@@ -38,7 +38,13 @@ const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
 const branchForCity = (city) => {
   const mapping = parseJson(process.env.NCM_BRANCH_MAP_JSON, {});
   const key = String(city || "").trim().toLowerCase();
-  return normalizeBranch(mapping[key] || "");
+  const branchValue = mapping[key];
+
+  if (Array.isArray(branchValue)) {
+    return normalizeBranch(branchValue.find(Boolean) || "");
+  }
+
+  return normalizeBranch(branchValue || "");
 };
 
 const resolvePickupBranch = (manufacturer) => {

@@ -39,3 +39,22 @@ test("requires manufacturer pickup branch before a create-order request is allow
 
   Object.assign(process.env, originalEnv);
 });
+
+test("prefers the first mapped branch in an array when city lookup returns prioritized branches", async () => {
+  process.env.NCM_BRANCH_MAP_JSON = JSON.stringify({
+    kathmandu: ["TINKUNE", "LALITPUR", "KATHMANDU"],
+    pokhara: ["POKHARA", "BHAKTAPUR"],
+  });
+
+  const { resolveNcmBranches } = await loadBranching();
+
+  const branches = resolveNcmBranches({
+    manufacturer: { ncmPickupBranch: "LALITPUR" },
+    address: { city: "kathmandu" },
+  });
+
+  assert.equal(branches.origin, "LALITPUR");
+  assert.equal(branches.destination, "TINKUNE");
+
+  Object.assign(process.env, originalEnv);
+});

@@ -5,6 +5,7 @@ import {
   getProfile,
   updateAvailability,
   registerManufacturer,
+  registerManufacturerSelf,
   listManufacturers,
   syncRatings,
   updateQualityRating,
@@ -13,6 +14,7 @@ import {
   updateManufacturer,
   updatePickupProfile,
   getManufacturerStats,
+  getAvailableNcmBranches,
 } from "../controllers/manufacturerController.js";
 import authManufacturer from "../middleware/manufacturerAuth.js";
 import { authAdmin } from "../middleware/auth.js";
@@ -22,6 +24,8 @@ const upload = multer({ dest: "uploads/" });
 
 // Public
 manufacturerRouter.post("/login", loginManufacturer);
+manufacturerRouter.get("/branches", getAvailableNcmBranches);
+manufacturerRouter.post("/register", upload.single("contractDoc"), registerManufacturerSelf);
 
 // Manufacturer-authenticated
 manufacturerRouter.get("/profile", authManufacturer, getProfile);

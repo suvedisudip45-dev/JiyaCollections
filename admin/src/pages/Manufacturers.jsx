@@ -40,6 +40,7 @@ const Manufacturers = ({ token }) => {
   const [manufacturers, setManufacturers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [ncmBranches, setNcmBranches] = useState([]);
 
   // Create Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -94,6 +95,19 @@ const Manufacturers = ({ token }) => {
     }
   }, [token]);
 
+  const fetchNcmBranches = useCallback(async (city) => {
+    try {
+      const res = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+        params: { city },
+      });
+      if (res.data.success && Array.isArray(res.data.branches)) {
+        setNcmBranches(res.data.branches);
+      }
+    } catch (err) {
+      console.error("Failed to load NCM branches", err);
+    }
+  }, [backendUrl]);
+
   const handleSyncRatings = async () => {
     try {
       const res = await axios.post(
@@ -113,6 +127,39 @@ const Manufacturers = ({ token }) => {
   useEffect(() => {
     fetchManufacturers();
   }, [fetchManufacturers]);
+
+  useEffect(() => {
+    fetchNcmBranches(formData.city);
+  }, [fetchNcmBranches, formData.city]);
+
+  const handleReviewManufacturer = async (manufacturerId, nextStatus) => {
+    try {
+      const infoMessage =
+        nextStatus === "ACTIVE"
+          ? "Approved and activated this manufacturer registration."
+          : nextStatus === "REJECTED"
+            ? "Rejected this manufacturer registration."
+            : "Updated manufacturer registration status.";
+
+      const res = await axios.put(
+        `${backendUrl}/api/manufacturer/admin/contract/${manufacturerId}`,
+        {
+          contractStatus: nextStatus,
+          agreementNotes: infoMessage,
+        },
+        { headers: { token } }
+      );
+
+      if (res.data.success) {
+        toast.success(`Manufacturer ${nextStatus.toLowerCase()} successfully`);
+        fetchManufacturers();
+      } else {
+        throw new Error(res.data.message || "Failed to update manufacturer review status");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Failed to update manufacturer review status");
+    }
+  };
 
   const handleCreateSubmit = async (e) => {
     e.preventDefault();
@@ -238,6 +285,10 @@ const Manufacturers = ({ token }) => {
     }
   };
 
+  const pendingManufacturers = manufacturers.filter(
+    (m) => (m.contractStatus || "ACTIVE").toUpperCase() === "PENDING"
+  );
+
   const filteredMfg = manufacturers.filter((m) => {
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
@@ -294,6 +345,69 @@ const Manufacturers = ({ token }) => {
           />
         </div>
       </div>
+
+      {pendingManufacturers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 md:p-5 shadow-xs">
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-700">Pending Applications</p>
+              <h2 className="text-lg font-black text-slate-900 mt-1">Manufacturer onboarding queue</h2>
+            </div>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+              {pendingManufacturers.length} awaiting review
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {pendingManufacturers.map((m) => (
+              <div
+                key={m.id}
+                className="bg-white rounded-xl border border-amber-200 p-4 shadow-xs"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">{m.businessName}</h3>
+                    <p className="text-[11px] text-slate-500 mt-1">{m.email}</p>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                    PENDING
+                  </span>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-600">
+                  <div className="bg-slate-50 rounded-lg p-2">
+                    <p className="text-slate-400">City</p>
+                    <p className="font-semibold text-slate-800 mt-1">{m.city || "Not set"}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-2">
+                    <p className="text-slate-400">Phone</p>
+                    <p className="font-semibold text-slate-800 mt-1">{m.phone || "Not set"}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded-lg p-2 col-span-2">
+                    <p className="text-slate-400">Pickup address</p>
+                    <p className="font-semibold text-slate-800 mt-1">{m.pickupAddress || m.address || "Not provided"}</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
+                    className="flex-1 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
+                    className="flex-1 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Grid of Manufacturer Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -426,6 +540,23 @@ const Manufacturers = ({ token }) => {
                   Contract
                 </button>
               </div>
+
+              {m.contractStatus === "PENDING" && (
+                <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
+                    className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
+                  >
+                    Reject
+                  </button>
+                </div>
+              )}
 
               <div className="pt-2 border-t border-slate-100">
                 <button
@@ -565,12 +696,18 @@ const Manufacturers = ({ token }) => {
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Admin Assigned NCM Pickup Branch</label>
                 <input
+                  list="admin-ncm-branches-list"
                   type="text"
-                  placeholder="e.g. TINKUNE"
+                  placeholder="Search pickup branch"
                   value={formData.ncmPickupBranch}
                   onChange={(e) => setFormData({ ...formData, ncmPickupBranch: e.target.value })}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
                 />
+                <datalist id="admin-ncm-branches-list">
+                  {ncmBranches.map((branch) => (
+                    <option key={branch} value={branch} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
