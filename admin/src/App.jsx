@@ -31,6 +31,7 @@ import GeneralLedger from "./pages/GeneralLedger";
 import TrialBalance from "./pages/TrialBalance";
 import Manufacturers from "./pages/Manufacturers";
 import OrderAssignments from "./pages/OrderAssignments";
+import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -86,6 +87,7 @@ const App = () => {
                   <Route path="/add-order" element={<CreateOrder token={token} />} />
                   <Route path="/orders" element={<Orders token={token} />} />
                   <Route path="/order-assignments" element={<OrderAssignments token={token} />} />
+                  <Route path="/delivery-monitor" element={<DeliveryMonitor token={token} />} />
                   <Route path="/manufacturers" element={<Manufacturers token={token} />} />
                   <Route path="/manufacturer-inventory" element={<ManufacturerInventoryMonitor token={token} />} />
                   <Route path="/customers" element={<Customers token={token} />} />

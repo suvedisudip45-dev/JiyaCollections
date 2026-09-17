@@ -618,6 +618,14 @@ model Manufacturer {
   password             String // bcrypt hashed
   phone                String
   city                 String // e.g. "Kathmandu", "Pokhara", "Biratnagar"
+  ncmPickupBranch      String?   @default("") // Assigned NCM pickup branch for this manufacturer; used for ready-for-pickup submissions
+  pickupBranchStatus   String?   @default("UNVERIFIED") // UNVERIFIED | VERIFIED | REJECTED
+  pickupBranchVerifiedAt DateTime?
+  pickupAddress        String?   @db.Text
+  pickupContactName    String?   @default("")
+  pickupContactPhone   String?   @default("")
+  pickupWindow         String?   @default("")
+  returnInstructions   String?   @db.Text
   address              String?   @db.Text
   qualityRating        Float     @default(5.0) // Dynamic 1.0–5.0 calculated from customer product reviews
   ratingCount          Int       @default(0) // Total customer reviews applied

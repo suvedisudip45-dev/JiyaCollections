@@ -154,9 +154,10 @@ const Sidebar = () => {
         <SectionGroup
           label="Supply Chain"
           icon={Icon.supply}
-          routes={["/order-assignments", "/manufacturers", "/manufacturer-inventory"]}
+          routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory"]}
         >
           <NavItem to="/order-assignments"     icon={Icon.routing}   label="Order Routing Engine" />
+          <NavItem to="/delivery-monitor"      icon={Icon.shipping}  label="Delivery & COD Monitor" />
           <NavItem to="/manufacturers"         icon={Icon.factory}   label="Manufacturers" />
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
         </SectionGroup>

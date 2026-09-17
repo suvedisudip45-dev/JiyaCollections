@@ -40,6 +40,11 @@ const branchForCity = (city) => {
   return normalizeBranch(mapping[key] || "");
 };
 
+const resolvePickupBranch = (manufacturer) => {
+  const direct = normalizeBranch(manufacturer?.ncmPickupBranch || manufacturer?.pickupBranch || "");
+  return direct;
+};
+
 const deliveryTypeForNcm = (deliveryType = "Door2Door") => {
   const allowed = new Set(["Door2Door", "Branch2Door", "Branch2Branch", "Door2Branch"]);
   return allowed.has(deliveryType) ? deliveryType : "Door2Door";
@@ -78,11 +83,16 @@ const syncSummary = (state) => {
 const buildDeliveryInput = ({ order, assignment, manufacturer }) => {
   const address = parseJson(order.address, {});
   const items = parseJson(order.items, []);
-  const origin = branchForCity(manufacturer.city);
+  const origin = resolvePickupBranch(manufacturer);
   const destination = branchForCity(address.city);
-  if (!origin || !destination) {
-    const error = new Error("NCM origin/destination branch mapping is required");
-    error.code = "NCM_BRANCH_MAPPING_REQUIRED";
+  if (!origin) {
+    const error = new Error("Manufacturer NCM pickup branch is required. Ask admin to assign and verify the pickup branch before readying the order.");
+    error.code = "NCM_PICKUP_BRANCH_REQUIRED";
+    throw error;
+  }
+  if (!destination) {
+    const error = new Error("NCM destination branch mapping is required. Configure the customer city mapping before dispatch.");
+    error.code = "NCM_DESTINATION_BRANCH_REQUIRED";
     throw error;
   }
 

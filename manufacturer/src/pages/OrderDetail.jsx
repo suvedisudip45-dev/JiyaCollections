@@ -23,7 +23,7 @@ import StatusBadge from "../components/StatusBadge";
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { token, backendUrl, currency } = useManufacturer();
+  const { token, backendUrl, currency, manufacturer } = useManufacturer();
   const [assignment, setAssignment] = useState(null);
   const [loading, setLoading] = useState(true);
   const [packageWeight, setPackageWeight] = useState("");
@@ -137,6 +137,27 @@ const OrderDetail = () => {
 
   const order = assignment.order;
   const items = order?.items || [];
+
+  const pickupReadiness = (() => {
+    const branch = (manufacturer?.ncmPickupBranch || "").trim();
+    const address = (manufacturer?.pickupAddress || "").trim();
+    const contactName = (manufacturer?.pickupContactName || "").trim();
+    const contactPhone = (manufacturer?.pickupContactPhone || "").trim();
+    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+
+    const missingFields = [];
+    if (!branch) missingFields.push("NCM pickup branch assignment");
+    if (!address) missingFields.push("pickup address");
+    if (!contactName) missingFields.push("contact name");
+    if (!contactPhone) missingFields.push("contact phone");
+    if (!pickupWindow) missingFields.push("pickup window");
+
+    return {
+      isReady: missingFields.length === 0,
+      branch,
+      missingFields,
+    };
+  })();
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -303,6 +324,38 @@ const OrderDetail = () => {
               Hub Workflow Actions
             </h3>
 
+            <div
+              className={`rounded-xl border p-3 text-[11px] ${
+                pickupReadiness.isReady
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-amber-200 bg-amber-50 text-amber-800"
+              }`}
+            >
+              <div className="flex items-center gap-2 font-bold">
+                {pickupReadiness.isReady ? (
+                  <CheckCircle className="w-4 h-4" />
+                ) : (
+                  <AlertCircle className="w-4 h-4" />
+                )}
+                <span>{pickupReadiness.isReady ? "Pickup-ready" : "Pickup blocked"}</span>
+              </div>
+
+              <div className="mt-2 space-y-1.5">
+                <p>
+                  Assigned branch: <strong>{pickupReadiness.branch || "Not assigned"}</strong>
+                </p>
+                {pickupReadiness.isReady ? (
+                  <p>All pickup requirements are complete and dispatch can proceed.</p>
+                ) : (
+                  <div className="space-y-1">
+                    {pickupReadiness.missingFields.map((field) => (
+                      <p key={field}>• {field} is missing.</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             {assignment.status === "assigned" && (
               <div className="space-y-2">
                 <button
@@ -348,11 +401,15 @@ const OrderDetail = () => {
               <div className="space-y-2">
                 <button
                   onClick={handleMarkReadyForPickup}
-                  disabled={actionLoading}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-md cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+                  disabled={actionLoading || !pickupReadiness.isReady}
+                  className={`w-full py-3 px-4 rounded-xl font-bold text-xs shadow-md flex items-center justify-center gap-2 ${
+                    pickupReadiness.isReady
+                      ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white cursor-pointer"
+                      : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                  }`}
                 >
                   <Truck className="w-4 h-4" />
-                  Mark Ready for Delivery Pickup
+                  {pickupReadiness.isReady ? "Mark Ready for Delivery Pickup" : "Pickup blocked"}
                 </button>
                 <p className="text-[11px] text-slate-500 text-center">
                   This will notify the nearest available Delivery Partner to collect the package from your hub.

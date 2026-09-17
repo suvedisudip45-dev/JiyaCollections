@@ -14,6 +14,9 @@ import {
   TrendingUp,
   RefreshCw,
   ShoppingBag,
+  MapPin,
+  ShieldCheck,
+  BellRing,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import StatusBadge from "../components/StatusBadge";
@@ -32,6 +35,33 @@ const Dashboard = () => {
     delivered: 0,
     total: 0,
   });
+
+  const readinessSummary = (() => {
+    const branch = (manufacturer?.ncmPickupBranch || "").trim();
+    const branchStatus = (manufacturer?.pickupBranchStatus || "UNVERIFIED").toUpperCase();
+    const pickupAddress = (manufacturer?.pickupAddress || "").trim();
+    const pickupContactName = (manufacturer?.pickupContactName || "").trim();
+    const pickupContactPhone = (manufacturer?.pickupContactPhone || "").trim();
+    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+
+    const missingFields = [];
+    if (!branch) missingFields.push("NCM branch assignment");
+    if (!pickupAddress) missingFields.push("Pickup address");
+    if (!pickupContactName) missingFields.push("Contact name");
+    if (!pickupContactPhone) missingFields.push("Contact phone");
+    if (!pickupWindow) missingFields.push("Pickup window");
+
+    const readinessScore = Math.max(0, 100 - missingFields.length * 20);
+    const isReady = branch && !missingFields.length;
+
+    return {
+      branch,
+      branchStatus,
+      missingFields,
+      readinessScore,
+      isReady,
+    };
+  })();
 
   const loadDashboardData = useCallback(async () => {
     if (!token) return;
@@ -145,6 +175,105 @@ const Dashboard = () => {
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
             >
               <span>View Orders</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5 p-5 border-b border-slate-100">
+          <div className="flex items-start gap-3">
+            <div className={`mt-0.5 w-11 h-11 rounded-xl flex items-center justify-center ${readinessSummary.isReady ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+              {readinessSummary.isReady ? <ShieldCheck className="w-5 h-5" /> : <BellRing className="w-5 h-5" />}
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Pickup readiness status</p>
+              <h2 className="mt-1 text-lg font-black text-slate-900">
+                {readinessSummary.isReady ? "Operationally ready for pickup" : "Action required before dispatch"}
+              </h2>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <span className={`inline-flex items-center px-2.5 py-1 rounded-full font-bold ${readinessSummary.isReady ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+              {readinessSummary.isReady ? "READY" : "CHECKLIST"}
+            </span>
+            <span className="text-slate-500">Readiness score: {readinessSummary.readinessScore}%</span>
+          </div>
+        </div>
+
+        <div className="grid xl:grid-cols-[1.2fr_0.8fr] gap-4 p-5">
+          <div className="space-y-3">
+            <div className="grid md:grid-cols-2 gap-3 text-xs">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Admin-assigned NCM branch</p>
+                <p className="mt-2 font-black text-slate-900">{readinessSummary.branch || "Not assigned yet"}</p>
+                <p className="mt-1 text-slate-500">Status: {readinessSummary.branchStatus || "UNVERIFIED"}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">Local pickup setup</p>
+                <p className="mt-2 font-black text-slate-900">{manufacturer?.pickupAddress ? "Configured" : "Incomplete"}</p>
+                <p className="mt-1 text-slate-500">{manufacturer?.pickupWindow || "No pickup window entered"}</p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Operational alert queue</p>
+              <div className="mt-2 space-y-2 text-xs text-slate-700">
+                {readinessSummary.missingFields.length === 0 ? (
+                  <div className="flex items-center gap-2 text-emerald-700 font-semibold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    All required pickup details are complete. Courier dispatch can proceed without delay.
+                  </div>
+                ) : (
+                  readinessSummary.missingFields.map((field) => (
+                    <div key={field} className="flex items-center gap-2 text-amber-700 font-semibold">
+                      <AlertTriangle className="w-4 h-4" />
+                      {field} is missing from the local pickup profile.
+                    </div>
+                  ))
+                )}
+                {!readinessSummary.branch && (
+                  <div className="flex items-center gap-2 text-rose-700 font-semibold">
+                    <MapPin className="w-4 h-4" />
+                    Admin has not assigned a valid NCM pickup branch yet. Please escalate to admin approval.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-4 text-white">
+            <div className="flex items-center justify-between text-xs text-emerald-200">
+              <span>Hub snapshot</span>
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div className="mt-4 space-y-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Assigned branch</span>
+                <span className="font-bold">{readinessSummary.branch || "—"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Contact</span>
+                <span className="font-bold">{manufacturer?.pickupContactName || "Not set"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Phone</span>
+                <span className="font-bold">{manufacturer?.pickupContactPhone || "Not set"}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-300">Venue</span>
+                <span className="font-bold text-right">{manufacturer?.pickupAddress ? "Configured" : "Missing"}</span>
+              </div>
+            </div>
+
+            <Link
+              to="/pickup-profile"
+              className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold transition-all"
+            >
+              Update pickup setup
               <ArrowRight className="w-3.5 h-3.5" />
             </Link>
           </div>

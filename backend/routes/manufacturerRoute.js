@@ -11,6 +11,7 @@ import {
   updateContractStatus,
   uploadContractDoc,
   updateManufacturer,
+  updatePickupProfile,
   getManufacturerStats,
 } from "../controllers/manufacturerController.js";
 import authManufacturer from "../middleware/manufacturerAuth.js";
@@ -28,6 +29,9 @@ manufacturerRouter.post("/profile", authManufacturer, getProfile);
 manufacturerRouter.put("/availability", authManufacturer, updateAvailability);
 manufacturerRouter.post("/availability", authManufacturer, updateAvailability);
 manufacturerRouter.get("/stats", authManufacturer, getManufacturerStats);
+manufacturerRouter.post("/pickup-profile", authManufacturer, updatePickupProfile);
+manufacturerRouter.put("/pickup-profile", authManufacturer, updatePickupProfile);
+manufacturerRouter.get("/pickup-profile", authManufacturer, getProfile);
 
 // Admin-only (support both direct and /admin/ prefixed paths)
 manufacturerRouter.get("/list", authAdmin, listManufacturers);

@@ -43,6 +43,7 @@ const Manufacturers = ({ token }) => {
 
   // Create Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editingManufacturerId, setEditingManufacturerId] = useState(null);
   const [formData, setFormData] = useState({
     businessName: "",
     email: "",
@@ -50,6 +51,13 @@ const Manufacturers = ({ token }) => {
     phone: "",
     address: "",
     city: "Kathmandu",
+    ncmPickupBranch: "",
+    pickupAddress: "",
+    pickupContactName: "",
+    pickupContactPhone: "",
+    pickupWindow: "",
+    returnInstructions: "",
+    pickupBranchStatus: "UNVERIFIED",
     commissionRate: 12,
     contractStart: new Date().toISOString().split("T")[0],
     contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
@@ -109,29 +117,59 @@ const Manufacturers = ({ token }) => {
   const handleCreateSubmit = async (e) => {
     e.preventDefault();
     try {
-      const res = await axios.post(
-        `${backendUrl}/api/manufacturer/admin/register`,
-        formData,
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Manufacturer registered successfully!");
-        setCreateModalOpen(false);
-        setFormData({
-          businessName: "",
-          email: "",
-          password: "",
-          phone: "",
-          address: "",
-          city: "Kathmandu",
-          commissionRate: 12,
-          contractStart: new Date().toISOString().split("T")[0],
-          contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
-        });
-        fetchManufacturers();
+      const payload = {
+        ...formData,
+        name: formData.businessName,
+        pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
+      };
+
+      if (editingManufacturerId) {
+        const res = await axios.put(
+          `${backendUrl}/api/manufacturer/admin/update/${editingManufacturerId}`,
+          payload,
+          { headers: { token } }
+        );
+        if (res.data.success) {
+          toast.success("Manufacturer pickup settings updated successfully!");
+        } else {
+          throw new Error(res.data.message || "Failed to update manufacturer settings");
+        }
+      } else {
+        const res = await axios.post(
+          `${backendUrl}/api/manufacturer/admin/register`,
+          payload,
+          { headers: { token } }
+        );
+        if (res.data.success) {
+          toast.success("Manufacturer registered successfully!");
+        } else {
+          throw new Error(res.data.message || "Failed to register manufacturer");
+        }
       }
+
+      setCreateModalOpen(false);
+      setEditingManufacturerId(null);
+      setFormData({
+        businessName: "",
+        email: "",
+        password: "",
+        phone: "",
+        address: "",
+        city: "Kathmandu",
+        ncmPickupBranch: "",
+        pickupAddress: "",
+        pickupContactName: "",
+        pickupContactPhone: "",
+        pickupWindow: "",
+        returnInstructions: "",
+        pickupBranchStatus: "UNVERIFIED",
+        commissionRate: 12,
+        contractStart: new Date().toISOString().split("T")[0],
+        contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+      });
+      fetchManufacturers();
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to register manufacturer");
+      toast.error(err.response?.data?.message || err.message || "Failed to save manufacturer settings");
     }
   };
 
@@ -320,6 +358,13 @@ const Manufacturers = ({ token }) => {
                   </div>
 
                   <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-400">NCM Pickup Branch:</span>
+                    <span className="font-bold text-slate-800">
+                      {m.ncmPickupBranch || "Not assigned"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
                     <span className="text-slate-400">Agreement Status:</span>
                     <span
                       className={`font-semibold ${
@@ -327,6 +372,13 @@ const Manufacturers = ({ token }) => {
                       }`}
                     >
                       {m.contractStatus || "ACTIVE"}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-400">Pickup Status:</span>
+                    <span className={`font-semibold ${m.pickupBranchStatus === "VERIFIED" ? "text-emerald-600" : "text-amber-600"}`}>
+                      {m.pickupBranchStatus || "UNVERIFIED"}
                     </span>
                   </div>
 
@@ -374,6 +426,36 @@ const Manufacturers = ({ token }) => {
                   Contract
                 </button>
               </div>
+
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  onClick={() => {
+                    setSelectedMfg(m);
+                    setEditingManufacturerId(m.id);
+                    setFormData((prev) => ({
+                      ...prev,
+                      businessName: m.businessName || "",
+                      email: m.email || "",
+                      password: "",
+                      phone: m.phone || "",
+                      address: m.address || "",
+                      city: m.city || "Kathmandu",
+                      ncmPickupBranch: m.ncmPickupBranch || "",
+                      pickupAddress: m.pickupAddress || "",
+                      pickupContactName: m.pickupContactName || "",
+                      pickupContactPhone: m.pickupContactPhone || "",
+                      pickupWindow: m.pickupWindow || "",
+                      returnInstructions: m.returnInstructions || "",
+                      pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
+                    }));
+                    setCreateModalOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  Pickup Config
+                </button>
+              </div>
             </div>
           ))
         )}
@@ -385,10 +467,13 @@ const Manufacturers = ({ token }) => {
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-900">
-                Register New Manufacturing Partner
+                {editingManufacturerId ? "Edit Manufacturing Partner" : "Register New Manufacturing Partner"}
               </h3>
               <button
-                onClick={() => setCreateModalOpen(false)}
+                onClick={() => {
+                  setCreateModalOpen(false);
+                  setEditingManufacturerId(null);
+                }}
                 className="text-slate-400 hover:text-slate-600 cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -477,6 +562,89 @@ const Manufacturers = ({ token }) => {
                 />
               </div>
 
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Admin Assigned NCM Pickup Branch</label>
+                <input
+                  type="text"
+                  placeholder="e.g. TINKUNE"
+                  value={formData.ncmPickupBranch}
+                  onChange={(e) => setFormData({ ...formData, ncmPickupBranch: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Pickup Address for Manufacturer</label>
+                <input
+                  type="text"
+                  placeholder="Pickup warehouse or factory address"
+                  value={formData.pickupAddress}
+                  onChange={(e) => setFormData({ ...formData, pickupAddress: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Ramesh Karki"
+                    value={formData.pickupContactName}
+                    onChange={(e) => setFormData({ ...formData, pickupContactName: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Phone</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. +977-98..."
+                    value={formData.pickupContactPhone}
+                    onChange={(e) => setFormData({ ...formData, pickupContactPhone: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Pickup Window</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 10:00 AM - 4:00 PM"
+                    value={formData.pickupWindow}
+                    onChange={(e) => setFormData({ ...formData, pickupWindow: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Pickup Status</label>
+                  <select
+                    value={formData.pickupBranchStatus || "UNVERIFIED"}
+                    onChange={(e) => setFormData({ ...formData, pickupBranchStatus: e.target.value })}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  >
+                    <option value="UNVERIFIED">UNVERIFIED</option>
+                    <option value="VERIFIED">VERIFIED</option>
+                    <option value="REJECTED">REJECTED</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Return Instructions</label>
+                <textarea
+                  rows={2}
+                  placeholder="Instructions for return or handover"
+                  value={formData.returnInstructions}
+                  onChange={(e) => setFormData({ ...formData, returnInstructions: e.target.value })}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Contract Start</label>
@@ -502,7 +670,10 @@ const Manufacturers = ({ token }) => {
               <div className="flex items-center justify-end gap-2 pt-3">
                 <button
                   type="button"
-                  onClick={() => setCreateModalOpen(false)}
+                  onClick={() => {
+                    setCreateModalOpen(false);
+                    setEditingManufacturerId(null);
+                  }}
                   className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold"
                 >
                   Cancel
@@ -511,7 +682,7 @@ const Manufacturers = ({ token }) => {
                   type="submit"
                   className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer"
                 >
-                  Register Partner
+                  {editingManufacturerId ? "Save Settings" : "Register Partner"}
                 </button>
               </div>
             </form>

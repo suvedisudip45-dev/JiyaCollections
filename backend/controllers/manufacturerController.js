@@ -84,6 +84,12 @@ const registerManufacturer = async (req, res) => {
       password,
       phone,
       city,
+      ncmPickupBranch,
+      pickupAddress,
+      pickupContactName,
+      pickupContactPhone,
+      pickupWindow,
+      returnInstructions,
       address,
       contractStartDate,
       contractStart,
@@ -122,6 +128,13 @@ const registerManufacturer = async (req, res) => {
         password: hashed,
         phone: phone.trim(),
         city: city.trim(),
+        ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
+        pickupBranchStatus: "UNVERIFIED",
+        pickupAddress: pickupAddress || address || null,
+        pickupContactName: pickupContactName || "",
+        pickupContactPhone: pickupContactPhone || "",
+        pickupWindow: pickupWindow || "",
+        returnInstructions: returnInstructions || null,
         address: address || null,
         contractDocUrl,
         contractStartDate: startVal ? new Date(startVal) : null,
@@ -272,6 +285,34 @@ const uploadContractDoc = async (req, res) => {
 };
 
 // ─── ADMIN: UPDATE MANUFACTURER (general) ────────────────────────────────────
+const updatePickupProfile = async (req, res) => {
+  try {
+    const manufacturerId = req.manufacturerId || req.body?.manufacturerId || req.params?.id;
+    const {
+      pickupAddress,
+      pickupContactName,
+      pickupContactPhone,
+      pickupWindow,
+      returnInstructions,
+    } = req.body;
+
+    const updateData = {};
+    if (pickupAddress !== undefined) updateData.pickupAddress = pickupAddress || null;
+    if (pickupContactName !== undefined) updateData.pickupContactName = String(pickupContactName || "").trim();
+    if (pickupContactPhone !== undefined) updateData.pickupContactPhone = String(pickupContactPhone || "").trim();
+    if (pickupWindow !== undefined) updateData.pickupWindow = String(pickupWindow || "").trim();
+    if (returnInstructions !== undefined) updateData.returnInstructions = returnInstructions || null;
+
+    const updated = await prisma.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+    const { password: _, ...safe } = updated;
+    safe.businessName = safe.name;
+    res.json({ success: true, message: "Pickup profile updated", manufacturer: safe });
+  } catch (error) {
+    console.error("updatePickupProfile error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 const updateManufacturer = async (req, res) => {
   try {
     const manufacturerId = req.params?.id || req.body?.manufacturerId || req.body?.id;
@@ -280,6 +321,13 @@ const updateManufacturer = async (req, res) => {
       businessName,
       phone,
       city,
+      ncmPickupBranch,
+      pickupBranchStatus,
+      pickupAddress,
+      pickupContactName,
+      pickupContactPhone,
+      pickupWindow,
+      returnInstructions,
       address,
       isActive,
       isAvailable,
@@ -295,6 +343,13 @@ const updateManufacturer = async (req, res) => {
     if (mfgName !== undefined) updateData.name = mfgName;
     if (phone !== undefined) updateData.phone = phone;
     if (city !== undefined) updateData.city = city;
+    if (ncmPickupBranch !== undefined) updateData.ncmPickupBranch = ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "";
+    if (pickupBranchStatus !== undefined) updateData.pickupBranchStatus = String(pickupBranchStatus || "UNVERIFIED").trim().toUpperCase();
+    if (pickupAddress !== undefined) updateData.pickupAddress = pickupAddress || null;
+    if (pickupContactName !== undefined) updateData.pickupContactName = String(pickupContactName || "").trim();
+    if (pickupContactPhone !== undefined) updateData.pickupContactPhone = String(pickupContactPhone || "").trim();
+    if (pickupWindow !== undefined) updateData.pickupWindow = String(pickupWindow || "").trim();
+    if (returnInstructions !== undefined) updateData.returnInstructions = returnInstructions || null;
     if (address !== undefined) updateData.address = address;
     if (isActive !== undefined) updateData.isActive = Boolean(isActive);
     if (isAvailable !== undefined) updateData.isAvailable = Boolean(isAvailable);
@@ -369,5 +424,6 @@ export {
   updateContractStatus,
   uploadContractDoc,
   updateManufacturer,
+  updatePickupProfile,
   getManufacturerStats,
 };

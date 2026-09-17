@@ -26,11 +26,32 @@ import StatusBadge from "../components/StatusBadge";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 
 const Orders = () => {
-  const { token, backendUrl, currency, setStats } = useManufacturer();
+  const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
   const [assignments, setAssignments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
+
+  const manufacturerPickupReadiness = (() => {
+    const branch = (manufacturer?.ncmPickupBranch || "").trim();
+    const pickupAddress = (manufacturer?.pickupAddress || "").trim();
+    const pickupContactName = (manufacturer?.pickupContactName || "").trim();
+    const pickupContactPhone = (manufacturer?.pickupContactPhone || "").trim();
+    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+
+    const missingFields = [];
+    if (!branch) missingFields.push("NCM pickup branch assignment");
+    if (!pickupAddress) missingFields.push("pickup address");
+    if (!pickupContactName) missingFields.push("contact name");
+    if (!pickupContactPhone) missingFields.push("contact phone");
+    if (!pickupWindow) missingFields.push("pickup window");
+
+    return {
+      isReady: !missingFields.length,
+      missingFields,
+      branch,
+    };
+  })();
 
   // Reject Modal State
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
@@ -325,6 +346,10 @@ const Orders = () => {
             const address = order.address || {};
             const isSelected = selectedOrderIds.has(item.id);
             const isNewAssigned = item.status === "assigned";
+            const pickupReadyForThisOrder = manufacturerPickupReadiness.isReady;
+            const dispatchWarningText = manufacturerPickupReadiness.missingFields.length
+              ? `Pickup blocked: ${manufacturerPickupReadiness.missingFields[0]} missing.`
+              : "Dispatch ready: all required pickup details are complete.";
 
             return (
               <div
@@ -482,6 +507,25 @@ const Orders = () => {
                         Fulfillment Stage Action
                       </span>
 
+                      {item.status === "packed" && (
+                        <div
+                          className={`rounded-xl border p-2 text-[10px] font-semibold ${
+                            pickupReadyForThisOrder
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                              : "border-amber-200 bg-amber-50 text-amber-800"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {pickupReadyForThisOrder ? (
+                              <CheckCircle className="w-3.5 h-3.5" />
+                            ) : (
+                              <AlertCircle className="w-3.5 h-3.5" />
+                            )}
+                            <span>{dispatchWarningText}</span>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Stage Transitions */}
                       {item.status === "assigned" && (
                         <div className="space-y-2">
@@ -528,10 +572,15 @@ const Orders = () => {
                         <div className="space-y-2">
                           <button
                             onClick={() => handleUpdateStatus(item.id, "ready_for_pickup")}
-                            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
+                            disabled={!pickupReadyForThisOrder}
+                            className={`w-full py-2.5 rounded-xl font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 ${
+                              pickupReadyForThisOrder
+                                ? "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                                : "bg-slate-200 text-slate-500 cursor-not-allowed"
+                            }`}
                           >
                             <Truck className="w-4 h-4" />
-                            <span>Ready for Courier Pickup</span>
+                            <span>{pickupReadyForThisOrder ? "Ready for Courier Pickup" : "Pickup blocked"}</span>
                           </button>
                           <button
                             onClick={() => setPrintOrdersList([order])}
