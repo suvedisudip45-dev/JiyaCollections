@@ -32,9 +32,18 @@ import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngin
 // App Config
 const app = express();
 const port = process.env.PORT || 4000;
-connectDB();
-connectCloudinary();
-ensureStandardChartOfAccounts();
+
+const startServer = async () => {
+  await connectDB();
+  connectCloudinary();
+  ensureStandardChartOfAccounts();
+
+  app.listen(port, () => {
+    logger.info("Server started", { port });
+  });
+};
+
+startServer();
 
 // Middleware
 app.use(express.json({ limit: "10mb" }));
@@ -102,6 +111,3 @@ app.get("/", (req, res) => {
   res.send("API Working");
 });
 
-app.listen(port, () => {
-  logger.info("Server started", { port });
-});

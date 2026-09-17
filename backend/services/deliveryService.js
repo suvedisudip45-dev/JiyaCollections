@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { prisma } from "../config/db.js";
+import { prisma, reconnectPrisma } from "../config/db.js";
 import { logger } from "../utils/logger.js";
 import {
   createOrder as createNcmOrder,
@@ -64,6 +64,18 @@ const generateVendorReference = ({ order, assignment }) => {
   const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ASS";
   const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 4).toUpperCase();
   return `NCM${orderKey}${assignmentKey}${suffix}`.slice(0, 15);
+};
+
+const runTransaction = async (handler, { retries = 1 } = {}) => {
+  try {
+    return await prisma.$transaction(handler);
+  } catch (error) {
+    if (error.code === "P2028" && retries > 0) {
+      await reconnectPrisma();
+      return runTransaction(handler, { retries: retries - 1 });
+    }
+    throw error;
+  }
 };
 
 const createEvent = async (tx, data) => {
@@ -180,7 +192,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     vendorReference: input.vendorReference,
   });
 
-  const delivery = await prisma.$transaction(async (tx) => {
+  const delivery = await runTransaction(async (tx) => {
     const record = existing
       ? await tx.deliveryOrder.update({
           where: { id: existing.id },
@@ -313,7 +325,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     const ncmOrderId = Number(response.data?.orderid);
     if (!Number.isInteger(ncmOrderId)) throw new Error("NCM did not return a valid order ID");
 
-    const updated = await prisma.$transaction(async (tx) => {
+    const updated = await runTransaction(async (tx) => {
       const record = await tx.deliveryOrder.update({
         where: { id: delivery.id },
         data: {
@@ -535,7 +547,7 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason
   const existing = await prisma.deliveryReturn.findUnique({ where: { deliveryOrderId: deliveryId } });
   if (existing) return existing;
   const response = await requestOrderReturn({ pk: delivery.ncmOrderId, comment: reason });
-  return prisma.$transaction(async (tx) => {
+  return runTransaction(async (tx) => {
     const returned = await tx.deliveryReturn.create({ data: { deliveryOrderId: deliveryId, orderId: delivery.orderId, manufacturerId, returnReason: reason, ncmReturnComment: reason, ncmReturnRequestedAt: new Date(), state: "RETURN_REQUESTED" } });
     await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested" } });
     await tx.order.update({ where: { id: delivery.orderId }, data: { fulfillmentStatus: "return_requested" } });
