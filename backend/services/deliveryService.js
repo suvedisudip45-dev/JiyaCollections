@@ -59,6 +59,13 @@ const sanitizePayload = (payload) => {
   return JSON.parse(JSON.stringify(payload));
 };
 
+const generateVendorReference = ({ order, assignment }) => {
+  const orderKey = String(order?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "ORD";
+  const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "ASS";
+  const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 12).toUpperCase();
+  return `NCM-${orderKey}-${assignmentKey}-${suffix}`.slice(0, 32);
+};
+
 const createEvent = async (tx, data) => {
   try {
     return await tx.deliveryEvent.create({ data });
@@ -112,7 +119,7 @@ const buildDeliveryInput = ({ order, assignment, manufacturer }) => {
     .map((item) => `${item.name || "Item"} x${Number(item.quantity || 1)}`)
     .join(", ")
     .slice(0, 500);
-  const vendorReference = `ORDER-${order.id}-V${assignment.id}`.slice(0, 100);
+  const vendorReference = generateVendorReference({ order, assignment });
 
   return {
     origin,
@@ -537,4 +544,4 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason
   });
 };
 
-export { STATUS_MAP, deliveryTypeForNcm, statusEventKey };
+export { STATUS_MAP, deliveryTypeForNcm, generateVendorReference, statusEventKey };

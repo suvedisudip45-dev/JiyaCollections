@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createOrder, requestNcm } from "../services/ncmClient.js";
-import { STATUS_MAP, deliveryTypeForNcm, statusEventKey } from "../services/deliveryService.js";
+import { STATUS_MAP, deliveryTypeForNcm, generateVendorReference, statusEventKey } from "../services/deliveryService.js";
 
 const restoreEnv = (name, value) => {
   if (value === undefined) delete process.env[name];
@@ -60,4 +60,15 @@ test("delivery mapping and event keys are deterministic", () => {
   assert.equal(deliveryTypeForNcm("invalid"), "Door2Door");
   assert.equal(STATUS_MAP.Delivered, "DELIVERED");
   assert.equal(statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }), statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }));
+});
+
+test("NCM vendor reference stays short and deterministic", () => {
+  const orderId = "4db7dcc1-dbf3-46eb-8c6c-73fec88611fc";
+  const assignmentId = "50cfd6db-49c5-4781-8acb-8411b4cb3e12";
+  const reference = generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } });
+
+  assert.equal(reference.startsWith("NCM-"), true);
+  assert.ok(reference.length <= 32, `Vendor reference is too long: ${reference.length} chars`);
+  assert.equal(generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } }), reference);
+  assert.notEqual(reference, `ORDER-${orderId}-V${assignmentId}`);
 });
