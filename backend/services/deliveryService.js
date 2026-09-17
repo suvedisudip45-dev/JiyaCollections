@@ -60,10 +60,10 @@ const sanitizePayload = (payload) => {
 };
 
 const generateVendorReference = ({ order, assignment }) => {
-  const orderKey = String(order?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "ORD";
-  const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6).toUpperCase() || "ASS";
-  const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 12).toUpperCase();
-  return `NCM-${orderKey}-${assignmentKey}-${suffix}`.slice(0, 32);
+  const orderKey = String(order?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ORD";
+  const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ASS";
+  const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 4).toUpperCase();
+  return `NCM${orderKey}${assignmentKey}${suffix}`.slice(0, 15);
 };
 
 const createEvent = async (tx, data) => {

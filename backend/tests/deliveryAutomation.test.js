@@ -67,8 +67,8 @@ test("NCM vendor reference stays short and deterministic", () => {
   const assignmentId = "50cfd6db-49c5-4781-8acb-8411b4cb3e12";
   const reference = generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } });
 
-  assert.equal(reference.startsWith("NCM-"), true);
-  assert.ok(reference.length <= 32, `Vendor reference is too long: ${reference.length} chars`);
+  assert.equal(reference.startsWith("NCM"), true);
+  assert.ok(reference.length <= 15, `Vendor reference is too long: ${reference.length} chars`);
   assert.equal(generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } }), reference);
   assert.notEqual(reference, `ORDER-${orderId}-V${assignmentId}`);
 });
