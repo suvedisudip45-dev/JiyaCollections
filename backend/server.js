@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
 import userRouter from "./routes/userRoute.js";
@@ -37,21 +38,12 @@ ensureStandardChartOfAccounts();
 // Middleware
 app.use(express.json());
 
-// Build allowed origins from env vars (supports local dev + deployed Netlify URLs)
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:5175',  // Manufacturer portal
-  process.env.FRONTEND_URL,
-  process.env.ADMIN_URL,
-  process.env.MANUFACTURER_URL,
-].filter(Boolean); // removes undefined/null if env vars not set
+const allowedOrigins = getAllowedOrigins();
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (e.g. Postman, curl, server-to-server)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (isOriginAllowed(origin)) return callback(null, true);
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
