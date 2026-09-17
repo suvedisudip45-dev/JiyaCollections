@@ -6,6 +6,7 @@ import {
   adminReconcileDelivery,
   getCustomerDelivery,
   getDelivery,
+  getRecentSystemLogs,
   readyForDelivery,
   readyForDeliveryByAssignment,
   receiveWebhook,
@@ -31,6 +32,7 @@ deliveryRouter.post("/manufacturer/return", authManufacturer, requestReturn);
 deliveryRouter.get("/customer/:id", authUser, getCustomerDelivery);
 deliveryRouter.get("/admin", authAdmin, adminListDeliveries);
 deliveryRouter.get("/admin/settlements", authAdmin, adminListSettlements);
+deliveryRouter.get("/admin/logs", authAdmin, getRecentSystemLogs);
 deliveryRouter.get("/admin/:id", authAdmin, getDelivery);
 deliveryRouter.post("/admin/:id/reconcile", authAdmin, adminReconcileDelivery);
 deliveryRouter.post("/admin/reconcile-active", authAdmin, adminReconcileActive);

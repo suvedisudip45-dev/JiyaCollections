@@ -1,0 +1,11 @@
+{"timestamp":"2026-09-17T03:20:01.861Z","level":"info","message":"redaction test","meta":{"phone":"98***10","address":"St***12","token":"ab***23","fbranch":"KTM","branch":"PKR","delivery_type":"Door2Door","weight":"1.5"}}
+{"timestamp":"2026-09-17T03:21:12.851Z","level":"info","message":"Server started","meta":{"port":4000}}
+{"timestamp":"2026-09-17T03:21:41.998Z","level":"http","message":"request completed","meta":{"method":"GET","url":"/api/delivery/admin/logs","statusCode":200,"durationMs":1,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:22:53.985Z","level":"http","message":"request completed","meta":{"method":"POST","url":"/api/user/admin","statusCode":200,"durationMs":14,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:23:43.225Z","level":"http","message":"request completed","meta":{"method":"POST","url":"/api/user/admin","statusCode":200,"durationMs":77,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:23:43.244Z","level":"http","message":"request completed","meta":{"method":"GET","url":"/api/delivery/admin/logs","statusCode":404,"durationMs":13,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:24:10.101Z","level":"http","message":"request completed","meta":{"method":"POST","url":"/api/user/admin","statusCode":200,"durationMs":70,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:24:10.107Z","level":"http","message":"request completed","meta":{"method":"GET","url":"/api/delivery/admin/logs","statusCode":404,"durationMs":1,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:26:36.272Z","level":"info","message":"Server started","meta":{"port":4000}}
+{"timestamp":"2026-09-17T03:26:48.878Z","level":"http","message":"request completed","meta":{"method":"POST","url":"/api/user/admin","statusCode":200,"durationMs":78,"ip":"::1","userAgent":"unknown","manufacturerId":null}}
+{"timestamp":"2026-09-17T03:26:48.889Z","level":"http","message":"request completed","meta":{"method":"GET","url":"/api/delivery/admin/logs","statusCode":200,"durationMs":2,"ip":"::1","userAgent":"unknown","manufacturerId":null}}

@@ -1,3 +1,5 @@
+import { logger } from "../utils/logger.js";
+
 const DEFAULT_BASE_URL = "https://demo.nepalcanmove.com";
 const REQUEST_TIMEOUT_MS = 8000;
 
@@ -20,6 +22,13 @@ const requestNcm = async (path, { method = "GET", query, body } = {}) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
+    const payloadForLog = body ? JSON.parse(JSON.stringify(body)) : null;
+    logger.info("NCM request started", {
+      method,
+      url: sanitizeUrl(url.toString()),
+      requestBody: payloadForLog,
+    });
+
     const response = await fetch(url, {
       method,
       signal: controller.signal,
@@ -44,11 +53,36 @@ const requestNcm = async (path, { method = "GET", query, body } = {}) => {
       error.code = `NCM_HTTP_${response.status}`;
       error.httpStatus = response.status;
       error.response = data;
+
+      logger.error("NCM request failed", {
+        method,
+        url: sanitizeUrl(url.toString()),
+        httpStatus: response.status,
+        requestBody: payloadForLog,
+        responseBody: data,
+      });
       throw error;
     }
 
+    logger.info("NCM request succeeded", {
+      method,
+      url: sanitizeUrl(url.toString()),
+      httpStatus: response.status,
+      requestBody: payloadForLog,
+      responseBody: data,
+    });
+
     return { data, httpStatus: response.status, url: sanitizeUrl(url.toString()) };
   } catch (error) {
+    logger.error("NCM request exception", {
+      method,
+      url: sanitizeUrl(url.toString()),
+      requestBody: body ? JSON.parse(JSON.stringify(body)) : null,
+      errorName: error.name,
+      errorCode: error.code,
+      errorMessage: error.message,
+      errorResponse: error.response || null,
+    });
     if (error.name === "AbortError") {
       const timeoutError = new Error("NCM request timed out");
       timeoutError.code = "NCM_TIMEOUT";

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { readRecentLogs } from "../utils/logger.js";
 import {
   applyNcmStatus,
   prepareReadyDelivery,
@@ -122,6 +123,15 @@ export const adminListDeliveries = async (req, res) => {
   if (req.query.manufacturerId) where.manufacturerId = req.query.manufacturerId;
   const deliveries = await prisma.deliveryOrder.findMany({ where, orderBy: { updatedAt: "desc" }, take: 200 });
   res.json({ success: true, deliveries });
+};
+
+export const getRecentSystemLogs = async (_req, res) => {
+  try {
+    const logs = readRecentLogs(80);
+    res.json({ success: true, logs });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || "Failed to read log file" });
+  }
 };
 
 export const adminListSettlements = async (req, res) => {

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { logger } from "../utils/logger.js";
 import {
   createOrder as createNcmOrder,
   getBulkOrderStatuses,
@@ -160,6 +161,18 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
   const input = buildDeliveryInput({ order, assignment, manufacturer });
 
+  logger.info("Prepared NCM delivery payload", {
+    orderId,
+    manufacturerId,
+    origin: input.origin,
+    destination: input.destination,
+    deliveryType: input.deliveryType,
+    itemAmount: input.itemAmount,
+    codAmount: input.codAmount,
+    packageDescription: input.packageDescription,
+    vendorReference: input.vendorReference,
+  });
+
   const delivery = await prisma.$transaction(async (tx) => {
     const record = existing
       ? await tx.deliveryOrder.update({
@@ -258,7 +271,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   try {
     const rate = await getShippingRate({ creation: input.origin, destination: input.destination, type: input.deliveryType });
     const rateValue = Number(rate.data?.delivery_charge ?? rate.data?.charge ?? rate.data?.shipping_charge ?? 0);
-    const response = await createNcmOrder({
+    const ncmPayload = {
       name: input.name,
       phone: input.phone,
       phone2: input.address.phone2 || "",
@@ -271,7 +284,25 @@ export const submitDeliveryToNcm = async (deliveryId) => {
       instruction: String(input.address.deliveryInstruction || "").slice(0, 500),
       delivery_type: input.deliveryType,
       weight: String(Math.max(0.1, Number(delivery.packageWeight || 1))),
+    };
+
+    logger.info("NCM create payload ready", {
+      deliveryId: delivery.id,
+      orderId: delivery.orderId,
+      manufacturerId: delivery.manufacturerId,
+      fbranch: ncmPayload.fbranch,
+      branch: ncmPayload.branch,
+      delivery_type: ncmPayload.delivery_type,
+      weight: ncmPayload.weight,
+      cod_charge: ncmPayload.cod_charge,
+      package: ncmPayload.package,
+      vref_id: ncmPayload.vref_id,
+      phone: "[REDACTED]",
+      address: "[REDACTED]",
+      instruction: "[REDACTED]",
     });
+
+    const response = await createNcmOrder(ncmPayload);
     const ncmOrderId = Number(response.data?.orderid);
     if (!Number.isInteger(ncmOrderId)) throw new Error("NCM did not return a valid order ID");
 

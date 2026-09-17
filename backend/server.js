@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+import { logger } from "./utils/logger.js";
 import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
@@ -36,7 +37,24 @@ connectCloudinary();
 ensureStandardChartOfAccounts();
 
 // Middleware
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    const durationMs = Date.now() - start;
+    logger.request(req, res, durationMs);
+    return originalJson(body);
+  };
+  res.on("finish", () => {
+    const durationMs = Date.now() - start;
+    if (!res.headersSent) {
+      logger.request(req, res, durationMs);
+    }
+  });
+  next();
+});
 
 const allowedOrigins = getAllowedOrigins();
 
@@ -84,4 +102,6 @@ app.get("/", (req, res) => {
   res.send("API Working");
 });
 
-app.listen(port, () => console.log("Server started on PORT : " + port));
+app.listen(port, () => {
+  logger.info("Server started", { port });
+});
