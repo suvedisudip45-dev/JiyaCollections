@@ -171,7 +171,7 @@ const Customers = ({ token }) => {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-black text-gray-900 tracking-tight flex items-center gap-2.5">
-              <span>👥</span> Customers & Loyalty Records
+              Customers &amp; Loyalty Records
             </h1>
             <p className="text-xs text-gray-500 mt-1">
               Track customer purchase game levels, order stats, and archive handwritten letters/gift notes sent.

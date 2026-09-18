@@ -121,7 +121,7 @@ const Sidebar = () => {
     <aside className="w-60 shrink-0 bg-white border-r border-slate-200/80 flex flex-col select-none" style={{ height: "calc(100vh - 65px)", position: "sticky", top: "65px" }}>
 
       {/* Scrollable nav area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#e2e8f0 transparent" }}>
+          <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#dfe7e3 transparent" }}>
 
         {/* ── CATALOG & PRODUCTS ── */}
         <SectionGroup

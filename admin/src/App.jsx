@@ -53,7 +53,7 @@ const App = () => {
   }, [token]);
 
   return (
-    <div className="bg-gray-50 min-h-screen">
+    <div className="admin-shell bg-[#f3f6f4] min-h-screen">
       <ToastContainer />
       {token === "" ? (
         <Login setToken={setToken} />
@@ -62,7 +62,7 @@ const App = () => {
           <Navbar setToken={setToken} />
           <div className="flex w-full min-h-[calc(100vh-65px)]">
             <Sidebar />
-            <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-slate-50/60 overflow-x-hidden min-w-0">
+            <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-[#f3f6f4] overflow-x-hidden min-w-0">
               <div className="max-w-7xl mx-auto">
                 <Routes>
                   <Route path="/finance" element={<FinanceDashboard token={token} />} />

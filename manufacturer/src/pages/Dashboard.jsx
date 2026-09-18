@@ -32,6 +32,7 @@ const Dashboard = () => {
     preparing: 0,
     packed: 0,
     ready: 0,
+    inDelivery: 0,
     delivered: 0,
     total: 0,
   });
@@ -80,6 +81,7 @@ const Dashboard = () => {
         const preparing = list.filter((a) => a.status === "preparing").length;
         const packed = list.filter((a) => a.status === "packed").length;
         const ready = list.filter((a) => a.status === "ready_for_pickup").length;
+        const inDelivery = list.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery"].includes(a.status)).length;
         const delivered = list.filter((a) => a.status === "delivered").length;
 
         const currentCounts = {
@@ -88,9 +90,10 @@ const Dashboard = () => {
           preparing,
           packed,
           ready,
+          inDelivery,
           delivered,
           total: list.length,
-          active: accepted + preparing + packed + ready,
+          active: accepted + preparing + packed + ready + inDelivery,
         };
         setHubStats(currentCounts);
         setStats(currentCounts);
@@ -115,6 +118,8 @@ const Dashboard = () => {
 
   useEffect(() => {
     loadDashboardData();
+    const interval = setInterval(() => loadDashboardData(), 15000);
+    return () => clearInterval(interval);
   }, [loadDashboardData]);
 
   const handleQuickAccept = async (assignmentId) => {
@@ -134,17 +139,17 @@ const Dashboard = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="dashboard-shell space-y-5">
       {/* Top Banner / Greeting */}
-      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white rounded-2xl p-6 sm:p-8 shadow-sm relative overflow-hidden">
+      <div className="bg-slate-950 text-white rounded-2xl p-6 sm:p-8 shadow-sm relative overflow-hidden border border-slate-800">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold border border-emerald-500/30">
+              <span className="px-2.5 py-0.5 rounded-full bg-teal-400/10 text-teal-300 text-xs font-semibold border border-teal-400/20">
                 City Hub: {manufacturer?.city}
               </span>
               <span className="text-xs text-slate-300">
-                Contract: <span className="text-emerald-300 font-semibold">{manufacturer?.contractStatus}</span>
+                Contract: <span className="text-teal-300 font-semibold">{manufacturer?.contractStatus}</span>
               </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight">
@@ -158,21 +163,21 @@ const Dashboard = () => {
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               onClick={loadDashboardData}
-              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all border border-white/10 cursor-pointer"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold transition-all border border-white/10 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </button>
             <Link
               to="/direct-orders"
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white text-xs font-bold transition-all shadow-xs border border-white/20 cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold transition-all border border-white/10 cursor-pointer"
             >
               <ShoppingBag className="w-3.5 h-3.5" />
               <span>Direct Sale</span>
             </Link>
             <Link
               to="/orders"
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition-all shadow-md cursor-pointer"
             >
               <span>View Orders</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -181,7 +186,7 @@ const Dashboard = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5 p-5 border-b border-slate-100">
           <div className="flex items-start gap-3">
             <div className={`mt-0.5 w-11 h-11 rounded-xl flex items-center justify-center ${readinessSummary.isReady ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
@@ -245,8 +250,8 @@ const Dashboard = () => {
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-900 via-emerald-950 to-slate-900 p-4 text-white">
-            <div className="flex items-center justify-between text-xs text-emerald-200">
+          <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-white">
+            <div className="flex items-center justify-between text-xs text-teal-300">
               <span>Hub snapshot</span>
               <ShieldCheck className="w-4 h-4" />
             </div>
@@ -271,7 +276,7 @@ const Dashboard = () => {
 
             <Link
               to="/pickup-profile"
-              className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold transition-all"
+              className="mt-5 inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition-all"
             >
               Update pickup setup
               <ArrowRight className="w-3.5 h-3.5" />
@@ -281,7 +286,7 @@ const Dashboard = () => {
       </div>
 
       {/* KPI Stats Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {/* Pending Card */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="flex items-center justify-between">
@@ -337,6 +342,19 @@ const Dashboard = () => {
               {hubStats.packed + hubStats.ready}
             </span>
             <span className="text-[11px] text-emerald-600 font-medium">Awaiting driver</span>
+          </div>
+        </div>
+
+        <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">In Delivery</span>
+            <div className="w-8 h-8 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center">
+              <Truck className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-2xl sm:text-3xl font-black text-slate-900">{hubStats.inDelivery}</span>
+            <span className="text-[11px] text-sky-600 font-medium">Live courier movement</span>
           </div>
         </div>
 

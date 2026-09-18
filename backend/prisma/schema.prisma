@@ -644,12 +644,33 @@ model Manufacturer {
   rejectionCount       Int       @default(0)
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
-
   inventory   ManufacturerInventory[]
   assignments OrderAssignment[]
 
   @@index([city])
   @@index([isActive, isAvailable])
+}
+
+model NcmBranch {
+  id             String   @id @default(uuid())
+  ncmPk          Int      @unique
+  code           String?  @db.VarChar(40)
+  name           String   @unique @db.VarChar(120)
+  branchType     String?  @db.VarChar(80)
+  geocode        String?  @db.VarChar(120)
+  address        String?  @db.Text
+  phone          String?  @db.VarChar(40)
+  phone2         String?  @db.VarChar(80)
+  provinceName   String?  @db.VarChar(120)
+  districtName   String?  @db.VarChar(120)
+  coveredAreas   Json
+  isActive       Boolean  @default(true)
+  lastSyncedAt   DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([isActive, districtName])
+  @@index([isActive, provinceName])
 }
 
 // Per-manufacturer inventory for each product

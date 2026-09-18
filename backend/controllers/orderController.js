@@ -82,6 +82,8 @@ const placeOrder = async (req, res) => {
         quantity: qty,
         originalUnitPrice: originalUnitPrice,
         discountPercentage: discountPercentage,
+        offerTag: matchedProduct?.offerTag || cartItem.offerTag || "",
+        offerTitle: matchedProduct?.offerTitle || cartItem.offerTitle || "",
         purchasedUnitPrice: purchasedUnitPrice, // Price snapshot frozen at purchase time
         price: purchasedUnitPrice, // Standardized unit price snapshot
         lineTotal: purchasedUnitPrice * qty,
@@ -331,11 +333,27 @@ const allOrders = async (req, res) => {
   try {
     const rawOrders = await prisma.order.findMany({
       orderBy: { date: "desc" },
+      include: {
+        deliveryOrder: {
+          select: {
+            id: true,
+            ncmOrderId: true,
+            state: true,
+            ncmStatus: true,
+            vendorReference: true,
+            originBranchName: true,
+            destinationBranchName: true,
+            pickedUpAt: true,
+            deliveredAt: true,
+          },
+        },
+      },
     });
     const orders = rawOrders.map((item) => ({
       ...item,
       _id: item.id,
       date: Number(item.date),
+      delivery: item.deliveryOrder || null,
     }));
     res.json({ success: true, orders });
   } catch (error) {
@@ -352,6 +370,21 @@ const allAdminOrders = async (req, res) => {
   try {
     const rawOrders = await prisma.order.findMany({
       orderBy: { date: "desc" },
+      include: {
+        deliveryOrder: {
+          select: {
+            id: true,
+            ncmOrderId: true,
+            state: true,
+            ncmStatus: true,
+            vendorReference: true,
+            originBranchName: true,
+            destinationBranchName: true,
+            pickedUpAt: true,
+            deliveredAt: true,
+          },
+        },
+      },
     });
 
     const adminOrders = rawOrders.filter((order) => {
@@ -372,6 +405,7 @@ const allAdminOrders = async (req, res) => {
       ...item,
       _id: item.id,
       date: Number(item.date),
+      delivery: item.deliveryOrder || null,
     }));
     res.json({ success: true, orders });
   } catch (error) {
@@ -387,11 +421,27 @@ const userOrders = async (req, res) => {
     const rawOrders = await prisma.order.findMany({
       where: { userId },
       orderBy: { date: "desc" },
+      include: {
+        deliveryOrder: {
+          select: {
+            id: true,
+            ncmOrderId: true,
+            state: true,
+            ncmStatus: true,
+            vendorReference: true,
+            originBranchName: true,
+            destinationBranchName: true,
+            pickedUpAt: true,
+            deliveredAt: true,
+          },
+        },
+      },
     });
     const orders = rawOrders.map((item) => ({
       ...item,
       _id: item.id,
       date: Number(item.date),
+      delivery: item.deliveryOrder || null,
     }));
     res.json({ success: true, orders });
   } catch (error) {

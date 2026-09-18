@@ -3,24 +3,205 @@ import { prisma, reconnectPrisma } from "../config/db.js";
 import { logger } from "../utils/logger.js";
 import {
   createOrder as createNcmOrder,
+  getBranches,
+  getNcmBranchName,
+  getNcmBranchRows,
   getBulkOrderStatuses,
+  createCodTransferTicket,
   getOrder,
+  getOrderComments,
   getOrderStatus,
   getShippingRate,
   requestOrderReturn,
+  shippingRateTypeForNcm,
 } from "./ncmClient.js";
 
 const VALID_READY_STATES = new Set(["packed"]);
-const STATUS_MAP = {
+let ncmBranchNamesCache = { expiresAt: 0, names: [] };
+
+const getNcmBranchNames = async () => {
+  if (ncmBranchNamesCache.expiresAt > Date.now() && ncmBranchNamesCache.names.length) return ncmBranchNamesCache.names;
+  try {
+    const response = await getBranches();
+    const names = [...new Set(getNcmBranchRows(response).map(getNcmBranchName).filter(Boolean))];
+    ncmBranchNamesCache = { names, expiresAt: Date.now() + 10 * 60 * 1000 };
+    return names;
+  } catch (error) {
+    logger.warn("Unable to load NCM branch catalog before rate lookup", { error: error.message });
+    return [];
+  }
+};
+
+export const STATUS_MAP = {
   "Pickup Order Created": "NCM_CREATED",
   "Drop off Order Created": "NCM_CREATED",
   "Sent for Pickup": "NCM_CREATED",
   "Pickup Complete": "PICKUP_CONFIRMED",
   "Sent for Delivery": "OUT_FOR_DELIVERY",
   Dispatched: "IN_TRANSIT",
+  "In Transit": "IN_TRANSIT",
   Arrived: "ARRIVED_AT_DESTINATION",
   Delivered: "DELIVERED",
   Returned: "RETURN_REQUESTED",
+};
+
+/**
+ * Normalizes any NCM event, status, or raw string variation into
+ * canonical delivery state, assignment status, fulfillment status, and display status.
+ */
+export const normalizeDeliveryStatus = (rawStatus = "", rawEvent = "") => {
+  const combined = `${String(rawEvent || "")} ${String(rawStatus || "")}`.toLowerCase().trim();
+  const s = String(rawStatus || "").toLowerCase().trim();
+  const e = String(rawEvent || "").toLowerCase().trim();
+
+  // 1. Delivered / Completed
+  if (
+    s === "delivered" ||
+    e === "delivery_completed" ||
+    combined.includes("delivery_completed") ||
+    s.includes("delivered")
+  ) {
+    return {
+      deliveryState: "DELIVERED",
+      assignmentStatus: "delivered",
+      fulfillmentStatus: "delivered",
+      canonicalStatus: "Delivered",
+    };
+  }
+
+  // 2. Sent for delivery / Out for delivery
+  if (
+    s === "sent for delivery" ||
+    s === "out for delivery" ||
+    s === "out_for_delivery" ||
+    e === "sent_for_delivery" ||
+    combined.includes("sent_for_delivery") ||
+    combined.includes("out for delivery")
+  ) {
+    return {
+      deliveryState: "OUT_FOR_DELIVERY",
+      assignmentStatus: "out_for_delivery",
+      fulfillmentStatus: "out_for_delivery",
+      canonicalStatus: "Sent for Delivery",
+    };
+  }
+
+  // 3. Arrived at destination branch
+  if (
+    s === "arrived" ||
+    s === "order_arrived" ||
+    s === "arrived_at_destination" ||
+    e === "order_arrived" ||
+    combined.includes("order_arrived") ||
+    s.includes("arrived")
+  ) {
+    return {
+      deliveryState: "ARRIVED_AT_DESTINATION",
+      assignmentStatus: "arrived_at_destination",
+      fulfillmentStatus: "arrived_at_destination",
+      canonicalStatus: "Arrived",
+    };
+  }
+
+  // 4. Dispatched / In Transit
+  if (
+    s === "dispatched" ||
+    s === "order_dispatched" ||
+    s === "order_dispached" || // handle common typo in user request & webhook
+    s === "in transit" ||
+    s === "in_transit" ||
+    e === "order_dispatched" ||
+    e === "order_dispached" ||
+    combined.includes("dispatched") ||
+    combined.includes("dispached") ||
+    combined.includes("in transit") ||
+    combined.includes("in_transit")
+  ) {
+    return {
+      deliveryState: "IN_TRANSIT",
+      assignmentStatus: "in_transit",
+      fulfillmentStatus: "in_transit",
+      canonicalStatus: "Dispatched",
+    };
+  }
+
+  // 5. Pickup completed / Picked up
+  if (
+    s === "pickup complete" ||
+    s === "pickup_completed" ||
+    s === "picked up" ||
+    s === "picked_up" ||
+    s === "order pickup" ||
+    s === "order_pickup" ||
+    e === "pickup_completed" ||
+    combined.includes("pickup_completed") ||
+    combined.includes("pickup complete") ||
+    combined.includes("picked up")
+  ) {
+    return {
+      deliveryState: "PICKUP_CONFIRMED",
+      assignmentStatus: "picked_up",
+      fulfillmentStatus: "picked_up",
+      canonicalStatus: "Pickup Complete",
+    };
+  }
+
+  // 6. Pickup order created / Sent for pickup
+  if (
+    s === "pickup order created" ||
+    s === "pickup_order_created" ||
+    s === "drop off order created" ||
+    s === "sent for pickup" ||
+    s === "ready_for_pickup" ||
+    e === "pickup_order_created" ||
+    combined.includes("pickup order created") ||
+    combined.includes("pickup_order_created") ||
+    combined.includes("sent for pickup")
+  ) {
+    return {
+      deliveryState: "NCM_CREATED",
+      assignmentStatus: "ready_for_pickup",
+      fulfillmentStatus: "ncm_created",
+      canonicalStatus: "Pickup Order Created",
+    };
+  }
+
+  // 7. Returned
+  if (
+    s === "returned" ||
+    s === "return requested" ||
+    s === "return_requested" ||
+    s === "vendor_return" ||
+    e === "order_return" ||
+    combined.includes("returned") ||
+    combined.includes("return")
+  ) {
+    return {
+      deliveryState: "RETURN_REQUESTED",
+      assignmentStatus: "return_requested",
+      fulfillmentStatus: "return_requested",
+      canonicalStatus: "Returned",
+    };
+  }
+
+  // Fallback: check STATUS_MAP or return unmapped
+  const mapped = STATUS_MAP[rawStatus];
+  if (mapped) {
+    const summary = syncSummary(mapped) || "in_transit";
+    return {
+      deliveryState: mapped,
+      assignmentStatus: summary,
+      fulfillmentStatus: summary,
+      canonicalStatus: rawStatus || "In Transit",
+    };
+  }
+
+  return {
+    deliveryState: "EXTERNAL_STATUS_UNMAPPED",
+    assignmentStatus: null,
+    fulfillmentStatus: null,
+    canonicalStatus: rawStatus || "Update Received",
+  };
 };
 
 const parseJson = (value, fallback) => {
@@ -33,31 +214,30 @@ const parseJson = (value, fallback) => {
   }
 };
 
-const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
-
-const branchForCity = (city) => {
-  const mapping = parseJson(process.env.NCM_BRANCH_MAP_JSON, {});
-  const key = String(city || "").trim().toLowerCase();
-  const branchValue = mapping[key];
-
-  if (Array.isArray(branchValue)) {
-    return normalizeBranch(branchValue.find(Boolean) || "");
+export const parseBoolean = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y"].includes(normalized)) return true;
+    if (["false", "0", "no", "n", ""].includes(normalized)) return false;
   }
-
-  return normalizeBranch(branchValue || "");
+  return fallback;
 };
+
+const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
 
 const resolvePickupBranch = (manufacturer) => {
   const direct = normalizeBranch(manufacturer?.ncmPickupBranch || manufacturer?.pickupBranch || "");
   return direct;
 };
 
-const deliveryTypeForNcm = (deliveryType = "Door2Door") => {
+export const deliveryTypeForNcm = (deliveryType = "Door2Door") => {
   const allowed = new Set(["Door2Door", "Branch2Door", "Branch2Branch", "Door2Branch"]);
   return allowed.has(deliveryType) ? deliveryType : "Door2Door";
 };
 
-const statusEventKey = ({ orderId, status, timestamp, event }) =>
+export const statusEventKey = ({ orderId, status, timestamp, event }) =>
   crypto.createHash("sha256").update(JSON.stringify({ orderId, status, timestamp, event })).digest("hex");
 
 const sanitizePayload = (payload) => {
@@ -65,7 +245,7 @@ const sanitizePayload = (payload) => {
   return JSON.parse(JSON.stringify(payload));
 };
 
-const generateVendorReference = ({ order, assignment }) => {
+export const generateVendorReference = ({ order, assignment }) => {
   const orderKey = String(order?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ORD";
   const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ASS";
   const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 4).toUpperCase();
@@ -106,11 +286,48 @@ const syncSummary = (state) => {
   return summary[state] || null;
 };
 
-const buildDeliveryInput = ({ order, assignment, manufacturer }) => {
+export const assignmentStatusFromNcmStatus = (status) => {
+  return normalizeDeliveryStatus(status).assignmentStatus;
+};
+
+export const webhookIdentifiers = (payload = {}) => {
+  const values = [
+    payload.order_id,
+    payload.orderid,
+    payload.orderId,
+    payload.vref_id,
+    payload.vendorReference,
+    payload.delivery_order_id,
+    ...(Array.isArray(payload.order_ids) ? payload.order_ids : []),
+  ];
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+};
+
+const normalizePackagingMeta = (source = {}) => {
+  const data = source && typeof source === "object" ? source : {};
+  const firstItem = Array.isArray(data.items) ? data.items[0] : null;
+  const productType = String(data.productType || firstItem?.productType || firstItem?.category || firstItem?.name || "Garment").trim() || "Garment";
+  const productDescription = String(data.productDescription || firstItem?.description || firstItem?.productDescription || firstItem?.name || "Ready-to-ship product").trim() || "Ready-to-ship product";
+  const packageType = String(data.packageType || firstItem?.packageType || "Box").trim() || "Box";
+  const isFragile = data.isFragile !== undefined
+    ? parseBoolean(data.isFragile)
+    : parseBoolean(firstItem?.isFragile ?? firstItem?.fragile);
+  const instruction = String(data.deliveryInstruction ?? data.instruction ?? "").trim();
+
+  return {
+    productType,
+    productDescription,
+    packageType,
+    isFragile,
+    deliveryInstruction: instruction,
+  };
+};
+
+export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingMeta = {}, itemsOverride = null }) => {
   const address = parseJson(order.address, {});
-  const items = parseJson(order.items, []);
+  const items = itemsOverride || parseJson(order.items, []);
   const origin = resolvePickupBranch(manufacturer);
-  const destination = branchForCity(address.city);
+  const destination = normalizeBranch(address.ncmBranch || address.city);
   if (!origin) {
     const error = new Error("Manufacturer NCM pickup branch is required. Ask admin to assign and verify the pickup branch before readying the order.");
     error.code = "NCM_PICKUP_BRANCH_REQUIRED";
@@ -133,28 +350,56 @@ const buildDeliveryInput = ({ order, assignment, manufacturer }) => {
 
   const itemAmount = Number(order.amount || 0);
   const deliveryType = deliveryTypeForNcm(address.deliveryType || "Door2Door");
-  const packageDescription = items
-    .map((item) => `${item.name || "Item"} x${Number(item.quantity || 1)}`)
-    .join(", ")
-    .slice(0, 500);
+  const meta = normalizePackagingMeta({ items, ...packagingMeta });
+  const productType = String(packagingMeta.productType || meta.productType || "Garment").trim() || "Garment";
+  const productDescription = String(packagingMeta.productDescription || meta.productDescription || "Ready-to-ship product").trim() || "Ready-to-ship product";
+  const packageType = String(packagingMeta.packageType || meta.packageType || "Box").trim() || "Box";
+  const isFragile = packagingMeta.isFragile !== undefined ? parseBoolean(packagingMeta.isFragile) : meta.isFragile;
+  const instruction = String(packagingMeta.deliveryInstruction ?? packagingMeta.instruction ?? address.deliveryInstruction ?? "").trim();
+
+  const packageDescription = [
+    productType,
+    productDescription,
+    packageType,
+    isFragile ? "Fragile" : "Standard",
+  ].filter(Boolean).join(" | ").slice(0, 500);
   const vendorReference = generateVendorReference({ order, assignment });
 
   return {
     origin,
     destination,
+    destinationCandidates: [destination],
     address,
     name,
     phone,
     customerAddress,
     itemAmount,
     deliveryType,
+    productType,
+    productDescription,
+    packageType,
+    isFragile,
+    instruction,
     packageDescription,
     vendorReference,
     codAmount: itemAmount,
+    originCandidates: origin === "KATHMANDU" ? ["TINKUNE", origin] : [origin],
   };
 };
 
-export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWeight }) => {
+const parsePackagingMeta = (payload) => {
+  if (!payload) return {};
+  if (typeof payload === "string") {
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return {};
+    }
+  }
+  return payload;
+};
+
+export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order || order.manufacturerId !== manufacturerId) {
     const error = new Error("Order not found or unauthorized");
@@ -168,6 +413,18 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     error.code = "DELIVERY_ASSIGNMENT_NOT_FOUND";
     throw error;
   }
+
+  const existingNotes = parsePackagingMeta(assignment.notes);
+  const packagingMeta = {
+    ...existingNotes,
+    productType: productType ?? existingNotes.productType ?? "",
+    productDescription: productDescription ?? existingNotes.productDescription ?? "",
+    packageType: packageType ?? existingNotes.packageType ?? "Box",
+    isFragile: isFragile !== undefined ? parseBoolean(isFragile) : parseBoolean(existingNotes.isFragile),
+    deliveryInstruction: deliveryInstruction ?? instruction ?? existingNotes.deliveryInstruction ?? "",
+    packagingNotes: packagingNotes ?? existingNotes.packagingNotes ?? "",
+    packageDimensions: packageDimensions ?? existingNotes.packageDimensions ?? "",
+  };
 
   const existing = await prisma.deliveryOrder.findUnique({ where: { orderId } });
   const submittedStates = ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"];
@@ -184,7 +441,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
   }
 
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
-  const input = buildDeliveryInput({ order, assignment, manufacturer });
+  const input = buildDeliveryInput({ order, assignment, manufacturer, packagingMeta });
 
   logger.info("Prepared NCM delivery payload", {
     orderId,
@@ -240,7 +497,15 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     });
     await tx.orderAssignment.update({
       where: { id: assignment.id },
-      data: { status: "ready_for_pickup", readyAt: new Date() },
+      data: {
+        status: "ready_for_pickup",
+        readyAt: new Date(),
+        notes: JSON.stringify({
+          ...existingNotes,
+          ...packagingMeta,
+          packageWeight: Number(packageWeight || existing?.packageWeight || 1),
+        }),
+      },
     });
     await createEvent(tx, {
       deliveryOrderId: record.id,
@@ -267,7 +532,13 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   const order = await prisma.order.findUnique({ where: { id: delivery.orderId } });
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: delivery.manufacturerId } });
   const assignment = await prisma.orderAssignment.findUnique({ where: { orderId: delivery.orderId } });
-  const input = buildDeliveryInput({ order, assignment, manufacturer });
+  const assignmentNotes = parsePackagingMeta(assignment?.notes);
+  const input = buildDeliveryInput({
+    order,
+    assignment,
+    manufacturer,
+    packagingMeta: assignmentNotes,
+  });
   const attemptKey = `NCM_CREATE:${delivery.id}:${delivery.packageVersion}`;
   const priorAttempt = await prisma.ncmRequestAttempt.findUnique({ where: { idempotencyKey: attemptKey } });
   if (priorAttempt?.result === "SUCCESS") return prisma.deliveryOrder.findUnique({ where: { id: delivery.id } });
@@ -294,7 +565,40 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   });
 
   try {
-    const rate = await getShippingRate({ creation: input.origin, destination: input.destination, type: input.deliveryType });
+    let rate;
+    let resolvedOrigin = input.origin;
+    let resolvedDestination = input.destination;
+    let lastRateError;
+    const catalog = await getNcmBranchNames();
+    const originCandidates = input.originCandidates || [input.origin];
+    const destinationCandidates = input.destinationCandidates || [input.destination];
+    for (const originCandidate of originCandidates) {
+      if (catalog.length && !catalog.includes(originCandidate)) continue;
+      for (const destinationCandidate of destinationCandidates) {
+        if (catalog.length && !catalog.includes(destinationCandidate)) continue;
+        try {
+          rate = await getShippingRate({
+            creation: originCandidate,
+            destination: destinationCandidate,
+            type: shippingRateTypeForNcm(input.deliveryType),
+          });
+          resolvedOrigin = originCandidate;
+          resolvedDestination = destinationCandidate;
+          break;
+        } catch (error) {
+          lastRateError = error;
+          const responseText = String(error.response?.raw || error.message || "");
+          if (!/branch matching query does not exist|branch.*not found/i.test(responseText)) throw error;
+        }
+      }
+      if (rate) break;
+    }
+    if (!rate) {
+      const error = new Error(`NCM has no valid branch mapping for ${originCandidates.join(", ")} -> ${destinationCandidates.join(", ")}`);
+      error.code = "NCM_BRANCH_NOT_FOUND";
+      error.response = lastRateError?.response;
+      throw error;
+    }
     const rateValue = Number(rate.data?.delivery_charge ?? rate.data?.charge ?? rate.data?.shipping_charge ?? 0);
     const ncmPayload = {
       name: input.name,
@@ -302,11 +606,11 @@ export const submitDeliveryToNcm = async (deliveryId) => {
       phone2: input.address.phone2 || "",
       cod_charge: String(input.codAmount + rateValue),
       address: input.customerAddress,
-      fbranch: input.origin,
-      branch: input.destination,
+      fbranch: resolvedOrigin,
+      branch: resolvedDestination,
       package: input.packageDescription,
       vref_id: input.vendorReference,
-      instruction: String(input.address.deliveryInstruction || "").slice(0, 500),
+      instruction: String(input.instruction || input.address.deliveryInstruction || "").slice(0, 500),
       delivery_type: input.deliveryType,
       weight: String(Math.max(0.1, Number(delivery.packageWeight || 1))),
     };
@@ -338,6 +642,8 @@ export const submitDeliveryToNcm = async (deliveryId) => {
           state: "NCM_CREATED",
           ncmOrderId,
           ncmStatus: "Pickup Order Created",
+          originBranchName: resolvedOrigin,
+          destinationBranchName: resolvedDestination,
           ncmDeliveryCharge: rateValue,
           customerDeliveryCharge: rateValue,
           ncmCreatedAt: new Date(),
@@ -383,13 +689,51 @@ export const submitDeliveryToNcm = async (deliveryId) => {
 };
 
 export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
-  const ids = payload.order_id ? [String(payload.order_id)] : (payload.order_ids || []).map(String);
+  const ids = webhookIdentifiers(payload);
   const results = [];
   for (const ncmId of ids) {
-    const delivery = await prisma.deliveryOrder.findFirst({ where: { ncmOrderId: Number(ncmId) } });
-    if (!delivery) continue;
-    const nextState = STATUS_MAP[payload.status] || "EXTERNAL_STATUS_UNMAPPED";
-    const eventKey = statusEventKey({ orderId: ncmId, status: payload.status, timestamp: payload.timestamp, event: payload.event });
+    const trimmedId = String(ncmId || "").trim();
+    if (!trimmedId) continue;
+
+    // Resolve delivery order by ncmOrderId (numeric), vendorReference, orderId, or deliveryOrder id
+    let delivery = null;
+    const numericId = Number(trimmedId);
+    if (Number.isInteger(numericId) && numericId > 0) {
+      delivery = await prisma.deliveryOrder.findFirst({
+        where: { ncmOrderId: numericId },
+        include: { order: { select: { paymentMethod: true, payment: true } } },
+      });
+    }
+    if (!delivery) {
+      delivery = await prisma.deliveryOrder.findFirst({
+        where: {
+          OR: [
+            { vendorReference: trimmedId },
+            { orderId: trimmedId },
+            { id: trimmedId },
+          ],
+        },
+        include: { order: { select: { paymentMethod: true, payment: true } } },
+      });
+    }
+
+    if (!delivery) {
+      logger.warn("Delivery order not found for NCM webhook ID", { ncmId: trimmedId, payload });
+      continue;
+    }
+
+    const { deliveryState, assignmentStatus, fulfillmentStatus, canonicalStatus } = normalizeDeliveryStatus(
+      payload.status,
+      payload.event
+    );
+
+    const eventKey = statusEventKey({
+      orderId: trimmedId,
+      status: payload.status || canonicalStatus,
+      timestamp: payload.timestamp,
+      event: payload.event,
+    });
+
     const updated = await prisma.$transaction(async (tx) => {
       await createEvent(tx, {
         deliveryOrderId: delivery.id,
@@ -397,33 +741,149 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
         source,
         eventType: payload.event || "NCM_STATUS_CHANGED",
         fromState: delivery.state,
-        toState: nextState,
-        ncmStatus: payload.status || null,
+        toState: deliveryState,
+        ncmStatus: canonicalStatus,
         payloadJson: sanitizePayload(payload),
         occurredAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         idempotencyKey: `NCM_STATUS:${eventKey}`,
       });
-      const data = {
-        ncmStatus: payload.status || delivery.ncmStatus,
+
+      const deliveryUpdateData = {
+        ncmStatus: canonicalStatus,
         lastSyncedAt: new Date(),
         nextSyncAt: new Date(Date.now() + 30 * 60 * 1000),
-        ...(nextState !== "EXTERNAL_STATUS_UNMAPPED" ? { state: nextState } : {}),
-        ...(nextState === "PICKUP_CONFIRMED" ? { pickedUpAt: new Date() } : {}),
-        ...(nextState === "DELIVERED" ? { deliveredAt: new Date() } : {}),
+        ...(deliveryState !== "EXTERNAL_STATUS_UNMAPPED" ? { state: deliveryState } : {}),
+        ...(deliveryState === "PICKUP_CONFIRMED" ? { pickedUpAt: new Date() } : {}),
+        ...(deliveryState === "DELIVERED" ? { deliveredAt: new Date() } : {}),
+        ...(deliveryState === "RETURN_REQUESTED" ? { returnedAt: new Date() } : {}),
       };
-      const record = await tx.deliveryOrder.update({ where: { id: delivery.id }, data });
-      const summary = syncSummary(nextState);
-      if (summary) await tx.order.update({ where: { id: delivery.orderId }, data: { fulfillmentStatus: summary } });
+
+      const record = await tx.deliveryOrder.update({ where: { id: delivery.id }, data: deliveryUpdateData });
+
+      // Synchronize Order model
+      if (fulfillmentStatus) {
+        const orderUpdateData = {
+          fulfillmentStatus,
+        };
+
+        if (deliveryState === "DELIVERED") {
+          orderUpdateData.status = "Delivered";
+          orderUpdateData.payment = true; // COD or online payment settled on delivery
+        } else if (deliveryState === "RETURN_REQUESTED") {
+          orderUpdateData.status = "Returned";
+          orderUpdateData.payment = String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
+            ? false
+            : Boolean(delivery.order?.payment);
+        } else if (
+          ["PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"].includes(deliveryState)
+        ) {
+          orderUpdateData.status = "Shipped";
+        }
+
+        await tx.order.update({
+          where: { id: delivery.orderId },
+          data: orderUpdateData,
+        });
+      }
+
+      // Synchronize OrderAssignment model
+      if (assignmentStatus) {
+        const assignmentUpdate = {
+          status: assignmentStatus,
+        };
+        if (assignmentStatus === "ready_for_pickup") assignmentUpdate.readyAt = new Date();
+        if (assignmentStatus === "picked_up") assignmentUpdate.pickedUpAt = new Date();
+
+        await tx.orderAssignment.updateMany({
+          where: { orderId: delivery.orderId },
+          data: assignmentUpdate,
+        });
+      }
+
+      if (deliveryState === "RETURN_REQUESTED") {
+        await tx.deliveryReturn.upsert({
+          where: { deliveryOrderId: delivery.id },
+          create: {
+            deliveryOrderId: delivery.id,
+            orderId: delivery.orderId,
+            manufacturerId: delivery.manufacturerId,
+            state: "RETURN_REQUESTED",
+            returnReason: payload.reason || payload.message || "NCM reported a returned delivery",
+            ncmReturnComment: payload.comment || payload.reason || payload.message || null,
+            ncmReturnRequestedAt: new Date(),
+          },
+          update: {
+            state: "RETURN_REQUESTED",
+            ncmReturnComment: payload.comment || payload.reason || payload.message || undefined,
+          },
+        });
+        await tx.deliveryFinancialSettlement.upsert({
+          where: { deliveryOrderId: delivery.id },
+          create: {
+            deliveryOrderId: delivery.id,
+            ncmOrderId: delivery.ncmOrderId,
+            codExpected: 0,
+            deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
+            deliveryFeeActual: Number(delivery.ncmDeliveryCharge || 0),
+            settlementState: "RETURN_PENDING",
+            varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
+          },
+          update: {
+            codExpected: 0,
+            settlementState: "RETURN_PENDING",
+            varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
+          },
+        });
+      }
+
+      // Create or update Financial Settlement upon delivery
+      if (deliveryState === "DELIVERED" && delivery.codAmount > 0) {
+        await tx.deliveryFinancialSettlement.upsert({
+          where: { deliveryOrderId: delivery.id },
+          create: {
+            deliveryOrderId: delivery.id,
+            ncmOrderId: delivery.ncmOrderId,
+            codExpected: delivery.codAmount,
+            deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
+            deliveryFeeActual: Number(delivery.ncmDeliveryCharge || delivery.customerDeliveryCharge || 0),
+            settlementState: "PENDING",
+          },
+          update: {
+            codExpected: delivery.codAmount,
+            ncmOrderId: delivery.ncmOrderId,
+          },
+        }).catch((err) => {
+          logger.warn("Financial settlement upsert notice", { error: err.message });
+        });
+      }
+
       return record;
     });
+
     results.push(updated);
   }
   return results;
 };
 
 export const storeAndApplyWebhook = async (payload) => {
-  const ids = payload.order_id ? [String(payload.order_id)] : (payload.order_ids || []).map(String);
-  const eventKey = statusEventKey({ orderId: ids.join(","), status: payload.status, timestamp: payload.timestamp, event: payload.event });
+  // Handle test webhooks sent from NCM Vendor Portal
+  if (
+    payload.test === true ||
+    payload.test === "true" ||
+    String(payload.order_id || "").toUpperCase().startsWith("TEST-")
+  ) {
+    logger.info("NCM test webhook received and acknowledged", { payload });
+    return { duplicate: false, test: true, updated: [] };
+  }
+
+  const ids = webhookIdentifiers(payload);
+  const eventKey = statusEventKey({
+    orderId: ids.join(","),
+    status: payload.status,
+    timestamp: payload.timestamp,
+    event: payload.event,
+  });
+
   try {
     await prisma.ncmWebhookEvent.create({
       data: {
@@ -437,15 +897,26 @@ export const storeAndApplyWebhook = async (payload) => {
       },
     });
   } catch (error) {
-    if (error.code === "P2002") return { duplicate: true, updated: [] };
+    if (error.code === "P2002") {
+      // Event already recorded; re-apply in case order was created after previous webhook attempt
+      const updated = await applyNcmStatus({ payload });
+      return { duplicate: true, updated };
+    }
     throw error;
   }
+
   try {
     const updated = await applyNcmStatus({ payload });
-    await prisma.ncmWebhookEvent.update({ where: { eventKey }, data: { processingStatus: "PROCESSED", processedAt: new Date() } });
+    await prisma.ncmWebhookEvent.update({
+      where: { eventKey },
+      data: { processingStatus: "PROCESSED", processedAt: new Date() },
+    });
     return { duplicate: false, updated };
   } catch (error) {
-    await prisma.ncmWebhookEvent.update({ where: { eventKey }, data: { processingStatus: "FAILED", processingError: error.message } }).catch(() => {});
+    await prisma.ncmWebhookEvent.update({
+      where: { eventKey },
+      data: { processingStatus: "FAILED", processingError: error.message },
+    }).catch(() => {});
     throw error;
   }
 };
@@ -505,12 +976,23 @@ export const storeOrderCommentWebhook = async (payload) => {
 export const reconcileDelivery = async (deliveryId) => {
   const delivery = await prisma.deliveryOrder.findUnique({ where: { id: deliveryId } });
   if (!delivery?.ncmOrderId) throw new Error("Delivery has no NCM order ID");
-  const [detail, statuses] = await Promise.all([getOrder(delivery.ncmOrderId), getOrderStatus(delivery.ncmOrderId)]);
+  const [detail, statuses, commentsResponse] = await Promise.all([
+    getOrder(delivery.ncmOrderId),
+    getOrderStatus(delivery.ncmOrderId),
+    getOrderComments(delivery.ncmOrderId),
+  ]);
   const latest = Array.isArray(statuses.data) ? statuses.data[0] : null;
   if (latest?.status) await applyNcmStatus({ payload: { order_id: delivery.ncmOrderId, status: latest.status, timestamp: latest.added_time, event: "NCM_POLL_STATUS" }, source: "NCM_POLL" });
   const deliveryCharge = Number(detail.data?.delivery_charge ?? delivery.ncmDeliveryCharge ?? 0);
   const codAmount = Number(detail.data?.cod_charge ?? delivery.codAmount ?? 0);
   const paymentStatus = detail.data?.payment_status || null;
+  const codCollected = ["completed", "paid", "received", "success"].includes(String(paymentStatus || "").toLowerCase())
+    ? codAmount
+    : 0;
+  const existingSettlement = await prisma.deliveryFinancialSettlement.findUnique({ where: { deliveryOrderId: delivery.id } });
+  const nextSettlementState = ["REQUESTED", "SETTLED"].includes(existingSettlement?.settlementState)
+    ? existingSettlement.settlementState
+    : codCollected > 0 ? "COD_RECEIVED" : "PENDING";
   await prisma.deliveryFinancialSettlement.upsert({
     where: { deliveryOrderId: delivery.id },
     create: {
@@ -519,15 +1001,49 @@ export const reconcileDelivery = async (deliveryId) => {
       codExpected: codAmount,
       deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
       deliveryFeeActual: deliveryCharge,
-      settlementState: "PENDING",
+      codCollected,
+      settlementState: nextSettlementState,
     },
     update: {
       ncmOrderId: delivery.ncmOrderId,
       codExpected: codAmount,
       deliveryFeeActual: deliveryCharge,
+      codCollected,
+      settlementState: nextSettlementState,
     },
   });
+
+  const comments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+  for (const comment of comments) {
+    const commentsText = String(comment.comments || "").trim();
+    if (!commentsText) continue;
+    const eventKey = statusEventKey({
+      orderId: String(delivery.ncmOrderId),
+      status: commentsText,
+      timestamp: comment.added_time || "",
+      event: "order.comment.created",
+    });
+    await prisma.deliveryComment.create({
+      data: {
+        deliveryOrderId: delivery.id,
+        ncmOrderId: delivery.ncmOrderId,
+        comments: commentsText,
+        addedBy: String(comment.addedBy || "NCM").slice(0, 150),
+        addedAt: comment.added_time ? new Date(comment.added_time) : null,
+        payloadJson: sanitizePayload(comment),
+        eventKey,
+      },
+    }).catch((error) => {
+      if (error.code !== "P2002") logger.warn("NCM comment persistence notice", { error: error.message });
+    });
+  }
+
   return prisma.deliveryOrder.update({ where: { id: delivery.id }, data: { lastSyncedAt: new Date(), nextSyncAt: new Date(Date.now() + 30 * 60 * 1000), ncmPaymentStatus: paymentStatus, ncmDeliveryCharge: deliveryCharge, syncFailureCount: 0, lastSyncError: null } });
+};
+
+export const requestCodSettlement = async ({ bankName, bankAccountName, bankAccountNumber }) => {
+  const response = await createCodTransferTicket({ bankName, bankAccountName, bankAccountNumber });
+  return response.data;
 };
 
 export const reconcileActiveDeliveries = async () => {
@@ -548,18 +1064,46 @@ export const reconcileActiveDeliveries = async () => {
 };
 
 export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason }) => {
-  const delivery = await prisma.deliveryOrder.findUnique({ where: { id: deliveryId } });
+  const delivery = await prisma.deliveryOrder.findUnique({
+    where: { id: deliveryId },
+    include: { order: { select: { paymentMethod: true, payment: true } } },
+  });
   if (!delivery || delivery.manufacturerId !== manufacturerId || !delivery.ncmOrderId) throw new Error("Delivery not found or not eligible for return");
   const existing = await prisma.deliveryReturn.findUnique({ where: { deliveryOrderId: deliveryId } });
   if (existing) return existing;
   const response = await requestOrderReturn({ pk: delivery.ncmOrderId, comment: reason });
   return runTransaction(async (tx) => {
     const returned = await tx.deliveryReturn.create({ data: { deliveryOrderId: deliveryId, orderId: delivery.orderId, manufacturerId, returnReason: reason, ncmReturnComment: reason, ncmReturnRequestedAt: new Date(), state: "RETURN_REQUESTED" } });
-    await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested" } });
-    await tx.order.update({ where: { id: delivery.orderId }, data: { fulfillmentStatus: "return_requested" } });
+    await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested", returnedAt: new Date() } });
+    await tx.order.update({
+      where: { id: delivery.orderId },
+      data: {
+        status: "Returned",
+        fulfillmentStatus: "return_requested",
+        payment: String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
+          ? false
+          : Boolean(delivery.order?.payment),
+      },
+    });
+    await tx.deliveryFinancialSettlement.upsert({
+      where: { deliveryOrderId: deliveryId },
+      create: {
+        deliveryOrderId: deliveryId,
+        ncmOrderId: delivery.ncmOrderId,
+        codExpected: 0,
+        deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
+        deliveryFeeActual: Number(delivery.ncmDeliveryCharge || 0),
+        settlementState: "RETURN_PENDING",
+        varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
+      },
+      update: {
+        codExpected: 0,
+        settlementState: "RETURN_PENDING",
+        varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
+      },
+    });
     await createEvent(tx, { deliveryOrderId: deliveryId, orderId: delivery.orderId, source: "MANUFACTURER", eventType: "RETURN_REQUESTED", fromState: delivery.state, toState: "RETURN_REQUESTED", actorId: manufacturerId, payloadJson: response.data, idempotencyKey: `RETURN_REQUESTED:${deliveryId}` });
     return returned;
   });
 };
 
-export { STATUS_MAP, deliveryTypeForNcm, generateVendorReference, statusEventKey };

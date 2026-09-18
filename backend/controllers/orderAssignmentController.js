@@ -15,6 +15,45 @@ const parseJSON = (val, fallback = []) => {
   return fallback;
 };
 
+const buildFulfillmentBenefits = (order, items = []) => {
+  const reward = parseJSON(order?.rewardApplied, {}) || {};
+  const productDiscount = items.reduce((total, item) => {
+    const original = Number(item.originalUnitPrice || 0);
+    const purchased = Number(item.purchasedUnitPrice ?? item.price ?? 0);
+    return total + Math.max(0, (original - purchased) * Number(item.quantity || 1));
+  }, 0);
+  const loyaltyDiscount = Number(order?.loyaltyDiscount || reward.discountAmount || 0);
+  const offerItems = items
+    .filter((item) => Number(item.discountPercentage || 0) > 0 || item.offerTag || item.offerTitle)
+    .map((item) => ({
+      name: item.name,
+      discountPercentage: Number(item.discountPercentage || 0),
+      offerTag: item.offerTag || item.offerTitle || "Product offer",
+      quantity: Number(item.quantity || 1),
+    }));
+
+  return {
+    loyaltyTier: reward.levelName || "Standard customer",
+    rewardTitle: reward.title || "",
+    rewardDescription: reward.description || "",
+    rewardUsage: reward.usage || reward.usageBadge || "",
+    loyaltyDiscount,
+    productDiscount: Number(productDiscount.toFixed(2)),
+    totalDiscount: Number((loyaltyDiscount + productDiscount).toFixed(2)),
+    freeShipping: Boolean(reward.freeShipping),
+    giftAmount: Number(reward.giftAmount || 0),
+    giftDescription: reward.giftDescription || "",
+    handwrittenCard: Boolean(reward.letterIncluded),
+    customPerk: reward.customPerk || "",
+    offerItems,
+    packingInstructions: [
+      reward.letterIncluded ? "Include a handwritten thank-you card." : "",
+      reward.giftDescription ? `Include gift: ${reward.giftDescription}.` : "",
+      reward.customPerk || "",
+    ].filter(Boolean),
+  };
+};
+
 // ─── NEPAL CITY PROXIMITY MAP ─────────────────────────────────────────────────
 const CITY_PROXIMITY = {
   kathmandu: ["lalitpur", "bhaktapur", "kirtipur", "madhyapur thimi", "budhanilkantha", "banepa", "dhulikhel"],
@@ -340,14 +379,59 @@ const getMyAssignments = async (req, res) => {
     });
 
     const orderIds = assignments.map((a) => a.orderId);
-    const orders = await prisma.order.findMany({
-      where: { id: { in: orderIds } },
+    const [orders, deliveryOrders] = await Promise.all([
+      prisma.order.findMany({
+        where: { id: { in: orderIds } },
+      }),
+      prisma.deliveryOrder.findMany({
+        where: { orderId: { in: orderIds } },
+        include: {
+          events: {
+            orderBy: { occurredAt: "desc" },
+            take: 10,
+            select: {
+              id: true,
+              eventType: true,
+              fromState: true,
+              toState: true,
+              ncmStatus: true,
+              occurredAt: true,
+              payloadJson: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const deliveryIds = deliveryOrders.map((delivery) => delivery.id);
+    const deliveryComments = deliveryIds.length
+      ? await prisma.deliveryComment.findMany({
+          where: { deliveryOrderId: { in: deliveryIds } },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+        })
+      : [];
+    const commentsMap = {};
+    deliveryComments.forEach((comment) => {
+      (commentsMap[comment.deliveryOrderId] ||= []).push(comment);
     });
+
     const orderMap = {};
     orders.forEach((o) => {
       const items = parseJSON(o.items, []);
       const address = parseJSON(o.address, {});
-      orderMap[o.id] = { ...o, items, address, date: Number(o.date) };
+      orderMap[o.id] = {
+        ...o,
+        items,
+        address,
+        date: Number(o.date),
+        fulfillmentBenefits: buildFulfillmentBenefits(o, items),
+      };
+    });
+
+    const deliveryMap = {};
+    deliveryOrders.forEach((d) => {
+      deliveryMap[d.orderId] = d;
     });
 
     const enriched = assignments.map((a) => ({
@@ -357,6 +441,9 @@ const getMyAssignments = async (req, res) => {
         businessName: a.manufacturer.name,
       },
       order: orderMap[a.orderId] || null,
+      delivery: deliveryMap[a.orderId]
+        ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
+        : null,
       createdAt: a.assignedAt,
     }));
 
@@ -439,7 +526,18 @@ const updateAssignmentStatus = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
-    const { status, packagingNotes } = req.body;
+    const {
+      status,
+      packagingNotes,
+      packageWeight,
+      packageDimensions,
+      productType,
+      productDescription,
+      packageType,
+      isFragile,
+      deliveryInstruction,
+      instruction,
+    } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
     const manufacturerStatuses = new Set(["accepted", "preparing", "quality_check", "packed"]);
@@ -454,8 +552,38 @@ const updateAssignmentStatus = async (req, res) => {
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
 
+    const lockedStatuses = new Set(["ready_for_pickup", "picked_up", "in_transit", "delivered", "return_requested"]);
+    if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined)) {
+      return res.status(409).json({
+        success: false,
+        message: "This order is already ready for dispatch. Packaging details are locked and cannot be changed after handoff.",
+      });
+    }
+
+    const existingNotes = (() => {
+      if (!assignment.notes) return {};
+      try {
+        return JSON.parse(assignment.notes);
+      } catch {
+        return {};
+      }
+    })();
+
     const updateData = { status: normalizedStatus };
-    if (packagingNotes !== undefined) updateData.notes = packagingNotes;
+    const payload = {
+      ...existingNotes,
+      packageWeight: packageWeight !== undefined ? packageWeight : existingNotes.packageWeight,
+      packageDimensions: packageDimensions !== undefined ? packageDimensions : existingNotes.packageDimensions,
+      packagingNotes: packagingNotes !== undefined ? packagingNotes : existingNotes.packagingNotes,
+      productType: productType !== undefined ? productType : existingNotes.productType,
+      productDescription: productDescription !== undefined ? productDescription : existingNotes.productDescription,
+      packageType: packageType !== undefined ? packageType : existingNotes.packageType,
+      isFragile: isFragile !== undefined ? isFragile : existingNotes.isFragile,
+      deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
+    };
+    if (Object.keys(payload).some((key) => payload[key] !== undefined)) {
+      updateData.notes = JSON.stringify(payload);
+    }
 
     await prisma.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
     await prisma.order.update({
@@ -482,19 +610,77 @@ const getAllAssignments = async (req, res) => {
       where,
       orderBy: { assignedAt: "desc" },
       include: {
-        manufacturer: { select: { id: true, name: true, city: true, qualityRating: true } },
+        manufacturer: {
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            phone: true,
+            qualityRating: true,
+            ncmPickupBranch: true,
+            pickupAddress: true,
+            pickupContactName: true,
+            pickupContactPhone: true,
+            pickupWindow: true,
+          },
+        },
       },
     });
 
     const orderIds = assignments.map((a) => a.orderId);
-    const orders = await prisma.order.findMany({
-      where: { id: { in: orderIds } },
+    const [orders, deliveryOrders] = await Promise.all([
+      prisma.order.findMany({
+        where: { id: { in: orderIds } },
+      }),
+      prisma.deliveryOrder.findMany({
+        where: { orderId: { in: orderIds } },
+        include: {
+          events: {
+            orderBy: { occurredAt: "desc" },
+            take: 10,
+            select: {
+              id: true,
+              eventType: true,
+              fromState: true,
+              toState: true,
+              ncmStatus: true,
+              occurredAt: true,
+              payloadJson: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const deliveryIds = deliveryOrders.map((delivery) => delivery.id);
+    const deliveryComments = deliveryIds.length
+      ? await prisma.deliveryComment.findMany({
+          where: { deliveryOrderId: { in: deliveryIds } },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        })
+      : [];
+    const commentsMap = {};
+    deliveryComments.forEach((comment) => {
+      (commentsMap[comment.deliveryOrderId] ||= []).push(comment);
     });
+
     const orderMap = {};
     orders.forEach((o) => {
       const items = parseJSON(o.items, []);
       const address = parseJSON(o.address, {});
-      orderMap[o.id] = { ...o, items, address, date: Number(o.date) };
+      orderMap[o.id] = {
+        ...o,
+        items,
+        address,
+        date: Number(o.date),
+        fulfillmentBenefits: buildFulfillmentBenefits(o, items),
+      };
+    });
+
+    const deliveryMap = {};
+    deliveryOrders.forEach((d) => {
+      deliveryMap[d.orderId] = d;
     });
 
     const enriched = assignments.map((a) => ({
@@ -504,6 +690,9 @@ const getAllAssignments = async (req, res) => {
         businessName: a.manufacturer.name,
       },
       order: orderMap[a.orderId] || null,
+      delivery: deliveryMap[a.orderId]
+        ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
+        : null,
       createdAt: a.assignedAt,
     }));
 
@@ -511,6 +700,94 @@ const getAllAssignments = async (req, res) => {
   } catch (error) {
     console.error("getAllAssignments error:", error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+// ─── GET SINGLE ASSIGNMENT WITH FULL AUDIT & DELIVERY TRAIL ───────────────────
+const getAssignmentById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const assignment = await prisma.orderAssignment.findUnique({
+      where: { id },
+      include: {
+        manufacturer: {
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            phone: true,
+            qualityRating: true,
+            ncmPickupBranch: true,
+            pickupAddress: true,
+            pickupContactName: true,
+            pickupContactPhone: true,
+            pickupWindow: true,
+          },
+        },
+      },
+    });
+
+    if (!assignment) {
+      return res.status(404).json({ success: false, message: "Assignment not found" });
+    }
+
+    if (req.manufacturerId && assignment.manufacturerId !== req.manufacturerId) {
+      return res.status(403).json({ success: false, message: "Unauthorized access" });
+    }
+
+    const [order, delivery] = await Promise.all([
+      prisma.order.findUnique({ where: { id: assignment.orderId } }),
+      prisma.deliveryOrder.findUnique({
+        where: { orderId: assignment.orderId },
+        include: {
+          events: {
+            orderBy: { occurredAt: "asc" },
+            select: {
+              id: true,
+              eventType: true,
+              fromState: true,
+              toState: true,
+              ncmStatus: true,
+              occurredAt: true,
+              payloadJson: true,
+              source: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const comments = delivery
+      ? await prisma.deliveryComment.findMany({ orderBy: { createdAt: "desc" }, where: { deliveryOrderId: delivery.id }, take: 100 })
+      : [];
+
+    const enrichedItems = order ? parseJSON(order.items, []) : [];
+    const enrichedOrder = order
+      ? {
+          ...order,
+          items: enrichedItems,
+          address: parseJSON(order.address, {}),
+          date: Number(order.date),
+          fulfillmentBenefits: buildFulfillmentBenefits(order, enrichedItems),
+        }
+      : null;
+
+    res.json({
+      success: true,
+      assignment: {
+        ...assignment,
+        manufacturer: {
+          ...assignment.manufacturer,
+          businessName: assignment.manufacturer.name,
+        },
+        order: enrichedOrder,
+        delivery: delivery ? { ...delivery, comments } : null,
+        createdAt: assignment.assignedAt,
+      },
+    });
+  } catch (error) {
+    console.error("getAssignmentById error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -565,6 +842,7 @@ const manualAssign = async (req, res) => {
 export {
   assignOrder,
   getMyAssignments,
+  getAssignmentById,
   acceptOrder,
   rejectOrder,
   updateAssignmentStatus,

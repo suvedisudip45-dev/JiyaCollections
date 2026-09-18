@@ -41,6 +41,7 @@ const Manufacturers = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [ncmBranches, setNcmBranches] = useState([]);
+  const [syncingNcmBranches, setSyncingNcmBranches] = useState(false);
 
   // Create Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -121,6 +122,24 @@ const Manufacturers = ({ token }) => {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to sync ratings");
+    }
+  };
+
+  const handleSyncNcmBranches = async () => {
+    try {
+      setSyncingNcmBranches(true);
+      const res = await axios.post(
+        `${backendUrl}/api/manufacturer/admin/branches/sync`,
+        {},
+        { headers: { token } }
+      );
+      if (!res.data.success) throw new Error(res.data.message || "Branch synchronization failed");
+      toast.success(res.data.message || "NCM branches synchronized");
+      fetchNcmBranches(formData.city);
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Failed to synchronize NCM branches");
+    } finally {
+      setSyncingNcmBranches(false);
     }
   };
 
@@ -321,6 +340,14 @@ const Manufacturers = ({ token }) => {
           >
             <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
             <span>Sync Ratings from Customer Reviews</span>
+          </button>
+          <button
+            onClick={handleSyncNcmBranches}
+            disabled={syncingNcmBranches}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs disabled:opacity-60"
+          >
+            <MapPin className="w-3.5 h-3.5 text-teal-600" />
+            <span>{syncingNcmBranches ? "Syncing NCM branches..." : "Sync NCM branches"}</span>
           </button>
           <button
             onClick={() => setCreateModalOpen(true)}

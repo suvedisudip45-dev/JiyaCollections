@@ -2,6 +2,7 @@ import express from "express";
 import {
   assignOrder,
   getMyAssignments,
+  getAssignmentById,
   acceptOrder,
   rejectOrder,
   updateAssignmentStatus,
@@ -23,6 +24,8 @@ orderAssignmentRouter.post("/admin/manual-assign", authAdmin, manualAssign);
 // Manufacturer-authenticated
 orderAssignmentRouter.get("/my", authManufacturer, getMyAssignments);
 orderAssignmentRouter.post("/my", authManufacturer, getMyAssignments);
+orderAssignmentRouter.get("/detail/:id", authManufacturer, getAssignmentById);
+orderAssignmentRouter.get("/:id", authManufacturer, getAssignmentById);
 orderAssignmentRouter.post("/accept/:id", authManufacturer, acceptOrder);
 orderAssignmentRouter.post("/accept", authManufacturer, acceptOrder);
 orderAssignmentRouter.post("/reject/:id", authManufacturer, rejectOrder);

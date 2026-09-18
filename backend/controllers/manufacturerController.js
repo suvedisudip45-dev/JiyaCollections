@@ -2,8 +2,78 @@ import { prisma } from "../config/db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { v2 as cloudinary } from "cloudinary";
-import { getBranches } from "../services/ncmClient.js";
+import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } from "../services/ncmClient.js";
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
+
+let ncmBranchesCache = { expiresAt: 0, branches: [] };
+const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
+
+const getCachedNcmBranches = async () => {
+  if (ncmBranchesCache.expiresAt > Date.now() && ncmBranchesCache.branches.length) return ncmBranchesCache.branches;
+  const branches = await prisma.ncmBranch.findMany({
+    where: { isActive: true },
+    orderBy: { name: "asc" },
+  });
+  ncmBranchesCache = { branches, expiresAt: Date.now() + NCM_BRANCH_CACHE_MS };
+  return branches;
+};
+
+const syncNcmBranches = async (req, res) => {
+  try {
+    const response = await getBranches();
+    const rows = getNcmBranchRows(response).filter((row) => Number.isInteger(Number(row?.pk)));
+    if (!rows.length) {
+      return res.status(502).json({ success: false, message: "NCM returned no branch records" });
+    }
+
+    const syncedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.ncmBranch.updateMany({ data: { isActive: false } });
+      for (const row of rows) {
+        const name = getNcmBranchName(row);
+        if (!name) continue;
+        await tx.ncmBranch.upsert({
+          where: { ncmPk: Number(row.pk) },
+          create: {
+            ncmPk: Number(row.pk),
+            code: String(row.code || "").trim() || null,
+            name,
+            branchType: String(row.branch_type || row.branchType || "").trim() || null,
+            geocode: String(row.geocode || "").trim() || null,
+            address: String(row.address || "").trim() || null,
+            phone: String(row.phone || "").trim() || null,
+            phone2: String(row.phone2 || "").trim() || null,
+            provinceName: String(row.province_name || row.province || "").trim().toUpperCase() || null,
+            districtName: String(row.district_name || row.district || "").trim().toUpperCase() || null,
+            coveredAreas: getNcmCoveredAreas(row),
+            isActive: true,
+            lastSyncedAt: syncedAt,
+          },
+          update: {
+            code: String(row.code || "").trim() || null,
+            name,
+            branchType: String(row.branch_type || row.branchType || "").trim() || null,
+            geocode: String(row.geocode || "").trim() || null,
+            address: String(row.address || "").trim() || null,
+            phone: String(row.phone || "").trim() || null,
+            phone2: String(row.phone2 || "").trim() || null,
+            provinceName: String(row.province_name || row.province || "").trim().toUpperCase() || null,
+            districtName: String(row.district_name || row.district || "").trim().toUpperCase() || null,
+            coveredAreas: getNcmCoveredAreas(row),
+            isActive: true,
+            lastSyncedAt: syncedAt,
+          },
+        });
+      }
+    });
+
+    ncmBranchesCache = { expiresAt: 0, branches: [] };
+    res.json({ success: true, message: `Synchronized ${rows.length} NCM branches`, count: rows.length, syncedAt });
+  } catch (error) {
+    console.error("syncNcmBranches error:", error);
+    res.status(502).json({ success: false, message: error.message || "Unable to synchronize NCM branches" });
+  }
+};
 
 // ─── LOGIN ───────────────────────────────────────────────────────────────────
 const loginManufacturer = async (req, res) => {
@@ -514,33 +584,11 @@ const getManufacturerStats = async (req, res) => {
 const getAvailableNcmBranches = async (req, res) => {
   try {
     const city = String(req.query?.city || "").trim();
-    const rawBranchMap = (() => {
-      try {
-        return JSON.parse(process.env.NCM_BRANCH_MAP_JSON || "{}") || {};
-      } catch {
-        return {};
-      }
-    })();
-
+    const district = String(req.query?.district || "").trim();
+    const province = String(req.query?.province || "").trim();
     const normalizeText = (value) => String(value || "").trim().toLowerCase().replace(/\s*\([^)]*\)\s*/g, "").replace(/[^a-z0-9]+/g, "");
     const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
-
-    const cityAliases = {
-      lalitpur: ["lalitpur", "patan"],
-      patan: ["lalitpur", "patan"],
-      bhaktapur: ["bhaktapur", "madhyapurthimi"],
-      bharatpur: ["bharatpur", "chitwan"],
-      chitwan: ["bharatpur", "chitwan"],
-      bhairahawa: ["bhairahawa", "siddharthanagar"],
-      siddharthanagar: ["bhairahawa", "siddharthanagar"],
-      surkhet: ["surkhet", "birendranagar"],
-      birendranagar: ["surkhet", "birendranagar"],
-      lamjung: ["lamjung", "besisahar"],
-      besisahar: ["lamjung", "besisahar"],
-      baglung: ["baglung"],
-      dharan: ["dharan", "itahari"],
-      itahari: ["dharan", "itahari"],
-    };
+    const branchQuery = normalizeBranch(req.query?.branch || "");
 
     const extractBranchName = (branch) => {
       if (typeof branch === "string") return branch;
@@ -560,72 +608,74 @@ const getAvailableNcmBranches = async (req, res) => {
       return branch?.city || branch?.location || branch?.district || branch?.address || branch?.branch_city || "";
     };
 
-    const pickPriorityBranches = (selectedCity) => {
-      const candidates = [];
-      const normalizedKey = normalizeText(selectedCity);
-      const aliasKeys = new Set([normalizedKey]);
+    const matchesLocation = (branch) => {
+      if (typeof branch === "string") return !district && !province;
+      const branchDistrict = normalizeText(branch?.district_name || branch?.districtName || branch?.district || "");
+      const branchProvince = normalizeText(branch?.province_name || branch?.provinceName || branch?.province || "");
+      const requestedDistrict = normalizeText(district);
+      const requestedProvince = normalizeText(province).replace(/province$/, "");
 
-      Object.keys(cityAliases).forEach((key) => {
-        if (key === normalizedKey || cityAliases[key].includes(normalizedKey)) {
-          aliasKeys.add(key);
-          cityAliases[key].forEach((alias) => aliasKeys.add(normalizeText(alias)));
-        }
-      });
-
-      [...aliasKeys].forEach((cityKey) => {
-        const directValue = rawBranchMap[cityKey] || rawBranchMap[selectedCity] || rawBranchMap[selectedCity.toLowerCase()];
-        if (Array.isArray(directValue)) {
-          directValue.forEach((item) => candidates.push(normalizeBranch(item)));
-        } else if (directValue) {
-          candidates.push(normalizeBranch(directValue));
-        }
-      });
-
-      Object.entries(rawBranchMap).forEach(([key, value]) => {
-        const keyNorm = normalizeText(key);
-        if (keyNorm && keyNorm.includes(normalizedKey) && keyNorm !== normalizedKey) {
-          if (Array.isArray(value)) {
-            value.forEach((item) => candidates.push(normalizeBranch(item)));
-          } else if (value) {
-            candidates.push(normalizeBranch(value));
-          }
-        }
-      });
-
-      return [...new Set(candidates.filter(Boolean))];
+      if (requestedDistrict && branchDistrict) {
+        if (branchDistrict !== requestedDistrict) return false;
+      }
+      if (requestedProvince && branchProvince) {
+        if (branchProvince !== requestedProvince && !branchProvince.includes(requestedProvince) && !requestedProvince.includes(branchProvince)) return false;
+      }
+      return true;
     };
 
-    const response = await getBranches();
-    const rawBranches = Array.isArray(response?.data) ? response.data : Array.isArray(response?.data?.results) ? response.data.results : [];
-    const apiBranches = [...new Set(
-      rawBranches
-        .map((branch) => {
-          const name = extractBranchName(branch);
-          return name ? normalizeBranch(name) : null;
-        })
-        .filter(Boolean)
-    )].sort();
+    const extractCoveredAreas = (branch) => {
+      if (!branch || typeof branch === "string") return [];
+      const values = [
+        branch.covered_areas,
+        branch.areas_covered,
+        branch.coveredAreas,
+        branch.covered_area,
+        branch.coveredArea,
+        branch.areas,
+        branch.coverage,
+      ].flat(Infinity);
+      return [...new Set(values
+        .flatMap((value) => typeof value === "string" ? value.split(/[,;|]/) : [value])
+        .map((value) => typeof value === "object" ? value?.name || value?.area || value?.title : value)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean))];
+    };
 
-    const defaultBranches = [
-      "TINKUNE",
-      "POKHARA",
-      "BIRATNAGAR",
-      "BHARATPUR",
-      "BUTWAL",
-      "DANG",
-      "DHARAN",
-      "HETAUDA",
-      "LALITPUR",
-      "KATHMANDU",
-    ];
+    const rawBranches = await getCachedNcmBranches();
+    const apiBranches = [...new Set(rawBranches.map(getNcmBranchName).filter(Boolean))].sort();
 
-    if (!city) {
-      return res.json({ success: true, branches: [...new Set([...apiBranches, ...defaultBranches])].sort() });
+    const searchText = normalizeText(district || city || province);
+    const matchingApiBranches = rawBranches.filter((branch) => {
+      if (branchQuery && normalizeBranch(extractBranchName(branch)) !== branchQuery) return false;
+      if (branchQuery) return true;
+      if (!matchesLocation(branch)) return false;
+      if (!searchText) return true;
+      const searchable = [
+        extractBranchName(branch),
+        extractBranchCity(branch),
+        branch?.district,
+        branch?.district_name,
+        branch?.districtName,
+        branch?.province,
+        branch?.province_name,
+        branch?.provinceName,
+        branch?.region,
+        branch?.areas_covered,
+        branch?.covered_areas,
+        branch?.coveredAreas,
+      ].flat().join(" ");
+      return normalizeText(searchable).includes(searchText);
+    });
+    const filteredApiBranches = [...new Set(matchingApiBranches.map(extractBranchName).map(normalizeBranch).filter(Boolean))].sort();
+
+    if (!city && !district && !province && !branchQuery) {
+      return res.json({ success: true, branches: apiBranches, coveredAreas: [] });
     }
 
-    const preferred = pickPriorityBranches(city);
     const normalizedCity = normalizeText(city);
     const cityMatches = apiBranches.filter((branchName) => {
+      if (!normalizedCity) return false;
       const branchText = normalizeText(branchName);
       const cityText = normalizedCity;
       const exactCityMatch = branchText.includes(cityText) || cityText.includes(branchText);
@@ -638,14 +688,18 @@ const getAvailableNcmBranches = async (req, res) => {
       });
     });
 
-    const finalBranches = [...new Set([...preferred, ...cityMatches, ...apiBranches, ...defaultBranches])]
+    const finalBranches = [...new Set([
+      ...cityMatches,
+      ...filteredApiBranches,
+    ])]
       .filter(Boolean)
       .sort();
 
-    res.json({ success: true, branches: finalBranches });
+    const coveredAreas = [...new Set(matchingApiBranches.flatMap(extractCoveredAreas))].sort();
+    res.json({ success: true, branches: finalBranches, coveredAreas });
   } catch (error) {
     console.error("getAvailableNcmBranches error:", error);
-    res.json({ success: true, branches: ["TINKUNE", "POKHARA", "BIRATNAGAR", "BHARATPUR", "BUTWAL", "DANG", "DHARAN", "HETAUDA", "LALITPUR", "KATHMANDU"] });
+    res.status(503).json({ success: false, branches: [], coveredAreas: [], message: "NCM branch catalog is temporarily unavailable" });
   }
 };
 
@@ -664,4 +718,5 @@ export {
   updatePickupProfile,
   getManufacturerStats,
   getAvailableNcmBranches,
+  syncNcmBranches,
 };

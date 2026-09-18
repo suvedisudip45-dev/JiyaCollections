@@ -5,18 +5,89 @@
 @tailwind utilities;
 
 * {
-  font-family: Outfit;
+  font-family: "Outfit", sans-serif;
+}
+
+:root {
+  color-scheme: light;
+  --admin-ink: #172321;
+  --admin-muted: #6b7975;
+  --admin-line: #dfe7e3;
+  --admin-canvas: #f3f6f4;
+  --admin-accent: #147d6d;
+  --admin-accent-dark: #0d574e;
+}
+
+body {
+  background: var(--admin-canvas);
+  color: var(--admin-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
 }
 
 select,
 input,
 textarea {
   border: 1px solid #c2c2c2;
-  outline-color: #c586a5;
+  outline-color: #147d6d;
   border-radius: 4px;
 }
 
 .active {
-  background-color: #ffebf5;
-  border-color: #c586a5;
+  background-color: #e7f2ef;
+  border-color: #8ccabd;
+}
+
+/* Keep legacy screens within the same quiet operations palette. */
+.admin-shell .bg-indigo-50,
+.admin-shell .bg-violet-50,
+.admin-shell .bg-purple-50,
+.admin-shell .bg-blue-50,
+.admin-shell .bg-cyan-50 {
+  background-color: #e7f2ef;
+}
+
+.admin-shell .text-indigo-600,
+.admin-shell .text-indigo-700,
+.admin-shell .text-indigo-800,
+.admin-shell .text-violet-600,
+.admin-shell .text-violet-700,
+.admin-shell .text-purple-600,
+.admin-shell .text-purple-700,
+.admin-shell .text-blue-600,
+.admin-shell .text-blue-700,
+.admin-shell .text-cyan-600,
+.admin-shell .text-cyan-700 {
+  color: #147d6d;
+}
+
+.admin-shell .border-indigo-200,
+.admin-shell .border-violet-200,
+.admin-shell .border-purple-200,
+.admin-shell .border-blue-200,
+.admin-shell .border-cyan-200 {
+  border-color: #b8dcd4;
+}
+
+.admin-shell .bg-indigo-600,
+.admin-shell .bg-violet-600,
+.admin-shell .bg-purple-600,
+.admin-shell .bg-blue-600,
+.admin-shell .bg-cyan-600 {
+  background-color: #147d6d;
+}
+
+.admin-shell .hover\:bg-indigo-700:hover,
+.admin-shell .hover\:bg-violet-700:hover,
+.admin-shell .hover\:bg-purple-700:hover,
+.admin-shell .hover\:bg-blue-700:hover,
+.admin-shell .hover\:bg-cyan-700:hover {
+  background-color: #0d574e;
 }

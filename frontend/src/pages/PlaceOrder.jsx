@@ -12,6 +12,7 @@ import {
   NEPAL_PROVINCES,
   getCityInfo,
 } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
 const PlaceOrder = () => {
   const [
@@ -39,9 +40,11 @@ const PlaceOrder = () => {
     phone: "",
     street: "",
     landmark: "",
-    city: "Kathmandu",
+    district: "Kathmandu",
+    city: "",
+    ncmBranch: "",
+    province: "Bagmati Province",
     state: "Bagmati Province",
-    zipcode: "44600",
     country: "Nepal",
   });
 
@@ -51,6 +54,10 @@ const PlaceOrder = () => {
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [ncmBranches, setNcmBranches] = useState([]);
+  const [coveredAreas, setCoveredAreas] = useState([]);
+  const [areaSearch, setAreaSearch] = useState("");
+  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
 
   // Dynamic delivery fee - recalculated when city changes
   const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(delivery_fee);
@@ -87,9 +94,11 @@ const PlaceOrder = () => {
             phone: firstAddr.phone || u.phone || "",
             street: firstAddr.street || "",
             landmark: firstAddr.landmark || "",
-            city: firstAddr.city || "Kathmandu",
+            district: firstAddr.district || "Kathmandu",
+            city: firstAddr.city || "",
+            ncmBranch: firstAddr.ncmBranch || firstAddr.city || "",
+            province: firstAddr.province || firstAddr.state || "Bagmati Province",
             state: firstAddr.state || "Bagmati Province",
-            zipcode: firstAddr.zipcode || "44600",
             country: "Nepal",
           }));
         } else {
@@ -117,6 +126,48 @@ const PlaceOrder = () => {
   useEffect(() => {
     fetchUserProfile();
   }, [token]);
+
+  useEffect(() => {
+    const fetchDistrictBranches = async () => {
+      if (!formData.province || !formData.district) {
+        setNcmBranches([]);
+        setCoveredAreas([]);
+        return;
+      }
+      setLoadingNcmBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: formData.province, district: formData.district },
+        });
+        setNcmBranches(response.data.success ? response.data.branches || [] : []);
+      } catch (error) {
+        setNcmBranches([]);
+        console.error("Failed to load NCM branches for district", error);
+      } finally {
+        setLoadingNcmBranches(false);
+      }
+    };
+
+    fetchDistrictBranches();
+  }, [backendUrl, formData.province, formData.district]);
+
+  useEffect(() => {
+    const fetchCoveredAreas = async () => {
+      if (!formData.city) {
+        setCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { branch: formData.city, district: formData.district, province: formData.province },
+        });
+        setCoveredAreas(response.data.success ? response.data.coveredAreas || [] : []);
+      } catch (error) {
+        setCoveredAreas([]);
+      }
+    };
+    fetchCoveredAreas();
+  }, [backendUrl, formData.city, formData.district, formData.province]);
 
   // Recalculate fee & loyalty rewards whenever city, shippingConfig or loyalty changes
   useEffect(() => {
@@ -187,18 +238,28 @@ const PlaceOrder = () => {
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
 
-    // If city is changed, automatically update state and zipcode if known
+    if (name === "province") {
+      const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+      setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "", street: "" }));
+      return;
+    }
+
+    if (name === "district") {
+      setFormData((data) => ({ ...data, district: value, city: "", ncmBranch: "", street: "" }));
+      return;
+    }
+
+    // Keep the submitted branch synchronized with the live NCM selection.
     if (name === "city") {
       const cityInfo = getCityInfo(value);
-      if (cityInfo) {
-        setFormData((data) => ({
-          ...data,
-          city: value,
-          state: cityInfo.province,
-          zipcode: cityInfo.zipcode,
-        }));
-        return;
-      }
+      setFormData((data) => ({
+        ...data,
+        city: value,
+        ncmBranch: value,
+        street: "",
+        state: cityInfo?.province || data.state,
+      }));
+      return;
     }
 
     setFormData((data) => ({
@@ -212,10 +273,13 @@ const PlaceOrder = () => {
     setSelectedSavedId(null);
     setFormData((prev) => ({
       ...prev,
-      city: loc.city,
-      state: loc.state,
-      zipcode: loc.zipcode,
-      street: loc.addressSnippet ? loc.addressSnippet : prev.street,
+      province: loc.state || prev.province,
+      state: loc.state || prev.state,
+      district: loc.city || prev.district,
+      city: loc.city || prev.city,
+      ncmBranch: "",
+      street: loc.addressSnippet || loc.city || prev.street,
+      landmark: loc.addressSnippet || `${loc.city || "Selected map location"} (${loc.lat}, ${loc.lng})`,
     }));
     toast.success(`Location set: ${loc.city}, ${loc.state}`);
   };
@@ -231,9 +295,11 @@ const PlaceOrder = () => {
       phone: addr.phone || prev.phone,
       street: addr.street || "",
       landmark: addr.landmark || "",
-      city: addr.city || "Kathmandu",
+      district: addr.district || "Kathmandu",
+      city: addr.city || "",
+      ncmBranch: addr.ncmBranch || addr.city || "",
+      province: addr.province || addr.state || "Bagmati Province",
       state: addr.state || "Bagmati Province",
-      zipcode: addr.zipcode || "44600",
       country: "Nepal",
     }));
   };
@@ -277,11 +343,23 @@ const PlaceOrder = () => {
       return;
     }
     if (!formData.street.trim()) {
-      toast.error("Please provide your street / area / ward address");
+      toast.error("Please select an NCM covered area");
       return;
     }
     if (!formData.landmark.trim()) {
       toast.error("Please provide a nearest landmark for delivery");
+      return;
+    }
+    if (!formData.province || !formData.district || !formData.city) {
+      toast.error("Please select your province, district, and NCM delivery town");
+      return;
+    }
+    if (!ncmBranches.includes(formData.city)) {
+      toast.error("Please select a valid NCM branch for this district");
+      return;
+    }
+    if (!coveredAreas.includes(formData.street)) {
+      toast.error("Please select a covered area provided by NCM");
       return;
     }
 
@@ -324,6 +402,10 @@ const PlaceOrder = () => {
       let orderData = {
         address: {
           ...formData,
+          street: formData.street,
+          province: formData.province,
+          district: formData.district,
+          ncmBranch: formData.ncmBranch || formData.city,
           country: "Nepal",
         },
         items: orderItems,
@@ -500,27 +582,93 @@ const PlaceOrder = () => {
             </div>
           </div>
 
-          {/* Street / Area / Ward Address */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              Street / Area / Ward Address *
-            </label>
-            <input
-              required
-              onChange={onChangeHandler}
-              name="street"
-              value={formData.street}
-              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
-              type="text"
-              placeholder="e.g. New Baneshwor, House No. 24, Ward 10"
-            />
+          {/* Province, District, and NCM branch */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Province *
+              </label>
+              <select
+                required
+                name="province"
+                value={formData.province}
+                onChange={onChangeHandler}
+                className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
+              >
+                {NEPAL_PROVINCES.map((province) => (
+                  <option key={province} value={province}>{province}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                District *
+              </label>
+              <select
+                required
+                name="district"
+                value={formData.district}
+                onChange={onChangeHandler}
+                className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
+              >
+                {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((district) => (
+                  <option key={district} value={district}>{district}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">NCM Town / Branch *</label>
+              <select
+                required
+                name="city"
+                value={formData.city}
+                onChange={onChangeHandler}
+                disabled={loadingNcmBranches || ncmBranches.length === 0}
+                className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
+              >
+                <option value="">{loadingNcmBranches ? "Loading NCM branches..." : "Select NCM branch"}</option>
+                {ncmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+              </select>
+              {!loadingNcmBranches && ncmBranches.length === 0 && (
+                <p className="text-[10px] text-rose-600 mt-1">NCM has no branch listed for this district.</p>
+              )}
+            </div>
           </div>
 
-          {/* Nearest Landmark Field */}
+          {/* Covered area search and selection */}
           <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">
-              Nearest Landmark *
-            </label>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Street / Covered Area *</label>
+            <input
+              type="search"
+              value={areaSearch}
+              onChange={(event) => setAreaSearch(event.target.value)}
+              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black mb-2"
+              placeholder="Filter NCM covered areas"
+              disabled={!formData.city || coveredAreas.length === 0}
+            />
+            <select
+              required
+              name="street"
+              value={formData.street}
+              onChange={onChangeHandler}
+              disabled={!formData.city || coveredAreas.length === 0}
+              className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
+            >
+              <option value="">{formData.city && coveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select a covered area"}</option>
+              {coveredAreas
+                .filter((area) => area.toLowerCase().includes(areaSearch.trim().toLowerCase()))
+                .map((area) => <option key={area} value={area}>{area}</option>)}
+            </select>
+            {formData.city && coveredAreas.length === 0 && (
+              <p className="text-[11px] text-rose-600 mt-1">This branch has no covered areas in NCM. Choose another branch.</p>
+            )}
+          </div>
+
+          {/* Precise nearest location */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Nearest Location *</label>
             <input
               required
               onChange={onChangeHandler}
@@ -528,80 +676,11 @@ const PlaceOrder = () => {
               value={formData.landmark}
               className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
               type="text"
-              placeholder="e.g. Opposite Bhatbhateni Supermarket / Near Civil Hospital"
+              placeholder="Enter a precise nearby location or landmark"
             />
-            <p className="text-[11px] text-gray-400 mt-0.5">
-              Helps delivery rider locate your address quickly.
-            </p>
+            <p className="text-[11px] text-gray-400 mt-0.5">This is the only free-text location detail required.</p>
           </div>
 
-          {/* City & State / Province Dropdowns */}
-          <div className="flex gap-3 flex-col sm:flex-row">
-            <div className="flex-1">
-              <label className="block text-xs font-semibold text-gray-600 mb-1">
-                City / Town (Nepal) *
-              </label>
-              <select
-                required
-                name="city"
-                value={formData.city}
-                onChange={onChangeHandler}
-                className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
-              >
-                {NEPAL_CITIES.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name} ({c.province.split(" ")[0]})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex-1">
-              <label className="block text-xs font-semibold text-gray-600 mb-1">
-                Province / State *
-              </label>
-              <select
-                required
-                name="state"
-                value={formData.state}
-                onChange={onChangeHandler}
-                className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
-              >
-                {NEPAL_PROVINCES.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Zipcode & Country */}
-          <div className="flex gap-3">
-            <div className="w-1/2">
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Postal / Zip Code *</label>
-              <input
-                required
-                onChange={onChangeHandler}
-                name="zipcode"
-                value={formData.zipcode}
-                className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
-                type="text"
-                placeholder="Zipcode (e.g. 44600)"
-              />
-            </div>
-            <div className="w-1/2">
-              <label className="block text-xs font-semibold text-gray-600 mb-1">Country</label>
-              <input
-                readOnly
-                disabled
-                name="country"
-                value="Nepal 🇳🇵"
-                className="border border-gray-200 bg-gray-100 rounded-lg py-2 px-3.5 w-full text-sm text-gray-700 cursor-not-allowed font-medium"
-                type="text"
-              />
-            </div>
-          </div>
         </div>
 
         {/* --- Right Side: Summary & Payment --- */}

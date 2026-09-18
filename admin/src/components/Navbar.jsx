@@ -11,7 +11,7 @@ const Navbar = ({ setToken }) => {
   });
 
   return (
-    <header className="sticky top-0 z-40 bg-white border-b border-slate-200/80 px-4 sm:px-8 py-3 flex items-center justify-between">
+    <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-[#dfe7e3] px-4 sm:px-8 py-3 flex items-center justify-between shadow-[0_1px_12px_rgba(23,35,33,0.04)]">
       {/* Brand & Title */}
       <div className="flex items-center gap-3">
         <img className="h-9 w-auto object-contain" src={assets.logo} alt="Aama Clothings" />
@@ -38,12 +38,12 @@ const Navbar = ({ setToken }) => {
         {/* Admin Account & Logout */}
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-2">
-            <div className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center text-xs font-bold shadow-xs">
+            <div className="w-8 h-8 rounded-full bg-[#172321] text-white flex items-center justify-center text-xs font-bold shadow-xs">
               AD
             </div>
             <div className="text-left text-xs leading-none">
               <span className="font-semibold text-slate-800 block">Administrator</span>
-              <span className="text-[10px] text-emerald-600 font-medium">Authenticated</span>
+              <span className="text-[10px] text-[#147d6d] font-medium">Authenticated</span>
             </div>
           </div>
 

@@ -1,9 +1,34 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: light;
+    --ink: #172321;
+    --muted: #687672;
+    --line: #dce5e1;
+    --canvas: #f3f6f4;
+    --accent: #147d6d;
+    --accent-dark: #0d574e;
+  }
+
+  * {
+    font-family: "Manrope", sans-serif;
+  }
+
   body {
-    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+    @apply text-slate-900 antialiased;
+    background: var(--canvas);
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    -webkit-tap-highlight-color: transparent;
   }
 }

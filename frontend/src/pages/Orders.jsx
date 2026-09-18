@@ -65,7 +65,9 @@ const Orders = () => {
 
   useEffect(() => {
     loadOrderData();
-  }, [token]);
+    const interval = setInterval(() => loadOrderData(), 15000);
+    return () => clearInterval(interval);
+  }, [token, backendUrl]);
 
   return (
     <div className="border-t pt-16">

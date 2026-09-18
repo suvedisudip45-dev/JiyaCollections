@@ -100,6 +100,8 @@ const Orders = () => {
 
   useEffect(() => {
     fetchOrders();
+    const interval = setInterval(() => fetchOrders(), 15000);
+    return () => clearInterval(interval);
   }, [fetchOrders]);
 
   const handleAccept = async (id) => {
@@ -211,6 +213,8 @@ const Orders = () => {
       activeTab === "completed" &&
       item.status !== "picked_up" &&
       item.status !== "in_transit" &&
+      item.status !== "arrived_at_destination" &&
+      item.status !== "out_for_delivery" &&
       item.status !== "delivered"
     )
       return false;
@@ -238,7 +242,7 @@ const Orders = () => {
     pending: assignments.filter((a) => a.status === "assigned").length,
     production: assignments.filter((a) => ["accepted", "preparing"].includes(a.status)).length,
     ready: assignments.filter((a) => ["packed", "ready_for_pickup"].includes(a.status)).length,
-    completed: assignments.filter((a) => ["picked_up", "in_transit", "delivered"].includes(a.status)).length,
+    completed: assignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
     rejected: assignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
   };
 
@@ -350,6 +354,7 @@ const Orders = () => {
             const dispatchWarningText = manufacturerPickupReadiness.missingFields.length
               ? `Pickup blocked: ${manufacturerPickupReadiness.missingFields[0]} missing.`
               : "Dispatch ready: all required pickup details are complete.";
+            const benefits = order.fulfillmentBenefits || {};
 
             return (
               <div
@@ -405,7 +410,7 @@ const Orders = () => {
                       <span>Courier Slip (4×6)</span>
                     </button>
 
-                    <StatusBadge status={item.status} />
+                    <StatusBadge status={item.status} deliveryStatus={item.delivery?.ncmStatus} />
                   </div>
                 </div>
 
@@ -482,7 +487,7 @@ const Orders = () => {
 
                       {address.landmark && (
                         <div className="p-1.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] font-medium">
-                          📍 <strong>Landmark:</strong> {address.landmark}
+                            <strong>Landmark:</strong> {address.landmark}
                         </div>
                       )}
 
@@ -503,6 +508,17 @@ const Orders = () => {
                   {/* Column 3: Production Action Stepper (3 cols) */}
                   <div className="md:col-span-3 flex flex-col justify-between space-y-3">
                     <div className="space-y-2">
+                      {(benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
+                        <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-2.5 space-y-1.5">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-teal-800">Customer benefits</p>
+                          <p className="text-[11px] font-bold text-slate-900">{benefits.loyaltyTier}</p>
+                          {benefits.totalDiscount > 0 && <p className="text-[10px] text-teal-800">Discount applied: {currency}{benefits.totalDiscount.toLocaleString()}</p>}
+                          {benefits.giftDescription && <p className="text-[10px] text-slate-700">Gift: {benefits.giftDescription}</p>}
+                          {benefits.handwrittenCard && <p className="text-[10px] font-semibold text-amber-800">Include handwritten thank-you card</p>}
+                          {benefits.customPerk && <p className="text-[10px] text-slate-700">{benefits.customPerk}</p>}
+                        </div>
+                      )}
+
                       <span className="text-slate-400 uppercase text-[10px] font-bold tracking-wider block">
                         Fulfillment Stage Action
                       </span>
@@ -595,7 +611,7 @@ const Orders = () => {
                       {item.status === "ready_for_pickup" && (
                         <div className="space-y-2">
                           <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[11px] font-semibold text-center">
-                            🚚 Awaiting Delivery Fleet Pickup
+                            Awaiting Delivery Fleet Pickup
                           </div>
                           <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 text-[11px] text-center">
                             Delivery progress will update automatically from Nepal Can Move.
@@ -603,11 +619,47 @@ const Orders = () => {
                         </div>
                       )}
 
-                      {["picked_up", "in_transit", "delivered"].includes(item.status) && (
-                        <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-[11px] font-bold text-center">
-                          ✓ Completed &amp; Dispatched
-                        </div>
-                      )}
+                      {["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(item.status) && (() => {
+                        const delivery = item.delivery || {};
+                        const statusDisplay = {
+                          picked_up: { label: "Picked Up by Courier", color: "bg-teal-50 border-teal-200 text-teal-800" },
+                          in_transit: { label: "In Transit / Dispatched", color: "bg-slate-50 border-slate-200 text-slate-800" },
+                          arrived_at_destination: { label: "Arrived at Destination Hub", color: "bg-teal-50 border-teal-200 text-teal-800" },
+                          out_for_delivery: { label: "Out for Delivery", color: "bg-amber-50 border-amber-200 text-amber-800" },
+                          delivered: { label: "Delivered to Customer", color: "bg-emerald-50 border-emerald-200 text-emerald-800" },
+                        };
+                        const info = statusDisplay[item.status] || { label: item.status, color: "bg-slate-50 border-slate-200 text-slate-800" };
+                        return (
+                          <div className={`rounded-xl border p-2.5 ${info.color} space-y-2`}>
+                            <div className="font-bold text-[11px] flex items-center gap-1.5">
+                              <span>{info.label}</span>
+                            </div>
+
+                            {/* NCM Courier Tracking Info */}
+                            {delivery.ncmOrderId && (
+                              <div className="space-y-1.5 pt-1.5 border-t border-current/10">
+                                <div className="flex items-center justify-between text-[10px]">
+                                  <span className="opacity-70">NCM Waybill:</span>
+                                  <span className="font-mono font-black">#{delivery.ncmOrderId}</span>
+                                </div>
+                                {delivery.ncmStatus && (
+                                  <div className="flex items-center justify-between text-[10px]">
+                                    <span className="opacity-70">Courier Status:</span>
+                                    <span className="font-bold">{delivery.ncmStatus}</span>
+                                  </div>
+                                )}
+                                {(delivery.originBranchName || delivery.destinationBranchName) && (
+                                  <div className="flex items-center gap-1 text-[10px]">
+                                    <span className="font-bold">{delivery.originBranchName || "Hub"}</span>
+                                    <span className="opacity-50">→</span>
+                                    <span className="font-bold">{delivery.destinationBranchName || "Destination"}</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <Link

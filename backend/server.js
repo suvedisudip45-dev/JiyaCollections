@@ -106,6 +106,8 @@ app.use("/api/manufacturer-order", manufacturerDirectOrderRouter);
 app.use("/api/expense", expenseRouter);
 app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);
+app.use("/webhooks", deliveryRouter);
+app.use("/api/ncm-webhook", deliveryRouter);
 
 app.get("/", (req, res) => {
   res.send("API Working");

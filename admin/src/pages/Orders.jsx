@@ -33,39 +33,53 @@ const getStatusBadgeStyle = (status) => {
 // ─── Fulfillment Status Styles (Hub Monitor) ──────────────────────────────────
 const getFulfillmentBadge = (fs) => {
   switch ((fs || "").toUpperCase()) {
-    case "PENDING_ASSIGNMENT":  return "bg-rose-50 text-rose-700 border-rose-200";
-    case "ASSIGNED":            return "bg-amber-50 text-amber-700 border-amber-200";
-    case "ACCEPTED":            return "bg-blue-50 text-blue-700 border-blue-200";
+    case "PENDING_ASSIGNMENT":        return "bg-rose-50 text-rose-700 border-rose-200";
+    case "ASSIGNED":                   return "bg-amber-50 text-amber-700 border-amber-200";
+    case "ACCEPTED":                   return "bg-blue-50 text-blue-700 border-blue-200";
     case "MANUFACTURING":
-    case "PREPARING":           return "bg-indigo-50 text-indigo-700 border-indigo-200";
+    case "PREPARING":                  return "bg-indigo-50 text-indigo-700 border-indigo-200";
     case "QUALITY_CHECK":
     case "PACKAGED":
-    case "PACKED":              return "bg-purple-50 text-purple-700 border-purple-200";
-    case "READY_FOR_PICKUP":    return "bg-orange-50 text-orange-700 border-orange-200";
+    case "PACKED":                     return "bg-purple-50 text-purple-700 border-purple-200";
+    case "SUBMISSION_PENDING":         return "bg-orange-50 text-orange-700 border-orange-200";
+    case "READY_FOR_PICKUP":           return "bg-orange-50 text-orange-700 border-orange-200";
+    case "NCM_CREATED":
+    case "PICKUP_ORDER_CREATED":       return "bg-orange-50 text-orange-700 border-orange-200";
     case "PICKED_UP":
-    case "IN_TRANSIT":          return "bg-cyan-50 text-cyan-700 border-cyan-200";
-    case "DELIVERED":           return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    case "FAILED":              return "bg-red-50 text-red-700 border-red-200";
-    default:                    return "bg-gray-50 text-gray-700 border-gray-200";
+    case "PICKUP_CONFIRMED":           return "bg-teal-50 text-teal-700 border-teal-200";
+    case "IN_TRANSIT":                 return "bg-sky-50 text-sky-700 border-sky-200";
+    case "ARRIVED_AT_DESTINATION":     return "bg-cyan-50 text-cyan-700 border-cyan-200";
+    case "OUT_FOR_DELIVERY":           return "bg-violet-50 text-violet-700 border-violet-200";
+    case "DELIVERED":                  return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "RETURN_REQUESTED":           return "bg-rose-50 text-rose-700 border-rose-200";
+    case "FAILED":                     return "bg-red-50 text-red-700 border-red-200";
+    default:                           return "bg-gray-50 text-gray-700 border-gray-200";
   }
 };
 
 const getFulfillmentLabel = (fs) => {
   switch ((fs || "").toUpperCase()) {
-    case "PENDING_ASSIGNMENT":  return "⏳ Pending Hub";
-    case "ASSIGNED":            return "📤 Hub Assigned";
-    case "ACCEPTED":            return "✅ Hub Accepted";
+    case "PENDING_ASSIGNMENT":        return "Pending Hub";
+    case "ASSIGNED":                   return "Hub Assigned";
+    case "ACCEPTED":                   return "Hub Accepted";
     case "MANUFACTURING":
-    case "PREPARING":           return "🧵 In Production";
-    case "QUALITY_CHECK":       return "🔍 Quality Check";
+    case "PREPARING":                  return "In Production";
+    case "QUALITY_CHECK":              return "Quality Check";
     case "PACKAGED":
-    case "PACKED":              return "📦 Packaged";
-    case "READY_FOR_PICKUP":    return "🚚 Ready for Pickup";
-    case "PICKED_UP":           return "🏃 Picked Up";
-    case "IN_TRANSIT":          return "🚀 In Transit";
-    case "DELIVERED":           return "✅ Delivered";
-    case "FAILED":              return "❌ Failed";
-    default:                    return fs || "Unknown";
+    case "PACKED":                     return "Packaged";
+    case "SUBMISSION_PENDING":         return "NCM Submitting";
+    case "NCM_CREATED":
+    case "PICKUP_ORDER_CREATED":       return "Courier Booked";
+    case "READY_FOR_PICKUP":           return "Ready for Pickup";
+    case "PICKED_UP":
+    case "PICKUP_CONFIRMED":           return "Picked Up";
+    case "IN_TRANSIT":                 return "In Transit";
+    case "ARRIVED_AT_DESTINATION":     return "Arrived at Hub";
+    case "OUT_FOR_DELIVERY":           return "Out for Delivery";
+    case "DELIVERED":                  return "Delivered";
+    case "RETURN_REQUESTED":           return "Return Requested";
+    case "FAILED":                     return "Failed";
+    default:                           return fs ? fs.replace(/_/g, " ") : "Unknown";
   }
 };
 
@@ -130,7 +144,7 @@ const AdminOrderCard = ({
           <span className="text-gray-500">{orderDateStr}</span>
           {order.address?.source && (
             <span className="px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded-md text-[10px] font-bold">
-              📱 {order.address.source}
+              {order.address.source}
               {order.address.socialUsername && ` (@${order.address.socialUsername})`}
             </span>
           )}
@@ -140,7 +154,7 @@ const AdminOrderCard = ({
           {/* Hub Allocation */}
           {order.assignmentId ? (
             <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold">
-              🏢 Hub Allocated
+              Hub Allocated
             </span>
           ) : (
             <button
@@ -149,7 +163,7 @@ const AdminOrderCard = ({
               className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
               title="Auto-allocate to optimal manufacturer hub"
             >
-              <span>⚡</span> Auto-Allocate Hub
+              Auto-Allocate Hub
             </button>
           )}
 
@@ -243,7 +257,7 @@ const AdminOrderCard = ({
             <p className="text-gray-700 pt-1">{order.address?.street}</p>
             {order.address?.landmark && (
               <div className="my-1.5 p-1.5 bg-yellow-50/80 border border-yellow-300 rounded text-yellow-900 text-[11px] font-medium flex items-start gap-1">
-                <span>📍</span><div><span className="font-bold">Landmark: </span>{order.address.landmark}</div>
+                <div><span className="font-bold">Landmark: </span>{order.address.landmark}</div>
               </div>
             )}
             <p className="text-gray-600 font-medium">{order.address?.city}, {order.address?.state}</p>
@@ -350,7 +364,7 @@ const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }
           {/* Hub Allocation Status */}
           {order.assignmentId ? (
             <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold flex items-center gap-1">
-              🏢 Hub Allocated
+              Hub Allocated
             </span>
           ) : (
             <button
@@ -358,7 +372,7 @@ const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }
               onClick={() => onAutoAllocate(order._id)}
               className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
             >
-              ⚡ Auto-Allocate Hub
+              Auto-Allocate Hub
             </button>
           )}
 
@@ -366,6 +380,19 @@ const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }
           <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${getFulfillmentBadge(fs)}`}>
             {getFulfillmentLabel(fs)}
           </span>
+
+          {/* Live NCM Courier Tracking Pill */}
+          {order.deliveryOrder?.ncmOrderId && (
+            <span
+              title={`NCM Order #${order.deliveryOrder.ncmOrderId}`}
+              className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-200 text-[10px] font-bold"
+            >
+              NCM #{order.deliveryOrder.ncmOrderId}
+              {order.deliveryOrder.ncmStatus && (
+                <span className="ml-1 opacity-75">· {order.deliveryOrder.ncmStatus}</span>
+              )}
+            </span>
+          )}
 
           {/* Print */}
           <button
@@ -404,7 +431,7 @@ const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }
           <p className="font-bold text-gray-900">{customerFullName || "—"}</p>
           <p className="text-indigo-700 font-semibold">📞 {order.address?.phone}</p>
           {order.address?.landmark && (
-            <p className="text-amber-800 text-[11px] mt-0.5">📍 {order.address.landmark}</p>
+            <p className="text-amber-800 text-[11px] mt-0.5">{order.address.landmark}</p>
           )}
           <p className="text-gray-600 mt-0.5">{order.address?.city}, {order.address?.state}</p>
         </div>
@@ -565,14 +592,20 @@ const Orders = ({ token }) => {
   useEffect(() => {
     fetchAdminOrders();
     fetchCustomerLoyalty();
-  }, [token]);
+    const interval = setInterval(() => {
+      fetchAdminOrders();
+      fetchCustomerLoyalty();
+      if (activeTab === "monitor") fetchAllOrders();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [token, activeTab]);
 
   // Lazy-load monitor tab
   useEffect(() => {
     if (activeTab === "monitor" && allOrders.length === 0) {
       fetchAllOrders();
     }
-  }, [activeTab]);
+  }, [activeTab, allOrders.length]);
 
   // ── Admin Orders filtering ──
   const filteredAdminOrders = useMemo(() => {
@@ -750,7 +783,6 @@ const Orders = ({ token }) => {
               : "border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50"
           }`}
         >
-          <span>🏢</span>
           <span>Website Orders — Hub Monitor</span>
           <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${activeTab === "monitor" ? "bg-indigo-600 text-white" : "bg-gray-200 text-gray-700"}`}>
             {allOrders.filter(o => { try { const r = typeof o.rewardApplied === "string" ? JSON.parse(o.rewardApplied) : o.rewardApplied; if (r?.adminCreated) return false; } catch {} return o.orderType !== "ADMIN_DIRECT"; }).length}
