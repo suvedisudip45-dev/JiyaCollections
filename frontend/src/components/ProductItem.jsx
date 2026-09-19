@@ -12,6 +12,7 @@ const ProductItem = ({
   discount,
   stockStatus,
   stockQuantity,
+  variants,
   rating,
   reviewCount,
   newInStore,
@@ -19,8 +20,15 @@ const ProductItem = ({
 }) => {
   const { currency } = useContext(ShopContext);
   const finalPrice = discount > 0 ? Math.round(price * (1 - discount / 100)) : price;
-  const isOutOfStock = stockQuantity !== undefined && stockQuantity <= 0;
-  const isLowStock = stockQuantity > 0 && stockQuantity < 10;
+
+  let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants;
+  const hasVariants = Array.isArray(parsedVariants) && parsedVariants.length > 0;
+  const effectiveStock = hasVariants
+    ? parsedVariants.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0)
+    : Number(stockQuantity ?? 0);
+
+  const isOutOfStock = effectiveStock <= 0;
+  const isLowStock = effectiveStock > 0 && effectiveStock < 10;
   const numRating = Number(rating) || 0;
 
   return (

@@ -20,14 +20,20 @@ const List = ({ token }) => {
   const [editBestseller, setEditBestseller] = useState(false);
   const [editNewInStore, setEditNewInStore] = useState(false);
   const [editPublished, setEditPublished] = useState(true);
-  const [editSizes, setEditSizes] = useState([]);
-  const [editColors, setEditColors] = useState([]);
+  
+  // Varieties in edit modal: [{ size, color, quantity, image, isFeatured, newImageFile, newImagePreview }]
+  const [editVariants, setEditVariants] = useState([]);
+  const [newVarSize, setNewVarSize] = useState("S");
+  const [newVarColor, setNewVarColor] = useState("");
+  const [newVarImageFile, setNewVarImageFile] = useState(null);
+  const [newVarFeatured, setNewVarFeatured] = useState(false);
+  const [editFeaturedTarget, setEditFeaturedTarget] = useState({ type: "variant", index: 0 });
+
   const [editImage1, setEditImage1] = useState(null);
 
   // Color options
   const [colorsList, setColorsList] = useState([]);
   const [categoriesList, setCategoriesList] = useState([]);
-  const [newColorInput, setNewColorInput] = useState("");
 
   const fetchList = async () => {
     try {
@@ -35,7 +41,7 @@ const List = ({ token }) => {
         headers: { token },
       });
       if (response.data.success) {
-        setList(response.data.products);
+        setList(response.data.products || []);
       } else {
         toast.error(response.data.message);
       }
@@ -118,41 +124,100 @@ const List = ({ token }) => {
     setEditNewInStore(product.newInStore || false);
     setEditPublished(product.published !== undefined ? product.published : true);
 
-    const szs = parseArray(product.sizes);
-    setEditSizes(szs.length > 0 ? szs : ["S", "M", "L"]);
+    // Parse existing variants
+    let existingVars = [];
+    if (typeof product.variants === "string") {
+      try {
+        existingVars = JSON.parse(product.variants || "[]");
+      } catch (e) {
+        existingVars = [];
+      }
+    } else if (Array.isArray(product.variants)) {
+      existingVars = product.variants;
+    }
 
-    const cols = parseArray(product.colors).map((c) => (typeof c === "object" ? c.name : c));
-    setEditColors(cols);
+    const formattedVars = existingVars.map((v, idx) => ({
+      size: v.size || "S",
+      color: v.color || "Standard",
+      quantity: Number(v.quantity) || 0,
+      image: v.image || null,
+      isFeatured: Boolean(v.isFeatured),
+      newImageFile: null,
+      newImagePreview: null,
+    }));
 
+    setEditVariants(formattedVars);
+
+    // Determine initial featured index
+    const featIdx = formattedVars.findIndex((v) => v.isFeatured);
+    if (featIdx >= 0) {
+      setEditFeaturedTarget({ type: "variant", index: featIdx });
+    } else {
+      setEditFeaturedTarget({ type: "gallery", index: 0 });
+    }
+
+    setNewVarSize("S");
+    setNewVarColor(colorsList.length > 0 ? colorsList[0].name : "");
+    setNewVarImageFile(null);
+    setNewVarFeatured(false);
     setEditImage1(null);
   };
 
-  const handleToggleSize = (size) => {
-    setEditSizes((prev) =>
-      prev.includes(size) ? (prev.length > 1 ? prev.filter((s) => s !== size) : prev) : [...prev, size]
-    );
-  };
-
-  const handleAddColor = (colorName) => {
-    if (!colorName) return;
-    if (!editColors.includes(colorName)) {
-      setEditColors([...editColors, colorName]);
+  const handleAddNewEditVariety = () => {
+    if (!newVarColor) {
+      toast.error("Please select or enter a color for the variety.");
+      return;
     }
-    setNewColorInput("");
+
+    const exists = editVariants.some(
+      (v) => v.size === newVarSize && v.color.toLowerCase() === newVarColor.toLowerCase()
+    );
+    if (exists) {
+      toast.warning("This size and color variety already exists.");
+      return;
+    }
+
+    const newIdx = editVariants.length;
+    const newV = {
+      size: newVarSize,
+      color: newVarColor,
+      quantity: 0,
+      image: null,
+      isFeatured: newVarFeatured,
+      newImageFile: newVarImageFile,
+      newImagePreview: newVarImageFile ? URL.createObjectURL(newVarImageFile) : null,
+    };
+
+    if (newVarFeatured) {
+      setEditFeaturedTarget({ type: "variant", index: newIdx });
+    }
+
+    setEditVariants([...editVariants, newV]);
+    setNewVarImageFile(null);
+    setNewVarFeatured(false);
+    toast.success(`Added variety: ${newVarSize} / ${newVarColor}`);
   };
 
-  const handleRemoveColor = (colorName) => {
-    setEditColors(editColors.filter((c) => c !== colorName));
+  const handleUpdateEditVarietyImage = (idx, file) => {
+    if (!file) return;
+    setEditVariants((prev) =>
+      prev.map((v, i) =>
+        i === idx
+          ? {
+              ...v,
+              newImageFile: file,
+              newImagePreview: URL.createObjectURL(file),
+            }
+          : v
+      )
+    );
+    toast.info(`Updated photo for variety ${editVariants[idx].size} / ${editVariants[idx].color}`);
   };
 
   const saveEditHandler = async (e) => {
     e.preventDefault();
     if (editCategories.length === 0) {
       toast.error("Please select at least 1 category");
-      return;
-    }
-    if (editSizes.length === 0) {
-      toast.error("Please select at least 1 size");
       return;
     }
     try {
@@ -168,24 +233,30 @@ const List = ({ token }) => {
       formData.append("newInStore", editNewInStore);
       formData.append("published", editPublished);
 
-      // Sizes & Colors variant templates
-      formData.append("sizes", JSON.stringify(editSizes));
-      formData.append("colors", JSON.stringify(editColors));
+      const allSizes = [...new Set(editVariants.map((v) => v.size))];
+      const allColors = [...new Set(editVariants.map((v) => v.color))];
+      formData.append("sizes", JSON.stringify(allSizes));
+      formData.append("colors", JSON.stringify(allColors));
 
-      // Build initial variant template combinations for manufacturers
-      const variantTemplates = [];
-      if (editColors.length > 0) {
-        editSizes.forEach((sz) => {
-          editColors.forEach((cl) => {
-            variantTemplates.push({ size: sz, color: cl });
-          });
-        });
-      } else {
-        editSizes.forEach((sz) => {
-          variantTemplates.push({ size: sz, color: "Standard" });
-        });
-      }
-      formData.append("variants", JSON.stringify(variantTemplates));
+      // Build serialized variants array
+      const variantsMetadata = editVariants.map((v, idx) => ({
+        size: v.size,
+        color: v.color,
+        quantity: Number(v.quantity) || 0,
+        image: v.image || null,
+        isFeatured: editFeaturedTarget.type === "variant" && editFeaturedTarget.index === idx,
+      }));
+      formData.append("variants", JSON.stringify(variantsMetadata));
+
+      formData.append("featuredType", editFeaturedTarget.type);
+      formData.append("featuredIndex", editFeaturedTarget.index);
+
+      // Append new variety images
+      editVariants.forEach((v, idx) => {
+        if (v.newImageFile) {
+          formData.append(`variantImage_${idx}`, v.newImageFile);
+        }
+      });
 
       if (editImage1) {
         formData.append("image1", editImage1);
@@ -198,7 +269,7 @@ const List = ({ token }) => {
       );
 
       if (response.data.success) {
-        toast.success(response.data.message || "Product varieties updated!");
+        toast.success(response.data.message || "Product & Varieties updated!");
         setEditingProduct(null);
         fetchList();
       } else {
@@ -264,21 +335,38 @@ const List = ({ token }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-medium">
-              {list.map((item, index) => {
-                const sizes = parseArray(item.sizes);
-                const colors = parseArray(item.colors);
-                const isOutOfStock = (item.stockQuantity || 0) <= 0;
-                const isLowStock = (item.stockQuantity || 0) <= 5 && !isOutOfStock;
+              {list.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center text-slate-400">
+                    <p className="font-semibold text-sm">No products found in catalog.</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Use the &quot;Add Items&quot; tab on the sidebar to create your first garment variety.
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                list.map((item, index) => {
+                  const sizes = parseArray(item.sizes);
+                  const colors = parseArray(item.colors);
+                  const isOutOfStock = (item.stockQuantity || 0) <= 0;
+                  const isLowStock = (item.stockQuantity || 0) <= 5 && !isOutOfStock;
+                  const imgThumb = Array.isArray(item.image) && item.image.length > 0 ? item.image[0] : (typeof item.image === "string" ? item.image : "");
 
-                return (
-                  <tr key={index} className={`hover:bg-slate-50/80 transition-colors ${!item.published ? "bg-slate-50/50" : ""}`}>
-                    <td className="py-3 px-4">
-                      <div className="flex items-center gap-3">
-                        <img
-                          className="w-11 h-11 object-cover rounded-xl border border-slate-200"
-                          src={Array.isArray(item.image) ? item.image[0] : item.image}
-                          alt=""
-                        />
+                  return (
+                    <tr key={index} className={`hover:bg-slate-50/80 transition-colors ${!item.published ? "bg-slate-50/50" : ""}`}>
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-3">
+                          {imgThumb ? (
+                            <img
+                              className="w-11 h-11 object-cover rounded-xl border border-slate-200"
+                              src={imgThumb}
+                              alt=""
+                            />
+                          ) : (
+                            <div className="w-11 h-11 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs font-bold">
+                              No Img
+                            </div>
+                          )}
                         <div>
                           <p className="font-bold text-slate-900">{item.name}</p>
                           <span className="text-[10px] text-slate-400">Sub: {item.subCategory || "General"}</span>
@@ -387,7 +475,7 @@ const List = ({ token }) => {
                     </td>
                   </tr>
                 );
-              })}
+              }))}
             </tbody>
           </table>
         </div>
@@ -502,82 +590,166 @@ const List = ({ token }) => {
                 />
               </div>
 
-              {/* SIZES CONFIGURATION */}
-              <div>
-                <label className="block mb-1 font-bold text-slate-700">
-                  Allowed Sizes (Manufacturers will maintain stock for these)
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {["XS", "S", "M", "L", "XL", "XXL", "3XL"].map((sz) => {
-                    const active = editSizes.includes(sz);
+              {/* VARIETIES & VARIETY IMAGES MANAGEMENT IN EDIT MODAL */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <label className="font-bold text-slate-900 text-xs">Garment Varieties &amp; Photos</label>
+                    <p className="text-[10px] text-slate-500">Configure size/color varieties, upload photos, and select the featured cover image.</p>
+                  </div>
+                </div>
+
+                {/* Quick Add Variety in Edit Modal */}
+                <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-2">
+                  <p className="text-[10px] font-bold text-slate-700 uppercase">Add New Variety:</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">Size</label>
+                      <select
+                        value={newVarSize}
+                        onChange={(e) => setNewVarSize(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-bold"
+                      >
+                        {["XS", "S", "M", "L", "XL", "XXL", "3XL", "Free Size"].map((sz) => (
+                          <option key={sz} value={sz}>{sz}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">Color</label>
+                      {colorsList.length > 0 ? (
+                        <select
+                          value={newVarColor}
+                          onChange={(e) => setNewVarColor(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs font-bold"
+                        >
+                          <option value="">-- Choose Color --</option>
+                          {colorsList.map((c) => (
+                            <option key={c.id} value={c.name}>{c.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="e.g. Navy Blue"
+                          value={newVarColor}
+                          onChange={(e) => setNewVarColor(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded-lg text-xs"
+                        />
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">Variety Photo</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => setNewVarImageFile(e.target.files[0] || null)}
+                        className="w-full text-[10px] text-slate-500 file:mr-1 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-[10px] file:font-bold file:bg-slate-900 file:text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-1">
+                    <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={newVarFeatured}
+                        onChange={(e) => setNewVarFeatured(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-amber-500 rounded"
+                      />
+                      <span>Make this variety the Featured Cover</span>
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={handleAddNewEditVariety}
+                      className="px-3.5 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 cursor-pointer"
+                    >
+                      + Add Variety
+                    </button>
+                  </div>
+                </div>
+
+                {/* List of Edit Varieties */}
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {editVariants.map((v, idx) => {
+                    const isFeatured = editFeaturedTarget.type === "variant" && editFeaturedTarget.index === idx;
+                    const displayImg = v.newImagePreview || v.image;
+
                     return (
-                      <button
-                        key={sz}
-                        type="button"
-                        onClick={() => handleToggleSize(sz)}
-                        className={`px-3 py-1.5 rounded-xl font-bold border cursor-pointer transition-all ${
-                          active
-                            ? "bg-indigo-600 text-white border-indigo-600"
-                            : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                      <div
+                        key={idx}
+                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 ${
+                          isFeatured
+                            ? "bg-amber-50 border-amber-300 ring-1 ring-amber-400/30"
+                            : "bg-white border-slate-200"
                         }`}
                       >
-                        {sz}
-                      </button>
+                        <div className="flex items-center gap-2.5">
+                          {/* Thumbnail / Upload */}
+                          <label className="relative w-11 h-11 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 cursor-pointer group">
+                            <img
+                              src={displayImg || assets.upload_area}
+                              alt={`${v.size} ${v.color}`}
+                              className="w-full h-full object-cover"
+                            />
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleUpdateEditVarietyImage(idx, e.target.files[0])}
+                              hidden
+                            />
+                            <span className="absolute inset-0 bg-black/60 text-white text-[8px] font-bold opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-center p-0.5">
+                              Change
+                            </span>
+                          </label>
+
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-bold text-slate-900 text-xs">{v.color}</span>
+                              <span className="px-1.5 py-0.2 bg-slate-100 border border-slate-200 text-slate-700 text-[10px] font-bold rounded">
+                                Size: {v.size}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-slate-400">
+                              {displayImg ? "✓ Photo Set" : "No photo (uses gallery)"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {displayImg && (
+                            <button
+                              type="button"
+                              onClick={() => setEditFeaturedTarget({ type: "variant", index: idx })}
+                              className={`px-2 py-0.5 rounded text-[10px] font-extrabold cursor-pointer border ${
+                                isFeatured
+                                  ? "bg-amber-400 text-slate-900 border-amber-500 shadow-2xs"
+                                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                              }`}
+                            >
+                              {isFeatured ? "★ Featured" : "Set Featured"}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditVariants(editVariants.filter((_, i) => i !== idx));
+                              if (editFeaturedTarget.type === "variant" && editFeaturedTarget.index === idx) {
+                                setEditFeaturedTarget({ type: "gallery", index: 0 });
+                              }
+                            }}
+                            className="text-rose-500 hover:text-rose-700 font-black text-sm cursor-pointer px-1"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
                     );
                   })}
-                </div>
-              </div>
-
-              {/* COLORS CONFIGURATION */}
-              <div>
-                <label className="block mb-1 font-bold text-slate-700">
-                  Allowed Color Varieties
-                </label>
-                <div className="flex gap-2 mb-2">
-                  {colorsList.length > 0 ? (
-                    <select
-                      value={newColorInput}
-                      onChange={(e) => setNewColorInput(e.target.value)}
-                      className="bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs flex-1 focus:outline-none"
-                    >
-                      <option value="">Select a color to add...</option>
-                      {colorsList.map((c) => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      placeholder="e.g. Navy Blue"
-                      value={newColorInput}
-                      onChange={(e) => setNewColorInput(e.target.value)}
-                      className="bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl text-xs flex-1 focus:outline-none"
-                    />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleAddColor(newColorInput)}
-                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold cursor-pointer shadow-xs"
-                  >
-                    + Add Color
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {editColors.map((colorName, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 text-slate-800 rounded-lg text-xs font-semibold border border-slate-200"
-                    >
-                      {colorName}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveColor(colorName)}
-                        className="text-rose-500 font-black hover:text-rose-700 cursor-pointer ml-1"
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
                 </div>
               </div>
 

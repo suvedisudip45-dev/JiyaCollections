@@ -61,6 +61,7 @@ export const readyForDelivery = async (req, res) => {
       isFragile: req.body.isFragile,
       deliveryInstruction: req.body.deliveryInstruction,
       instruction: req.body.instruction,
+      packagingChecklist: req.body.packagingChecklist,
     });
     if (result.alreadySubmitted) return res.json({ success: true, delivery: result.delivery, duplicate: true });
     const delivery = await submitDeliveryToNcm(result.delivery.id);

@@ -252,6 +252,7 @@ const Collection = () => {
               discount={item.discount}
               stockStatus={item.stockStatus}
               stockQuantity={item.stockQuantity ?? 0}
+              variants={item.variants}
               rating={item.rating}
               reviewCount={item.reviewCount}
               newInStore={item.newInStore}

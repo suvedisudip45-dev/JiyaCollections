@@ -16,6 +16,12 @@ import {
   ShieldCheck,
   User,
   Phone,
+  Gift,
+  HeartHandshake,
+  CreditCard,
+  CheckSquare,
+  Square,
+  Sparkles,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import StatusBadge from "../components/StatusBadge";
@@ -41,6 +47,16 @@ const OrderDetail = () => {
   const [isFragile, setIsFragile] = useState(false);
   const [deliveryInstruction, setDeliveryInstruction] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Pre-Dispatch Packaging Checklist State
+  const [checklist, setChecklist] = useState({
+    loyaltyGift: false,
+    thankYouLetter: false,
+    additionalLetter: false,
+    marketingCard: false,
+    marketingCardId: "",
+    qualityCheck: false,
+  });
 
   const fetchAssignment = useCallback(async () => {
     if (!token) return;
@@ -72,6 +88,17 @@ const OrderDetail = () => {
           setPackageType(notes.packageType || "Box");
           setIsFragile(parseBoolean(notes.isFragile));
           setDeliveryInstruction(notes.deliveryInstruction || notes.instruction || found.deliveryInstruction || "");
+
+          if (notes.packagingChecklist) {
+            setChecklist({
+              loyaltyGift: Boolean(notes.packagingChecklist.loyaltyGift),
+              thankYouLetter: Boolean(notes.packagingChecklist.thankYouLetter),
+              additionalLetter: Boolean(notes.packagingChecklist.additionalLetter),
+              marketingCard: Boolean(notes.packagingChecklist.marketingCard),
+              marketingCardId: notes.packagingChecklist.marketingCardId || "",
+              qualityCheck: Boolean(notes.packagingChecklist.qualityCheck),
+            });
+          }
         } else {
           toast.error("Assignment not found");
           navigate("/orders");
@@ -88,7 +115,30 @@ const OrderDetail = () => {
     fetchAssignment();
   }, [fetchAssignment]);
 
+  const validateChecklist = () => {
+    const benefits = assignment?.order?.fulfillmentBenefits || {};
+    const hasLoyaltyGift = Boolean(benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0));
+    const hasHandwrittenLetter = Boolean(benefits.handwrittenCard);
+
+    if (hasLoyaltyGift && !checklist.loyaltyGift) {
+      toast.warning(`Please verify that the Loyalty Card Gift (${benefits.giftDescription || "Gift Item"}) is included.`);
+      return false;
+    }
+    if (hasHandwrittenLetter && !checklist.thankYouLetter) {
+      toast.warning("Please verify that the Handwritten Thank-You Letter is enclosed as requested for this tier.");
+      return false;
+    }
+    if (checklist.marketingCard && !checklist.marketingCardId.trim()) {
+      toast.warning("Please enter the Marketing Partner Card ID.");
+      return false;
+    }
+    return true;
+  };
+
   const handleStatusChange = async (newStatus) => {
+    if (newStatus === "packed" || newStatus === "ready_for_pickup") {
+      if (!validateChecklist()) return;
+    }
     setActionLoading(true);
     try {
       const res = await axios.put(
@@ -103,6 +153,10 @@ const OrderDetail = () => {
           packageType,
           isFragile,
           deliveryInstruction,
+          packagingChecklist: {
+            ...checklist,
+            verifiedAt: new Date().toISOString(),
+          },
         },
         { headers: { token } }
       );
@@ -118,6 +172,7 @@ const OrderDetail = () => {
   };
 
   const handleMarkReadyForPickup = async () => {
+    if (!validateChecklist()) return;
     setActionLoading(true);
     try {
       const res = await axios.post(
@@ -131,6 +186,10 @@ const OrderDetail = () => {
           packageType,
           isFragile,
           deliveryInstruction,
+          packagingChecklist: {
+            ...checklist,
+            verifiedAt: new Date().toISOString(),
+          },
         },
         { headers: { token } }
       );
@@ -332,6 +391,243 @@ const OrderDetail = () => {
                 )}
               </div>
             )}
+          </div>
+
+          {/* Pre-Dispatch Packaging Verification Checklist Card */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
+                <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                <span>Pre-Dispatch Packaging Verification Checklist</span>
+              </div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                Dispatch Verification
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Dynamically fetched perks and physical inclusions to be added with this product before handover.
+            </p>
+
+            {/* Standard Order Banner if no special perks apply */}
+            {!benefits.giftDescription && !benefits.handwrittenCard && !benefits.customPerk && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex items-center gap-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                <p className="text-[11px] text-slate-600">
+                  <strong>Standard Package:</strong> No mandatory extra loyalty gifts or handwritten letters for this order.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-3 pt-1">
+              {/* 1. Gifts from loyalty card — only shown if customer earned a gift */}
+              {(benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0)) && (
+                <div
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, loyaltyGift: !prev.loyaltyGift }))}
+                  className={`p-3.5 rounded-2xl border transition-all select-none ${
+                    isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  } flex items-start gap-3.5 ${
+                    checklist.loyaltyGift
+                      ? "bg-emerald-50/70 border-emerald-300"
+                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="mt-0.5 text-emerald-600 shrink-0">
+                    {checklist.loyaltyGift ? (
+                      <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Gift className="w-4 h-4 text-emerald-600" />
+                      <span className="text-xs font-bold text-slate-900">
+                        Gifts from Loyalty Card Included <span className="text-rose-500">*</span>
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Loyalty card bonus gift, VIP reward, or promotional freebie added to parcel.
+                    </p>
+                    {benefits.giftDescription && (
+                      <span className="inline-block mt-1 text-[10px] font-bold text-emerald-800 bg-emerald-100/70 px-2 py-0.5 rounded-md">
+                        Required Item: {benefits.giftDescription}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Handwritten thank-you letter — only shown if requested for this tier */}
+              {benefits.handwrittenCard && (
+                <div
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, thankYouLetter: !prev.thankYouLetter }))}
+                  className={`p-3.5 rounded-2xl border transition-all select-none ${
+                    isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  } flex items-start gap-3.5 ${
+                    checklist.thankYouLetter
+                      ? "bg-emerald-50/70 border-emerald-300"
+                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="mt-0.5 text-emerald-600 shrink-0">
+                    {checklist.thankYouLetter ? (
+                      <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <HeartHandshake className="w-4 h-4 text-rose-500" />
+                      <span className="text-xs font-bold text-slate-900">
+                        Handwritten Thank-You Letter <span className="text-rose-500">*</span>
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Personalized, handwritten note on Aama brand paper enclosed inside the package.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* 3. Custom Perk Fulfilled if present */}
+              {benefits.customPerk && (
+                <div
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, customPerkIncluded: !prev.customPerkIncluded }))}
+                  className={`p-3.5 rounded-2xl border transition-all select-none ${
+                    isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  } flex items-start gap-3.5 ${
+                    checklist.customPerkIncluded
+                      ? "bg-emerald-50/70 border-emerald-300"
+                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="mt-0.5 text-emerald-600 shrink-0">
+                    {checklist.customPerkIncluded ? (
+                      <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-teal-600" />
+                      <span className="text-xs font-bold text-slate-900">
+                        Custom Perk Fulfilled: {benefits.customPerk}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 4. Additional letter */}
+              <div
+                onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, additionalLetter: !prev.additionalLetter }))}
+                className={`p-3.5 rounded-2xl border transition-all select-none ${
+                  isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                } flex items-start gap-3.5 ${
+                  checklist.additionalLetter
+                    ? "bg-emerald-50/70 border-emerald-300"
+                    : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <div className="mt-0.5 text-emerald-600 shrink-0">
+                  {checklist.additionalLetter ? (
+                    <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                  ) : (
+                    <Square className="w-5 h-5 text-slate-400" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-500" />
+                    <span className="text-xs font-bold text-slate-900">
+                      Additional Letter
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Marketing partner card */}
+              <div
+                className={`p-3.5 rounded-2xl border transition-all space-y-3 ${
+                  checklist.marketingCard
+                    ? "bg-amber-50/50 border-amber-300"
+                    : "bg-slate-50 border-slate-200"
+                }`}
+              >
+                <div
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, marketingCard: !prev.marketingCard }))}
+                  className={`flex items-start gap-3.5 select-none ${
+                    isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  }`}
+                >
+                  <div className="mt-0.5 text-amber-600 shrink-0">
+                    {checklist.marketingCard ? (
+                      <CheckSquare className="w-5 h-5 text-amber-600 fill-amber-100" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <CreditCard className="w-4 h-4 text-amber-600" />
+                      <span className="text-xs font-bold text-slate-900">
+                        Marketing Partner Card
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {checklist.marketingCard && (
+                  <div className="pt-2 border-t border-amber-200/80 pl-8 space-y-1.5 animate-in fade-in duration-150">
+                    <label className="block text-[11px] font-bold text-amber-900">
+                      Marketing Partner Card ID <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Enter Card ID"
+                      value={checklist.marketingCardId}
+                      disabled={isDispatchLocked}
+                      onChange={(e) => setChecklist((prev) => ({ ...prev, marketingCardId: e.target.value }))}
+                      className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 disabled:opacity-60"
+                      required={checklist.marketingCard}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 6. Garment quality check & packaging seal */}
+              <div
+                onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, qualityCheck: !prev.qualityCheck }))}
+                className={`p-3.5 rounded-2xl border transition-all select-none ${
+                  isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                } flex items-start gap-3.5 ${
+                  checklist.qualityCheck
+                    ? "bg-emerald-50/70 border-emerald-300"
+                    : "bg-slate-50 border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <div className="mt-0.5 text-emerald-600 shrink-0">
+                  {checklist.qualityCheck ? (
+                    <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                  ) : (
+                    <Square className="w-5 h-5 text-slate-400" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span className="text-xs font-bold text-slate-900">
+                      Garment Quality &amp; Packaging Sealed
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Inspected fabric quality, size labels, stitching, and wrapped in tamper-proof seal.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Packaging & Quality Specs Card */}

@@ -5,9 +5,93 @@ import {
   postCustomerPaymentAccounting,
 } from "../services/accountingPostingEngine.js";
 import { runAllocationEngine } from "./orderAssignmentController.js";
+import { resolveDistrictShippingFee } from "./shippingController.js";
 
 // global variables
 const deliveryCharge = 50;
+
+// Helper to validate stock before order placement
+const validateOrderStock = (items, dbProducts) => {
+  for (const cartItem of items) {
+    const pId = cartItem._id || cartItem.id || cartItem.productId;
+    const matchedProduct = dbProducts.find((p) => p.id === pId);
+    if (!matchedProduct) {
+      return { valid: false, message: `Product not found: ${cartItem.name || pId}` };
+    }
+
+    const orderedQty = Math.max(1, Number(cartItem.quantity || 1));
+    let parsedVariants = typeof matchedProduct.variants === "string"
+      ? JSON.parse(matchedProduct.variants || "[]")
+      : (matchedProduct.variants || []);
+    if (!Array.isArray(parsedVariants)) parsedVariants = [];
+
+    const itemSize = (cartItem.size || "").trim().toLowerCase();
+    const itemColor = (cartItem.color || "").trim().toLowerCase();
+
+    if (parsedVariants.length > 0) {
+      let matchedVariant = null;
+      if (itemSize && itemColor) {
+        matchedVariant = parsedVariants.find(
+          (v) => (v.size || "").trim().toLowerCase() === itemSize &&
+                 (v.color || "").trim().toLowerCase() === itemColor
+        );
+      } else if (itemSize) {
+        matchedVariant = parsedVariants.find(
+          (v) => (v.size || "").trim().toLowerCase() === itemSize
+        );
+      } else if (itemColor) {
+        matchedVariant = parsedVariants.find(
+          (v) => (v.color || "").trim().toLowerCase() === itemColor
+        );
+      }
+
+      if (matchedVariant) {
+        const varQty = Number(matchedVariant.quantity ?? 0);
+        if (varQty <= 0) {
+          return {
+            valid: false,
+            message: `Product "${matchedProduct.name}" (${cartItem.size || ""}${cartItem.color ? ` / ${cartItem.color}` : ""}) is out of stock.`,
+          };
+        }
+        if (orderedQty > varQty) {
+          return {
+            valid: false,
+            message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" (${cartItem.size || ""}${cartItem.color ? ` / ${cartItem.color}` : ""}) exceeds available stock (${varQty}).`,
+          };
+        }
+      } else {
+        const totalVarStock = parsedVariants.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0);
+        if (totalVarStock <= 0) {
+          return {
+            valid: false,
+            message: `Product "${matchedProduct.name}" is completely out of stock.`,
+          };
+        }
+        if (orderedQty > totalVarStock) {
+          return {
+            valid: false,
+            message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" exceeds available stock (${totalVarStock}).`,
+          };
+        }
+      }
+    } else {
+      const stock = Number(matchedProduct.stockQuantity ?? 0);
+      if (stock <= 0) {
+        return {
+          valid: false,
+          message: `Product "${matchedProduct.name}" is out of stock.`,
+        };
+      }
+      if (orderedQty > stock) {
+        return {
+          valid: false,
+          message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" exceeds available stock (${stock}).`,
+        };
+      }
+    }
+  }
+  return { valid: true };
+};
 
 // Placing orders using COD Method with Immutable Price Snapshot
 const placeOrder = async (req, res) => {
@@ -19,42 +103,15 @@ const placeOrder = async (req, res) => {
     }
 
     // Extract product IDs and query current DB records to freeze price snapshots
-    const productIds = items.map((i) => i._id || i.id).filter(Boolean);
+    const productIds = items.map((i) => i._id || i.id || i.productId).filter(Boolean);
     const dbProducts = await prisma.product.findMany({
       where: { id: { in: productIds } },
     });
 
     // Validate stock before proceeding
-    for (const cartItem of items) {
-      const pId = cartItem._id || cartItem.id;
-      const matchedProduct = dbProducts.find((p) => p.id === pId);
-      if (!matchedProduct) {
-        return res.json({ success: false, message: `Product not found: ${cartItem.name || pId}` });
-      }
-
-      const orderedQty = Number(cartItem.quantity || 1);
-      const parsedVariants = typeof matchedProduct.variants === 'string'
-        ? JSON.parse(matchedProduct.variants)
-        : (matchedProduct.variants || []);
-
-      if (cartItem.size && cartItem.color && Array.isArray(parsedVariants) && parsedVariants.length > 0) {
-        const variant = parsedVariants.find(v => v.size === cartItem.size && v.color === cartItem.color);
-        if (variant && variant.quantity !== undefined && variant.quantity !== null) {
-          if (orderedQty > variant.quantity) {
-            return res.json({
-              success: false,
-              message: `Requested quantity for "${matchedProduct.name}" (${cartItem.size}/${cartItem.color}) exceeds available stock (${variant.quantity}).`,
-            });
-          }
-        }
-      }
-
-      if (matchedProduct.stockQuantity > 0 && orderedQty > matchedProduct.stockQuantity) {
-        return res.json({
-          success: false,
-          message: `Requested quantity for "${matchedProduct.name}" exceeds available stock (${matchedProduct.stockQuantity}).`,
-        });
-      }
+    const stockValidation = validateOrderStock(items, dbProducts);
+    if (!stockValidation.valid) {
+      return res.json({ success: false, message: stockValidation.message });
     }
 
     const frozenItemsSnapshot = items.map((cartItem) => {
@@ -92,25 +149,19 @@ const placeOrder = async (req, res) => {
 
     const itemsTotal = frozenItemsSnapshot.reduce((acc, item) => acc + item.lineTotal, 0);
     
-    // Resolve dynamic shipping charge from ShippingConfig
+    // Resolve dynamic shipping charge from ShippingConfig (authoritative backend calculation)
     let expectedFee = deliveryCharge;
     try {
-      const shippingCfg = await prisma.shippingConfig.findFirst();
-      if (shippingCfg) {
-        const destCity = (address?.city || "").trim().toLowerCase();
-        const baseCity = (shippingCfg.baseCity || "Kathmandu").trim().toLowerCase();
-        const isFree = Number(shippingCfg.freeShippingMin || 0) > 0 && itemsTotal >= Number(shippingCfg.freeShippingMin);
-
-        if (isFree) {
-          expectedFee = 0;
-        } else if (destCity && destCity === baseCity) {
-          expectedFee = Number(shippingCfg.sameCityFee || 50);
-        } else {
-          expectedFee = Number(shippingCfg.differentCityFee || 120);
-        }
-      }
+      const customerDistrict = address?.district || address?.city || "";
+      const customerProvince = address?.state || address?.province || "";
+      const shippingResult = await resolveDistrictShippingFee({
+        district: customerDistrict,
+        province: customerProvince,
+        subtotal: itemsTotal,
+      });
+      expectedFee = shippingResult.fee;
     } catch (cfgErr) {
-      console.error("Error reading shipping config:", cfgErr);
+      console.error("Error calculating district shipping fee in placeOrder:", cfgErr);
     }
 
     // Check user loyalty level and reward eligibility
@@ -148,16 +199,15 @@ const placeOrder = async (req, res) => {
       console.error("Error applying loyalty reward:", loyErr);
     }
 
-    const resolvedFee = req.body.deliveryFee !== undefined
-      ? Math.max(0, Number(req.body.deliveryFee))
-      : expectedFee;
-
+    // Price-lock: Backend authoritative fee is locked into order amount and deliveryFee
+    const resolvedFee = expectedFee;
     const finalAmount = Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount);
 
     const orderData = {
       userId,
       items: frozenItemsSnapshot,
       amount: finalAmount,
+      deliveryFee: resolvedFee,
       paymentMethod: "COD",
       payment: false,
       date: BigInt(Date.now()),
@@ -258,7 +308,9 @@ const placeOrder = async (req, res) => {
       if (hasVariants && deduction.variantDeductions.length > 0) {
         for (const vd of deduction.variantDeductions) {
           const vIdx = parsedVariants.findIndex(
-            (v) => v.size === vd.size && v.color === vd.color
+            (v) =>
+              (v.size || "").trim().toLowerCase() === (vd.size || "").trim().toLowerCase() &&
+              (v.color || "").trim().toLowerCase() === (vd.color || "").trim().toLowerCase()
           );
           if (vIdx !== -1) {
             const currentVariantQty = Number(parsedVariants[vIdx].quantity || 0);
@@ -554,47 +606,9 @@ const adminCreateOrder = async (req, res) => {
     });
 
     // Validate stock before proceeding
-    for (const cartItem of items) {
-      const pId = cartItem._id || cartItem.id || cartItem.productId;
-      const matchedProduct = dbProducts.find((p) => p.id === pId);
-      if (!matchedProduct) {
-        return res.json({
-          success: false,
-          message: `Product not found: ${cartItem.name || pId}`,
-        });
-      }
-
-      const orderedQty = Number(cartItem.quantity || 1);
-      const parsedVariants =
-        typeof matchedProduct.variants === "string"
-          ? JSON.parse(matchedProduct.variants)
-          : matchedProduct.variants || [];
-
-      if (
-        cartItem.size &&
-        cartItem.color &&
-        Array.isArray(parsedVariants) &&
-        parsedVariants.length > 0
-      ) {
-        const variant = parsedVariants.find(
-          (v) => v.size === cartItem.size && v.color === cartItem.color
-        );
-        if (variant && variant.quantity !== undefined && variant.quantity !== null) {
-          if (orderedQty > variant.quantity) {
-            return res.json({
-              success: false,
-              message: `Requested quantity (${orderedQty}) for "${matchedProduct.name}" (${cartItem.size}/${cartItem.color}) exceeds available stock (${variant.quantity}).`,
-            });
-          }
-        }
-      }
-
-      if (matchedProduct.stockQuantity > 0 && orderedQty > matchedProduct.stockQuantity) {
-        return res.json({
-          success: false,
-          message: `Requested quantity for "${matchedProduct.name}" exceeds available stock (${matchedProduct.stockQuantity}).`,
-        });
-      }
+    const stockValidation = validateOrderStock(items, dbProducts);
+    if (!stockValidation.valid) {
+      return res.json({ success: false, message: stockValidation.message });
     }
 
     // Freeze snapshot of items
@@ -647,24 +661,16 @@ const adminCreateOrder = async (req, res) => {
     // Dynamic shipping calculation according to shipment rates (ShippingConfig)
     let expectedFee = 50;
     try {
-      const shippingCfg = await prisma.shippingConfig.findFirst();
-      if (shippingCfg) {
-        const destCity = (client.city || "").trim().toLowerCase();
-        const baseCity = (shippingCfg.baseCity || "Kathmandu").trim().toLowerCase();
-        const isFree =
-          Number(shippingCfg.freeShippingMin || 0) > 0 &&
-          itemsTotal >= Number(shippingCfg.freeShippingMin);
-
-        if (isFree) {
-          expectedFee = 0;
-        } else if (destCity && destCity === baseCity) {
-          expectedFee = Number(shippingCfg.sameCityFee || 50);
-        } else {
-          expectedFee = Number(shippingCfg.differentCityFee || 120);
-        }
-      }
+      const customerDistrict = client.district || client.city || "";
+      const customerProvince = client.state || client.province || "";
+      const shippingResult = await resolveDistrictShippingFee({
+        district: customerDistrict,
+        province: customerProvince,
+        subtotal: itemsTotal,
+      });
+      expectedFee = shippingResult.fee;
     } catch (cfgErr) {
-      console.error("Error reading shipping config:", cfgErr);
+      console.error("Error calculating shipping config in admin order:", cfgErr);
     }
 
     const resolvedFee =
@@ -698,6 +704,7 @@ const adminCreateOrder = async (req, res) => {
       street: client.street || "",
       landmark: client.landmark || "",
       city: client.city || "Kathmandu",
+      district: client.district || client.city || "Kathmandu",
       state: client.state || "Bagmati Province",
       zipcode: client.zipcode || "44600",
       country: client.country || "Nepal",
@@ -711,6 +718,7 @@ const adminCreateOrder = async (req, res) => {
         userId: orderUserId,
         items: frozenItemsSnapshot,
         amount: finalAmount,
+        deliveryFee: resolvedFee,
         paymentMethod: paymentMethod || "COD",
         payment: Boolean(payment),
         status: status || "Order Placed",
@@ -778,7 +786,9 @@ const adminCreateOrder = async (req, res) => {
       if (hasVariants && deduction.variantDeductions.length > 0) {
         for (const vd of deduction.variantDeductions) {
           const vIdx = parsedVariants.findIndex(
-            (v) => v.size === vd.size && v.color === vd.color
+            (v) =>
+              (v.size || "").trim().toLowerCase() === (vd.size || "").trim().toLowerCase() &&
+              (v.color || "").trim().toLowerCase() === (vd.color || "").trim().toLowerCase()
           );
           if (vIdx !== -1) {
             const currentVariantQty = Number(parsedVariants[vIdx].quantity || 0);

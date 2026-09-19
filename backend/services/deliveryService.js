@@ -399,7 +399,7 @@ const parsePackagingMeta = (payload) => {
   return payload;
 };
 
-export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction }) => {
+export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order || order.manufacturerId !== manufacturerId) {
     const error = new Error("Order not found or unauthorized");
@@ -424,6 +424,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     deliveryInstruction: deliveryInstruction ?? instruction ?? existingNotes.deliveryInstruction ?? "",
     packagingNotes: packagingNotes ?? existingNotes.packagingNotes ?? "",
     packageDimensions: packageDimensions ?? existingNotes.packageDimensions ?? "",
+    packagingChecklist: packagingChecklist ?? existingNotes.packagingChecklist ?? null,
   };
 
   const existing = await prisma.deliveryOrder.findUnique({ where: { orderId } });

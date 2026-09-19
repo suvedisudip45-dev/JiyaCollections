@@ -1,34 +1,22 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { Factory, Lock, Mail, ArrowRight, Shield, UserPlus } from "lucide-react";
+import { Factory, Lock, Mail, ArrowRight, Shield, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
-
-const NEPAL_CITIES = [
-  "Kathmandu",
-  "Lalitpur",
-  "Bhaktapur",
-  "Pokhara",
-  "Biratnagar",
-  "Birgunj",
-  "Butwal",
-  "Dharan",
-  "Chitwan",
-  "Hetauda",
-  "Nepalgunj",
-  "Itahari",
-  "Janakpur",
-  "Dhangadhi",
-];
+import { NEPAL_PROVINCES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
 const defaultRegisterForm = {
   businessName: "",
   email: "",
   password: "",
   phone: "",
-  city: "Kathmandu",
+  province: "Bagmati Province",
+  district: "Kathmandu",
+  city: "",
+  street: "",
+  landmark: "",
   address: "",
-  ncmPickupBranch: "",
   pickupAddress: "",
   pickupContactName: "",
   pickupContactPhone: "",
@@ -47,23 +35,69 @@ const Login = () => {
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
+  const [coveredAreas, setCoveredAreas] = useState([]);
+  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
 
+  // Cascading NCM branches based on province and district
   useEffect(() => {
-    const fetchBranches = async () => {
+    const fetchDistrictBranches = async () => {
+      if (!registerForm.province || !registerForm.district) {
+        setNcmBranches([]);
+        setCoveredAreas([]);
+        return;
+      }
+      setLoadingNcmBranches(true);
       try {
         const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { city: registerForm.city },
+          params: { province: registerForm.province, district: registerForm.district },
         });
-        if (response.data.success && Array.isArray(response.data.branches)) {
-          setNcmBranches(response.data.branches);
+        const branches = response.data.success ? response.data.branches || [] : [];
+        setNcmBranches(branches);
+        if (branches.length > 0 && !branches.includes(registerForm.city)) {
+          setRegisterForm((prev) => ({ ...prev, city: branches[0] }));
+        } else if (branches.length === 0) {
+          setRegisterForm((prev) => ({ ...prev, city: "", street: "" }));
         }
       } catch (error) {
-        console.error("Failed to fetch NCM branches", error);
+        setNcmBranches([]);
+        console.error("Failed to load NCM branches", error);
+      } finally {
+        setLoadingNcmBranches(false);
       }
     };
 
-    fetchBranches();
-  }, [backendUrl, registerForm.city]);
+    fetchDistrictBranches();
+  }, [backendUrl, registerForm.province, registerForm.district]);
+
+  // Fetch covered areas when NCM town/branch changes
+  useEffect(() => {
+    const fetchCoveredAreas = async () => {
+      if (!registerForm.city) {
+        setCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: registerForm.city,
+            district: registerForm.district,
+            province: registerForm.province,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setCoveredAreas(areas);
+        if (areas.length > 0 && !areas.includes(registerForm.street)) {
+          setRegisterForm((prev) => ({ ...prev, street: areas[0] }));
+        } else if (areas.length === 0) {
+          setRegisterForm((prev) => ({ ...prev, street: "" }));
+        }
+      } catch (error) {
+        setCoveredAreas([]);
+      }
+    };
+
+    fetchCoveredAreas();
+  }, [backendUrl, registerForm.city, registerForm.district, registerForm.province]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -89,11 +123,30 @@ const Login = () => {
 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
+    if (!registerForm.province || !registerForm.district || !registerForm.city) {
+      toast.error("Please select province, district, and NCM town branch");
+      return;
+    }
+
     setRegisterLoading(true);
     try {
+      const formattedAddress = registerForm.address
+        ? registerForm.address
+        : [registerForm.street, registerForm.landmark, registerForm.city, registerForm.district, registerForm.province]
+            .filter(Boolean)
+            .join(", ");
+
+      const formattedPickupAddress = registerForm.pickupAddress
+        ? registerForm.pickupAddress
+        : [registerForm.street, registerForm.landmark, registerForm.city].filter(Boolean).join(", ");
+
       const payload = {
         ...registerForm,
         name: registerForm.businessName,
+        city: registerForm.city,
+        ncmPickupBranch: registerForm.city,
+        address: formattedAddress,
+        pickupAddress: formattedPickupAddress,
       };
 
       const response = await axios.post(`${backendUrl}/api/manufacturer/register`, payload);
@@ -113,197 +166,329 @@ const Login = () => {
 
   if (showRegister) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="w-full max-w-3xl">
-          <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-6 sm:p-8 shadow-2xl">
-            <div className="flex items-center justify-between gap-4 mb-6">
-              <div>
-                <h2 className="text-xl font-black text-white">Register as Manufacturer</h2>
-                <p className="text-xs text-slate-400 mt-1">Submit your manufacturing profile for admin approval</p>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 sm:p-6 text-slate-100">
+        <div className="w-full max-w-4xl">
+          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-10 shadow-2xl backdrop-blur-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8 pb-6 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <Factory className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-black text-white tracking-tight">Register as Manufacturer</h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Join Aama Clothings distributed apparel fulfillment network
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={() => setShowRegister(false)}
-                className="text-sm text-slate-300 hover:text-white"
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 border border-slate-700/60 transition-all self-start sm:self-auto cursor-pointer"
               >
-                Back to login
+                ← Back to Login
               </button>
             </div>
 
-            <form onSubmit={handleRegisterSubmit} className="space-y-4 text-sm text-slate-200">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Business / Factory Name</label>
-                  <input
-                    type="text"
-                    required
-                    value={registerForm.businessName}
-                    onChange={(e) => setRegisterForm({ ...registerForm, businessName: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
+            <form onSubmit={handleRegisterSubmit} className="space-y-6 text-sm">
+              {/* Section 1: Business & Account Credentials */}
+              <div>
+                <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <Shield className="w-4 h-4" /> 1. Business &amp; Authentication Credentials
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Business / Factory Name *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Kathmandu Himalayan Textiles Pvt Ltd"
+                      value={registerForm.businessName}
+                      onChange={(e) => setRegisterForm({ ...registerForm, businessName: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Official Contact Phone *</label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="e.g. 9841234567"
+                      value={registerForm.phone}
+                      onChange={(e) => setRegisterForm({ ...registerForm, phone: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Login Email *</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="factory@domain.com"
+                      value={registerForm.email}
+                      onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Secure Password *</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={registerForm.password}
+                      onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Address & NCM Branch Selection (Identical customer checkout logic) */}
+              <div className="pt-4 border-t border-slate-800">
+                <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <MapPin className="w-4 h-4" /> 2. Location &amp; Nepal Can Move (NCM) Logistics Integration
+                </h3>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Province *</label>
+                    <select
+                      required
+                      value={registerForm.province}
+                      onChange={(e) => {
+                        const nextProvince = e.target.value;
+                        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[nextProvince]?.[0] || "";
+                        setRegisterForm({
+                          ...registerForm,
+                          province: nextProvince,
+                          district: nextDistrict,
+                          city: "",
+                          street: "",
+                        });
+                      }}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      {NEPAL_PROVINCES.map((prov) => (
+                        <option key={prov} value={prov} className="bg-slate-900 text-white">
+                          {prov}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">District *</label>
+                    <select
+                      required
+                      value={registerForm.district}
+                      onChange={(e) => {
+                        setRegisterForm({
+                          ...registerForm,
+                          district: e.target.value,
+                          city: "",
+                          street: "",
+                        });
+                      }}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      {(NEPAL_DISTRICTS_BY_PROVINCE[registerForm.province] || []).map((dist) => (
+                        <option key={dist} value={dist} className="bg-slate-900 text-white">
+                          {dist}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">NCM Town / Branch *</label>
+                    <select
+                      required
+                      value={registerForm.city}
+                      disabled={loadingNcmBranches || ncmBranches.length === 0}
+                      onChange={(e) => setRegisterForm({ ...registerForm, city: e.target.value, street: "" })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="" className="bg-slate-900 text-slate-400">
+                        {loadingNcmBranches ? "Loading branches..." : "Select NCM Branch"}
+                      </option>
+                      {ncmBranches.map((branch) => (
+                        <option key={branch} value={branch} className="bg-slate-900 text-white">
+                          {branch}
+                        </option>
+                      ))}
+                    </select>
+                    {!loadingNcmBranches && ncmBranches.length === 0 && (
+                      <p className="text-[10px] text-rose-400 mt-1">No NCM branch found for this district.</p>
+                    )}
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Official Email</label>
-                  <input
-                    type="email"
-                    required
-                    value={registerForm.email}
-                    onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Street / Covered Area *</label>
+                    <select
+                      required
+                      value={registerForm.street}
+                      disabled={!registerForm.city || coveredAreas.length === 0}
+                      onChange={(e) => setRegisterForm({ ...registerForm, street: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <option value="" className="bg-slate-900 text-slate-400">
+                        {registerForm.city && coveredAreas.length === 0
+                          ? "No covered areas returned by NCM"
+                          : "Select Covered Area"}
+                      </option>
+                      {coveredAreas.map((area) => (
+                        <option key={area} value={area} className="bg-slate-900 text-white">
+                          {area}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Nearest Landmark / Unit Details *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Near Industrial Area Gate 2, Ward 4"
+                      value={registerForm.landmark}
+                      onChange={(e) => setRegisterForm({ ...registerForm, landmark: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Password</label>
-                  <input
-                    type="password"
-                    required
-                    value={registerForm.password}
-                    onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Full Factory / Warehouse Address</label>
+                    <input
+                      type="text"
+                      placeholder="Factory building name, ward, road"
+                      value={registerForm.address}
+                      onChange={(e) => setRegisterForm({ ...registerForm, address: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Pickup Warehouse Address (For Courier)</label>
+                    <input
+                      type="text"
+                      placeholder="Exact pickup gate/room address for courier rider"
+                      value={registerForm.pickupAddress}
+                      onChange={(e) => setRegisterForm({ ...registerForm, pickupAddress: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 3: Dispatch & Fulfillment Details */}
+              <div className="pt-4 border-t border-slate-800">
+                <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <Clock className="w-4 h-4" /> 3. Dispatch &amp; Handover Details
+                </h3>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Pickup Contact Person</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ramesh Karki"
+                      value={registerForm.pickupContactName}
+                      onChange={(e) => setRegisterForm({ ...registerForm, pickupContactName: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Pickup Contact Phone</label>
+                    <input
+                      type="tel"
+                      placeholder="e.g. 9800000000"
+                      value={registerForm.pickupContactPhone}
+                      onChange={(e) => setRegisterForm({ ...registerForm, pickupContactPhone: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Pickup Availability Window</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 10:00 AM - 5:00 PM"
+                      value={registerForm.pickupWindow}
+                      onChange={(e) => setRegisterForm({ ...registerForm, pickupWindow: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Phone</label>
-                  <input
-                    type="text"
-                    required
-                    value={registerForm.phone}
-                    onChange={(e) => setRegisterForm({ ...registerForm, phone: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">City</label>
-                  <select
-                    required
-                    value={registerForm.city}
-                    onChange={(e) => setRegisterForm({ ...registerForm, city: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500"
-                  >
-                    {NEPAL_CITIES.map((city) => (
-                      <option key={city} value={city}>{city}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Pickup Branch / Location</label>
-                  <input
-                    list="ncm-branches-list"
-                    type="text"
-                    placeholder="Search pickup branch"
-                    value={registerForm.ncmPickupBranch}
-                    onChange={(e) => setRegisterForm({ ...registerForm, ncmPickupBranch: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                  <datalist id="ncm-branches-list">
-                    {ncmBranches.map((branch) => (
-                      <option key={branch} value={branch} />
-                    ))}
-                  </datalist>
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Business / Factory Address</label>
-                  <input
-                    type="text"
-                    required
-                    value={registerForm.address}
-                    onChange={(e) => setRegisterForm({ ...registerForm, address: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Order Pickup Address</label>
-                  <input
-                    type="text"
-                    required
-                    value={registerForm.pickupAddress}
-                    onChange={(e) => setRegisterForm({ ...registerForm, pickupAddress: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Pickup Contact Name</label>
-                  <input
-                    type="text"
-                    value={registerForm.pickupContactName}
-                    onChange={(e) => setRegisterForm({ ...registerForm, pickupContactName: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Pickup Contact Phone</label>
-                  <input
-                    type="text"
-                    value={registerForm.pickupContactPhone}
-                    onChange={(e) => setRegisterForm({ ...registerForm, pickupContactPhone: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Pickup Window</label>
-                  <input
-                    type="text"
-                    value={registerForm.pickupWindow}
-                    onChange={(e) => setRegisterForm({ ...registerForm, pickupWindow: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Contract Start</label>
-                  <input
-                    type="date"
-                    value={registerForm.contractStartDate}
-                    onChange={(e) => setRegisterForm({ ...registerForm, contractStartDate: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Contract End</label>
-                  <input
-                    type="date"
-                    value={registerForm.contractExpiryDate}
-                    onChange={(e) => setRegisterForm({ ...registerForm, contractExpiryDate: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Return Instructions</label>
+                <div className="mt-4">
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Return &amp; Defect Handling Instructions</label>
                   <textarea
-                    rows={3}
+                    rows={2}
+                    placeholder="Instructions for courier return drop-offs or warehouse inspection protocol"
                     value={registerForm.returnInstructions}
                     onChange={(e) => setRegisterForm({ ...registerForm, returnInstructions: e.target.value })}
-                    className="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                   />
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={registerLoading}
-                className="w-full mt-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
-                {registerLoading ? (
-                  <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <span>Submit Manufacturer Registration</span>
-                    <UserPlus className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+              {/* Section 4: Agreement Dates */}
+              <div className="pt-4 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Contract Start Date</label>
+                  <input
+                    type="date"
+                    value={registerForm.contractStartDate}
+                    onChange={(e) => setRegisterForm({ ...registerForm, contractStartDate: e.target.value })}
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Contract Expiry Date</label>
+                  <input
+                    type="date"
+                    value={registerForm.contractExpiryDate}
+                    onChange={(e) => setRegisterForm({ ...registerForm, contractExpiryDate: e.target.value })}
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-4 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowRegister(false)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={registerLoading}
+                  className="px-8 py-3 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer flex items-center gap-2"
+                >
+                  {registerLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
+                      <span>Submitting Registration...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus className="w-4 h-4" />
+                      <span>Submit Application for Review</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -312,42 +497,37 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-      <div className="w-full max-w-md">
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+      {/* Background Glow */}
+      <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="w-full max-w-md relative z-10">
+        {/* Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-4 shadow-lg">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-4 shadow-lg shadow-emerald-500/5">
             <Factory className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-black tracking-tight text-white">
-            Aama Manufacturer Hub
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">
-            Production, Quality Compliance &amp; Order Fulfillment
-          </p>
+          <h1 className="text-2xl font-black text-white tracking-tight">Manufacturer Hub</h1>
+          <p className="text-sm text-slate-400 mt-1">Sign in to manage your order fulfillment pipeline</p>
         </div>
 
-        <div className="bg-slate-800/90 backdrop-blur-xl border border-slate-700/80 rounded-2xl p-6 sm:p-8 shadow-2xl">
-          <div className="mb-6">
-            <h2 className="text-lg font-bold text-white">Partner Authentication</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Sign in with your registered manufacturer email
-            </p>
-          </div>
-
+        {/* Card */}
+        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
-                Manufacturer Email
+                Email Address
               </label>
               <div className="relative">
-                <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="email"
                   required
-                  placeholder="hub@nepaltextile.com"
+                  placeholder="manufacturer@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                  className="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
             </div>
@@ -357,14 +537,14 @@ const Login = () => {
                 Password
               </label>
               <div className="relative">
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="password"
                   required
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all"
+                  className="w-full bg-slate-950/80 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
             </div>
@@ -372,34 +552,34 @@ const Login = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition-all shadow-lg hover:shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="w-full py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer mt-2"
             >
               {loading ? (
-                <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <div className="w-5 h-5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
               ) : (
                 <>
-                  <span>Sign In to Hub</span>
+                  <span>Sign In</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </button>
           </form>
 
-          <button
-            type="button"
-            onClick={() => setShowRegister(true)}
-            className="w-full mt-4 border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 font-semibold py-3 px-4 rounded-xl text-sm flex items-center justify-center gap-2 transition-all cursor-pointer"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>Register as Manufacturer</span>
-          </button>
+          <div className="mt-6 pt-6 border-t border-slate-800 text-center">
+            <p className="text-xs text-slate-400 mb-2">Want to partner as an apparel manufacturing hub?</p>
+            <button
+              type="button"
+              onClick={() => setShowRegister(true)}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Register new manufacturer account</span>
+            </button>
+          </div>
 
-          <div className="mt-6 pt-5 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-slate-400">
-            <span className="flex items-center gap-1">
-              <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              Quality Agreement Enforced
-            </span>
-            <span>Aama Clothings v2.4</span>
+          <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-center gap-2 text-slate-500 text-xs">
+            <Shield className="w-3.5 h-3.5" />
+            <span>Encrypted &amp; secure partner portal</span>
           </div>
         </div>
       </div>

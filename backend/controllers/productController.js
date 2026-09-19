@@ -30,6 +30,18 @@ const normalizeCategories = (val) => {
   return [];
 };
 
+// Helper: extract file by fieldname from req.files (array from upload.any() or fields object)
+const getFileByFieldname = (files, fieldname) => {
+  if (!files) return null;
+  if (Array.isArray(files)) {
+    return files.find((f) => f.fieldname === fieldname) || null;
+  }
+  if (files[fieldname]) {
+    return Array.isArray(files[fieldname]) ? files[fieldname][0] : files[fieldname];
+  }
+  return null;
+};
+
 // function for add product
 const addProduct = async (req, res) => {
   try {
@@ -49,27 +61,89 @@ const addProduct = async (req, res) => {
       colors,
       variants,
       published,
+      featuredType, // 'variant' | 'gallery'
+      featuredIndex, // number index
     } = req.body;
 
-    const image1 = req.files?.image1 && req.files.image1[0];
-    const image2 = req.files?.image2 && req.files.image2[0];
-    const image3 = req.files?.image3 && req.files.image3[0];
-    const image4 = req.files?.image4 && req.files.image4[0];
+    let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
+    if (!Array.isArray(parsedVariants)) parsedVariants = [];
 
-    const images = [image1, image2, image3, image4].filter(
-      (item) => item !== undefined
-    );
+    // 1. Upload gallery images (image1, image2, image3, image4, etc.)
+    const galleryFiles = [];
+    for (let i = 1; i <= 8; i++) {
+      const f = getFileByFieldname(req.files, `image${i}`);
+      if (f) galleryFiles.push(f);
+    }
 
-    let imagesUrl = await Promise.all(
-      images.map(async (item) => {
-        let result = await cloudinary.uploader.upload(item.path, {
+    const galleryUrls = await Promise.all(
+      galleryFiles.map(async (file) => {
+        const result = await cloudinary.uploader.upload(file.path, {
           resource_type: "image",
         });
         return result.secure_url;
       })
     );
 
-    const qty = stockQuantity !== undefined ? parseInt(stockQuantity, 10) : 0;
+    // 2. Upload variety-specific images (variantImage_0, variantImage_1, etc.)
+    for (let i = 0; i < parsedVariants.length; i++) {
+      const vFile =
+        getFileByFieldname(req.files, `variantImage_${i}`) ||
+        getFileByFieldname(req.files, `variant_image_${i}`);
+
+      if (vFile) {
+        const result = await cloudinary.uploader.upload(vFile.path, {
+          resource_type: "image",
+        });
+        parsedVariants[i].image = result.secure_url;
+      }
+    }
+
+    // 3. Assemble and order the full image gallery, ensuring Featured Image is at index 0
+    let featuredUrl = "";
+    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
+
+    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
+      featuredUrl = parsedVariants[featIdx]?.image || "";
+      parsedVariants = parsedVariants.map((v, idx) => ({
+        ...v,
+        isFeatured: idx === featIdx,
+      }));
+    } else if (featuredType === "gallery" && featIdx >= 0 && featIdx < galleryUrls.length) {
+      featuredUrl = galleryUrls[featIdx] || "";
+      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
+    } else {
+      // Check if any variant has isFeatured = true
+      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
+      if (featVar) {
+        featuredUrl = featVar.image;
+      } else if (galleryUrls.length > 0) {
+        featuredUrl = galleryUrls[0];
+      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
+        featuredUrl = parsedVariants[0].image;
+        parsedVariants[0].isFeatured = true;
+      }
+    }
+
+    // Combine all distinct image URLs
+    const allImages = [];
+    if (featuredUrl) allImages.push(featuredUrl);
+
+    // Add remaining gallery URLs
+    galleryUrls.forEach((u) => {
+      if (u && !allImages.includes(u)) allImages.push(u);
+    });
+
+    // Add remaining variant image URLs
+    parsedVariants.forEach((v) => {
+      if (v.image && !allImages.includes(v.image)) {
+        allImages.push(v.image);
+      }
+    });
+
+    let qty = stockQuantity !== undefined && stockQuantity !== "" ? parseInt(stockQuantity, 10) : 0;
+    if (parsedVariants.length > 0) {
+      qty = parsedVariants.reduce((sum, v) => sum + Math.max(0, parseInt(v.quantity || 0, 10)), 0);
+    }
     const categoriesArray = normalizeCategories(category);
     const isNewInStore = newInStore === "true" || newInStore === true;
 
@@ -87,7 +161,7 @@ const addProduct = async (req, res) => {
       category: JSON.stringify(categoriesArray),
       subCategory,
       sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes,
-      image: imagesUrl,
+      image: allImages,
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
       discount: discount ? Number(discount) : 0,
@@ -95,7 +169,7 @@ const addProduct = async (req, res) => {
       stockQuantity: qty,
       lowStockThreshold: lowStockThreshold !== undefined ? parseInt(lowStockThreshold, 10) : 5,
       colors: typeof colors === "string" ? JSON.parse(colors) : colors || [],
-      variants: typeof variants === "string" ? JSON.parse(variants) : variants || [],
+      variants: parsedVariants,
       published: published === "false" || published === false ? false : true,
       date: BigInt(Date.now()),
     };
@@ -118,7 +192,7 @@ const addProduct = async (req, res) => {
       });
     }
 
-    res.json({ success: true, message: "Product Added" });
+    res.json({ success: true, message: "Product Added with Varieties" });
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -139,11 +213,15 @@ const updateProduct = async (req, res) => {
       bestseller,
       newInStore,
       discount,
+      costPrice,
       stockQuantity,
       lowStockThreshold,
       colors,
       variants,
       published,
+      featuredType,
+      featuredIndex,
+      existingImages,
     } = req.body;
 
     const existingProduct = await prisma.product.findUnique({ where: { id } });
@@ -151,36 +229,102 @@ const updateProduct = async (req, res) => {
       return res.json({ success: false, message: "Product not found" });
     }
 
-    // Convert existing image (Prisma JSON) to a plain JS array
-    let imagesUrl = toImageArray(existingProduct.image);
+    let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
+    if (!Array.isArray(parsedVariants)) parsedVariants = [];
 
-    // Check if new images were uploaded
-    if (req.files) {
-      const img1 = req.files.image1 && req.files.image1[0];
-      const img2 = req.files.image2 && req.files.image2[0];
-      const img3 = req.files.image3 && req.files.image3[0];
-      const img4 = req.files.image4 && req.files.image4[0];
+    // Parse existing images array
+    let currentImages = existingImages
+      ? (typeof existingImages === "string" ? JSON.parse(existingImages) : existingImages)
+      : toImageArray(existingProduct.image);
 
-      const newImages = [img1, img2, img3, img4].filter(
-        (item) => item !== undefined && item !== false
+    // 1. Upload new gallery images if provided
+    const newGalleryFiles = [];
+    for (let i = 1; i <= 8; i++) {
+      const f = getFileByFieldname(req.files, `image${i}`);
+      if (f) newGalleryFiles.push(f);
+    }
+
+    let newGalleryUrls = [];
+    if (newGalleryFiles.length > 0) {
+      newGalleryUrls = await Promise.all(
+        newGalleryFiles.map(async (file) => {
+          const result = await cloudinary.uploader.upload(file.path, {
+            resource_type: "image",
+          });
+          return result.secure_url;
+        })
       );
+    }
 
-      if (newImages.length > 0) {
-        imagesUrl = await Promise.all(
-          newImages.map(async (item) => {
-            const result = await cloudinary.uploader.upload(item.path, {
-              resource_type: "image",
-            });
-            return result.secure_url;
-          })
-        );
+    // 2. Upload variety-specific images if uploaded
+    for (let i = 0; i < parsedVariants.length; i++) {
+      const vFile =
+        getFileByFieldname(req.files, `variantImage_${i}`) ||
+        getFileByFieldname(req.files, `variant_image_${i}`);
+
+      if (vFile) {
+        const result = await cloudinary.uploader.upload(vFile.path, {
+          resource_type: "image",
+        });
+        parsedVariants[i].image = result.secure_url;
       }
     }
+
+    // 3. Determine Featured Image
+    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
+    let featuredUrl = "";
+
+    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
+      featuredUrl = parsedVariants[featIdx]?.image || "";
+      parsedVariants = parsedVariants.map((v, idx) => ({
+        ...v,
+        isFeatured: idx === featIdx,
+      }));
+    } else if (featuredType === "gallery") {
+      const combinedGallery = [...newGalleryUrls, ...currentImages];
+      if (featIdx >= 0 && featIdx < combinedGallery.length) {
+        featuredUrl = combinedGallery[featIdx] || "";
+      }
+      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
+    } else {
+      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
+      if (featVar) {
+        featuredUrl = featVar.image;
+      } else if (newGalleryUrls.length > 0) {
+        featuredUrl = newGalleryUrls[0];
+      } else if (currentImages.length > 0) {
+        featuredUrl = currentImages[0];
+      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
+        featuredUrl = parsedVariants[0].image;
+        parsedVariants[0].isFeatured = true;
+      }
+    }
+
+    // Combine all images cleanly
+    const allImages = [];
+    if (featuredUrl) allImages.push(featuredUrl);
+
+    newGalleryUrls.forEach((u) => {
+      if (u && !allImages.includes(u)) allImages.push(u);
+    });
+
+    currentImages.forEach((u) => {
+      if (u && !allImages.includes(u)) allImages.push(u);
+    });
+
+    parsedVariants.forEach((v) => {
+      if (v.image && !allImages.includes(v.image)) {
+        allImages.push(v.image);
+      }
+    });
 
     // Determine stock quantity
     let newQty = existingProduct.stockQuantity;
     if (stockQuantity !== undefined && stockQuantity !== "") {
       newQty = parseInt(stockQuantity, 10);
+    }
+    if (parsedVariants.length > 0) {
+      newQty = parsedVariants.reduce((sum, v) => sum + Math.max(0, parseInt(v.quantity || 0, 10)), 0);
     }
 
     const categoryStorage =
@@ -190,7 +334,6 @@ const updateProduct = async (req, res) => {
     if (newInStore !== undefined) {
       isNewInStore = newInStore === "true" || newInStore === true;
       if (isNewInStore) {
-        // Unset any other product that had newInStore = true
         await prisma.product.updateMany({
           where: { id: { not: id } },
           data: { newInStore: false },
@@ -205,7 +348,7 @@ const updateProduct = async (req, res) => {
       ...(categoryStorage !== undefined && { category: categoryStorage }),
       ...(subCategory && { subCategory }),
       ...(sizes && { sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes }),
-      image: imagesUrl,
+      image: allImages,
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
       ...(discount !== undefined && { discount: Number(discount) }),
@@ -213,7 +356,7 @@ const updateProduct = async (req, res) => {
       stockQuantity: newQty,
       ...(lowStockThreshold !== undefined && { lowStockThreshold: parseInt(lowStockThreshold, 10) }),
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
-      ...(variants !== undefined && { variants: typeof variants === "string" ? JSON.parse(variants) : variants }),
+      variants: parsedVariants,
       ...(published !== undefined && { published: published === "true" || published === true }),
     };
 
@@ -222,7 +365,7 @@ const updateProduct = async (req, res) => {
       data: updateData,
     });
 
-    res.json({ success: true, message: "Product Updated Successfully" });
+    res.json({ success: true, message: "Product and Varieties Updated Successfully" });
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });

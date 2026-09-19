@@ -18,52 +18,45 @@ import {
   Percent,
 } from "lucide-react";
 import { backendUrl, currency } from "../App";
+import { NEPAL_PROVINCES, NEPAL_CITIES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
-const NEPAL_CITIES = [
-  "Kathmandu",
-  "Lalitpur",
-  "Bhaktapur",
-  "Pokhara",
-  "Biratnagar",
-  "Birgunj",
-  "Butwal",
-  "Dharan",
-  "Chitwan",
-  "Hetauda",
-  "Nepalgunj",
-  "Itahari",
-  "Janakpur",
-  "Dhangadhi",
-];
+const defaultFormData = {
+  businessName: "",
+  email: "",
+  password: "",
+  phone: "",
+  province: "Bagmati Province",
+  district: "Kathmandu",
+  city: "",
+  street: "",
+  landmark: "",
+  address: "",
+  ncmPickupBranch: "",
+  pickupAddress: "",
+  pickupContactName: "",
+  pickupContactPhone: "",
+  pickupWindow: "",
+  returnInstructions: "",
+  pickupBranchStatus: "UNVERIFIED",
+  commissionRate: 12,
+  contractStart: new Date().toISOString().split("T")[0],
+  contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+};
 
 const Manufacturers = ({ token }) => {
   const [manufacturers, setManufacturers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [ncmBranches, setNcmBranches] = useState([]);
+  const [coveredAreas, setCoveredAreas] = useState([]);
+  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
   const [syncingNcmBranches, setSyncingNcmBranches] = useState(false);
 
   // Create Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [editingManufacturerId, setEditingManufacturerId] = useState(null);
-  const [formData, setFormData] = useState({
-    businessName: "",
-    email: "",
-    password: "",
-    phone: "",
-    address: "",
-    city: "Kathmandu",
-    ncmPickupBranch: "",
-    pickupAddress: "",
-    pickupContactName: "",
-    pickupContactPhone: "",
-    pickupWindow: "",
-    returnInstructions: "",
-    pickupBranchStatus: "UNVERIFIED",
-    commissionRate: 12,
-    contractStart: new Date().toISOString().split("T")[0],
-    contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
-  });
+  const [formData, setFormData] = useState(defaultFormData);
 
   // Quality Modal
   const [qualityModalOpen, setQualityModalOpen] = useState(false);
@@ -96,18 +89,66 @@ const Manufacturers = ({ token }) => {
     }
   }, [token]);
 
-  const fetchNcmBranches = useCallback(async (city) => {
-    try {
-      const res = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-        params: { city },
-      });
-      if (res.data.success && Array.isArray(res.data.branches)) {
-        setNcmBranches(res.data.branches);
+  // Cascading NCM branches based on province and district
+  useEffect(() => {
+    const fetchDistrictBranches = async () => {
+      if (!formData.province || !formData.district) {
+        setNcmBranches([]);
+        setCoveredAreas([]);
+        return;
       }
-    } catch (err) {
-      console.error("Failed to load NCM branches", err);
-    }
-  }, [backendUrl]);
+      setLoadingNcmBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: formData.province, district: formData.district },
+        });
+        const branches = response.data.success ? response.data.branches || [] : [];
+        setNcmBranches(branches);
+        if (branches.length > 0 && !branches.includes(formData.city)) {
+          setFormData((prev) => ({ ...prev, city: branches[0], ncmPickupBranch: branches[0] }));
+        } else if (branches.length === 0) {
+          setFormData((prev) => ({ ...prev, city: "", ncmPickupBranch: "", street: "" }));
+        }
+      } catch (error) {
+        setNcmBranches([]);
+        console.error("Failed to load NCM branches", error);
+      } finally {
+        setLoadingNcmBranches(false);
+      }
+    };
+
+    fetchDistrictBranches();
+  }, [backendUrl, formData.province, formData.district]);
+
+  // Fetch covered areas when NCM town/branch changes
+  useEffect(() => {
+    const fetchCoveredAreas = async () => {
+      if (!formData.city) {
+        setCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: formData.city,
+            district: formData.district,
+            province: formData.province,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setCoveredAreas(areas);
+        if (areas.length > 0 && !areas.includes(formData.street)) {
+          setFormData((prev) => ({ ...prev, street: areas[0] }));
+        } else if (areas.length === 0) {
+          setFormData((prev) => ({ ...prev, street: "" }));
+        }
+      } catch (error) {
+        setCoveredAreas([]);
+      }
+    };
+
+    fetchCoveredAreas();
+  }, [backendUrl, formData.city, formData.district, formData.province]);
 
   const handleSyncRatings = async () => {
     try {
@@ -135,7 +176,14 @@ const Manufacturers = ({ token }) => {
       );
       if (!res.data.success) throw new Error(res.data.message || "Branch synchronization failed");
       toast.success(res.data.message || "NCM branches synchronized");
-      fetchNcmBranches(formData.city);
+      if (formData.province && formData.district) {
+        const branchRes = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: formData.province, district: formData.district },
+        });
+        if (branchRes.data.success) {
+          setNcmBranches(branchRes.data.branches || []);
+        }
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || "Failed to synchronize NCM branches");
     } finally {
@@ -146,10 +194,6 @@ const Manufacturers = ({ token }) => {
   useEffect(() => {
     fetchManufacturers();
   }, [fetchManufacturers]);
-
-  useEffect(() => {
-    fetchNcmBranches(formData.city);
-  }, [fetchNcmBranches, formData.city]);
 
   const handleReviewManufacturer = async (manufacturerId, nextStatus) => {
     try {
@@ -182,10 +226,29 @@ const Manufacturers = ({ token }) => {
 
   const handleCreateSubmit = async (e) => {
     e.preventDefault();
+    if (!formData.province || !formData.district || !formData.city) {
+      toast.error("Please select province, district, and NCM town branch");
+      return;
+    }
+
     try {
+      const formattedAddress = formData.address
+        ? formData.address
+        : [formData.street, formData.landmark, formData.city, formData.district, formData.province]
+            .filter(Boolean)
+            .join(", ");
+
+      const formattedPickupAddress = formData.pickupAddress
+        ? formData.pickupAddress
+        : [formData.street, formData.landmark, formData.city].filter(Boolean).join(", ");
+
       const payload = {
         ...formData,
         name: formData.businessName,
+        city: formData.city,
+        ncmPickupBranch: formData.city || formData.ncmPickupBranch,
+        address: formattedAddress,
+        pickupAddress: formattedPickupAddress,
         pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
       };
 
@@ -215,24 +278,7 @@ const Manufacturers = ({ token }) => {
 
       setCreateModalOpen(false);
       setEditingManufacturerId(null);
-      setFormData({
-        businessName: "",
-        email: "",
-        password: "",
-        phone: "",
-        address: "",
-        city: "Kathmandu",
-        ncmPickupBranch: "",
-        pickupAddress: "",
-        pickupContactName: "",
-        pickupContactPhone: "",
-        pickupWindow: "",
-        returnInstructions: "",
-        pickupBranchStatus: "UNVERIFIED",
-        commissionRate: 12,
-        contractStart: new Date().toISOString().split("T")[0],
-        contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
-      });
+      setFormData(defaultFormData);
       fetchManufacturers();
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || "Failed to save manufacturer settings");
@@ -590,22 +636,36 @@ const Manufacturers = ({ token }) => {
                   onClick={() => {
                     setSelectedMfg(m);
                     setEditingManufacturerId(m.id);
-                    setFormData((prev) => ({
-                      ...prev,
-                      businessName: m.businessName || "",
+                    setFormData({
+                      ...defaultFormData,
+                      businessName: m.businessName || m.name || "",
                       email: m.email || "",
                       password: "",
                       phone: m.phone || "",
+                      province: m.province || "Bagmati Province",
+                      district: m.district || "Kathmandu",
+                      city: m.city || m.ncmPickupBranch || "",
+                      street: m.street || "",
+                      landmark: m.landmark || "",
                       address: m.address || "",
-                      city: m.city || "Kathmandu",
-                      ncmPickupBranch: m.ncmPickupBranch || "",
+                      ncmPickupBranch: m.ncmPickupBranch || m.city || "",
                       pickupAddress: m.pickupAddress || "",
                       pickupContactName: m.pickupContactName || "",
                       pickupContactPhone: m.pickupContactPhone || "",
                       pickupWindow: m.pickupWindow || "",
                       returnInstructions: m.returnInstructions || "",
                       pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
-                    }));
+                      contractStart: m.contractStartDate
+                        ? new Date(m.contractStartDate).toISOString().split("T")[0]
+                        : m.contractStart
+                        ? new Date(m.contractStart).toISOString().split("T")[0]
+                        : defaultFormData.contractStart,
+                      contractEnd: m.contractExpiryDate
+                        ? new Date(m.contractExpiryDate).toISOString().split("T")[0]
+                        : m.contractEnd
+                        ? new Date(m.contractEnd).toISOString().split("T")[0]
+                        : defaultFormData.contractEnd,
+                    });
                     setCreateModalOpen(true);
                   }}
                   className="w-full px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 flex items-center justify-center gap-1 cursor-pointer"
@@ -619,234 +679,355 @@ const Manufacturers = ({ token }) => {
         )}
       </div>
 
-      {/* Register Modal */}
+      {/* Register / Edit Partner Modal */}
       {createModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                {editingManufacturerId ? "Edit Manufacturing Partner" : "Register New Manufacturing Partner"}
-              </h3>
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  {editingManufacturerId ? "Edit Partner / Logistics Hub" : "Register New Manufacturing Partner"}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Configure partner details, Nepal geography, and NCM dispatch branch hub
+                </p>
+              </div>
               <button
                 onClick={() => {
                   setCreateModalOpen(false);
                   setEditingManufacturerId(null);
                 }}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateSubmit} className="space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Business / Factory Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Kathmandu Himalayan Textiles Pvt Ltd"
-                  value={formData.businessName}
-                  onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Login Email</label>
-                  <input
-                    type="email"
-                    required
-                    placeholder="factory@textiles.com"
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
+            <form onSubmit={handleCreateSubmit} className="space-y-5 text-xs">
+              {/* Section 1: Business Profile & Credentials */}
+              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <Factory className="w-3.5 h-3.5 text-slate-600" />
+                  1. Business Profile & Credentials
+                </h4>
 
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Password</label>
-                  <input
-                    type="password"
-                    required
-                    placeholder="••••••••"
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Contact Phone</label>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Business / Factory Name <span className="text-rose-500">*</span>
+                  </label>
                   <input
                     type="text"
                     required
-                    placeholder="+977-98..."
-                    value={formData.phone}
-                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                    placeholder="e.g. Kathmandu Himalayan Textiles Pvt Ltd"
+                    value={formData.businessName}
+                    onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                   />
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Assigned City Hub</label>
-                  <select
-                    value={formData.city}
-                    onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  >
-                    {NEPAL_CITIES.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Login Email <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="factory@textiles.com"
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      {editingManufacturerId ? "Password (leave blank to keep)" : "Password *"}
+                    </label>
+                    <input
+                      type="password"
+                      required={!editingManufacturerId}
+                      placeholder={editingManufacturerId ? "••••••••" : "Create password"}
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Contact Phone <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="+977-98..."
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Street Address</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Ward No. 4, Balaju Industrial Area"
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-              </div>
+              {/* Section 2: Regional Location & NCM Logistics Hub */}
+              <div className="p-4 bg-emerald-50/40 border border-emerald-200/60 rounded-xl space-y-3">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                  2. Regional Location & NCM Hub Selection
+                </h4>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Admin Assigned NCM Pickup Branch</label>
-                <input
-                  list="admin-ncm-branches-list"
-                  type="text"
-                  placeholder="Search pickup branch"
-                  value={formData.ncmPickupBranch}
-                  onChange={(e) => setFormData({ ...formData, ncmPickupBranch: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-                <datalist id="admin-ncm-branches-list">
-                  {ncmBranches.map((branch) => (
-                    <option key={branch} value={branch} />
-                  ))}
-                </datalist>
-              </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Province <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={formData.province}
+                      onChange={(e) => {
+                        const newProv = e.target.value;
+                        const defaultDist = NEPAL_DISTRICTS_BY_PROVINCE[newProv]?.[0] || "";
+                        setFormData({
+                          ...formData,
+                          province: newProv,
+                          district: defaultDist,
+                          city: "",
+                          street: "",
+                        });
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                    >
+                      {NEPAL_PROVINCES.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Pickup Address for Manufacturer</label>
-                <input
-                  type="text"
-                  placeholder="Pickup warehouse or factory address"
-                  value={formData.pickupAddress}
-                  onChange={(e) => setFormData({ ...formData, pickupAddress: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-              </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      District <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={formData.district}
+                      onChange={(e) =>
+                        setFormData({
+                          ...formData,
+                          district: e.target.value,
+                          city: "",
+                          street: "",
+                        })
+                      }
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                    >
+                      {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((d) => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-              <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      NCM Town / Branch Hub <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={formData.city}
+                      onChange={(e) => setFormData({ ...formData, city: e.target.value, ncmPickupBranch: e.target.value, street: "" })}
+                      disabled={loadingNcmBranches || ncmBranches.length === 0}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 disabled:opacity-50"
+                    >
+                      {loadingNcmBranches ? (
+                        <option value="">Loading NCM branches...</option>
+                      ) : ncmBranches.length === 0 ? (
+                        <option value="">No branch available in this district</option>
+                      ) : (
+                        ncmBranches.map((branch) => (
+                          <option key={branch} value={branch}>
+                            {branch}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Street / Covered Area
+                    </label>
+                    {coveredAreas.length > 0 ? (
+                      <select
+                        value={formData.street}
+                        onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                      >
+                        {coveredAreas.map((area) => (
+                          <option key={area} value={area}>
+                            {area}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="e.g. Ward No. 4, Balaju Industrial Area"
+                        value={formData.street}
+                        onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                      />
+                    )}
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Name</label>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Nearest Landmark / Factory Unit Details
+                  </label>
                   <input
                     type="text"
-                    placeholder="e.g. Ramesh Karki"
-                    value={formData.pickupContactName}
-                    onChange={(e) => setFormData({ ...formData, pickupContactName: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                    placeholder="e.g. Near Balaju Bypass Gate, Block C"
+                    value={formData.landmark}
+                    onChange={(e) => setFormData({ ...formData, landmark: e.target.value })}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
                   />
                 </div>
+              </div>
+
+              {/* Section 3: Dispatch & Pickup Operations */}
+              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <Phone className="w-3.5 h-3.5 text-slate-600" />
+                  3. Dispatch & Pickup Operations
+                </h4>
 
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Phone</label>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Specific Pickup Warehouse / Loading Dock Address
+                  </label>
                   <input
                     type="text"
-                    placeholder="e.g. +977-98..."
-                    value={formData.pickupContactPhone}
-                    onChange={(e) => setFormData({ ...formData, pickupContactPhone: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Pickup Window</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 10:00 AM - 4:00 PM"
-                    value={formData.pickupWindow}
-                    onChange={(e) => setFormData({ ...formData, pickupWindow: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                    placeholder="e.g. Warehouse 2, Ground Floor Dispatch Dock"
+                    value={formData.pickupAddress}
+                    onChange={(e) => setFormData({ ...formData, pickupAddress: e.target.value })}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                   />
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Pickup Status</label>
-                  <select
-                    value={formData.pickupBranchStatus || "UNVERIFIED"}
-                    onChange={(e) => setFormData({ ...formData, pickupBranchStatus: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  >
-                    <option value="UNVERIFIED">UNVERIFIED</option>
-                    <option value="VERIFIED">VERIFIED</option>
-                    <option value="REJECTED">REJECTED</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Name</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Ramesh Karki"
+                      value={formData.pickupContactName}
+                      onChange={(e) => setFormData({ ...formData, pickupContactName: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Phone</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. +977-98..."
+                      value={formData.pickupContactPhone}
+                      onChange={(e) => setFormData({ ...formData, pickupContactPhone: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Pickup Time Window</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 10:00 AM - 4:00 PM"
+                      value={formData.pickupWindow}
+                      onChange={(e) => setFormData({ ...formData, pickupWindow: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Pickup Status</label>
+                    <select
+                      value={formData.pickupBranchStatus || "UNVERIFIED"}
+                      onChange={(e) => setFormData({ ...formData, pickupBranchStatus: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    >
+                      <option value="UNVERIFIED">UNVERIFIED</option>
+                      <option value="VERIFIED">VERIFIED</option>
+                      <option value="REJECTED">REJECTED</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Return Instructions</label>
-                <textarea
-                  rows={2}
-                  placeholder="Instructions for return or handover"
-                  value={formData.returnInstructions}
-                  onChange={(e) => setFormData({ ...formData, returnInstructions: e.target.value })}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-              </div>
+              {/* Section 4: Return Policy & Contract */}
+              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-slate-600" />
+                  4. Return Policy & Contract Period
+                </h4>
 
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Contract Start</label>
-                  <input
-                    type="date"
-                    value={formData.contractStart}
-                    onChange={(e) => setFormData({ ...formData, contractStart: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  <label className="block font-semibold text-slate-700 mb-1">Return / Handover Instructions</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Instructions for return verification or quality check during handover..."
+                    value={formData.returnInstructions}
+                    onChange={(e) => setFormData({ ...formData, returnInstructions: e.target.value })}
+                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                   />
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Contract End</label>
-                  <input
-                    type="date"
-                    value={formData.contractEnd}
-                    onChange={(e) => setFormData({ ...formData, contractEnd: e.target.value })}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Contract Start Date</label>
+                    <input
+                      type="date"
+                      value={formData.contractStart}
+                      onChange={(e) => setFormData({ ...formData, contractStart: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Contract Expiry Date</label>
+                    <input
+                      type="date"
+                      value={formData.contractEnd}
+                      onChange={(e) => setFormData({ ...formData, contractEnd: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2 pt-3">
+              {/* Modal Action Buttons */}
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => {
                     setCreateModalOpen(false);
                     setEditingManufacturerId(null);
                   }}
-                  className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold"
+                  className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer"
+                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer transition shadow-md hover:shadow-lg"
                 >
-                  {editingManufacturerId ? "Save Settings" : "Register Partner"}
+                  {editingManufacturerId ? "Save Changes" : "Register Partner"}
                 </button>
               </div>
             </form>

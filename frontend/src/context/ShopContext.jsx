@@ -1,9 +1,8 @@
-/* eslint-disable no-unused-vars */
-/* eslint-disable react/prop-types */
 import { createContext, useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import { playAddToCartSound, playCountSound } from "../utils/soundEffects";
 
 export const ShopContext = createContext();
 
@@ -20,9 +19,8 @@ const ShopContextProvider = (props) => {
 
   // Shipping config from backend
   const [shippingConfig, setShippingConfig] = useState({
-    baseCity: "Kathmandu",
-    sameCityFee: 50,
-    differentCityFee: 120,
+    sameDistrictFee: 50,
+    differentDistrictFee: 120,
     freeShippingMin: 0,
   });
 
@@ -32,9 +30,8 @@ const ShopContextProvider = (props) => {
       if (res.data.success && res.data.config) {
         const c = res.data.config;
         setShippingConfig({
-          baseCity: c.baseCity || "Kathmandu",
-          sameCityFee: Number(c.sameCityFee ?? 50),
-          differentCityFee: Number(c.differentCityFee ?? 120),
+          sameDistrictFee: Number(c.sameDistrictFee ?? c.sameCityFee ?? 50),
+          differentDistrictFee: Number(c.differentDistrictFee ?? c.differentCityFee ?? 120),
           freeShippingMin: Number(c.freeShippingMin ?? 0),
         });
       }
@@ -43,14 +40,37 @@ const ShopContextProvider = (props) => {
     }
   };
 
-  // Calculate delivery fee based on city and subtotal
-  const calculateDeliveryFee = (city, subtotal) => {
+  // Authoritative backend shipping rate calculation
+  const calculateShippingRate = async (district, province = "", subtotal = 0) => {
+    try {
+      const res = await axios.get(backendUrl + "/api/shipping/calculate", {
+        params: { district, province, subtotal },
+      });
+      if (res.data.success) {
+        return res.data;
+      }
+    } catch (err) {
+      console.error("Error fetching calculated shipping rate:", err);
+    }
+    return {
+      fee: shippingConfig.differentDistrictFee || 120,
+      tier: "DIFFERENT_DISTRICT",
+      label: "Outside District Delivery",
+      sameDistrictFee: shippingConfig.sameDistrictFee,
+      differentDistrictFee: shippingConfig.differentDistrictFee,
+    };
+  };
+
+  // Backwards compatibility helper for instant display
+  const calculateDeliveryFee = (district, subtotal) => {
     const freeMin = Number(shippingConfig.freeShippingMin || 0);
     if (freeMin > 0 && subtotal >= freeMin) return 0;
-    const destCity = (city || "").trim().toLowerCase();
-    const baseCity = (shippingConfig.baseCity || "Kathmandu").trim().toLowerCase();
-    if (destCity && destCity === baseCity) return shippingConfig.sameCityFee;
-    return shippingConfig.differentCityFee;
+    const dest = (district || "").trim().toLowerCase();
+    const ktmCluster = ["kathmandu", "lalitpur", "bhaktapur"];
+    if (dest && ktmCluster.includes(dest)) {
+      return shippingConfig.sameDistrictFee;
+    }
+    return shippingConfig.differentDistrictFee;
   };
 
   const getMaxStock = (product, size, color) => {
@@ -64,14 +84,39 @@ const ShopContextProvider = (props) => {
       }
     }
     if (Array.isArray(variants) && variants.length > 0) {
-      const matched = variants.find(
-        (v) => (!size || v.size === size) && (!color || v.color === color)
-      );
-      if (matched && matched.quantity !== undefined && matched.quantity !== null) {
-        return Number(matched.quantity);
+      const s = (size || "").trim().toLowerCase();
+      const c = (color || "").trim().toLowerCase();
+
+      if (s && c) {
+        const matched = variants.find(
+          (v) =>
+            (v.size || "").trim().toLowerCase() === s &&
+            (v.color || "").trim().toLowerCase() === c
+        );
+        if (matched && matched.quantity !== undefined && matched.quantity !== null) {
+          return Math.max(0, Number(matched.quantity));
+        }
+        return 0; // Specific variant combination does not exist
+      } else if (s) {
+        const matchingSizes = variants.filter(
+          (v) => (v.size || "").trim().toLowerCase() === s
+        );
+        if (matchingSizes.length > 0) {
+          return matchingSizes.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0);
+        }
+        return 0;
+      } else if (c) {
+        const matchingColors = variants.filter(
+          (v) => (v.color || "").trim().toLowerCase() === c
+        );
+        if (matchingColors.length > 0) {
+          return matchingColors.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0);
+        }
+        return 0;
       }
+      return variants.reduce((sum, v) => sum + Math.max(0, Number(v.quantity || 0)), 0);
     }
-    return Number(product.stockQuantity ?? 0);
+    return Math.max(0, Number(product.stockQuantity ?? 0));
   };
 
   const addToCart = async (itemId, size, color) => {
@@ -84,7 +129,7 @@ const ShopContextProvider = (props) => {
       return;
     }
 
-    const itemInfo = products.find((product) => product._id === itemId);
+    const itemInfo = products.find((product) => product._id === itemId || product.id === itemId);
     const maxStock = getMaxStock(itemInfo, size, color);
     const variantKey = `${size}-${color}`;
     const currentQty = (cartItems[itemId] && cartItems[itemId][variantKey]) || 0;
@@ -113,6 +158,9 @@ const ShopContextProvider = (props) => {
     }
     setCartItems(cartData);
 
+    // Audio feedback for rewarding add to cart
+    playAddToCartSound();
+
     if (!token) {
       localStorage.setItem("cartItems", JSON.stringify(cartData));
     }
@@ -125,13 +173,18 @@ const ShopContextProvider = (props) => {
 
     if (token) {
       try {
-        await axios.post(
+        const response = await axios.post(
           backendUrl + "/api/cart/add",
           { itemId, size, color },
           { headers: { token } }
         );
+        if (response.data && !response.data.success) {
+          toast.error(response.data.message || "Failed to add to cart");
+          // Revert local state
+          getUserCart(token);
+        }
       } catch (error) {
-        console.log(error);
+        console.error("Cart add error:", error);
         toast.error(error.message);
       }
     }
@@ -158,12 +211,22 @@ const ShopContextProvider = (props) => {
     const variantKey = `${size}-${color}`;
 
     if (quantity > 0) {
-      const itemInfo = products.find((product) => product._id === itemId);
+      const itemInfo = products.find((product) => product._id === itemId || product.id === itemId);
       const maxStock = getMaxStock(itemInfo, size, color);
-      if (quantity > maxStock) {
+      if (maxStock <= 0) {
+        toast.error("This product/variant is out of stock");
+        quantity = 0;
+      } else if (quantity > maxStock) {
         toast.error(`Only ${maxStock} item${maxStock > 1 ? "s" : ""} available in stock`);
         quantity = maxStock;
       }
+    }
+
+    const previousQty = (cartData[itemId] && cartData[itemId][variantKey]) || 0;
+    if (quantity > previousQty) {
+      playCountSound("inc", quantity);
+    } else if (quantity < previousQty) {
+      playCountSound("dec", quantity);
     }
 
     if (quantity <= 0) {
@@ -188,13 +251,17 @@ const ShopContextProvider = (props) => {
 
     if (token) {
       try {
-        await axios.post(
+        const response = await axios.post(
           backendUrl + "/api/cart/update",
           { itemId, size, color, quantity },
           { headers: { token } }
         );
+        if (response.data && !response.data.success) {
+          toast.error(response.data.message || "Failed to update cart");
+          getUserCart(token);
+        }
       } catch (error) {
-        console.log(error);
+        console.error("Cart update error:", error);
         toast.error(error.message);
       }
     }
@@ -284,6 +351,7 @@ const ShopContextProvider = (props) => {
     delivery_fee,
     shippingConfig,
     calculateDeliveryFee,
+    calculateShippingRate,
     search,
     setSearch,
     showSearch,

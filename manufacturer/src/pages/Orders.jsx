@@ -24,6 +24,7 @@ import {
 import { useManufacturer } from "../context/ManufacturerContext";
 import StatusBadge from "../components/StatusBadge";
 import ShippingLabelModal from "../components/ShippingLabelModal";
+import PackagingChecklistModal from "../components/PackagingChecklistModal";
 
 const Orders = () => {
   const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
@@ -31,6 +32,11 @@ const Orders = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
+
+  // Pre-dispatch Checklist Modal State
+  const [checklistModalOpen, setChecklistModalOpen] = useState(false);
+  const [checklistTargetItem, setChecklistTargetItem] = useState(null);
+  const [checklistTargetStatus, setChecklistTargetStatus] = useState("packed");
 
   const manufacturerPickupReadiness = (() => {
     const branch = (manufacturer?.ncmPickupBranch || "").trim();
@@ -147,7 +153,7 @@ const Orders = () => {
       if (status === "ready_for_pickup") {
         const res = await axios.post(
           `${backendUrl}/api/delivery-job/ready/${id}`,
-          {},
+          { ...extraData },
           { headers: { token } }
         );
         if (res.data.success) {
@@ -171,6 +177,21 @@ const Orders = () => {
     } catch (err) {
       toast.error(err.response?.data?.message || "Error updating status");
     }
+  };
+
+  const openPackagingChecklist = (item, targetStatus) => {
+    setChecklistTargetItem(item);
+    setChecklistTargetStatus(targetStatus);
+    setChecklistModalOpen(true);
+  };
+
+  const handleChecklistConfirm = async (checklistData) => {
+    if (!checklistTargetItem) return;
+    const targetId = checklistTargetItem.id;
+    const targetStatus = checklistTargetStatus;
+    setChecklistModalOpen(false);
+    await handleUpdateStatus(targetId, targetStatus, { packagingChecklist: checklistData });
+    setChecklistTargetItem(null);
   };
 
   const toggleSelectOrder = (id) => {
@@ -519,6 +540,37 @@ const Orders = () => {
                         </div>
                       )}
 
+                      {(() => {
+                        let parsedChecklist = null;
+                        try {
+                          if (item.notes) {
+                            const parsed = JSON.parse(item.notes);
+                            parsedChecklist = parsed?.packagingChecklist || null;
+                          }
+                        } catch {}
+
+                        if (!parsedChecklist) return null;
+
+                        return (
+                          <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-2 text-[10px] space-y-1">
+                            <div className="flex items-center gap-1 font-bold text-emerald-800">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Packaging Checklist Verified</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1 text-[10px] text-slate-700">
+                              {parsedChecklist.loyaltyGift && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">🎁 Loyalty Gift</span>}
+                              {parsedChecklist.thankYouLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">✍️ Thank-You Letter</span>}
+                              {parsedChecklist.additionalLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">📄 Additional Letter</span>}
+                              {parsedChecklist.marketingCard && (
+                                <span className="bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-200 text-amber-900 font-semibold">
+                                  💳 Partner Card: {parsedChecklist.marketingCardId || "Enclosed"}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       <span className="text-slate-400 uppercase text-[10px] font-bold tracking-wider block">
                         Fulfillment Stage Action
                       </span>
@@ -576,7 +628,7 @@ const Orders = () => {
 
                       {item.status === "preparing" && (
                         <button
-                          onClick={() => handleUpdateStatus(item.id, "packed")}
+                          onClick={() => openPackagingChecklist(item, "packed")}
                           className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
                         >
                           <ShieldCheck className="w-4 h-4" />
@@ -587,7 +639,7 @@ const Orders = () => {
                       {item.status === "packed" && (
                         <div className="space-y-2">
                           <button
-                            onClick={() => handleUpdateStatus(item.id, "ready_for_pickup")}
+                            onClick={() => openPackagingChecklist(item, "ready_for_pickup")}
                             disabled={!pickupReadyForThisOrder}
                             className={`w-full py-2.5 rounded-xl font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 ${
                               pickupReadyForThisOrder
@@ -740,6 +792,21 @@ const Orders = () => {
           orders={printOrdersList}
           currency={currency}
           onClose={() => setPrintOrdersList(null)}
+        />
+      )}
+
+      {/* Pre-Dispatch Packaging Checklist Modal */}
+      {checklistModalOpen && checklistTargetItem && (
+        <PackagingChecklistModal
+          isOpen={checklistModalOpen}
+          assignment={checklistTargetItem}
+          targetStatus={checklistTargetStatus}
+          currency={currency}
+          onClose={() => {
+            setChecklistModalOpen(false);
+            setChecklistTargetItem(null);
+          }}
+          onConfirm={handleChecklistConfirm}
         />
       )}
     </div>

@@ -28,6 +28,7 @@ const PlaceOrder = () => {
     delivery_fee,
     shippingConfig,
     calculateDeliveryFee,
+    calculateShippingRate,
     products,
     getMaxStock,
     getProductsData,
@@ -56,7 +57,6 @@ const PlaceOrder = () => {
   const [submitting, setSubmitting] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
   const [coveredAreas, setCoveredAreas] = useState([]);
-  const [areaSearch, setAreaSearch] = useState("");
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
 
   // Dynamic delivery fee - recalculated when city changes
@@ -169,71 +169,85 @@ const PlaceOrder = () => {
     fetchCoveredAreas();
   }, [backendUrl, formData.city, formData.district, formData.province]);
 
-  // Recalculate fee & loyalty rewards whenever city, shippingConfig or loyalty changes
+  // Recalculate fee & loyalty rewards whenever district, province, shippingConfig or loyalty changes
   useEffect(() => {
-    const subtotal = getCartAmount();
-    let fee = calculateDeliveryFee(formData.city, subtotal);
-    const baseCity = shippingConfig?.baseCity || "Kathmandu";
-    const isLocal = (formData.city || "").trim().toLowerCase() === baseCity.trim().toLowerCase();
-    const freeMin = Number(shippingConfig?.freeShippingMin || 0);
+    let isCancelled = false;
+    const updateRates = async () => {
+      const subtotal = getCartAmount();
+      const district = formData.district || "Kathmandu";
+      const province = formData.province || "Bagmati Province";
 
-    // ---- Modular loyalty reward resolution ----
-    let isLoyaltyFreeShipping = false;
-    let discAmount = 0;
-    let discLabel = "";
-    let giftInfo = null;
+      let serverFee = 120;
+      let serverLabel = "Outside District Delivery";
 
-    if (loyaltyData?.activeReward?.isEligible) {
-      const act = loyaltyData.activeReward;
-      const lvl = loyaltyData.currentLevel;
-      const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
-
-      // Free Delivery
-      if (act.freeShipping) {
-        isLoyaltyFreeShipping = true;
-        fee = 0;
-        setShippingTierLabel(
-          `Free Delivery · ${lvl.name} (${usageText})`
-        );
-      }
-
-      // Price Discount
-      if (Number(act.discountAmount) > 0) {
-        discAmount = Math.min(subtotal, Number(act.discountAmount));
-        const parts = [];
-        if (act.freeShipping) parts.push("Free Delivery");
-        parts.push(`Rs. ${discAmount} Off`);
-        discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
-      } else if (act.freeShipping) {
-        discLabel = `${lvl.name} · Free Delivery (${usageText})`;
-      }
-
-      // Gift / Letter / Custom Perk
-      if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
-        giftInfo = {
-          amount: Number(act.giftAmount || 0),
-          description: act.giftDescription || "",
-          letterIncluded: Boolean(act.letterIncluded),
-          customPerk: act.customPerk || "",
-        };
-      }
-    }
-
-    if (!isLoyaltyFreeShipping) {
-      if (freeMin > 0 && subtotal >= freeMin) {
-        setShippingTierLabel("Free Delivery (Order above Rs. " + freeMin + ")");
-      } else if (isLocal) {
-        setShippingTierLabel(`Inside ${baseCity}`);
+      if (calculateShippingRate) {
+        const rateResult = await calculateShippingRate(district, province, subtotal);
+        if (!isCancelled && rateResult) {
+          serverFee = rateResult.fee !== undefined ? rateResult.fee : 120;
+          serverLabel = rateResult.label || "Standard Shipping";
+        }
       } else {
-        setShippingTierLabel(`Outside ${baseCity}`);
+        serverFee = calculateDeliveryFee ? calculateDeliveryFee(district, subtotal) : 50;
       }
-    }
 
-    setDynamicDeliveryFee(fee);
-    setLoyaltyDiscountAmount(discAmount);
-    setLoyaltyDiscountLabel(discLabel);
-    setLoyaltyGiftInfo(giftInfo);
-  }, [formData.city, shippingConfig, cartItems, loyaltyData]);
+      if (isCancelled) return;
+
+      let fee = serverFee;
+      let tierLabel = serverLabel;
+
+      // ---- Modular loyalty reward resolution ----
+      let isLoyaltyFreeShipping = false;
+      let discAmount = 0;
+      let discLabel = "";
+      let giftInfo = null;
+
+      if (loyaltyData?.activeReward?.isEligible) {
+        const act = loyaltyData.activeReward;
+        const lvl = loyaltyData.currentLevel;
+        const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
+
+        // Free Delivery
+        if (act.freeShipping) {
+          isLoyaltyFreeShipping = true;
+          fee = 0;
+          tierLabel = `Free Delivery · ${lvl.name} (${usageText})`;
+        }
+
+        // Price Discount
+        if (Number(act.discountAmount) > 0) {
+          discAmount = Math.min(subtotal, Number(act.discountAmount));
+          const parts = [];
+          if (act.freeShipping) parts.push("Free Delivery");
+          parts.push(`Rs. ${discAmount} Off`);
+          discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
+        } else if (act.freeShipping) {
+          discLabel = `${lvl.name} · Free Delivery (${usageText})`;
+        }
+
+        // Gift / Letter / Custom Perk
+        if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
+          giftInfo = {
+            amount: Number(act.giftAmount || 0),
+            description: act.giftDescription || "",
+            letterIncluded: Boolean(act.letterIncluded),
+            customPerk: act.customPerk || "",
+          };
+        }
+      }
+
+      setShippingTierLabel(tierLabel);
+      setDynamicDeliveryFee(fee);
+      setLoyaltyDiscountAmount(discAmount);
+      setLoyaltyDiscountLabel(discLabel);
+      setLoyaltyGiftInfo(giftInfo);
+    };
+
+    updateRates();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData]);
 
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
@@ -637,17 +651,9 @@ const PlaceOrder = () => {
             </div>
           </div>
 
-          {/* Covered area search and selection */}
+          {/* Covered area selection */}
           <div>
             <label className="block text-xs font-semibold text-gray-600 mb-1">Street / Covered Area *</label>
-            <input
-              type="search"
-              value={areaSearch}
-              onChange={(event) => setAreaSearch(event.target.value)}
-              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black mb-2"
-              placeholder="Filter NCM covered areas"
-              disabled={!formData.city || coveredAreas.length === 0}
-            />
             <select
               required
               name="street"
@@ -657,9 +663,9 @@ const PlaceOrder = () => {
               className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
             >
               <option value="">{formData.city && coveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select a covered area"}</option>
-              {coveredAreas
-                .filter((area) => area.toLowerCase().includes(areaSearch.trim().toLowerCase()))
-                .map((area) => <option key={area} value={area}>{area}</option>)}
+              {coveredAreas.map((area) => (
+                <option key={area} value={area}>{area}</option>
+              ))}
             </select>
             {formData.city && coveredAreas.length === 0 && (
               <p className="text-[11px] text-rose-600 mt-1">This branch has no covered areas in NCM. Choose another branch.</p>
@@ -676,9 +682,8 @@ const PlaceOrder = () => {
               value={formData.landmark}
               className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
               type="text"
-              placeholder="Enter a precise nearby location or landmark"
+              placeholder="Enter nearest location or landmark"
             />
-            <p className="text-[11px] text-gray-400 mt-0.5">This is the only free-text location detail required.</p>
           </div>
 
         </div>
@@ -820,7 +825,7 @@ const PlaceOrder = () => {
                 <svg className="w-4 h-4 text-black" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
                 </svg>
-                <span>Delivery To: {formData.city}, {formData.state}</span>
+                <span>Delivery To: {formData.city ? `${formData.city}, ` : ""}{formData.district}, {formData.province}</span>
               </div>
               <p className="text-[11px] text-gray-500 pl-5">
                 {formData.street ? formData.street : "Street address pending"} {formData.landmark && `(Near ${formData.landmark})`}

@@ -230,11 +230,14 @@ export const runAllocationEngine = async (orderId) => {
     // Pick top scoring candidate (giving strong preference to in-stock hubs)
     let bestCandidate = scoredCandidates.find((c) => c.hasAllItemsInStock);
     if (!bestCandidate) {
-      bestCandidate = scoredCandidates[0];
+      bestCandidate = scoredCandidates.find((c) => c.stockFulfillmentRatio > 0);
     }
 
     if (!bestCandidate || !bestCandidate.manufacturer) {
-      return { success: false, message: "Could not identify optimal manufacturer hub." };
+      return {
+        success: false,
+        message: "No manufacturer hub currently has available inventory to fulfill this order.",
+      };
     }
 
     const assignedManufacturer = bestCandidate.manufacturer;
@@ -537,6 +540,7 @@ const updateAssignmentStatus = async (req, res) => {
       isFragile,
       deliveryInstruction,
       instruction,
+      packagingChecklist,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
@@ -553,7 +557,7 @@ const updateAssignmentStatus = async (req, res) => {
       return res.json({ success: false, message: "Assignment not found" });
 
     const lockedStatuses = new Set(["ready_for_pickup", "picked_up", "in_transit", "delivered", "return_requested"]);
-    if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined)) {
+    if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined || packagingChecklist !== undefined)) {
       return res.status(409).json({
         success: false,
         message: "This order is already ready for dispatch. Packaging details are locked and cannot be changed after handoff.",
@@ -580,6 +584,7 @@ const updateAssignmentStatus = async (req, res) => {
       packageType: packageType !== undefined ? packageType : existingNotes.packageType,
       isFragile: isFragile !== undefined ? isFragile : existingNotes.isFragile,
       deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
+      packagingChecklist: packagingChecklist !== undefined ? packagingChecklist : existingNotes.packagingChecklist,
     };
     if (Object.keys(payload).some((key) => payload[key] !== undefined)) {
       updateData.notes = JSON.stringify(payload);

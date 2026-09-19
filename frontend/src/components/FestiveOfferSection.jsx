@@ -145,6 +145,7 @@ const FestiveOfferSection = () => {
                 price={item.price}
                 discount={item.discount}
                 stockQuantity={item.stockQuantity ?? 0}
+                variants={item.variants}
                 rating={item.rating}
                 reviewCount={item.reviewCount}
                 newInStore={item.newInStore}

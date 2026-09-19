@@ -52,6 +52,7 @@ model Order {
   userId            String
   items             Json
   amount            Float
+  deliveryFee       Float          @default(0)
   address           Json
   status            String         @default("Order Placed")
   paymentMethod     String
@@ -110,12 +111,11 @@ model Review {
 }
 
 model ShippingConfig {
-  id               String   @id @default("default")
-  baseCity         String   @default("Kathmandu")
-  sameCityFee      Float    @default(50)
-  differentCityFee Float    @default(120)
-  freeShippingMin  Float?   @default(0)
-  updatedAt        DateTime @updatedAt
+  id                   String   @id @default("default")
+  sameDistrictFee      Float    @default(50)
+  differentDistrictFee Float    @default(120)
+  freeShippingMin      Float?   @default(0)
+  updatedAt            DateTime @updatedAt
 }
 
 model CustomerLevel {

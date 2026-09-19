@@ -54,18 +54,40 @@ const Cart = () => {
             );
             if (!productData) return null;
             const maxStock = getMaxStock(productData, item.size, item.color);
-            const isOverStock = item.quantity > maxStock;
+            const isOutOfStock = maxStock <= 0;
+            const isOverStock = !isOutOfStock && item.quantity > maxStock;
+
+            // Find variety-specific image if available
+            let itemImage = Array.isArray(productData.image) ? productData.image[0] : productData.image;
+            let parsedVars = typeof productData.variants === "string"
+              ? JSON.parse(productData.variants || "[]")
+              : (productData.variants || []);
+            if (Array.isArray(parsedVars)) {
+              const matchedVar = parsedVars.find(
+                (v) =>
+                  (!item.size || (v.size || "").toLowerCase() === item.size.toLowerCase()) &&
+                  (!item.color || (v.color || "").toLowerCase() === item.color.toLowerCase()) &&
+                  v.image
+              );
+              if (matchedVar && matchedVar.image) {
+                itemImage = matchedVar.image;
+              }
+            }
 
             return (
               <div
                 key={index}
-                className="py-4 border-t border-b text-gray-700 grid grid-cols-[4fr_0.5fr_0.5fr] sm:grid-cols-[4fr_2fr_0.5fr] items-center gap-4"
+                className={`py-4 border-t border-b text-gray-700 grid grid-cols-[4fr_0.5fr_0.5fr] sm:grid-cols-[4fr_2fr_0.5fr] items-center gap-4 ${
+                  isOutOfStock ? "bg-red-50/50 border-red-200" : ""
+                }`}
               >
                 <div className="flex items-start gap-6">
                   <img
-                    className="w-16 sm:w-20 rounded"
-                    src={productData.image?.[0]}
-                    alt=""
+                    className={`w-16 sm:w-20 rounded-xl object-cover aspect-square border border-gray-100 shadow-2xs ${
+                      isOutOfStock ? "opacity-60 grayscale" : ""
+                    }`}
+                    src={itemImage}
+                    alt={productData.name}
                   />
                   <div>
                     <p className="text-xs sm:text-lg font-medium">
@@ -86,22 +108,31 @@ const Cart = () => {
                           {currency} {productData.price}
                         </p>
                       )}
-                      <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm">
-                        {item.size}
+                      <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm font-semibold">
+                        Size: {item.size}
                       </p>
                       {item.color && (
-                        <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm">
-                          {item.color}
+                        <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm font-semibold">
+                          Color: {item.color}
                         </p>
                       )}
-                      {maxStock > 0 && (
+                      {isOutOfStock ? (
+                        <span className="text-xs text-red-700 font-bold bg-red-100 px-2.5 py-1 rounded-md border border-red-300">
+                          🚫 Out of Stock
+                        </span>
+                      ) : maxStock > 0 ? (
                         <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
                           Max available: {maxStock}
                         </span>
-                      )}
+                      ) : null}
                     </div>
+                    {isOutOfStock && (
+                      <p className="text-xs text-red-600 font-bold mt-1.5 flex items-center gap-1">
+                        <span>⚠️</span> This item has 0 units available. Please delete it to proceed.
+                      </p>
+                    )}
                     {isOverStock && (
-                      <p className="text-xs text-red-600 font-medium mt-1">
+                      <p className="text-xs text-amber-700 font-medium mt-1">
                         ⚠️ Requested quantity exceeds available stock ({maxStock}).
                       </p>
                     )}
@@ -109,6 +140,7 @@ const Cart = () => {
                 </div>
                 <div className="flex flex-col items-center">
                   <input
+                    disabled={isOutOfStock}
                     onChange={(e) => {
                       const val = e.target.value;
                       if (val === "" || val === "0") return;
@@ -120,7 +152,9 @@ const Cart = () => {
                         num
                       );
                     }}
-                    className="border max-w-14 sm:max-w-20 px-2 py-1 text-center rounded"
+                    className={`border max-w-14 sm:max-w-20 px-2 py-1 text-center rounded ${
+                      isOutOfStock ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
+                    }`}
                     type="number"
                     min={1}
                     max={maxStock > 0 ? maxStock : 1}
@@ -132,6 +166,7 @@ const Cart = () => {
                   className="w-4 mr-4 sm:w-5 cursor-pointer hover:opacity-75 transition-opacity"
                   src={assets.bin_icon}
                   alt="Delete"
+                  title="Remove from cart"
                 />
               </div>
             );
@@ -150,17 +185,17 @@ const Cart = () => {
                   if (!productData) continue;
                   const maxStock = getMaxStock(productData, item.size, item.color);
                   if (maxStock <= 0) {
-                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) is out of stock. Please remove it from your cart.`);
+                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) is out of stock. Please remove it from your cart before checkout.`);
                     return;
                   }
                   if (item.quantity > maxStock) {
-                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) only has ${maxStock} in stock. Please adjust your quantity.`);
+                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) only has ${maxStock} item(s) in stock. Please adjust your quantity.`);
                     return;
                   }
                 }
                 navigate("/place-order");
               }}
-              className="bg-black text-white text-sm my-8 px-8 py-3 hover:bg-gray-800 transition-colors rounded"
+              className="bg-black text-white text-sm my-8 px-8 py-3 hover:bg-gray-800 transition-colors rounded shadow-md cursor-pointer active:scale-95"
             >
               PROCEED TO CHECKOUT
             </button>
