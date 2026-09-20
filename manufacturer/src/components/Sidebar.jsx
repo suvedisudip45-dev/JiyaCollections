@@ -8,6 +8,7 @@ import {
   ShoppingBag,
   Crown,
   MapPin,
+  Wallet,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 
@@ -66,6 +67,13 @@ const Sidebar = () => {
               <div className="flex items-center gap-3">
                 <MapPin className="w-4 h-4" />
                 <span>Pickup Setup</span>
+              </div>
+            </NavLink>
+
+            <NavLink to="/finance" className={navLinkStyle}>
+              <div className="flex items-center gap-3">
+                <Wallet className="w-4 h-4" />
+                <span>Finance Summary</span>
               </div>
             </NavLink>
           </nav>

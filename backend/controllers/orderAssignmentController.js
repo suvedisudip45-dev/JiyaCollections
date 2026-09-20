@@ -15,6 +15,41 @@ const parseJSON = (val, fallback = []) => {
   return fallback;
 };
 
+export const canAdminReassignAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
+  const normalized = String(status || "").toLowerCase();
+
+  if (hasDeliveryOrder) return false;
+
+  const lockedStatuses = new Set([
+    "accepted",
+    "preparing",
+    "quality_check",
+    "packed",
+    "ready_for_pickup",
+    "picked_up",
+    "out_for_delivery",
+    "in_transit",
+    "arrived_at_destination",
+    "delivered",
+    "return_requested",
+  ]);
+
+  if (lockedStatuses.has(normalized)) return false;
+
+  return ["assigned", "pending_acceptance", "pending_assignment", "rejected"].includes(normalized) || normalized === "";
+};
+
+export const canManufacturerRejectAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
+  const normalized = String(status || "").toLowerCase();
+
+  if (hasDeliveryOrder) return false;
+  if (["accepted", "preparing", "quality_check", "packed", "ready_for_pickup", "picked_up", "out_for_delivery", "in_transit", "arrived_at_destination", "delivered", "return_requested"].includes(normalized)) {
+    return false;
+  }
+
+  return ["assigned", "pending_acceptance", "pending_assignment"].includes(normalized) || normalized === "";
+};
+
 const buildFulfillmentBenefits = (order, items = []) => {
   const reward = parseJSON(order?.rewardApplied, {}) || {};
   const productDiscount = items.reduce((total, item) => {
@@ -467,6 +502,14 @@ const acceptOrder = async (req, res) => {
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
 
+    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
+    if (deliveryExists || !canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
+      return res.status(409).json({
+        success: false,
+        message: "This order is already in production or has moved to delivery handoff and cannot be re-routed.",
+      });
+    }
+
     await prisma.orderAssignment.update({
       where: { id: assignmentId },
       data: { status: "accepted", acceptedAt: new Date() },
@@ -495,7 +538,14 @@ const rejectOrder = async (req, res) => {
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
 
-    // Track rejection counter on manufacturer
+    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
+    if (!canManufacturerRejectAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
+      return res.status(409).json({
+        success: false,
+        message: "This order is already accepted or already assigned to a delivery partner. Only the admin can reassign it to a different manufacturer.",
+      });
+    }
+
     await prisma.manufacturer.update({
       where: { id: manufacturerId },
       data: { rejectionCount: { increment: 1 } },
@@ -506,18 +556,12 @@ const rejectOrder = async (req, res) => {
       data: { status: "rejected", rejectionReason: reason || "No capacity" },
     });
 
-    // Reset order and trigger smart reallocation to next optimal hub
     await prisma.order.update({
       where: { id: assignment.orderId },
-      data: { fulfillmentStatus: "pending_assignment", assignmentId: null, manufacturerId: null },
+      data: { fulfillmentStatus: "rejected", status: "Rejected by Manufacturer" },
     });
 
-    // Reallocate automatically
-    runAllocationEngine(assignment.orderId).catch((reallocErr) => {
-      console.error("Reallocation error on reject:", reallocErr);
-    });
-
-    res.json({ success: true, message: "Order declined. Automatic reallocation initiated to next optimal hub." });
+    res.json({ success: true, message: "Order rejected. Only an admin can reassign this order to another manufacturer." });
   } catch (error) {
     console.error("rejectOrder error:", error);
     res.json({ success: false, message: error.message });
@@ -807,6 +851,14 @@ const manualAssign = async (req, res) => {
     if (!manufacturer) return res.json({ success: false, message: "Manufacturer not found" });
 
     const existing = await prisma.orderAssignment.findUnique({ where: { orderId } });
+    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId } });
+    if (existing && !canAdminReassignAssignment({ status: existing.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
+      return res.status(409).json({
+        success: false,
+        message: "This order is already accepted by the manufacturer or assigned to a delivery partner, so it cannot be reassigned to another hub.",
+      });
+    }
+
     let assignment;
     if (existing) {
       assignment = await prisma.orderAssignment.update({

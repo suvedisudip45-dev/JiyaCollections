@@ -631,6 +631,15 @@ model Manufacturer {
   ratingCount          Int       @default(0) // Total customer reviews applied
   isActive             Boolean   @default(true)
   isAvailable          Boolean   @default(true) // manufacturer can toggle
+  proposedCommissionRate Float?    // Current commission proposal under negotiation
+  agreedCommissionRate   Float?    // Final agreed commission % once both parties accept
+  commissionStatus       String    @default("PENDING") // PENDING | APPROVED | REJECTED
+  commissionLastProposedBy String?  @default("ADMIN") // ADMIN | MANUFACTURER | null
+  commissionFinalizedAt  DateTime?
+  commissionLockUntil    DateTime? // Prevents changes for one month after final approval
+  commissionHistory      Json?     @default("[]") // admin-only audit trail of finalized rates
+  commissionNote         String?   @db.Text
+  adminCommissionFeedback String? @db.Text
   // Contract fields
   contractStatus       String    @default("ACTIVE") // ACTIVE | SUSPENDED | TERMINATED
   contractDocUrl       String?   @db.Text // uploaded PDF URL (Cloudinary)

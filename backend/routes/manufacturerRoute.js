@@ -12,6 +12,7 @@ import {
   updateContractStatus,
   uploadContractDoc,
   updateManufacturer,
+  updateCommissionAgreement,
   updatePickupProfile,
   getManufacturerStats,
   getAvailableNcmBranches,
@@ -38,6 +39,9 @@ manufacturerRouter.get("/stats", authManufacturer, getManufacturerStats);
 manufacturerRouter.post("/pickup-profile", authManufacturer, updatePickupProfile);
 manufacturerRouter.put("/pickup-profile", authManufacturer, updatePickupProfile);
 manufacturerRouter.get("/pickup-profile", authManufacturer, getProfile);
+manufacturerRouter.post("/commission", authManufacturer, updateCommissionAgreement);
+manufacturerRouter.put("/commission", authManufacturer, updateCommissionAgreement);
+manufacturerRouter.put("/admin/commission/:id", authAdmin, updateCommissionAgreement);
 
 // Admin-only (support both direct and /admin/ prefixed paths)
 manufacturerRouter.get("/list", authAdmin, listManufacturers);

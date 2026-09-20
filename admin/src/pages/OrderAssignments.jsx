@@ -16,6 +16,30 @@ import {
 } from "lucide-react";
 import { backendUrl, currency } from "../App";
 
+const canAdminReassignAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
+  const normalized = String(status || "").toLowerCase();
+
+  if (hasDeliveryOrder) return false;
+
+  const lockedStatuses = new Set([
+    "accepted",
+    "preparing",
+    "quality_check",
+    "packed",
+    "ready_for_pickup",
+    "picked_up",
+    "out_for_delivery",
+    "in_transit",
+    "arrived_at_destination",
+    "delivered",
+    "return_requested",
+  ]);
+
+  if (lockedStatuses.has(normalized)) return false;
+
+  return ["assigned", "pending_acceptance", "pending_assignment", "rejected"].includes(normalized) || normalized === "";
+};
+
 const OrderAssignments = ({ token }) => {
   const [assignments, setAssignments] = useState([]);
   const [manufacturers, setManufacturers] = useState([]);
@@ -189,6 +213,10 @@ const OrderAssignments = ({ token }) => {
                   const mfg = a.manufacturer;
                   const items = order?.items || [];
                   const totalQty = items.reduce((sum, i) => sum + (i.quantity || 1), 0);
+                  const canAdminReassign = canAdminReassignAssignment({
+                    status: a.status,
+                    hasDeliveryOrder: Boolean(a.delivery),
+                  });
 
                   return (
                     <tr key={a.id} className="hover:bg-slate-50/80 transition-colors">
@@ -238,17 +266,23 @@ const OrderAssignments = ({ token }) => {
                       </td>
 
                       <td className="py-3.5 px-4 text-right">
-                        <button
-                          onClick={() => {
-                            setSelectedAssignment(a);
-                            setTargetMfgId(a.manufacturerId || "");
-                            setReassignReason("");
-                            setReassignModalOpen(true);
-                          }}
-                          className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs cursor-pointer shadow-xs"
-                        >
-                          Re-route Hub
-                        </button>
+                        {canAdminReassign ? (
+                          <button
+                            onClick={() => {
+                              setSelectedAssignment(a);
+                              setTargetMfgId(a.manufacturerId || "");
+                              setReassignReason("");
+                              setReassignModalOpen(true);
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs cursor-pointer shadow-xs"
+                          >
+                            Re-route Hub
+                          </button>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-bold border border-slate-200">
+                            Locked
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );

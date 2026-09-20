@@ -1,4 +1,5 @@
 import express from "express";
+import jwt from "jsonwebtoken";
 import {
   getFinancialAnalyticsDashboard,
   getTreasuryAccounts,
@@ -28,13 +29,35 @@ import {
   getVATAndTaxReport,
   recordOperatingExpense,
   getFinancialStatements,
+  getManufacturerFinancialSummary,
 } from "../controllers/financialController.js";
 import adminAuth from "../middleware/adminAuth.js";
+import manufacturerAuth from "../middleware/manufacturerAuth.js";
 
 const financialRouter = express.Router();
 
+const authorizeManufacturerOrAdmin = (req, res, next) => {
+  const token = req.headers.token || req.headers.authorization?.replace("Bearer ", "");
+  if (!token) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const role = decoded.role;
+    if (role === "admin" || role === "manufacturer") {
+      req.manufacturerId = decoded.manufacturerId || req.query?.manufacturerId || req.body?.manufacturerId;
+      return next();
+    }
+    return res.status(403).json({ success: false, message: "Access denied." });
+  } catch (error) {
+    return res.status(401).json({ success: false, message: error.message || "Invalid token." });
+  }
+};
+
 // Executive Analytics & Overview
 financialRouter.get("/dashboard", adminAuth, getFinancialAnalyticsDashboard);
+financialRouter.get("/manufacturer-summary", authorizeManufacturerOrAdmin, getManufacturerFinancialSummary);
 
 // Treasury & Liquid Cash & Expenses
 financialRouter.get("/treasury-accounts", adminAuth, getTreasuryAccounts);

@@ -6,6 +6,8 @@ import { backendUrl, currency } from "../App";
 
 const PayablesReceivables = ({ token }) => {
   const [data, setData] = useState(null);
+  const [manufacturerSummary, setManufacturerSummary] = useState(null);
+  const [range, setRange] = useState("month");
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("payables"); // payables | receivables
 
@@ -68,9 +70,32 @@ const PayablesReceivables = ({ token }) => {
     }
   };
 
+  const fetchManufacturerSummary = async (selectedRange = range) => {
+    try {
+      const res = await axios.get(`${backendUrl}/api/finance/manufacturer-summary`, {
+        headers: { token },
+        params: { range: selectedRange },
+      });
+      if (res.data.success) {
+        setManufacturerSummary(res.data.data);
+      }
+    } catch (err) {
+      console.error("Failed to load manufacturer summary", err);
+    }
+  };
+
   useEffect(() => {
-    if (token) fetchData();
+    if (token) {
+      fetchData();
+      fetchManufacturerSummary();
+    }
   }, [token]);
+
+  useEffect(() => {
+    if (token) {
+      fetchManufacturerSummary(range);
+    }
+  }, [range, token]);
 
   // Handlers
   const handleCreatePayable = async (e) => {
@@ -232,6 +257,8 @@ const PayablesReceivables = ({ token }) => {
   const payables = data?.payables || [];
   const receivables = data?.receivables || [];
   const accounts = data?.accounts || [];
+  const manufacturerSummaryData = manufacturerSummary?.summary || {};
+  const manufacturerOrders = manufacturerSummary?.orders || [];
 
   const openPayables = payables.filter((p) => p.status !== "SETTLED" && p.status !== "CANCELLED");
   const settledPayables = payables.filter((p) => p.status === "SETTLED");
@@ -299,6 +326,100 @@ const PayablesReceivables = ({ token }) => {
               <span className="text-red-600 font-medium">⚠️ Shortfall — deposit funds first</span>
             )}
           </p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 p-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Manufacturer summary</p>
+            <h2 className="text-base font-bold text-slate-900">Payables & receivables by manufacturer</h2>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: "day", label: "Today" },
+              { value: "week", label: "7 Days" },
+              { value: "month", label: "Month" },
+              { value: "quarter", label: "3 Months" },
+              { value: "year", label: "Year" },
+            ].map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setRange(option.value)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${
+                  range === option.value
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider text-red-600">Payable</p>
+            <p className="mt-1 text-xl font-black text-red-700">{fmt(manufacturerSummaryData.payable || 0)}</p>
+          </div>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider text-emerald-600">Receivable</p>
+            <p className="mt-1 text-xl font-black text-emerald-700">{fmt(manufacturerSummaryData.receivable || 0)}</p>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider text-blue-600">Net receivable</p>
+            <p className="mt-1 text-xl font-black text-blue-700">{fmt(manufacturerSummaryData.netReceivable || 0)}</p>
+          </div>
+          <div className="bg-slate-100 border border-slate-200 rounded-xl p-3">
+            <p className="text-[10px] uppercase tracking-wider text-slate-600">Sold / delivered / returned</p>
+            <p className="mt-1 text-lg font-black text-slate-800">
+              {manufacturerSummaryData.itemsSold || 0} / {manufacturerSummaryData.itemsDelivered || 0} / {manufacturerSummaryData.itemsReturned || 0}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="px-3 py-2 font-semibold">Order</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 font-semibold">Qty</th>
+                <th className="px-3 py-2 font-semibold">Sales</th>
+                <th className="px-3 py-2 font-semibold">Payable</th>
+                <th className="px-3 py-2 font-semibold">Receivable</th>
+              </tr>
+            </thead>
+            <tbody>
+              {manufacturerOrders.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="px-3 py-6 text-center text-slate-400">No manufacturer order activity in this period.</td>
+                </tr>
+              ) : (
+                manufacturerOrders.map((order) => (
+                  <tr key={order.id} className="border-t border-slate-100">
+                    <td className="px-3 py-2 font-medium text-slate-700">{order.id.slice(0, 8)}</td>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex px-2 py-1 rounded-full text-[10px] font-bold ${
+                        String(order.status || "").toLowerCase().includes("deliver")
+                          ? "bg-emerald-100 text-emerald-700"
+                          : String(order.status || "").toLowerCase().includes("return")
+                            ? "bg-amber-100 text-amber-700"
+                            : "bg-slate-100 text-slate-700"
+                      }`}>
+                        {order.status || "Pending"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-slate-700">{order.quantity}</td>
+                    <td className="px-3 py-2 text-slate-700">{fmt(order.amount)}</td>
+                    <td className="px-3 py-2 text-red-700 font-semibold">{fmt(order.payable)}</td>
+                    <td className="px-3 py-2 text-emerald-700 font-semibold">{fmt(order.receivable)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 

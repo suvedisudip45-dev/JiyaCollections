@@ -18,6 +18,219 @@ const getCurrentYearMonth = () => {
   return `${year}-${month}`;
 };
 
+const parseOrderItems = (items) => {
+  if (!items) return [];
+  if (Array.isArray(items)) return items;
+  if (typeof items === "string") {
+    try {
+      const parsed = JSON.parse(items);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const getDateWindow = (query) => {
+  const rawRange = String(query?.range || "month").toLowerCase();
+  const now = new Date();
+  let start = new Date(now);
+  let end = new Date(now);
+
+  const setEndOfDay = (date) => {
+    date.setHours(23, 59, 59, 999);
+    return date;
+  };
+
+  if (rawRange === "day") {
+    start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    end = setEndOfDay(new Date(now));
+  } else if (rawRange === "week") {
+    start = new Date(now);
+    start.setDate(now.getDate() - 6);
+    start.setHours(0, 0, 0, 0);
+    end = setEndOfDay(new Date(now));
+  } else if (rawRange === "quarter") {
+    start = new Date(now.getFullYear(), now.getMonth() - 2, 1, 0, 0, 0, 0);
+    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (rawRange === "year") {
+    start = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+    end = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+  } else if (rawRange === "custom") {
+    const customStart = query?.startDate ? new Date(query.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
+    const customEnd = query?.endDate ? new Date(query.endDate) : new Date(now);
+    start = new Date(customStart);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(customEnd);
+    end.setHours(23, 59, 59, 999);
+  } else {
+    start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  }
+
+  return {
+    start,
+    end,
+    startIso: start.toISOString(),
+    endIso: end.toISOString(),
+  };
+};
+
+export const getManufacturerFinancialSummary = async (req, res) => {
+  try {
+    const manufactureIdFromToken = req.manufacturerId;
+    const manufacturerId = manufactureIdFromToken || req.query?.manufacturerId || req.body?.manufacturerId;
+
+    if (!manufacturerId) {
+      return res.status(400).json({ success: false, message: "Manufacturer ID is required." });
+    }
+
+    const { start, end } = getDateWindow(req.query);
+    const startTs = BigInt(start.getTime());
+    const endTs = BigInt(end.getTime());
+
+    const [orders, manufacturer, inventoryRows, allProducts] = await Promise.all([
+      prisma.order.findMany({
+        where: {
+          manufacturerId,
+          date: { gte: startTs, lte: endTs },
+        },
+        orderBy: { date: "desc" },
+      }),
+      prisma.manufacturer.findUnique({
+        where: { id: manufacturerId },
+        select: {
+          id: true,
+          name: true,
+          agreedCommissionRate: true,
+          proposedCommissionRate: true,
+          commissionStatus: true,
+          commissionLastProposedBy: true,
+          commissionHistory: true,
+          commissionFinalizedAt: true,
+          commissionLockUntil: true,
+        },
+      }),
+      prisma.manufacturerInventory.findMany({
+        where: { manufacturerId },
+        select: { productId: true, agreedCostPrice: true, proposedCostPrice: true },
+      }),
+      prisma.product.findMany({
+        select: { id: true, costPrice: true },
+      })
+    ]);
+
+    const inventoryMap = {};
+    inventoryRows.forEach((entry) => {
+      inventoryMap[entry.productId] = {
+        agreedCostPrice: Number(entry.agreedCostPrice || 0),
+        proposedCostPrice: Number(entry.proposedCostPrice || 0),
+      };
+    });
+
+    const productCostMap = {};
+    allProducts.forEach((product) => {
+      productCostMap[product.id] = Number(product.costPrice || 0);
+    });
+
+    const commissionRate = Number(
+      manufacturer?.agreedCommissionRate ?? manufacturer?.proposedCommissionRate ?? 12
+    );
+    let totalSales = 0;
+    let totalPayable = 0;
+    let totalReceivable = 0;
+    let totalDelivered = 0;
+    let totalReturned = 0;
+    let itemsSold = 0;
+    let itemsDelivered = 0;
+    let itemsReturned = 0;
+
+    const orderBreakdown = orders.map((order) => {
+      const items = parseOrderItems(order.items);
+      const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
+      const orderSales = Number(order.amount || 0);
+      let orderCost = 0;
+      let orderReceivable = 0;
+
+      items.forEach((item) => {
+        const qty = Number(item.quantity || 1);
+        const productId = item.productId || item._id || item.id;
+        const inventoryEntry = inventoryMap[productId];
+        const unitCost = inventoryEntry
+          ? (inventoryEntry.agreedCostPrice || inventoryEntry.proposedCostPrice || productCostMap[productId] || 0)
+          : productCostMap[productId] || 0;
+        orderCost += qty * unitCost;
+      });
+
+      const commission = Number((orderSales * (commissionRate / 100)).toFixed(2));
+      const statusText = String(order.status || "").trim().toLowerCase();
+      const isDelivered = statusText.includes("deliver") || order.fulfillmentStatus === "DELIVERED";
+      const isReturned = statusText.includes("return") || statusText.includes("cancel");
+
+      if (isDelivered) {
+        orderReceivable = Math.max(0, Number((orderSales - orderCost - commission).toFixed(2)));
+      }
+
+      totalSales += orderSales;
+      totalPayable += orderCost;
+      totalReceivable += orderReceivable;
+      itemsSold += orderQuantity;
+      if (isDelivered) {
+        itemsDelivered += orderQuantity;
+        totalDelivered += 1;
+      }
+      if (isReturned) {
+        itemsReturned += orderQuantity;
+        totalReturned += 1;
+      }
+
+      return {
+        id: order.id,
+        status: order.status,
+        fulfillmentStatus: order.fulfillmentStatus,
+        date: order.date,
+        amount: orderSales,
+        quantity: orderQuantity,
+        payable: orderCost,
+        receivable: orderReceivable,
+        commission,
+        netReceivable: orderReceivable - orderCost,
+      };
+    });
+
+    const response = {
+      success: true,
+      range: req.query?.range || "month",
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+      data: {
+        manufacturer: manufacturer || { id: manufacturerId },
+        summary: {
+          totalOrders: orders.length,
+          totalSales,
+          payable: totalPayable,
+          receivable: totalReceivable,
+          netReceivable: Math.max(0, totalReceivable - totalPayable),
+          itemsSold,
+          itemsDelivered,
+          itemsReturned,
+          deliveredOrders: totalDelivered,
+          returnedOrders: totalReturned,
+          agreedCommissionRate: commissionRate,
+        },
+        orders: orderBreakdown,
+      },
+    };
+
+    return res.json(response);
+  } catch (error) {
+    console.error("getManufacturerFinancialSummary error:", error);
+    return res.status(500).json({ success: false, message: error.message || "Unable to load manufacturer financial summary." });
+  }
+};
+
 // ==========================================
 // 1. EXECUTIVE FINANCIAL ANALYTICS & DASHBOARD
 // ==========================================

@@ -224,6 +224,35 @@ const Manufacturers = ({ token }) => {
     }
   };
 
+  const handleCommissionDecision = async (manufacturerId, nextStatus, rateOverride) => {
+    try {
+      const proposedRate = Number(rateOverride ?? 12);
+      const payload = {
+        agreedCommissionRate: nextStatus === "APPROVED" ? proposedRate : undefined,
+        commissionStatus: nextStatus,
+        adminCommissionFeedback:
+          nextStatus === "APPROVED"
+            ? `Commission approved at ${proposedRate.toFixed(2)}%.`
+            : "Commission rejected by admin.",
+      };
+
+      const res = await axios.put(
+        `${backendUrl}/api/manufacturer/admin/commission/${manufacturerId}`,
+        payload,
+        { headers: { token } }
+      );
+
+      if (res.data.success) {
+        toast.success(`Commission ${nextStatus.toLowerCase()} successfully`);
+        fetchManufacturers();
+      } else {
+        throw new Error(res.data.message || "Failed to update commission agreement");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Failed to update commission agreement");
+    }
+  };
+
   const handleCreateSubmit = async (e) => {
     e.preventDefault();
     if (!formData.province || !formData.district || !formData.city) {
@@ -250,6 +279,9 @@ const Manufacturers = ({ token }) => {
         address: formattedAddress,
         pickupAddress: formattedPickupAddress,
         pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
+        proposedCommissionRate: Number(formData.commissionRate || 12),
+        commissionStatus: "PENDING",
+        commissionLastProposedBy: "ADMIN",
       };
 
       if (editingManufacturerId) {
@@ -569,6 +601,20 @@ const Manufacturers = ({ token }) => {
                     </span>
                   </div>
 
+                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-400">Commission:</span>
+                    <span className="font-bold text-slate-800">
+                      Proposed {Number(m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12).toFixed(2)}% · Agreed {Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12).toFixed(2)}%
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                    <span className="text-slate-400">Commission Status:</span>
+                    <span className={`font-bold ${m.commissionStatus === "APPROVED" ? "text-emerald-600" : m.commissionStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"}`}>
+                      {m.commissionStatus || "PENDING"}
+                    </span>
+                  </div>
+
                   <div className="flex items-center justify-between py-1">
                     <span className="text-slate-400">Payout Model:</span>
                     <span className="font-bold text-emerald-600">100% Agreed COGS</span>
@@ -631,6 +677,25 @@ const Manufacturers = ({ token }) => {
                 </div>
               )}
 
+              {((m.proposedCommissionRate !== null && m.proposedCommissionRate !== undefined) || (m.agreedCommissionRate !== null && m.agreedCommissionRate !== undefined)) &&
+                (m.commissionStatus === "PENDING" || !m.commissionStatus) &&
+                m.commissionLastProposedBy !== "ADMIN" && (
+                  <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => handleCommissionDecision(m.id, "APPROVED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
+                    >
+                      Approve Rate
+                    </button>
+                    <button
+                      onClick={() => handleCommissionDecision(m.id, "REJECTED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                      className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
+                    >
+                      Reject Rate
+                    </button>
+                  </div>
+                )}
+
               <div className="pt-2 border-t border-slate-100">
                 <button
                   onClick={() => {
@@ -655,6 +720,7 @@ const Manufacturers = ({ token }) => {
                       pickupWindow: m.pickupWindow || "",
                       returnInstructions: m.returnInstructions || "",
                       pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
+                      commissionRate: Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12),
                       contractStart: m.contractStartDate
                         ? new Date(m.contractStartDate).toISOString().split("T")[0]
                         : m.contractStart
@@ -727,6 +793,19 @@ const Manufacturers = ({ token }) => {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Commission Rate (%)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={formData.commissionRate}
+                      onChange={(e) => setFormData({ ...formData, commissionRate: Number(e.target.value || 0) })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block font-semibold text-slate-700 mb-1">
                       Login Email <span className="text-rose-500">*</span>
                     </label>
@@ -739,21 +818,24 @@ const Manufacturers = ({ token }) => {
                       className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                     />
                   </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      {editingManufacturerId ? "Password (leave blank to keep)" : "Password *"}
-                    </label>
-                    <input
-                      type="password"
-                      required={!editingManufacturerId}
-                      placeholder={editingManufacturerId ? "••••••••" : "Create password"}
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
                 </div>
+
+                {!editingManufacturerId && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Password *</label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Create password"
+                        value={formData.password}
+                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+                    <div></div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
