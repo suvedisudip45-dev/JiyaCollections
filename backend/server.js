@@ -28,6 +28,7 @@ import manufacturerDirectOrderRouter from "./routes/manufacturerDirectOrderRoute
 import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
+import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
 // App Config
@@ -108,6 +109,7 @@ app.use("/api/expense", expenseRouter);
 app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);
 app.use("/api/personalized-letter", personalizedLetterRouter);
+app.use("/api/admin/story-letter", storyLetterAdminRouter);
 app.use("/webhooks", deliveryRouter);
 app.use("/api/ncm-webhook", deliveryRouter);
 

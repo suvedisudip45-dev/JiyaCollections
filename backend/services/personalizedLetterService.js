@@ -92,6 +92,14 @@ const normalizeText = (value, fallback = "") => {
   return text || fallback;
 };
 
+export const buildPrintIdempotencyKey = ({ orderId, assignmentId = null, letterId = null }) => {
+  const safeOrderId = normalizeText(orderId, "unknown-order");
+  const safeAssignmentId = normalizeText(assignmentId, "assignment");
+  const safeLetterId = normalizeText(letterId, "letter");
+
+  return `PERSONALIZED_LETTER:${safeOrderId}:${safeAssignmentId}:${safeLetterId}`;
+};
+
 const buildStoryOpening = (customerName, storyTitle, isFirstLetter, isLastLetter, isNewStory) => {
   if (isNewStory) return `This is where our story begins for ${customerName}, and the first spark of ${storyTitle} starts to glow.`;
   if (isFirstLetter) return `This is where our story begins again for ${customerName}, and the path before us feels full of possibility.`;
@@ -259,6 +267,19 @@ const resolveNextStoryForCustomer = async (tx, customerId, currentStoryId) => {
     .sort((a, b) => (countMap[a.id] ?? 0) - (countMap[b.id] ?? 0) || Number(b.assignmentWeight || 1) - Number(a.assignmentWeight || 1))[0];
 };
 
+export const resolveAssignmentProgression = ({ currentSequenceNumber, storyLength, nextStoryId = null }) => {
+  const safeCurrentSequence = Number(currentSequenceNumber ?? 1);
+  const safeStoryLength = Number(storyLength ?? safeCurrentSequence);
+  const isFinalLetter = safeStoryLength > 0 && safeCurrentSequence >= safeStoryLength;
+
+  return {
+    isFinalLetter,
+    shouldCompleteCurrentStory: isFinalLetter,
+    nextSequenceNumber: isFinalLetter ? 1 : safeCurrentSequence + 1,
+    nextStoryId,
+  };
+};
+
 const ensureLetterRecords = async (storyId) => {
   const activeLetters = await prisma.storyLetter.count({
     where: { storyId, status: "ACTIVE" },
@@ -384,7 +405,9 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
   }
 
   const existing = await prisma.letterDelivery.findFirst({
-    where: { orderId },
+    where: {
+      OR: [{ orderId }, { idempotencyKey: idempotencyKey || buildPrintIdempotencyKey({ orderId }) }],
+    },
     include: {
       story: true,
       storyLetter: true,
@@ -430,18 +453,35 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
       throw new Error("STORY_NOT_FOUND");
     }
 
+    const storyLetterCount = await tx.storyLetter.count({
+      where: { storyId: story.id, status: "ACTIVE" },
+    });
+
+    if (storyLetterCount === 0) {
+      await ensureLetterRecords(story.id);
+    }
+
     let nextLetter = await tx.storyLetter.findFirst({
       where: {
         storyId: story.id,
-        sequenceNumber: assignment.nextSequenceNumber,
+        sequenceNumber: assignment.nextSequenceNumber || 1,
         status: "ACTIVE",
       },
     });
 
     if (!nextLetter) {
+      const progression = resolveAssignmentProgression({
+        currentSequenceNumber: assignment.nextSequenceNumber || 1,
+        storyLength: storyLetterCount || 1,
+      });
+
       await tx.customerStoryAssignment.update({
         where: { id: assignment.id },
-        data: { status: "COMPLETED", completedAt: new Date() },
+        data: {
+          status: progression.shouldCompleteCurrentStory ? "COMPLETED" : "ACTIVE",
+          completedAt: progression.shouldCompleteCurrentStory ? new Date() : null,
+          nextSequenceNumber: progression.nextSequenceNumber,
+        },
       });
 
       const nextStory = await resolveNextStoryForCustomer(tx, customer.id, story.id);
@@ -466,15 +506,8 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
 
       story = nextStory;
       nextLetter = await tx.storyLetter.findFirst({
-        where: { storyId: story.id, sequenceNumber: assignment.nextSequenceNumber, status: "ACTIVE" },
+        where: { storyId: story.id, sequenceNumber: 1, status: "ACTIVE" },
       });
-
-      if (!nextLetter) {
-        await ensureLetterRecords(story.id);
-        nextLetter = await tx.storyLetter.findFirst({
-          where: { storyId: story.id, sequenceNumber: 1, status: "ACTIVE" },
-        });
-      }
     }
 
     if (!nextLetter) {
@@ -527,6 +560,40 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
       },
     });
 
+    const deterministicIdempotencyKey = idempotencyKey || buildPrintIdempotencyKey({
+      orderId: order.id,
+      assignmentId: assignment.id,
+      letterId: nextLetter.id,
+    });
+
+    const duplicateAllocation = await tx.letterDelivery.findFirst({
+      where: {
+        OR: [{ idempotencyKey: deterministicIdempotencyKey }, { orderId: order.id }],
+      },
+      include: {
+        story: true,
+        storyLetter: true,
+        template: true,
+        templateVersion: true,
+      },
+    });
+
+    if (duplicateAllocation) {
+      return {
+        success: true,
+        data: {
+          id: duplicateAllocation.id,
+          status: duplicateAllocation.status,
+          orderId: duplicateAllocation.orderId,
+          story: { id: duplicateAllocation.story.id, title: duplicateAllocation.story.title },
+          letter: { id: duplicateAllocation.storyLetter.id, sequenceNumber: duplicateAllocation.storyLetter.sequenceNumber, title: duplicateAllocation.storyLetter.title },
+          template: { id: duplicateAllocation.template.id, name: duplicateAllocation.template.name },
+          renderedContent: duplicateAllocation.renderedContent,
+          renderedHtml: duplicateAllocation.renderedHtml,
+        },
+      };
+    }
+
     const created = await tx.letterDelivery.create({
       data: {
         customerId: customer.id,
@@ -537,7 +604,7 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
         storyLetterId: nextLetter.id,
         templateId: template.id,
         templateVersionId: templateVersion.id,
-        idempotencyKey: idempotencyKey || `${order.id}:${nextLetter.id}:${Date.now()}`,
+        idempotencyKey: deterministicIdempotencyKey,
         status: "PRINTED",
         reservedAt: new Date(),
         printedAt: new Date(),
@@ -552,12 +619,44 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
       },
     });
 
-    await tx.customerStoryAssignment.update({
-      where: { id: assignment.id },
-      data: {
-        nextSequenceNumber: nextLetter.sequenceNumber + 1,
-      },
+    const finalProgress = resolveAssignmentProgression({
+      currentSequenceNumber: nextLetter.sequenceNumber,
+      storyLength: await tx.storyLetter.count({ where: { storyId: story.id, status: "ACTIVE" } }),
+      nextStoryId: null,
     });
+
+    if (finalProgress.shouldCompleteCurrentStory) {
+      await tx.customerStoryAssignment.update({
+        where: { id: assignment.id },
+        data: {
+          status: "COMPLETED",
+          completedAt: new Date(),
+          nextSequenceNumber: 1,
+        },
+      });
+
+      const nextStory = await resolveNextStoryForCustomer(tx, customer.id, story.id);
+      if (nextStory) {
+        await tx.customerStoryAssignment.create({
+          data: {
+            customerId: customer.id,
+            storyId: nextStory.id,
+            status: "ACTIVE",
+            nextSequenceNumber: 1,
+            startedAt: new Date(),
+          },
+        });
+      }
+    } else {
+      await tx.customerStoryAssignment.update({
+        where: { id: assignment.id },
+        data: {
+          nextSequenceNumber: finalProgress.nextSequenceNumber,
+          status: "ACTIVE",
+          completedAt: null,
+        },
+      });
+    }
 
     return {
       success: true,
