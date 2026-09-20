@@ -241,16 +241,21 @@ const OrderDetail = () => {
   const handlePrintPersonalizedLetter = async () => {
     setActionLoading(true);
     try {
+      const stableIdempotencyKey = `story-letter-${id}-${storyLetter?.letter?.id || "draft"}`;
       const res = await axios.post(
         `${backendUrl}/api/personalized-letter/${id}/print`,
-        { idempotencyKey: `story-letter-${id}-${Date.now()}` },
+        { idempotencyKey: stableIdempotencyKey },
         { headers: { token } }
       );
 
       if (res.data.success && res.data.data?.renderedHtml) {
         const printWindow = window.open("", "_blank", "width=900,height=1100");
         if (printWindow) {
-          printWindow.document.write(`<!doctype html><html><head><title>Personalized Story Letter</title><style>@page { size: A4; margin: 18mm; } body { margin:0; font-family:Arial,sans-serif; color:#111827; } .letter-wrapper { max-width: 760px; margin: 0 auto; padding: 24px; } .letter-inner { white-space: pre-wrap; line-height:1.7; font-size:14px; } </style></head><body><div class="letter-wrapper"><div class="letter-inner">${res.data.data.renderedHtml}</div></div></body></html>`);
+          const printDocument = res.data.data.renderedHtml.includes("<html")
+            ? res.data.data.renderedHtml
+            : `<!doctype html><html lang="ne"><head><meta charset="UTF-8" /><title>Personalized Story Letter</title><style>@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600;700&display=swap"); @page { size: A4; margin: 18mm; } body { margin:0; font-family:"Noto Sans Devanagari","Noto Sans Nepali","Mangal","Arial",sans-serif; color:#111827; } .letter-wrapper { max-width: 760px; margin: 0 auto; padding: 24px; } .letter-inner { white-space: pre-wrap; line-height:1.75; font-size:14px; word-break: break-word; } </style></head><body><div class="letter-wrapper"><div class="letter-inner">${res.data.data.renderedHtml}</div></div></body></html>`;
+
+          printWindow.document.write(printDocument);
           printWindow.document.close();
           printWindow.focus();
           setTimeout(() => printWindow.print(), 400);

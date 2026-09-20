@@ -92,6 +92,53 @@ const normalizeText = (value, fallback = "") => {
   return text || fallback;
 };
 
+const escapeHtml = (value = "") =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+
+export const buildLetterHtmlDocument = (content = "") => {
+  const safeContent = escapeHtml(content || "").replace(/\n/g, "<br />");
+
+  return `<!doctype html>
+  <html lang="ne">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Personalized Story Letter</title>
+      <style>
+        @import url("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600;700&display=swap");
+        @page { size: A4; margin: 18mm; }
+        body {
+          margin: 0;
+          font-family: "Noto Sans Devanagari", "Noto Sans Nepali", "Mangal", "Arial", sans-serif;
+          color: #111827;
+          background: #ffffff;
+          line-height: 1.75;
+        }
+        .letter-wrapper {
+          max-width: 760px;
+          margin: 0 auto;
+          padding: 24px;
+        }
+        .letter-inner {
+          white-space: pre-wrap;
+          font-size: 14px;
+          word-break: break-word;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="letter-wrapper">
+        <div class="letter-inner">${safeContent}</div>
+      </div>
+    </body>
+  </html>`;
+};
+
 export const buildPrintIdempotencyKey = ({ orderId, assignmentId = null, letterId = null }) => {
   const safeOrderId = normalizeText(orderId, "unknown-order");
   const safeAssignmentId = normalizeText(assignmentId, "assignment");
@@ -609,7 +656,7 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
         reservedAt: new Date(),
         printedAt: new Date(),
         renderedContent,
-        renderedHtml: `<html><body style="font-family:Arial,sans-serif;padding:32px;max-width:820px;margin:0 auto;white-space:pre-wrap;">${renderedContent.replace(/\n/g, "<br />")}</body></html>`,
+        renderedHtml: buildLetterHtmlDocument(renderedContent),
       },
       include: {
         story: true,
