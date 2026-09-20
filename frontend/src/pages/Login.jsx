@@ -30,6 +30,7 @@ const Login = () => {
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [gender, setGender] = useState("PREFER_NOT_TO_SAY");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
@@ -61,6 +62,7 @@ const Login = () => {
         const response = await axios.post(backendUrl + "/api/user/register", {
           firstName: firstName.trim(),
           lastName: lastName.trim(),
+          gender,
           email: email.trim().toLowerCase(),
           phone: phone.trim(),
           password,
@@ -139,6 +141,22 @@ const Login = () => {
               placeholder="Last Name"
               required
             />
+          </div>
+        )}
+
+        {currentState === "Sign Up" && (
+          <div className="w-full">
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">Gender</label>
+            <select
+              value={gender}
+              onChange={(e) => setGender(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black bg-white"
+            >
+              <option value="MALE">Male</option>
+              <option value="FEMALE">Female</option>
+              <option value="OTHER">Other</option>
+              <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+            </select>
           </div>
         )}
 

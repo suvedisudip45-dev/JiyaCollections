@@ -38,6 +38,7 @@ const emptyTemplateForm = {
   name: "",
   description: "",
   status: "ACTIVE",
+  targetGender: "ANY",
   selectionWeight: 1,
   repetitionWindow: 3,
   body: defaultTemplateBody,
@@ -278,6 +279,7 @@ const StoryLetterLibrary = ({ token }) => {
       name: template.name,
       description: template.description || "",
       status: template.status,
+      targetGender: template.targetGender || "ANY",
       selectionWeight: template.selectionWeight ?? 1,
       repetitionWindow: template.repetitionWindow ?? 3,
       body: template.body,
@@ -490,6 +492,20 @@ const StoryLetterLibrary = ({ token }) => {
               />
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs text-slate-600">
+                  template audience
+                  <select
+                    value={templateForm.targetGender}
+                    onChange={(e) => setTemplateForm({ ...templateForm, targetGender: e.target.value })}
+                    className="mt-1 w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-violet-500"
+                  >
+                    <option value="ANY">ANY</option>
+                    <option value="MALE">Male</option>
+                    <option value="FEMALE">Female</option>
+                    <option value="OTHER">Other</option>
+                    <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600">
                   selection weight
                   <input
                     type="number"
@@ -500,17 +516,17 @@ const StoryLetterLibrary = ({ token }) => {
                     className="mt-1 w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-violet-500"
                   />
                 </label>
-                <label className="text-xs text-slate-600">
-                  repetition window
-                  <input
-                    type="number"
-                    min="1"
-                    value={templateForm.repetitionWindow}
-                    onChange={(e) => setTemplateForm({ ...templateForm, repetitionWindow: Number(e.target.value || 3) })}
-                    className="mt-1 w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-violet-500"
-                  />
-                </label>
               </div>
+              <label className="text-xs text-slate-600">
+                repetition window
+                <input
+                  type="number"
+                  min="1"
+                  value={templateForm.repetitionWindow}
+                  onChange={(e) => setTemplateForm({ ...templateForm, repetitionWindow: Number(e.target.value || 3) })}
+                  className="mt-1 w-full border border-slate-300 rounded-xl px-3 py-2 text-sm outline-none focus:border-violet-500"
+                />
+              </label>
               <textarea
                 value={templateForm.body}
                 onChange={(e) => setTemplateForm({ ...templateForm, body: e.target.value })}
@@ -576,7 +592,7 @@ const StoryLetterLibrary = ({ token }) => {
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">{template.status}</span>
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">{template.description || "No description"}</div>
-                <div className="mt-2 text-[10px] text-slate-500">Weight: {template.selectionWeight} • Window: {template.repetitionWindow}</div>
+                <div className="mt-2 text-[10px] text-slate-500">Audience: {template.targetGender || "ANY"} • Weight: {template.selectionWeight} • Window: {template.repetitionWindow}</div>
                 <div className="mt-3 flex justify-end gap-2">
                   <button type="button" onClick={() => handleToggleArchive("template", template)} className="text-[10px] font-semibold text-amber-700 hover:underline">{template.status === "ARCHIVED" ? "Restore" : "Archive"}</button>
                   <button type="button" onClick={() => handleStartEditTemplate(template)} className="text-[10px] font-semibold text-violet-700 hover:underline">Edit</button>
@@ -673,9 +689,16 @@ const StoryLetterLibrary = ({ token }) => {
             <input value={templateEditForm.name} onChange={(e) => setTemplateEditForm({ ...templateEditForm, name: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Template name" />
             <textarea value={templateEditForm.description} onChange={(e) => setTemplateEditForm({ ...templateEditForm, description: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[70px]" placeholder="Description" />
             <div className="grid gap-3 md:grid-cols-2">
+              <select value={templateEditForm.targetGender} onChange={(e) => setTemplateEditForm({ ...templateEditForm, targetGender: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm">
+                <option value="ANY">Any</option>
+                <option value="MALE">Male</option>
+                <option value="FEMALE">Female</option>
+                <option value="OTHER">Other</option>
+                <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+              </select>
               <input type="number" min="0.1" step="0.1" value={templateEditForm.selectionWeight} onChange={(e) => setTemplateEditForm({ ...templateEditForm, selectionWeight: Number(e.target.value || 1) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Weight" />
-              <input type="number" min="1" value={templateEditForm.repetitionWindow} onChange={(e) => setTemplateEditForm({ ...templateEditForm, repetitionWindow: Number(e.target.value || 3) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Window" />
             </div>
+            <input type="number" min="1" value={templateEditForm.repetitionWindow} onChange={(e) => setTemplateEditForm({ ...templateEditForm, repetitionWindow: Number(e.target.value || 3) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Window" />
             <textarea value={templateEditForm.body} onChange={(e) => setTemplateEditForm({ ...templateEditForm, body: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[170px] font-mono" placeholder="Template body" />
             <div className="flex gap-2">
               <button type="submit" className="bg-sky-600 text-white rounded-xl px-3 py-2 text-sm font-semibold">Save template</button>

@@ -60,6 +60,7 @@ const loginUser = async (req, res) => {
           name: user.name,
           email: user.email,
           phone: user.phone || "",
+          gender: user.gender || "PREFER_NOT_TO_SAY",
           addresses,
         },
       });
@@ -75,7 +76,11 @@ const loginUser = async (req, res) => {
 // Route for user register
 const registerUser = async (req, res) => {
   try {
-    const { firstName, lastName, name, email, phone, password } = req.body;
+    const { firstName, lastName, name, email, phone, password, gender } = req.body;
+
+    const normalizedGender = ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"].includes(String(gender || "").trim().toUpperCase())
+      ? String(gender).trim().toUpperCase()
+      : "PREFER_NOT_TO_SAY";
 
     // Validate name fields
     let fName = (firstName || "").trim();
@@ -144,6 +149,7 @@ const registerUser = async (req, res) => {
         firstName: fName,
         lastName: lName,
         phone: phone ? phone.trim() : "",
+        gender: normalizedGender,
         name: fName.concat(" ").concat(lName),
         email: email.trim().toLowerCase(),
         password: hashedPassword,
@@ -164,6 +170,7 @@ const registerUser = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone,
+        gender: user.gender || "PREFER_NOT_TO_SAY",
         addresses: [],
       },
     });
@@ -193,6 +200,7 @@ const getUserProfile = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone || "",
+        gender: user.gender || "PREFER_NOT_TO_SAY",
         addresses,
       },
     });

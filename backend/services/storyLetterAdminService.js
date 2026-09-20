@@ -208,9 +208,15 @@ export const listTemplates = async () => {
   });
 };
 
+const normalizeTemplateGender = (value, fallback = "ANY") => {
+  const normalized = String(value ?? fallback).trim().toUpperCase();
+  return ["ANY", "MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"].includes(normalized) ? normalized : fallback;
+};
+
 export const createTemplate = async (payload = {}) => {
   const name = String(payload.name || "").trim();
   const body = String(payload.body || "").trim();
+  const targetGender = normalizeTemplateGender(payload.targetGender, "ANY");
 
   if (!name) {
     throw new Error("TEMPLATE_NAME_REQUIRED");
@@ -225,6 +231,7 @@ export const createTemplate = async (payload = {}) => {
       name,
       description: payload.description || "",
       status: normalizeStatus(payload.status, "ACTIVE"),
+      targetGender,
       selectionWeight: Number(payload.selectionWeight ?? 1),
       repetitionWindow: Number.isInteger(Number(payload.repetitionWindow)) ? Number(payload.repetitionWindow) : 3,
       body,
@@ -258,6 +265,7 @@ export const updateTemplate = async (templateId, payload = {}) => {
   }
   if (payload.description !== undefined) updates.description = payload.description || "";
   if (payload.status !== undefined) updates.status = normalizeStatus(payload.status, existing.status);
+  if (payload.targetGender !== undefined) updates.targetGender = normalizeTemplateGender(payload.targetGender, existing.targetGender || "ANY");
   if (payload.selectionWeight !== undefined) updates.selectionWeight = Number(payload.selectionWeight ?? existing.selectionWeight ?? 1);
   if (payload.repetitionWindow !== undefined) updates.repetitionWindow = Number.isInteger(Number(payload.repetitionWindow)) ? Number(payload.repetitionWindow) : existing.repetitionWindow ?? 3;
   if (payload.body !== undefined) {

@@ -12,6 +12,7 @@ model User {
   firstName String? @default("")
   lastName  String? @default("")
   phone     String? @default("")
+  gender    String? @default("PREFER_NOT_TO_SAY") // MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
   name      String
   email     String  @unique
   password  String
@@ -63,6 +64,7 @@ model LetterTemplate {
   name              String
   description       String?                @db.Text
   status            String                 @default("ACTIVE") // ACTIVE | DRAFT | PAUSED | ARCHIVED
+  targetGender      String                 @default("ANY") // ANY | MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
   selectionWeight   Float                  @default(1)
   repetitionWindow  Int?                   @default(3)
   body              String                 @db.Text
@@ -73,6 +75,7 @@ model LetterTemplate {
   deliveries        LetterDelivery[]
 
   @@index([status])
+  @@index([targetGender, status])
 }
 
 model LetterTemplateVersion {

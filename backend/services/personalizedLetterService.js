@@ -64,26 +64,82 @@ const ensureDefaultStorySeed = async () => {
     });
   }
 
-  const template = await prisma.letterTemplate.create({
-    data: {
-      name: "Classic Welcome Letter",
-      description: "Default template for personalized story delivery.",
+  const templates = [
+    {
+      name: "Universal Welcome Letter",
+      description: "Default template for any customer.",
       status: "ACTIVE",
+      targetGender: "ANY",
       selectionWeight: 1,
       repetitionWindow: 3,
       body: defaultLetterBody,
     },
-  });
-
-  await prisma.letterTemplateVersion.create({
-    data: {
-      templateId: template.id,
-      versionNumber: 1,
+    {
+      name: "Male Story Letter",
+      description: "Male-specific story template.",
+      status: "ACTIVE",
+      targetGender: "MALE",
+      selectionWeight: 1,
+      repetitionWindow: 3,
       body: defaultLetterBody,
     },
-  });
+    {
+      name: "Female Story Letter",
+      description: "Female-specific story template.",
+      status: "ACTIVE",
+      targetGender: "FEMALE",
+      selectionWeight: 1,
+      repetitionWindow: 3,
+      body: defaultLetterBody,
+    },
+  ];
+
+  for (const templateInput of templates) {
+    const template = await prisma.letterTemplate.create({
+      data: {
+        ...templateInput,
+      },
+    });
+
+    await prisma.letterTemplateVersion.create({
+      data: {
+        templateId: template.id,
+        versionNumber: 1,
+        body: templateInput.body,
+      },
+    });
+  }
 
   return true;
+};
+
+export const normalizeGenderValue = (value, fallback = "PREFER_NOT_TO_SAY") => {
+  const normalized = String(value ?? fallback).trim().toUpperCase();
+  return ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY", "ANY"].includes(normalized) ? normalized : fallback;
+};
+
+export const resolveTemplateGenderPool = (gender, templates = []) => {
+  const customerGender = normalizeGenderValue(gender, "PREFER_NOT_TO_SAY");
+  const normalizedTemplates = templates.map((template) => ({
+    ...template,
+    targetGender: normalizeGenderValue(template?.targetGender ?? "ANY", "ANY"),
+  }));
+
+  const directMatches = normalizedTemplates.filter((template) => template.targetGender === customerGender);
+  if (directMatches.length) {
+    return directMatches;
+  }
+
+  const anyMatches = normalizedTemplates.filter((template) => template.targetGender === "ANY");
+  if (anyMatches.length) {
+    return anyMatches;
+  }
+
+  if (["OTHER", "PREFER_NOT_TO_SAY"].includes(customerGender)) {
+    return normalizedTemplates;
+  }
+
+  return normalizedTemplates;
 };
 
 const normalizeText = (value, fallback = "") => {
@@ -244,6 +300,11 @@ const getOrCreateCustomerAssignment = async (tx, customerId) => {
 };
 
 const selectTemplateForCustomer = async (tx, customerId) => {
+  const customer = await tx.user.findUnique({
+    where: { id: customerId },
+    select: { id: true, gender: true },
+  });
+
   const activeTemplates = await tx.letterTemplate.findMany({
     where: { status: "ACTIVE" },
     orderBy: { selectionWeight: "desc" },
@@ -253,6 +314,8 @@ const selectTemplateForCustomer = async (tx, customerId) => {
     return null;
   }
 
+  const genderPool = resolveTemplateGenderPool(customer?.gender, activeTemplates);
+
   const recent = await tx.letterDelivery.findMany({
     where: { customerId },
     orderBy: { createdAt: "desc" },
@@ -261,8 +324,8 @@ const selectTemplateForCustomer = async (tx, customerId) => {
   });
 
   const recentIds = new Set(recent.map((item) => item.templateId).filter(Boolean));
-  const candidates = activeTemplates.filter((template) => !recentIds.has(template.id));
-  const pool = candidates.length ? candidates : activeTemplates;
+  const candidates = genderPool.filter((template) => !recentIds.has(template.id));
+  const pool = candidates.length ? candidates : genderPool;
 
   const totalWeight = pool.reduce((sum, template) => sum + Number(template.selectionWeight || 1), 0);
   const roulette = Math.random() * totalWeight;

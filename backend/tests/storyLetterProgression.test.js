@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildPrintIdempotencyKey, resolveAssignmentProgression } from "../services/personalizedLetterService.js";
+import { buildPrintIdempotencyKey, resolveAssignmentProgression, resolveTemplateGenderPool } from "../services/personalizedLetterService.js";
 
 test("print idempotency key stays stable across repeated requests", () => {
   const first = buildPrintIdempotencyKey({ orderId: "order_123", assignmentId: "assignment_456", letterId: "letter_789" });
@@ -31,4 +31,18 @@ test("final story letter completes current story and resets to sequence 1 for th
   assert.equal(progression.isFinalLetter, true);
   assert.equal(progression.shouldCompleteCurrentStory, true);
   assert.equal(progression.nextSequenceNumber, 1);
+});
+
+test("male customers prefer male templates and fallback to generic templates when no exact match exists", () => {
+  const templates = [
+    { id: "generic", targetGender: "ANY", selectionWeight: 1 },
+    { id: "male", targetGender: "MALE", selectionWeight: 2 },
+    { id: "female", targetGender: "FEMALE", selectionWeight: 2 },
+  ];
+
+  const selected = resolveTemplateGenderPool("MALE", templates);
+  assert.deepEqual(selected.map((item) => item.id), ["male"]);
+
+  const fallback = resolveTemplateGenderPool("PREFER_NOT_TO_SAY", [{ id: "male", targetGender: "MALE" }, { id: "generic", targetGender: "ANY" }]);
+  assert.equal(fallback[0].id, "generic");
 });
