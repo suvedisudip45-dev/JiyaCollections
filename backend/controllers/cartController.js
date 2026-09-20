@@ -185,4 +185,48 @@ const getUserCart = async (req, res) => {
   }
 };
 
-export { addToCart, updateCart, getUserCart };
+// sync guest cart into user cart upon login
+const syncCart = async (req, res) => {
+  try {
+    const { userId, localCart } = req.body;
+    const userData = await prisma.user.findUnique({ where: { id: userId } });
+    if (!userData) {
+      return res.json({ success: false, message: "User not found" });
+    }
+
+    let cartData = structuredClone(userData.cartData || {});
+    if (localCart && typeof localCart === "object") {
+      for (const itemId in localCart) {
+        if (!cartData[itemId]) {
+          cartData[itemId] = {};
+        }
+        for (const variantKey in localCart[itemId]) {
+          const qty = Number(localCart[itemId][variantKey]) || 0;
+          if (qty > 0) {
+            cartData[itemId][variantKey] = Math.max(
+              Number(cartData[itemId][variantKey] || 0),
+              qty
+            );
+          }
+        }
+        if (Object.keys(cartData[itemId]).length === 0) {
+          delete cartData[itemId];
+        }
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { cartData },
+    });
+
+    res.json({ success: true, cartData });
+  } catch (error) {
+    console.error("syncCart error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+export { addToCart, updateCart, getUserCart, syncCart };
+
+

@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 
 const Orders = () => {
-  const { backendUrl, token, currency, navigate } = useContext(ShopContext);
+  const { backendUrl, token, setToken, currency, navigate } = useContext(ShopContext);
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -50,6 +50,7 @@ const Orders = () => {
   const loadOrderData = async (isManualRefresh = false) => {
     if (!token) {
       setLoading(false);
+      navigate("/login", { replace: true });
       return;
     }
 
@@ -99,6 +100,18 @@ const Orders = () => {
 
         setOrders(formattedOrders);
       } else {
+        const msg = (response.data.message || "").toLowerCase();
+        if (
+          msg.includes("not authorized") ||
+          msg.includes("jwt") ||
+          msg.includes("user not found") ||
+          msg.includes("invalid token")
+        ) {
+          localStorage.removeItem("token");
+          setToken("");
+          navigate("/login", { replace: true });
+          return;
+        }
         toast.error(response.data.message || "Failed to load orders");
       }
     } catch (error) {
@@ -111,10 +124,15 @@ const Orders = () => {
   };
 
   useEffect(() => {
+    if (!token) {
+      navigate("/login", { replace: true });
+      return;
+    }
     loadOrderData();
     const interval = setInterval(() => loadOrderData(), 20000);
     return () => clearInterval(interval);
   }, [token, backendUrl]);
+
 
   // Order Metrics Summary Report
   const metrics = useMemo(() => {

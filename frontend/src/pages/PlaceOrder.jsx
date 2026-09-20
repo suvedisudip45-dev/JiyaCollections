@@ -113,6 +113,17 @@ const PlaceOrder = () => {
         }
       }
 
+      if (!profRes.data.success) {
+        const msg = (profRes.data.message || "").toLowerCase();
+        if (msg.includes("not authorized") || msg.includes("jwt") || msg.includes("user not found")) {
+          localStorage.removeItem("token");
+          setToken("");
+          toast.error("Session expired. Please login again.");
+          navigate("/login", { state: { from: "/place-order" } });
+          return;
+        }
+      }
+
       if (loyRes.data.success && loyRes.data.loyalty) {
         setLoyaltyData(loyRes.data.loyalty);
       }
@@ -124,8 +135,14 @@ const PlaceOrder = () => {
   };
 
   useEffect(() => {
+    if (!token) {
+      toast.info("Please sign in or create an account to proceed with checkout");
+      navigate("/login", { state: { from: "/place-order" } });
+      return;
+    }
     fetchUserProfile();
   }, [token]);
+
 
   useEffect(() => {
     const fetchDistrictBranches = async () => {

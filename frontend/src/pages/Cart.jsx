@@ -1,12 +1,12 @@
-/* eslint-disable no-unused-vars */
 import React, { useContext, useEffect, useState } from "react";
 import { ShopContext } from "../context/ShopContext";
 import Title from "../components/Title";
 import { assets } from "../assets/assets";
 import CartTotal from "../components/CartTotal";
+import { toast } from "react-toastify";
 
 const Cart = () => {
-  const { products, currency, cartItems, updateQuantity, navigate, getMaxStock } =
+  const { products, currency, cartItems, updateQuantity, navigate, getMaxStock, token } =
     useContext(ShopContext);
 
   const [cartData, setCartData] = useState([]);
@@ -42,7 +42,7 @@ const Cart = () => {
             <p className="text-lg">Your cart is currently empty.</p>
             <button
               onClick={() => navigate("/collection")}
-              className="mt-4 bg-black text-white px-6 py-2 text-sm rounded hover:bg-gray-800"
+              className="mt-4 bg-black text-white px-6 py-2 text-sm rounded hover:bg-gray-800 cursor-pointer"
             >
               Shop Now
             </button>
@@ -175,24 +175,35 @@ const Cart = () => {
       </div>
       <div className="flex justify-end my-20">
         <div className="w-full sm:w-[450px]">
-          <CartTotal />
+          <CartTotal isCartPage={true} />
           <div className="w-full text-end">
             <button
               onClick={() => {
+                if (cartData.length === 0) {
+                  toast.error("Your cart is empty");
+                  return;
+                }
                 // Check if any item in cart is out of stock or exceeds stock
                 for (const item of cartData) {
                   const productData = products.find((p) => p._id === item._id);
                   if (!productData) continue;
                   const maxStock = getMaxStock(productData, item.size, item.color);
                   if (maxStock <= 0) {
-                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) is out of stock. Please remove it from your cart before checkout.`);
+                    toast.error(`"${productData.name}" (${item.size}/${item.color || 'Default'}) is out of stock. Please remove it from your cart before checkout.`);
                     return;
                   }
                   if (item.quantity > maxStock) {
-                    alert(`"${productData.name}" (${item.size}/${item.color || 'Default'}) only has ${maxStock} item(s) in stock. Please adjust your quantity.`);
+                    toast.error(`"${productData.name}" (${item.size}/${item.color || 'Default'}) only has ${maxStock} item(s) in stock. Please adjust your quantity.`);
                     return;
                   }
                 }
+
+                if (!token) {
+                  toast.info("Please sign in or create an account to proceed with checkout");
+                  navigate("/login", { state: { from: "/place-order" } });
+                  return;
+                }
+
                 navigate("/place-order");
               }}
               className="bg-black text-white text-sm my-8 px-8 py-3 hover:bg-gray-800 transition-colors rounded shadow-md cursor-pointer active:scale-95"
@@ -205,5 +216,6 @@ const Cart = () => {
     </div>
   );
 };
+
 
 export default Cart;

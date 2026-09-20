@@ -139,14 +139,18 @@ const Profile = () => {
   // Redirect to login if not authenticated
   useEffect(() => {
     if (!token) {
-      navigate("/login");
+      navigate("/login", { replace: true });
     }
   }, [token]);
 
   // Fetch user profile and loyalty on mount
   useEffect(() => {
     const fetchProfileAndLoyalty = async () => {
-      if (!token) return;
+      if (!token) {
+        setLoading(false);
+        navigate("/login", { replace: true });
+        return;
+      }
       try {
         setLoading(true);
         const [profRes, loyRes] = await Promise.all([
@@ -164,6 +168,20 @@ const Profile = () => {
           };
           setProfile(data);
           setEditData(data);
+        } else {
+          const msg = (profRes.data.message || "").toLowerCase();
+          if (
+            msg.includes("not authorized") ||
+            msg.includes("jwt") ||
+            msg.includes("user not found") ||
+            msg.includes("invalid token")
+          ) {
+            localStorage.removeItem("token");
+            setToken("");
+            toast.error("Session expired. Please login again.");
+            navigate("/login", { replace: true });
+            return;
+          }
         }
 
         if (loyRes.data.success && loyRes.data.loyalty) {
@@ -322,173 +340,337 @@ const Profile = () => {
           </div>
         </div>
 
-        {/* ── Gamified Purchase Level & Rewards Card ──────────────────────── */}
-        {loyalty && (
-          <div className="bg-gradient-to-br from-gray-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-xl border border-indigo-900/50 relative overflow-hidden">
-            {/* Background Glow */}
-            <div
-              className="absolute -right-16 -top-16 w-64 h-64 rounded-full blur-3xl opacity-20 pointer-events-none"
-              style={{ backgroundColor: loyalty.currentLevel?.color || "#3B82F6" }}
-            />
+        {/* ── Loyalty Card ──────────────────────────────────────────────── */}
+        {loyalty && (() => {
+          const lvl = loyalty.currentLevel || {};
+          const next = loyalty.nextLevel || null;
+          const color = lvl.color || "#3B82F6";
+          const pct = Math.min(100, loyalty.progressPercentage || 0);
+          const totalSpend = loyalty.totalSpend || 0;
+          const totalOrders = loyalty.totalOrders || 0;
+          const remainingSpend = loyalty.remainingSpend || 0;
+          const remainingOrders = loyalty.remainingOrders || 0;
 
-            <div className="relative z-10 space-y-5">
-              {/* Header: Level Badge & Tier Info */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-3.5">
-                  <div
-                    className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl shadow-lg border-2"
+          // Spend progress toward next level
+          const spendPct = next
+            ? Math.min(100, Math.round((totalSpend / Number(next.minSpend || 1)) * 100))
+            : 100;
+          // Order progress toward next level
+          const ordersPct = next
+            ? Math.min(100, Math.round((totalOrders / Number(next.minOrders || 1)) * 100))
+            : 100;
+
+          const perkList = loyalty.activeReward?.perkTags || [];
+          const isMaxTier = !next;
+
+          return (
+            <div
+              className="relative overflow-hidden rounded-3xl shadow-2xl"
+              style={{ background: `linear-gradient(135deg, #0f0f1a 0%, #141428 50%, #0a0a18 100%)` }}
+            >
+              {/* Ambient glow orbs */}
+              <div
+                className="absolute -right-20 -top-20 w-72 h-72 rounded-full blur-[80px] opacity-30 pointer-events-none"
+                style={{ backgroundColor: color }}
+              />
+              <div
+                className="absolute -left-10 bottom-0 w-48 h-48 rounded-full blur-[60px] opacity-15 pointer-events-none"
+                style={{ backgroundColor: color }}
+              />
+
+              {/* Card Content */}
+              <div className="relative z-10">
+
+                {/* ── Top Header Strip ── */}
+                <div
+                  className="px-6 pt-6 pb-4 flex items-center justify-between"
+                  style={{ borderBottom: "1px solid rgba(255,255,255,0.07)" }}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-400">
+                      Active Member
+                    </span>
+                  </div>
+                  <span
+                    className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full"
                     style={{
-                      backgroundColor: `${loyalty.currentLevel?.color || "#3B82F6"}25`,
-                      borderColor: `${loyalty.currentLevel?.color || "#3B82F6"}80`,
+                      background: `${color}22`,
+                      color: color,
+                      border: `1px solid ${color}44`,
                     }}
                   >
-                    {loyalty.currentLevel?.badgeIcon || "⭐"}
+                    Level {lvl.levelNumber || 1}
+                  </span>
+                </div>
+
+                {/* ── Tier Name + Badge ── */}
+                <div className="px-6 py-5 flex items-center gap-4">
+                  {/* Badge */}
+                  <div
+                    className="w-16 h-16 rounded-2xl flex items-center justify-center text-4xl shrink-0 shadow-lg"
+                    style={{
+                      background: `${color}20`,
+                      border: `2px solid ${color}60`,
+                      boxShadow: `0 0 24px ${color}30`,
+                    }}
+                  >
+                    {lvl.badgeIcon || "⭐"}
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full"
-                        style={{
-                          backgroundColor: `${loyalty.currentLevel?.color || "#3B82F6"}30`,
-                          color: loyalty.currentLevel?.color || "#60A5FA",
-                        }}
-                      >
-                        Level {loyalty.currentLevel?.levelNumber || 1}
-                      </span>
-                      <span className="text-xs text-gray-400 font-semibold">• VIP Customer</span>
-                    </div>
-                    <h3 className="text-xl font-black text-white mt-0.5">
-                      {loyalty.currentLevel?.name}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-gray-400 font-semibold uppercase tracking-widest">Your Tier</p>
+                    <h3 className="text-2xl font-black text-white leading-tight mt-0.5">
+                      {lvl.name || "Bronze Explorer"}
                     </h3>
+                    {isMaxTier && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded-full px-2.5 py-0.5 mt-1">
+                        ✦ Highest Tier Achieved
+                      </span>
+                    )}
                   </div>
+
+
                 </div>
 
-                {/* Lifetime Stats Pill */}
-                <div className="flex items-center gap-4 bg-white/5 backdrop-blur-md px-4 py-2.5 rounded-xl border border-white/10 self-start sm:self-auto">
-                  <div>
-                    <p className="text-[10px] font-bold uppercase text-gray-400">Membership</p>
-                    <p className="text-sm font-black text-emerald-400">
-                      Active VIP
-                    </p>
-                  </div>
-                  <div className="w-px h-8 bg-white/10" />
-                  <div>
-                    <p className="text-[10px] font-bold uppercase text-gray-400">Total Orders</p>
-                    <p className="text-sm font-black text-amber-400">
-                      {loyalty.totalOrders || 0}
-                    </p>
-                  </div>
-                </div>
-              </div>
 
-              {/* Progress Bar Towards Next Level */}
-              {loyalty.nextLevel ? (
-                <div className="p-4 bg-white/5 backdrop-blur-md rounded-xl border border-white/10 space-y-2">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="font-semibold text-gray-200 flex items-center gap-1.5">
-                      <span>Next Level:</span>
-                      <strong className="text-white">
-                        {loyalty.nextLevel.name}
-                      </strong>
-                    </span>
-                    <span className="font-black text-indigo-300">
-                      {loyalty.progressPercentage}% Completed
-                    </span>
-                  </div>
 
-                  {/* Visual Bar */}
-                  <div className="w-full bg-white/10 h-3 rounded-full overflow-hidden p-0.5 border border-white/10">
+                {/* ── Progress Section ── */}
+                <div className="px-6 pb-5 space-y-4">
+                  {next ? (
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-amber-400 via-indigo-400 to-emerald-400 transition-all duration-700 shadow-sm"
-                      style={{ width: `${Math.min(100, loyalty.progressPercentage)}%` }}
-                    />
-                  </div>
+                      className="rounded-2xl p-4 space-y-3.5"
+                      style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                    >
+                      {/* Header */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">{next.badgeIcon || "🎯"}</span>
+                          <div>
+                            <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Next Tier</p>
+                            <p className="text-sm font-black text-white leading-none">{next.name}</p>
+                          </div>
+                        </div>
+                        <div
+                          className="text-xs font-black tabular-nums px-2.5 py-1 rounded-full"
+                          style={{ background: `${color}20`, color }}
+                        >
+                          {pct}%
+                        </div>
+                      </div>
 
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-[11px] text-gray-300 gap-1 pt-0.5">
-                    <span>
-                      {loyalty.remainingOrders > 0
-                        ? `Place ${loyalty.remainingOrders} more order(s) to unlock next tier`
-                        : "Ready for next tier unlock"}
-                    </span>
-                    <span className="text-gray-400">
-                      Tier Progress: {loyalty.progressPercentage}%
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-2">
-                  <span>✓</span> Congratulations! You have reached the Maximum VIP Tier!
-                </div>
-              )}
+                      {/* Spend Progress */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-400 font-medium">Spend to Next Tier</span>
+                          <span className="font-semibold tabular-nums" style={{ color }}>
+                            {remainingSpend > 0
+                              ? `Rs. ${remainingSpend.toLocaleString()} more needed`
+                              : "✓ Spend goal met"}
+                          </span>
+                        </div>
+                        <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+                          <div
+                            className="h-full rounded-full transition-all duration-1000"
+                            style={{
+                              width: `${spendPct}%`,
+                              background: `linear-gradient(90deg, ${color}99, ${color})`,
+                              boxShadow: `0 0 8px ${color}60`,
+                            }}
+                          />
+                        </div>
+                      </div>
 
-              {/* Unlocked Benefits & Rewards Breakdown */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                {/* Active Level Perks */}
-                <div className="p-3 bg-emerald-950/40 rounded-xl border border-emerald-500/30 text-xs space-y-1">
-                  <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1">
-                    <span>✓</span> Current Unlocked Rewards
-                  </p>
-                  <p className="font-bold text-white text-sm">
-                    {loyalty.currentLevel?.rewardTitle}
-                  </p>
-                  {loyalty.currentLevel?.rewardDescription && (
-                    <p className="text-[11px] text-gray-300">{loyalty.currentLevel.rewardDescription}</p>
+                      {/* Orders Progress */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-400 font-medium">Orders to Next Tier</span>
+                          <span className="font-semibold tabular-nums text-indigo-300">
+                            {remainingOrders > 0
+                              ? `${remainingOrders} more order${remainingOrders !== 1 ? "s" : ""} needed`
+                              : "✓ Orders goal met"}
+                          </span>
+                        </div>
+                        <div className="w-full h-2.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.08)" }}>
+                          <div
+                            className="h-full rounded-full transition-all duration-1000"
+                            style={{
+                              width: `${ordersPct}%`,
+                              background: "linear-gradient(90deg, #818cf899, #818cf8)",
+                              boxShadow: "0 0 8px #818cf860",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* CTA */}
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        <p className="text-[11px] text-amber-300 font-medium">
+                          {pct >= 100
+                            ? "You qualify! Next purchase will upgrade your tier 🎉"
+                            : `Complete both goals to unlock ${next.name} perks`}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      className="rounded-2xl px-5 py-4 flex items-center gap-3"
+                      style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
+                    >
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center text-lg shrink-0">
+                        👑
+                      </div>
+                      <div>
+                        <p className="text-xs font-black text-emerald-400">Maximum Tier Achieved!</p>
+                        <p className="text-[11px] text-emerald-300/70 mt-0.5">
+                          Enjoy lifetime VIP privileges — luxury packaging, priority dispatch & exclusive gifts.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Active Perks ── */}
+                  {(perkList.length > 0 || lvl.rewardTitle) && (
+                    <div
+                      className="rounded-2xl p-4 space-y-2.5"
+                      style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)" }}
+                    >
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                        ✦ Your Current Perks
+                      </p>
+                      {perkList.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          {perkList.map((perk, i) => (
+                            <span
+                              key={i}
+                              className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full"
+                              style={{
+                                background: `${color}15`,
+                                color: color,
+                                border: `1px solid ${color}30`,
+                              }}
+                            >
+                              ✓ {perk}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-300 font-medium">{lvl.rewardTitle}</p>
+                      )}
+                      {lvl.rewardDescription && (
+                        <p className="text-[11px] text-gray-500 leading-relaxed">{lvl.rewardDescription}</p>
+                      )}
+                      {loyalty.activeReward?.isEligible && (
+                        <div
+                          className="flex items-center gap-2 text-[11px] font-semibold rounded-xl px-3 py-2"
+                          style={{ background: `${color}10`, color: color }}
+                        >
+                          <span>🎁</span>
+                          <span>
+                            Reward active — {loyalty.activeReward.remainingUses} use{loyalty.activeReward.remainingUses !== 1 ? "s" : ""} remaining
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── Next Level Preview ── */}
+                  {next && next.rewardTitle && (
+                    <div
+                      className="rounded-2xl p-4 space-y-1.5"
+                      style={{ background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.2)" }}
+                    >
+                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400">
+                        🔒 Unlock at {next.name}
+                      </p>
+                      <p className="text-xs font-bold text-white">{next.rewardTitle}</p>
+                      {next.rewardDescription && (
+                        <p className="text-[11px] text-gray-500 leading-relaxed">{next.rewardDescription}</p>
+                      )}
+                    </div>
                   )}
                 </div>
 
-                {/* Upcoming Next Level Teaser */}
-                {loyalty.nextLevel ? (
-                  <div className="p-3 bg-indigo-950/40 rounded-xl border border-indigo-500/30 text-xs space-y-1">
-                    <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
-                      <span>•</span> Unlock at Next Level ({loyalty.nextLevel.name})
+                {/* ── Tier Roadmap ── */}
+                {loyalty.allLevels && loyalty.allLevels.length > 0 && (
+                  <div
+                    className="px-6 pt-4 pb-6"
+                    style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
+                  >
+                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-gray-500 mb-4">
+                      Tier Roadmap
                     </p>
-                    <p className="font-bold text-white text-sm">
-                      {loyalty.nextLevel.rewardTitle}
-                    </p>
-                    {loyalty.nextLevel.rewardDescription && (
-                      <p className="text-[11px] text-gray-300">{loyalty.nextLevel.rewardDescription}</p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-xs flex items-center justify-center text-gray-300 text-center">
-                    Enjoy lifetime highest-priority packaging & personalized handwritten letters!
+
+                    {/* Horizontal Step Tracker */}
+                    <div className="flex items-center gap-0">
+                      {loyalty.allLevels.map((step, idx) => {
+                        const achieved = (lvl.levelNumber || 1) >= step.levelNumber;
+                        const isCurr = (lvl.levelNumber || 1) === step.levelNumber;
+                        const isLast = idx === loyalty.allLevels.length - 1;
+                        return (
+                          <div key={step.id || idx} className="flex items-center flex-1 min-w-0">
+                            {/* Node */}
+                            <div className="flex flex-col items-center flex-shrink-0">
+                              <div
+                                className="relative w-10 h-10 rounded-full flex items-center justify-center text-xl transition-all duration-300"
+                                style={{
+                                  background: isCurr
+                                    ? `${step.color || color}25`
+                                    : achieved
+                                    ? `${step.color || color}15`
+                                    : "rgba(255,255,255,0.04)",
+                                  border: isCurr
+                                    ? `2px solid ${step.color || color}`
+                                    : achieved
+                                    ? `1.5px solid ${step.color || color}60`
+                                    : "1.5px solid rgba(255,255,255,0.1)",
+                                  boxShadow: isCurr ? `0 0 14px ${step.color || color}40` : "none",
+                                }}
+                              >
+                                {achieved ? (
+                                  <span>{step.badgeIcon || "⭐"}</span>
+                                ) : (
+                                  <span className="opacity-30">{step.badgeIcon || "⭐"}</span>
+                                )}
+                                {isCurr && (
+                                  <span
+                                    className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-gray-900"
+                                    style={{ background: step.color || color }}
+                                  />
+                                )}
+                              </div>
+                              <p
+                                className="text-[9px] font-bold text-center mt-1.5 max-w-[52px] leading-tight"
+                                style={{
+                                  color: isCurr ? (step.color || color) : achieved ? "rgba(255,255,255,0.6)" : "rgba(255,255,255,0.2)",
+                                }}
+                              >
+                                {step.name}
+                              </p>
+                              <p className="text-[8px] text-gray-600 text-center mt-0.5">
+                                {step.minOrders > 0 ? `${step.minOrders} orders` : "Start"}
+                              </p>
+                            </div>
+
+                            {/* Connector Line */}
+                            {!isLast && (
+                              <div className="flex-1 h-px mx-1" style={{
+                                background: achieved && (lvl.levelNumber || 1) > step.levelNumber
+                                  ? `linear-gradient(90deg, ${step.color || color}80, ${loyalty.allLevels[idx + 1]?.color || color}50)`
+                                  : "rgba(255,255,255,0.1)"
+                              }} />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
-
-              {/* Tier Roadmap Pills */}
-              {loyalty.allLevels && loyalty.allLevels.length > 0 && (
-                <div className="pt-2 border-t border-white/10">
-                  <p className="text-[10px] uppercase font-bold text-gray-400 mb-2">Purchase Level Milestones</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {loyalty.allLevels.map((lvl) => {
-                      const isAchieved = (loyalty.currentLevel?.levelNumber || 1) >= lvl.levelNumber;
-                      const isCurrent = (loyalty.currentLevel?.levelNumber || 1) === lvl.levelNumber;
-                      return (
-                        <div
-                          key={lvl.id}
-                          className={`p-2 rounded-xl text-center border transition-all ${
-                            isCurrent
-                              ? "bg-white/15 border-white ring-1 ring-white/50 shadow-md scale-102"
-                              : isAchieved
-                              ? "bg-white/5 border-white/20 text-gray-200"
-                              : "bg-black/20 border-white/5 text-gray-500 opacity-60"
-                          }`}
-                        >
-                          <div className="text-lg">{lvl.badgeIcon}</div>
-                          <p className="font-bold text-[11px] truncate mt-0.5">{lvl.name}</p>
-                          <p className="text-[9px] text-gray-400">
-                            {lvl.minOrders} order(s) required
-                          </p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
+
 
         {/* ── Personal Information Card ─────────────────────────────────── */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">

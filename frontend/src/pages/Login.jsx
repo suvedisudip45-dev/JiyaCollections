@@ -1,4 +1,5 @@
 import React, { useContext, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -24,6 +25,8 @@ const encryptPassword = (plaintext) => {
 const Login = () => {
   const [currentState, setCurrentState] = useState("Login");
   const { token, setToken, navigate, backendUrl } = useContext(ShopContext);
+  const location = useLocation();
+  const redirectTo = location.state?.from || "/";
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -93,12 +96,11 @@ const Login = () => {
     }
   };
 
-
   useEffect(() => {
     if (token) {
-      navigate("/");
+      navigate(redirectTo, { replace: true });
     }
-  }, [token]);
+  }, [token, redirectTo]);
 
   return (
     <>
@@ -106,10 +108,17 @@ const Login = () => {
         onSubmit={onSubmitHandler}
         className="flex flex-col items-center w-[90%] sm:max-w-[420px] m-auto mt-14 gap-4 text-gray-800 bg-white p-6 sm:p-8 rounded-2xl border border-gray-100 shadow-sm"
       >
+        {redirectTo === "/place-order" && (
+          <div className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-700 text-center mb-1">
+            🛒 <span className="font-semibold">Checkout in progress</span>: Log in or create an account to proceed directly with your order.
+          </div>
+        )}
+
         <div className="inline-flex items-center gap-2 mb-2 mt-2">
           <p className="prata-regular text-3xl">{currentState}</p>
           <hr className="border-none h-[1.5px] w-8 bg-gray-800" />
         </div>
+
 
         {/* First & Last Name Inputs for Sign Up */}
         {currentState === "Sign Up" && (

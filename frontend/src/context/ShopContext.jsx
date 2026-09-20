@@ -303,7 +303,32 @@ const ShopContextProvider = (props) => {
   };
 
   const getUserCart = async (userToken) => {
+    if (!userToken) return;
     try {
+      // Check if there are local guest items to sync with user account
+      const storedGuestCart = localStorage.getItem("cartItems");
+      let guestCartObj = null;
+      if (storedGuestCart) {
+        try {
+          guestCartObj = JSON.parse(storedGuestCart);
+        } catch (e) {
+          guestCartObj = null;
+        }
+      }
+
+      if (guestCartObj && Object.keys(guestCartObj).length > 0) {
+        const syncRes = await axios.post(
+          backendUrl + "/api/cart/sync",
+          { localCart: guestCartObj },
+          { headers: { token: userToken } }
+        );
+        if (syncRes.data.success) {
+          setCartItems(syncRes.data.cartData || {});
+          localStorage.removeItem("cartItems");
+          return;
+        }
+      }
+
       const response = await axios.post(
         backendUrl + "/api/cart/get",
         {},
@@ -311,6 +336,18 @@ const ShopContextProvider = (props) => {
       );
       if (response.data.success) {
         setCartItems(response.data.cartData || {});
+      } else {
+        const msg = (response.data.message || "").toLowerCase();
+        if (
+          msg.includes("not authorized") ||
+          msg.includes("jwt") ||
+          msg.includes("user not found") ||
+          msg.includes("invalid token")
+        ) {
+          // Clear stale or expired token so app reflects logged out state
+          localStorage.removeItem("token");
+          setToken("");
+        }
       }
     } catch (error) {
       console.error("Error fetching user cart:", error);
@@ -368,6 +405,7 @@ const ShopContextProvider = (props) => {
     token,
     getMaxStock,
     getProductsData,
+    getUserCart,
   };
 
   return (
