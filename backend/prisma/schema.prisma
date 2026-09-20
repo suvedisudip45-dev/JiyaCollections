@@ -17,6 +17,130 @@ model User {
   password  String
   cartData  Json    @default("{}")
   addresses Json    @default("[]")
+
+  storyAssignments CustomerStoryAssignment[] @relation("CustomerStoryAssignmentCustomer")
+  letterDeliveries LetterDelivery[] @relation("CustomerLetterDeliveryCustomer")
+}
+
+model Story {
+  id                  String                   @id @default(uuid())
+  title               String
+  description         String?                  @db.Text
+  status              String                   @default("ACTIVE") // ACTIVE | PAUSED | ARCHIVED
+  assignmentEnabled   Boolean                  @default(true)
+  allowNewCustomers   Boolean                  @default(true)
+  allowAfterCompletion Boolean                @default(true)
+  assignmentWeight     Float                    @default(1)
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+  letters             StoryLetter[]
+  assignments         CustomerStoryAssignment[]
+  deliveries          LetterDelivery[]
+
+  @@index([status, assignmentEnabled])
+}
+
+model StoryLetter {
+  id                String         @id @default(uuid())
+  storyId           String
+  sequenceNumber    Int
+  title             String
+  summary           String?        @db.Text
+  continuitySummary  String?        @db.Text
+  content           String         @db.Text
+  status            String         @default("ACTIVE") // ACTIVE | DRAFT | ARCHIVED
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  story             Story          @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  deliveries        LetterDelivery[]
+
+  @@unique([storyId, sequenceNumber])
+  @@index([storyId, sequenceNumber])
+}
+
+model LetterTemplate {
+  id                String                 @id @default(uuid())
+  name              String
+  description       String?                @db.Text
+  status            String                 @default("ACTIVE") // ACTIVE | DRAFT | PAUSED | ARCHIVED
+  selectionWeight   Float                  @default(1)
+  repetitionWindow  Int?                   @default(3)
+  body              String                 @db.Text
+  createdBy         String?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  versions          LetterTemplateVersion[]
+  deliveries        LetterDelivery[]
+
+  @@index([status])
+}
+
+model LetterTemplateVersion {
+  id            String         @id @default(uuid())
+  templateId    String
+  versionNumber Int
+  body          String         @db.Text
+  createdBy     String?
+  createdAt     DateTime       @default(now())
+  template      LetterTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  deliveries    LetterDelivery[]
+
+  @@unique([templateId, versionNumber])
+  @@index([templateId])
+}
+
+model CustomerStoryAssignment {
+  id                 String          @id @default(uuid())
+  customerId         String
+  storyId            String
+  status             String          @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  nextSequenceNumber Int             @default(1)
+  startedAt          DateTime        @default(now())
+  completedAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  customer           User            @relation("CustomerStoryAssignmentCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  story              Story           @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  deliveries         LetterDelivery[] @relation("AssignmentLetterDelivery")
+
+  @@index([customerId, status])
+  @@index([storyId, status])
+}
+
+model LetterDelivery {
+  id                       String                  @id @default(uuid())
+  customerId               String
+  orderId                  String                  @unique
+  manufacturerId           String?
+  customerStoryAssignmentId String
+  storyId                  String
+  storyLetterId            String
+  templateId               String
+  templateVersionId        String
+  idempotencyKey           String?                 @unique
+  status                   String                  @default("RESERVED") // RESERVED | PRINTED | PACKED | SHIPPED | DELIVERED | CANCELLED | VOIDED
+  reservedAt               DateTime?
+  printedAt                DateTime?
+  packedAt                 DateTime?
+  shippedAt                DateTime?
+  deliveredAt              DateTime?
+  cancelledAt              DateTime?
+  renderedContent          String?                 @db.Text
+  renderedHtml             String?                 @db.Text
+  renderedDocumentUrl      String?                 @db.Text
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  customer                 User                    @relation("CustomerLetterDeliveryCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  order                    Order                   @relation("OrderLetterDelivery", fields: [orderId], references: [id], onDelete: Cascade)
+  assignment               CustomerStoryAssignment  @relation("AssignmentLetterDelivery", fields: [customerStoryAssignmentId], references: [id], onDelete: Cascade)
+  story                    Story                   @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  storyLetter              StoryLetter             @relation(fields: [storyLetterId], references: [id], onDelete: Restrict)
+  template                 LetterTemplate          @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  templateVersion          LetterTemplateVersion   @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+
+  @@index([customerId, createdAt])
+  @@index([storyId, createdAt])
+  @@index([status])
 }
 
 model Product {
@@ -70,6 +194,7 @@ model Order {
   manufacturerId    String? // Fulfilled directly by manufacturer
   directNotes       String?        @db.Text
   deliveryOrder     DeliveryOrder?
+  letterDeliveries  LetterDelivery[] @relation("OrderLetterDelivery")
 
   @@index([fulfillmentStatus])
   @@index([userId])

@@ -10,6 +10,7 @@ import {
   Clock,
   MapPin,
   FileText,
+  Printer,
   Weight,
   Layers,
   AlertCircle,
@@ -47,6 +48,7 @@ const OrderDetail = () => {
   const [isFragile, setIsFragile] = useState(false);
   const [deliveryInstruction, setDeliveryInstruction] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [storyLetter, setStoryLetter] = useState(null);
 
   // Pre-Dispatch Packaging Checklist State
   const [checklist, setChecklist] = useState({
@@ -111,9 +113,22 @@ const OrderDetail = () => {
     }
   }, [id, token, backendUrl, navigate]);
 
+  const fetchStoryLetterStatus = useCallback(async () => {
+    if (!token || !id) return;
+    try {
+      const res = await axios.get(`${backendUrl}/api/personalized-letter/${id}`, { headers: { token } });
+      if (res.data.success) {
+        setStoryLetter(res.data.data || null);
+      }
+    } catch (error) {
+      setStoryLetter(null);
+    }
+  }, [backendUrl, id, token]);
+
   useEffect(() => {
     fetchAssignment();
-  }, [fetchAssignment]);
+    fetchStoryLetterStatus();
+  }, [fetchAssignment, fetchStoryLetterStatus]);
 
   const validateChecklist = () => {
     const benefits = assignment?.order?.fulfillmentBenefits || {};
@@ -218,6 +233,40 @@ const OrderDetail = () => {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to accept");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handlePrintPersonalizedLetter = async () => {
+    setActionLoading(true);
+    try {
+      const res = await axios.post(
+        `${backendUrl}/api/personalized-letter/${id}/print`,
+        { idempotencyKey: `story-letter-${id}-${Date.now()}` },
+        { headers: { token } }
+      );
+
+      if (res.data.success && res.data.data?.renderedHtml) {
+        const printWindow = window.open("", "_blank", "width=900,height=1100");
+        if (printWindow) {
+          printWindow.document.write(`<!doctype html><html><head><title>Personalized Story Letter</title><style>@page { size: A4; margin: 18mm; } body { margin:0; font-family:Arial,sans-serif; color:#111827; } .letter-wrapper { max-width: 760px; margin: 0 auto; padding: 24px; } .letter-inner { white-space: pre-wrap; line-height:1.7; font-size:14px; } </style></head><body><div class="letter-wrapper"><div class="letter-inner">${res.data.data.renderedHtml}</div></div></body></html>`);
+          printWindow.document.close();
+          printWindow.focus();
+          setTimeout(() => printWindow.print(), 400);
+        }
+        setStoryLetter(res.data.data);
+        toast.success("Personalized letter is ready to print.");
+        return;
+      }
+
+      if (res.data.success) {
+        toast.info(res.data.message || "Personalized letter is available.");
+      } else {
+        toast.error(res.data.message || "Unable to print personalized letter.");
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || "Failed to print personalized letter");
     } finally {
       setActionLoading(false);
     }
@@ -1001,6 +1050,23 @@ const OrderDetail = () => {
 
             {assignment.status === "packed" && (
               <div className="space-y-2">
+                <button
+                  onClick={handlePrintPersonalizedLetter}
+                  disabled={actionLoading}
+                  className="w-full py-3 px-4 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  <Printer className="w-4 h-4" />
+                  Print Personalized Letter
+                </button>
+
+                {storyLetter?.letter && (
+                  <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[11px] text-violet-900">
+                    <div className="font-bold uppercase tracking-wider text-violet-700">Allocated letter</div>
+                    <div className="mt-1 text-sm font-black">#{storyLetter.letter.sequenceNumber || "1"}</div>
+                    <div className="text-violet-700">{storyLetter.letter.title || "Personalized Story"}</div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleMarkReadyForPickup}
                   disabled={actionLoading || !pickupReadiness.isReady}
