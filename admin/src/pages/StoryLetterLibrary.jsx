@@ -51,6 +51,12 @@ const StoryLetterLibrary = ({ token }) => {
   const [storyForm, setStoryForm] = useState(emptyStoryForm);
   const [letterForm, setLetterForm] = useState(emptyLetterForm);
   const [templateForm, setTemplateForm] = useState(emptyTemplateForm);
+  const [editingStoryId, setEditingStoryId] = useState(null);
+  const [editingLetterId, setEditingLetterId] = useState(null);
+  const [editingTemplateId, setEditingTemplateId] = useState(null);
+  const [storyEditForm, setStoryEditForm] = useState(emptyStoryForm);
+  const [letterEditForm, setLetterEditForm] = useState(emptyLetterForm);
+  const [templateEditForm, setTemplateEditForm] = useState(emptyTemplateForm);
   const [loading, setLoading] = useState(true);
   const [savingStory, setSavingStory] = useState(false);
   const [savingLetter, setSavingLetter] = useState(false);
@@ -202,6 +208,144 @@ const StoryLetterLibrary = ({ token }) => {
       toast.error(error.response?.data?.message || "Unable to create template");
     } finally {
       setSavingTemplate(false);
+    }
+  };
+
+  const handleStartEditStory = (story) => {
+    setEditingStoryId(story.id);
+    setStoryEditForm({
+      title: story.title,
+      description: story.description || "",
+      status: story.status,
+      assignmentEnabled: story.assignmentEnabled,
+      allowNewCustomers: story.allowNewCustomers,
+      allowAfterCompletion: story.allowAfterCompletion,
+      assignmentWeight: story.assignmentWeight ?? 1,
+    });
+  };
+
+  const handleSaveStoryEdit = async (e) => {
+    e.preventDefault();
+    if (!editingStoryId) return;
+    try {
+      const res = await axios.patch(`${backendUrl}/api/admin/story-letter/stories/${editingStoryId}`, storyEditForm, {
+        headers: { token },
+      });
+      if (res.data.success) {
+        toast.success("Story updated");
+        setEditingStoryId(null);
+        setStoryEditForm(emptyStoryForm);
+        await fetchLibrary();
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update story");
+    }
+  };
+
+  const handleStartEditLetter = (letter) => {
+    setEditingLetterId(letter.id);
+    setLetterEditForm({
+      sequenceNumber: letter.sequenceNumber,
+      title: letter.title,
+      summary: letter.summary || "",
+      continuitySummary: letter.continuitySummary || "",
+      content: letter.content || "",
+      status: letter.status,
+    });
+  };
+
+  const handleSaveLetterEdit = async (e) => {
+    e.preventDefault();
+    if (!editingLetterId) return;
+    try {
+      const res = await axios.patch(`${backendUrl}/api/admin/story-letter/story-letters/${editingLetterId}`, letterEditForm, {
+        headers: { token },
+      });
+      if (res.data.success) {
+        toast.success("Letter updated");
+        setEditingLetterId(null);
+        setLetterEditForm(emptyLetterForm);
+        await fetchStoryLetters(selectedStoryId);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update letter");
+    }
+  };
+
+  const handleStartEditTemplate = (template) => {
+    setEditingTemplateId(template.id);
+    setTemplateEditForm({
+      name: template.name,
+      description: template.description || "",
+      status: template.status,
+      selectionWeight: template.selectionWeight ?? 1,
+      repetitionWindow: template.repetitionWindow ?? 3,
+      body: template.body,
+    });
+  };
+
+  const handleSaveTemplateEdit = async (e) => {
+    e.preventDefault();
+    if (!editingTemplateId) return;
+    try {
+      const res = await axios.patch(`${backendUrl}/api/admin/story-letter/templates/${editingTemplateId}`, templateEditForm, {
+        headers: { token },
+      });
+      if (res.data.success) {
+        toast.success("Template updated");
+        setEditingTemplateId(null);
+        setTemplateEditForm(emptyTemplateForm);
+        await fetchLibrary();
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update template");
+    }
+  };
+
+  const handleToggleArchive = async (type, item) => {
+    try {
+      const endpointMap = {
+        story: `${backendUrl}/api/admin/story-letter/stories/${item.id}/toggle-archive`,
+        letter: `${backendUrl}/api/admin/story-letter/story-letters/${item.id}/toggle-archive`,
+        template: `${backendUrl}/api/admin/story-letter/templates/${item.id}/toggle-archive`,
+      };
+      const res = await axios.patch(endpointMap[type], {}, { headers: { token } });
+      if (res.data.success) {
+        toast.success(`${type.charAt(0).toUpperCase() + type.slice(1)} ${item.status === "ARCHIVED" ? "restored" : "archived"}`);
+        if (type === "story") {
+          await fetchLibrary();
+        }
+        if (type === "letter") {
+          await fetchStoryLetters(selectedStoryId);
+        }
+        if (type === "template") {
+          await fetchLibrary();
+        }
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || `Unable to update ${type}.`);
+    }
+  };
+
+  const moveLetter = async (index, direction) => {
+    if (!selectedStoryId) return;
+    const nextLetters = [...letters];
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= nextLetters.length) return;
+
+    [nextLetters[index], nextLetters[targetIndex]] = [nextLetters[targetIndex], nextLetters[index]];
+    setLetters(nextLetters);
+
+    try {
+      const idsInOrder = nextLetters.map((letter) => letter.id);
+      const res = await axios.patch(`${backendUrl}/api/admin/story-letter/stories/${selectedStoryId}/letters/reorder`, { order: idsInOrder }, { headers: { token } });
+      if (!res.data.success) {
+        toast.error("Unable to reorder story letters");
+        await fetchStoryLetters(selectedStoryId);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to reorder story letters");
+      await fetchStoryLetters(selectedStoryId);
     }
   };
 
@@ -390,27 +534,32 @@ const StoryLetterLibrary = ({ token }) => {
           <h2 className="text-sm font-bold text-slate-800 mb-3">Story library</h2>
           <div className="space-y-3">
             {stories.length ? stories.map((story) => (
-              <button
-                key={story.id}
-                type="button"
-                onClick={() => setSelectedStoryId(story.id)}
-                className={`w-full text-left rounded-xl border p-3 transition ${selectedStoryId === story.id ? "border-violet-500 bg-violet-50" : "border-slate-200 hover:border-slate-300"}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="font-bold text-sm text-slate-800">{story.title}</div>
-                    <div className="text-[11px] text-slate-500 mt-1">{story.description || "No description"}</div>
+              <div key={story.id} className={`rounded-xl border p-3 transition ${selectedStoryId === story.id ? "border-violet-500 bg-violet-50" : "border-slate-200 hover:border-slate-300"}`}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedStoryId(story.id)}
+                  className="w-full text-left"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-bold text-sm text-slate-800">{story.title}</div>
+                      <div className="text-[11px] text-slate-500 mt-1">{story.description || "No description"}</div>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">{story.status}</span>
                   </div>
-                  <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">{story.status}</span>
+                  <div className="mt-2 flex gap-2 text-[10px] text-slate-500">
+                    <span>{story.letterCount ?? 0} letters</span>
+                    <span>•</span>
+                    <span>{story.assignmentCount ?? 0} assignments</span>
+                    <span>•</span>
+                    <span>{story.deliveryCount ?? 0} deliveries</span>
+                  </div>
+                </button>
+                <div className="mt-2 flex justify-end gap-2">
+                  <button type="button" onClick={() => handleToggleArchive("story", story)} className="text-[10px] font-semibold text-amber-700 hover:underline">{story.status === "ARCHIVED" ? "Restore" : "Archive"}</button>
+                  <button type="button" onClick={() => handleStartEditStory(story)} className="text-[10px] font-semibold text-violet-700 hover:underline">Edit</button>
                 </div>
-                <div className="mt-2 flex gap-2 text-[10px] text-slate-500">
-                  <span>{story.letterCount ?? 0} letters</span>
-                  <span>•</span>
-                  <span>{story.assignmentCount ?? 0} assignments</span>
-                  <span>•</span>
-                  <span>{story.deliveryCount ?? 0} deliveries</span>
-                </div>
-              </button>
+              </div>
             )) : (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">No stories yet. Create one to begin.</div>
             )}
@@ -428,6 +577,10 @@ const StoryLetterLibrary = ({ token }) => {
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">{template.description || "No description"}</div>
                 <div className="mt-2 text-[10px] text-slate-500">Weight: {template.selectionWeight} • Window: {template.repetitionWindow}</div>
+                <div className="mt-3 flex justify-end gap-2">
+                  <button type="button" onClick={() => handleToggleArchive("template", template)} className="text-[10px] font-semibold text-amber-700 hover:underline">{template.status === "ARCHIVED" ? "Restore" : "Archive"}</button>
+                  <button type="button" onClick={() => handleStartEditTemplate(template)} className="text-[10px] font-semibold text-violet-700 hover:underline">Edit</button>
+                </div>
               </div>
             )) : (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">No templates yet. Create one to seed the letter delivery flow.</div>
@@ -440,7 +593,7 @@ const StoryLetterLibrary = ({ token }) => {
         <h2 className="text-sm font-bold text-slate-800 mb-3">Story letters</h2>
         {selectedStoryId ? (
           <div className="space-y-3">
-            {letters.length ? letters.map((letter) => (
+            {letters.length ? letters.map((letter, index) => (
               <div key={letter.id} className="rounded-xl border border-slate-200 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="font-bold text-sm text-slate-800">#{letter.sequenceNumber} · {letter.title}</div>
@@ -448,6 +601,12 @@ const StoryLetterLibrary = ({ token }) => {
                 </div>
                 <div className="text-[11px] text-slate-500 mt-1">{letter.summary || "No summary"}</div>
                 <div className="mt-2 text-[11px] text-slate-700 whitespace-pre-wrap">{letter.content}</div>
+                <div className="mt-3 flex justify-end gap-2 flex-wrap">
+                  <button type="button" onClick={() => moveLetter(index, -1)} disabled={index === 0} className="text-[10px] font-semibold text-slate-600 disabled:opacity-40 hover:underline">↑ Up</button>
+                  <button type="button" onClick={() => moveLetter(index, 1)} disabled={index === letters.length - 1} className="text-[10px] font-semibold text-slate-600 disabled:opacity-40 hover:underline">↓ Down</button>
+                  <button type="button" onClick={() => handleToggleArchive("letter", letter)} className="text-[10px] font-semibold text-amber-700 hover:underline">{letter.status === "ARCHIVED" ? "Restore" : "Archive"}</button>
+                  <button type="button" onClick={() => handleStartEditLetter(letter)} className="text-[10px] font-semibold text-violet-700 hover:underline">Edit</button>
+                </div>
               </div>
             )) : (
               <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">No letters for this story yet.</div>
@@ -457,6 +616,75 @@ const StoryLetterLibrary = ({ token }) => {
           <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">Select a story to review its letters.</div>
         )}
       </div>
+
+      {editingStoryId && (
+        <div className="rounded-2xl border border-violet-200 bg-violet-50 p-4 shadow-sm">
+          <h3 className="text-sm font-bold text-violet-800 mb-3">Edit story</h3>
+          <form onSubmit={handleSaveStoryEdit} className="grid gap-3 md:grid-cols-2">
+            <input value={storyEditForm.title} onChange={(e) => setStoryEditForm({ ...storyEditForm, title: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Story title" />
+            <select value={storyEditForm.status} onChange={(e) => setStoryEditForm({ ...storyEditForm, status: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm">
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="DRAFT">DRAFT</option>
+              <option value="PAUSED">PAUSED</option>
+              <option value="ARCHIVED">ARCHIVED</option>
+            </select>
+            <textarea value={storyEditForm.description} onChange={(e) => setStoryEditForm({ ...storyEditForm, description: e.target.value })} className="md:col-span-2 border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[90px]" placeholder="Description" />
+            <input type="number" min="0.1" step="0.1" value={storyEditForm.assignmentWeight} onChange={(e) => setStoryEditForm({ ...storyEditForm, assignmentWeight: Number(e.target.value || 1) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" />
+            <div className="md:col-span-2 flex flex-wrap gap-4 text-xs text-slate-700">
+              <label className="flex items-center gap-2"><input type="checkbox" checked={storyEditForm.assignmentEnabled} onChange={(e) => setStoryEditForm({ ...storyEditForm, assignmentEnabled: e.target.checked })} /> enabled</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={storyEditForm.allowNewCustomers} onChange={(e) => setStoryEditForm({ ...storyEditForm, allowNewCustomers: e.target.checked })} /> new customers</label>
+              <label className="flex items-center gap-2"><input type="checkbox" checked={storyEditForm.allowAfterCompletion} onChange={(e) => setStoryEditForm({ ...storyEditForm, allowAfterCompletion: e.target.checked })} /> after completion</label>
+            </div>
+            <div className="md:col-span-2 flex gap-2">
+              <button type="submit" className="bg-violet-600 text-white rounded-xl px-3 py-2 text-sm font-semibold">Save story</button>
+              <button type="button" onClick={() => { setEditingStoryId(null); setStoryEditForm(emptyStoryForm); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-2 text-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editingLetterId && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+          <h3 className="text-sm font-bold text-emerald-800 mb-3">Edit letter</h3>
+          <form onSubmit={handleSaveLetterEdit} className="grid gap-3 md:grid-cols-2">
+            <input type="number" min="1" value={letterEditForm.sequenceNumber} onChange={(e) => setLetterEditForm({ ...letterEditForm, sequenceNumber: Number(e.target.value || 1) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Sequence" />
+            <select value={letterEditForm.status} onChange={(e) => setLetterEditForm({ ...letterEditForm, status: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm">
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="DRAFT">DRAFT</option>
+              <option value="PAUSED">PAUSED</option>
+              <option value="ARCHIVED">ARCHIVED</option>
+            </select>
+            <input value={letterEditForm.title} onChange={(e) => setLetterEditForm({ ...letterEditForm, title: e.target.value })} className="md:col-span-2 border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Letter title" />
+            <input value={letterEditForm.summary} onChange={(e) => setLetterEditForm({ ...letterEditForm, summary: e.target.value })} className="md:col-span-2 border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Summary" />
+            <textarea value={letterEditForm.continuitySummary} onChange={(e) => setLetterEditForm({ ...letterEditForm, continuitySummary: e.target.value })} className="md:col-span-2 border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[80px]" placeholder="Continuity summary" />
+            <textarea value={letterEditForm.content} onChange={(e) => setLetterEditForm({ ...letterEditForm, content: e.target.value })} className="md:col-span-2 border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[120px]" placeholder="Content" />
+            <div className="md:col-span-2 flex gap-2">
+              <button type="submit" className="bg-emerald-600 text-white rounded-xl px-3 py-2 text-sm font-semibold">Save letter</button>
+              <button type="button" onClick={() => { setEditingLetterId(null); setLetterEditForm(emptyLetterForm); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-2 text-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {editingTemplateId && (
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 shadow-sm">
+          <h3 className="text-sm font-bold text-sky-800 mb-3">Edit template</h3>
+          <form onSubmit={handleSaveTemplateEdit} className="grid gap-3">
+            <input value={templateEditForm.name} onChange={(e) => setTemplateEditForm({ ...templateEditForm, name: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Template name" />
+            <textarea value={templateEditForm.description} onChange={(e) => setTemplateEditForm({ ...templateEditForm, description: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[70px]" placeholder="Description" />
+            <div className="grid gap-3 md:grid-cols-2">
+              <input type="number" min="0.1" step="0.1" value={templateEditForm.selectionWeight} onChange={(e) => setTemplateEditForm({ ...templateEditForm, selectionWeight: Number(e.target.value || 1) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Weight" />
+              <input type="number" min="1" value={templateEditForm.repetitionWindow} onChange={(e) => setTemplateEditForm({ ...templateEditForm, repetitionWindow: Number(e.target.value || 3) })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm" placeholder="Window" />
+            </div>
+            <textarea value={templateEditForm.body} onChange={(e) => setTemplateEditForm({ ...templateEditForm, body: e.target.value })} className="border border-slate-300 rounded-xl px-3 py-2 text-sm min-h-[170px] font-mono" placeholder="Template body" />
+            <div className="flex gap-2">
+              <button type="submit" className="bg-sky-600 text-white rounded-xl px-3 py-2 text-sm font-semibold">Save template</button>
+              <button type="button" onClick={() => { setEditingTemplateId(null); setTemplateEditForm(emptyTemplateForm); }} className="bg-white border border-slate-300 text-slate-700 rounded-xl px-3 py-2 text-sm">Cancel</button>
+            </div>
+          </form>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -114,16 +114,16 @@ const OrderDetail = () => {
   }, [id, token, backendUrl, navigate]);
 
   const fetchStoryLetterStatus = useCallback(async () => {
-    if (!token || !id) return;
+    if (!token || !assignment?.order?.id) return;
     try {
-      const res = await axios.get(`${backendUrl}/api/personalized-letter/${id}`, { headers: { token } });
+      const res = await axios.get(`${backendUrl}/api/personalized-letter/${assignment.order.id}`, { headers: { token } });
       if (res.data.success) {
         setStoryLetter(res.data.data || null);
       }
     } catch (error) {
       setStoryLetter(null);
     }
-  }, [backendUrl, id, token]);
+  }, [assignment?.order?.id, backendUrl, token]);
 
   useEffect(() => {
     fetchAssignment();
@@ -239,11 +239,17 @@ const OrderDetail = () => {
   };
 
   const handlePrintPersonalizedLetter = async () => {
+    const orderId = assignment?.order?.id || id;
+    if (!orderId) {
+      toast.error("Order not available for personalized letter print.");
+      return;
+    }
+
     setActionLoading(true);
     try {
-      const stableIdempotencyKey = `story-letter-${id}-${storyLetter?.letter?.id || "draft"}`;
+      const stableIdempotencyKey = `story-letter-${orderId}-${storyLetter?.letter?.id || "draft"}`;
       const res = await axios.post(
-        `${backendUrl}/api/personalized-letter/${id}/print`,
+        `${backendUrl}/api/personalized-letter/${orderId}/print`,
         { idempotencyKey: stableIdempotencyKey },
         { headers: { token } }
       );
