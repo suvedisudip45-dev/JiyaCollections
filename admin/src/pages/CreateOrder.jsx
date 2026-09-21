@@ -5,6 +5,7 @@ import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -36,7 +37,11 @@ const CreateOrder = ({ token }) => {
     lastName: "",
     phone: "",
     email: "",
+    gender: "PREFER_NOT_TO_SAY",
+    province: "Bagmati Province",
+    district: "Kathmandu",
     city: "Kathmandu",
+    ncmBranch: "Kathmandu",
     landmark: "",
     street: "",
     state: "Bagmati Province",
@@ -44,6 +49,9 @@ const CreateOrder = ({ token }) => {
     country: "Nepal",
     orderNotes: "",
   });
+
+  const [ncmBranches, setNcmBranches] = useState([]);
+  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
 
   // Selected Order Items: list of { productId, name, image, size, color, quantity, originalUnitPrice, discountPercentage, purchasedUnitPrice, stockAvailable }
   const [selectedItems, setSelectedItems] = useState([]);
@@ -155,18 +163,73 @@ const CreateOrder = ({ token }) => {
     const { name, value } = e.target;
     setClient((prev) => {
       const updated = { ...prev, [name]: value };
+
+      if (name === "province") {
+        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+        updated.province = value;
+        updated.state = value;
+        updated.district = nextDistrict;
+        updated.city = nextDistrict;
+        updated.ncmBranch = nextDistrict;
+        updated.zipcode = "";
+      }
+
+      if (name === "district") {
+        updated.district = value;
+        updated.city = value;
+        updated.ncmBranch = value;
+      }
+
       if (name === "city") {
+        updated.city = value;
+        updated.ncmBranch = value;
         const found = NEPAL_CITIES.find(
           (c) => c.name.toLowerCase() === value.trim().toLowerCase()
         );
         if (found) {
           updated.state = found.province;
+          updated.province = found.province;
           updated.zipcode = found.zipcode;
         }
       }
+
+      if (name === "ncmBranch") {
+        updated.ncmBranch = value;
+        updated.city = value;
+      }
+
       return updated;
     });
   };
+
+  useEffect(() => {
+    const fetchNcmBranches = async () => {
+      if (!client.province || !client.district) {
+        setNcmBranches([]);
+        return;
+      }
+
+      setLoadingNcmBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: client.province, district: client.district },
+        });
+
+        if (response.data.success) {
+          setNcmBranches(response.data.branches || []);
+        } else {
+          setNcmBranches([]);
+        }
+      } catch (error) {
+        setNcmBranches([]);
+        console.error("Failed to load NCM branches for admin order:", error);
+      } finally {
+        setLoadingNcmBranches(false);
+      }
+    };
+
+    fetchNcmBranches();
+  }, [backendUrl, client.province, client.district]);
 
   // Calculate items subtotal
   const itemsSubtotal = useMemo(() => {
@@ -497,7 +560,8 @@ const CreateOrder = ({ token }) => {
       toast.error("Please enter the client's Contact Phone Number.");
       return;
     }
-    if (!client.city.trim()) {
+    const deliveryLocation = (client.city || client.ncmBranch || client.district || "").trim();
+    if (!deliveryLocation) {
       toast.error("Please specify the delivery City.");
       return;
     }
@@ -520,8 +584,14 @@ const CreateOrder = ({ token }) => {
           lastName: client.lastName.trim(),
           phone: client.phone.trim(),
           email: client.email.trim(),
+          gender: client.gender || "PREFER_NOT_TO_SAY",
+          province: client.province || client.state || "Bagmati Province",
+          district: client.district || client.city || "Kathmandu",
+          city: client.city || client.ncmBranch || client.district || "Kathmandu",
+          ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
           landmark: client.landmark.trim(),
           street: client.street.trim(),
+          state: client.state || client.province || "Bagmati Province",
         },
         items: selectedItems,
         discount: activeDiscount,
@@ -560,7 +630,11 @@ const CreateOrder = ({ token }) => {
       lastName: "",
       phone: "",
       email: "",
+      gender: "PREFER_NOT_TO_SAY",
+      province: "Bagmati Province",
+      district: "Kathmandu",
       city: "Kathmandu",
+      ncmBranch: "Kathmandu",
       landmark: "",
       street: "",
       state: "Bagmati Province",
@@ -707,6 +781,23 @@ const CreateOrder = ({ token }) => {
               </div>
             </div>
 
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Gender
+              </label>
+              <select
+                name="gender"
+                value={client.gender}
+                onChange={handleClientChange}
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="MALE">Male</option>
+                <option value="FEMALE">Female</option>
+                <option value="OTHER">Other</option>
+                <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+              </select>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
@@ -756,22 +847,60 @@ const CreateOrder = ({ token }) => {
               </span>
             </div>
 
-            {/* City Selection */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  Province <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  name="province"
+                  value={client.province}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                >
+                  {NEPAL_PROVINCES.map((province) => (
+                    <option key={province} value={province}>{province}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  District <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  name="district"
+                  value={client.district}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                >
+                  {(NEPAL_DISTRICTS_BY_PROVINCE[client.province] || []).map((district) => (
+                    <option key={district} value={district}>{district}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             <div>
               <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                Destination City <span className="text-rose-500">*</span>
+                NCM Branch / Delivery Town <span className="text-rose-500">*</span>
               </label>
               <select
-                name="city"
-                value={client.city}
+                name="ncmBranch"
+                value={client.ncmBranch}
                 onChange={handleClientChange}
-                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                disabled={loadingNcmBranches || ncmBranches.length === 0}
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800 disabled:opacity-50"
               >
-                {NEPAL_CITIES.map((c, i) => (
-                  <option key={i} value={c.name}>
-                    {c.name} ({c.province})
-                  </option>
-                ))}
+                {loadingNcmBranches ? (
+                  <option value="">Loading NCM branches...</option>
+                ) : ncmBranches.length === 0 ? (
+                  <option value="">No branch available in this district</option>
+                ) : (
+                  ncmBranches.map((branch) => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))
+                )}
               </select>
             </div>
 
@@ -807,35 +936,6 @@ const CreateOrder = ({ token }) => {
                 onChange={handleClientChange}
                 className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
               />
-            </div>
-
-            {/* Province & Zipcode Grid */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Province
-                </label>
-                <input
-                  type="text"
-                  name="state"
-                  value={client.state}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-600 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Postal Code
-                </label>
-                <input
-                  type="text"
-                  name="zipcode"
-                  value={client.zipcode}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-600 focus:outline-none"
-                />
-              </div>
             </div>
 
             {/* Delivery / Order Notes */}

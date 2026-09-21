@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { v2 as cloudinary } from "cloudinary";
 import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } from "../services/ncmClient.js";
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
+import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -186,8 +187,22 @@ const registerManufacturer = async (req, res) => {
       return res.json({ success: false, message: "Business name, email, password, phone, and city are required" });
     }
 
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedPickupContactPhone = pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "";
+    if (!isValidMobileNumber(normalizedPhone)) {
+      return res.json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97" });
+    }
+    if (pickupContactPhone && !isValidMobileNumber(normalizedPickupContactPhone)) {
+      return res.json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97" });
+    }
+
     const existing = await prisma.manufacturer.findUnique({ where: { email: email.toLowerCase().trim() } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
+
+    const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });
+    if (duplicatePhoneManufacturer) {
+      return res.json({ success: false, message: "Contact number already used" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -212,13 +227,13 @@ const registerManufacturer = async (req, res) => {
         name: mfgName,
         email: email.toLowerCase().trim(),
         password: hashed,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         city: city.trim(),
         ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
         pickupBranchStatus: "UNVERIFIED",
         pickupAddress: pickupAddress || address || null,
         pickupContactName: pickupContactName || "",
-        pickupContactPhone: pickupContactPhone || "",
+        pickupContactPhone: normalizedPickupContactPhone,
         pickupWindow: pickupWindow || "",
         returnInstructions: returnInstructions || null,
         address: address || null,
@@ -278,9 +293,23 @@ const registerManufacturerSelf = async (req, res) => {
       return res.json({ success: false, message: "Business name, email, password, phone, city, and pickup address are required" });
     }
 
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedPickupContactPhone = pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "";
+    if (!isValidMobileNumber(normalizedPhone)) {
+      return res.json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97" });
+    }
+    if (pickupContactPhone && !isValidMobileNumber(normalizedPickupContactPhone)) {
+      return res.json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97" });
+    }
+
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await prisma.manufacturer.findUnique({ where: { email: normalizedEmail } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
+
+    const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });
+    if (duplicatePhoneManufacturer) {
+      return res.json({ success: false, message: "Contact number already used" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
     let contractDocUrl = null;
@@ -303,13 +332,13 @@ const registerManufacturerSelf = async (req, res) => {
         name: mfgName,
         email: normalizedEmail,
         password: hashed,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         city: city.trim(),
         ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
         pickupBranchStatus: "UNVERIFIED",
         pickupAddress: pickupAddress || address || null,
         pickupContactName: pickupContactName || "",
-        pickupContactPhone: pickupContactPhone || "",
+        pickupContactPhone: normalizedPickupContactPhone,
         pickupWindow: pickupWindow || "",
         returnInstructions: returnInstructions || null,
         address: address || null,

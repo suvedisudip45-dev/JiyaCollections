@@ -6,6 +6,12 @@ import { useManufacturer } from "../context/ManufacturerContext";
 import { NEPAL_PROVINCES } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
+const isValidNepalMobileNumber = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  const normalized = digits.replace(/^0+/, "").replace(/^977/, "");
+  return /^9[78]\d{8}$/.test(normalized);
+};
+
 const defaultRegisterForm = {
   businessName: "",
   email: "",
@@ -127,6 +133,14 @@ const Login = () => {
       toast.error("Please select province, district, and NCM town branch");
       return;
     }
+    if (!isValidNepalMobileNumber(registerForm.phone)) {
+      toast.error("Please enter a valid mobile number starting with 98 or 97.");
+      return;
+    }
+    if (registerForm.pickupContactPhone && !isValidNepalMobileNumber(registerForm.pickupContactPhone)) {
+      toast.error("Please enter a valid pickup contact mobile number starting with 98 or 97.");
+      return;
+    }
 
     setRegisterLoading(true);
     try {
@@ -143,6 +157,8 @@ const Login = () => {
       const payload = {
         ...registerForm,
         name: registerForm.businessName,
+        phone: registerForm.phone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+        pickupContactPhone: registerForm.pickupContactPhone ? registerForm.pickupContactPhone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, "") : "",
         city: registerForm.city,
         ncmPickupBranch: registerForm.city,
         address: formattedAddress,
@@ -216,7 +232,7 @@ const Login = () => {
                       required
                       placeholder="e.g. 9841234567"
                       value={registerForm.phone}
-                      onChange={(e) => setRegisterForm({ ...registerForm, phone: e.target.value })}
+                      onChange={(e) => setRegisterForm({ ...registerForm, phone: e.target.value.replace(/[^0-9]/g, "") })}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>
@@ -412,7 +428,7 @@ const Login = () => {
                       type="tel"
                       placeholder="e.g. 9800000000"
                       value={registerForm.pickupContactPhone}
-                      onChange={(e) => setRegisterForm({ ...registerForm, pickupContactPhone: e.target.value })}
+                      onChange={(e) => setRegisterForm({ ...registerForm, pickupContactPhone: e.target.value.replace(/[^0-9]/g, "") })}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                     />
                   </div>

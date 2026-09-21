@@ -1,8 +1,24 @@
-export const normalizePhoneNumber = (value = "") => {
+export const sanitizePhoneNumber = (value = "") => {
   if (value === null || value === undefined) return "";
-  const digits = String(value).replace(/\D/g, "");
+
+  const raw = String(value).trim();
+  if (!raw) return "";
+
+  let digits = raw.replace(/\D/g, "");
   if (!digits) return "";
-  return digits.startsWith("977") ? digits.slice(3) : digits;
+
+  digits = digits.replace(/^0+/, "");
+  digits = digits.replace(/^977/, "");
+
+  return digits.length === 10 ? digits : "";
+};
+
+export const normalizePhoneNumber = (value = "") => sanitizePhoneNumber(value);
+
+export const isValidMobileNumber = (value = "") => {
+  const normalized = sanitizePhoneNumber(value);
+  if (!normalized || normalized.length !== 10) return false;
+  return /^9[78]\d{8}$/.test(normalized);
 };
 
 export const normalizeGender = (value = "") => {
@@ -27,6 +43,7 @@ export const buildInactiveSocialProfile = ({
   phone = "",
   email = "",
   gender = "",
+  province = "",
   city = "",
   district = "",
   state = "",
@@ -36,6 +53,7 @@ export const buildInactiveSocialProfile = ({
   source = "Social Media",
   loyaltyTier = "",
   orderId = "",
+  ncmBranch = "",
 } = {}) => {
   const normalizedPhone = normalizePhoneNumber(phone);
   const normalizedGender = normalizeGender(gender);
@@ -45,9 +63,11 @@ export const buildInactiveSocialProfile = ({
     email: String(email || "").trim(),
     phone: normalizedPhone,
     gender: normalizedGender,
-    city: String(city || address?.city || "").trim(),
+    province: String(province || address?.province || state || "").trim(),
+    city: String(city || address?.city || ncmBranch || "").trim(),
     district: String(district || address?.district || "").trim(),
-    state: String(state || address?.state || "").trim(),
+    ncmBranch: String(ncmBranch || address?.ncmBranch || city || "").trim(),
+    state: String(state || address?.state || province || "").trim(),
     country: String(country || address?.country || "Nepal").trim() || "Nepal",
     socialUsername: String(socialUsername || "").trim(),
     source: String(source || "Social Media").trim() || "Social Media",

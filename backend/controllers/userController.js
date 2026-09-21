@@ -6,6 +6,7 @@ import { decryptAES } from "../utils/crypto.js";
 import {
   buildInactiveSocialProfile,
   generateSocialCustomerCode,
+  isValidMobileNumber,
   normalizeGender,
   normalizePhoneNumber,
 } from "../utils/socialCustomerProfile.js";
@@ -130,11 +131,27 @@ const registerUser = async (req, res) => {
       });
     }
 
-    // Validating phone number if provided
-    if (phone && phone.trim().length < 7) {
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!isValidMobileNumber(normalizedPhone)) {
       return res.json({
         success: false,
-        message: "Please enter a valid phone number",
+        message: "Please enter a valid mobile number starting with 98 or 97",
+      });
+    }
+
+    const duplicatePhoneUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: normalizedPhone },
+          { socialCustomerPhone: normalizedPhone },
+        ],
+      },
+    });
+
+    if (duplicatePhoneUser) {
+      return res.json({
+        success: false,
+        message: "This mobile number is already used by another customer",
       });
     }
 
@@ -154,7 +171,7 @@ const registerUser = async (req, res) => {
       data: {
         firstName: fName,
         lastName: lName,
-        phone: phone ? phone.trim() : "",
+        phone: normalizedPhone,
         gender: normalizedGender,
         name: fName.concat(" ").concat(lName),
         email: email.trim().toLowerCase(),
@@ -193,6 +210,7 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     phone = "",
     email = "",
     gender = "",
+    province = "",
     city = "",
     district = "",
     state = "",
@@ -202,11 +220,12 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     source = "Social Media",
     loyaltyTier = "",
     orderId = "",
+    ncmBranch = "",
   } = payload;
 
   const normalizedPhone = normalizePhoneNumber(phone);
-  if (!normalizedPhone) {
-    throw new Error("Phone number is required to create a social media profile");
+  if (!isValidMobileNumber(normalizedPhone)) {
+    throw new Error("Please enter a valid mobile number starting with 98 or 97");
   }
 
   let code = generateSocialCustomerCode();
@@ -251,6 +270,7 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     phone: normalizedPhone,
     email,
     gender,
+    province,
     city,
     district,
     state,
@@ -260,6 +280,7 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     source,
     loyaltyTier,
     orderId,
+    ncmBranch,
   });
 
   const generatedCode = baseProfile.socialCustomerCode;
@@ -326,26 +347,25 @@ export const validateSocialCustomerProfile = async (req, res) => {
     });
 
     if (!user) {
-      const active = await prisma.user.findFirst({
+      const existingPhone = await prisma.user.findFirst({
         where: {
           OR: [
             { phone: normalizedPhone },
             { socialCustomerPhone: normalizedPhone },
           ],
-          isInactiveProfile: false,
         },
       });
 
-      if (active) {
+      if (existingPhone) {
         return res.json({
           success: false,
-          message: "This mobile number already belongs to an active website profile. Please log in.",
+          message: "contact number and code didnot match",
         });
       }
 
       return res.json({
         success: false,
-        message: "Invalid mobile number or secret code. Please check the code provided during your social-media purchase.",
+        message: "contact number and code didnot match",
       });
     }
 
@@ -509,6 +529,7 @@ const getUserProfile = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone || "",
+        socialCustomerCode: user.socialCustomerCode || "",
         gender: user.gender || "PREFER_NOT_TO_SAY",
         addresses,
       },
@@ -607,8 +628,24 @@ const updateUserProfile = async (req, res) => {
     if (!fName) return res.json({ success: false, message: "First name is required" });
     if (!lName) return res.json({ success: false, message: "Last name is required" });
 
-    if (phone && phone.trim().length > 0 && phone.trim().length < 7) {
-      return res.json({ success: false, message: "Please enter a valid phone number" });
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (phone && phone.trim().length > 0 && !isValidMobileNumber(normalizedPhone)) {
+      return res.json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97" });
+    }
+
+    const existingPhoneUser = phone && phone.trim().length > 0
+      ? await prisma.user.findFirst({
+          where: {
+            OR: [
+              { phone: normalizedPhone },
+              { socialCustomerPhone: normalizedPhone },
+            ],
+          },
+        })
+      : null;
+
+    if (existingPhoneUser && existingPhoneUser.id !== userId) {
+      return res.json({ success: false, message: "This mobile number is already used by another customer" });
     }
 
     const updatedUser = await prisma.user.update({
@@ -617,7 +654,7 @@ const updateUserProfile = async (req, res) => {
         firstName: fName,
         lastName: lName,
         name: fName.concat(" ").concat(lName),
-        phone: phone ? phone.trim() : "",
+        phone: normalizedPhone || "",
       },
     });
 

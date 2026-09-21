@@ -46,6 +46,12 @@ const Field = ({ label, value, name, type = "text", readOnly, placeholder, onCha
   </div>
 );
 
+const isValidNepalMobileNumber = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  const normalized = digits.replace(/^0+/, "").replace(/^977/, "");
+  return /^9[78]\d{8}$/.test(normalized);
+};
+
 // ── Password field with show/hide toggle ─────────────────────────────────────
 const PasswordField = ({ label, name, value, onChange, placeholder }) => {
   const [show, setShow] = useState(false);
@@ -126,6 +132,7 @@ const Profile = () => {
     lastName: "",
     email: "",
     phone: "",
+    socialCustomerCode: "",
   });
   const [editData, setEditData] = useState({ ...profile });
   const [soundEnabled, setSoundEnabledState] = useState(isSoundEnabled());
@@ -165,6 +172,7 @@ const Profile = () => {
             lastName: u.lastName || "",
             email: u.email || "",
             phone: u.phone || "",
+            socialCustomerCode: u.socialCustomerCode || "",
           };
           setProfile(data);
           setEditData(data);
@@ -199,7 +207,8 @@ const Profile = () => {
 
   const handleEditChange = (e) => {
     const { name, value } = e.target;
-    setEditData((prev) => ({ ...prev, [name]: value }));
+    const sanitizedValue = name === "phone" ? value.replace(/[^0-9]/g, "") : value;
+    setEditData((prev) => ({ ...prev, [name]: sanitizedValue }));
   };
 
   const handleCancelEdit = () => {
@@ -212,8 +221,8 @@ const Profile = () => {
       toast.error("First and last name are required");
       return;
     }
-    if (editData.phone && editData.phone.trim().length > 0 && editData.phone.trim().length < 7) {
-      toast.error("Please enter a valid phone number");
+    if (editData.phone && editData.phone.trim().length > 0 && !isValidNepalMobileNumber(editData.phone)) {
+      toast.error("Please enter a valid mobile number starting with 98 or 97");
       return;
     }
     try {
@@ -234,6 +243,7 @@ const Profile = () => {
           lastName: u.lastName,
           email: u.email,
           phone: u.phone || "",
+          socialCustomerCode: u.socialCustomerCode || profile.socialCustomerCode || "",
         };
         setProfile(updated);
         setEditData(updated);
@@ -752,6 +762,14 @@ const Profile = () => {
               readOnly={!editMode}
               placeholder="e.g. 9841234567"
               onChange={handleEditChange}
+            />
+            <Field
+              label="Social Code"
+              name="socialCustomerCode"
+              value={profile.socialCustomerCode || ""}
+              readOnly
+              placeholder="No social code yet"
+              hint="This is the secret code connected to your social-media purchase profile."
             />
           </div>
 

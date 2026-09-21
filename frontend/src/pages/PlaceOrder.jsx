@@ -14,6 +14,12 @@ import {
 } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
+const isValidNepalMobileNumber = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  const normalized = digits.replace(/^0+/, "").replace(/^977/, "");
+  return /^9[78]\d{8}$/.test(normalized);
+};
+
 const PlaceOrder = () => {
   const [
     method, setMethod
@@ -280,6 +286,11 @@ const PlaceOrder = () => {
       return;
     }
 
+    if (name === "phone") {
+      setFormData((data) => ({ ...data, phone: value.replace(/[^0-9]/g, "") }));
+      return;
+    }
+
     // Keep the submitted branch synchronized with the live NCM selection.
     if (name === "city") {
       const cityInfo = getCityInfo(value);
@@ -369,8 +380,8 @@ const PlaceOrder = () => {
       toast.error("Please provide first and last name");
       return;
     }
-    if (!formData.phone.trim() || formData.phone.trim().length < 7) {
-      toast.error("Please provide a valid contact phone number");
+    if (!isValidNepalMobileNumber(formData.phone)) {
+      toast.error("Please provide a valid mobile number starting with 98 or 97");
       return;
     }
     if (!formData.street.trim()) {
