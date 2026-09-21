@@ -4,12 +4,18 @@ const DEFAULT_COLORS = ['Black', 'White', 'Red', 'Blue', 'Green', 'Yellow', 'Pin
 
 const addColor = async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, nepaliName } = req.body;
     if (!name || !name.trim()) return res.json({ success: false, message: 'Color name is required' });
     const trimmedName = name.trim();
+    const nepaliValue = (nepaliName || '').trim();
     const exists = await prisma.color.findFirst({ where: { name: trimmedName } });
     if (exists) return res.json({ success: false, message: 'Color already exists' });
-    const color = await prisma.color.create({ data: { name: trimmedName } });
+    const color = await prisma.color.create({
+      data: {
+        name: trimmedName,
+        nepaliName: nepaliValue,
+      },
+    });
     res.json({ success: true, message: 'Color Added', color });
   } catch (error) {
     console.log(error);

@@ -47,6 +47,8 @@ const addProduct = async (req, res) => {
   try {
     const {
       name,
+      nepaliName,
+      nameNepali,
       description,
       price,
       category,
@@ -154,8 +156,11 @@ const addProduct = async (req, res) => {
       });
     }
 
+    const resolvedNepaliName = (nepaliName || nameNepali || name || "").trim();
+
     const productData = {
       name,
+      nepaliName: resolvedNepaliName,
       description,
       price: Number(price),
       category: JSON.stringify(categoriesArray),
@@ -205,6 +210,8 @@ const updateProduct = async (req, res) => {
     const {
       id,
       name,
+      nepaliName,
+      nameNepali,
       description,
       price,
       category,
@@ -341,8 +348,11 @@ const updateProduct = async (req, res) => {
       }
     }
 
+    const resolvedNepaliName = (nepaliName || nameNepali || existingProduct.nepaliName || name || "").trim();
+
     const updateData = {
       ...(name && { name }),
+      ...(resolvedNepaliName || existingProduct.nepaliName ? { nepaliName: resolvedNepaliName || existingProduct.nepaliName || "" } : {}),
       ...(description && { description }),
       ...(price !== undefined && { price: Number(price) }),
       ...(categoryStorage !== undefined && { category: categoryStorage }),

@@ -13,6 +13,7 @@ const Categories = ({ token }) => {
   const [newSubCategory, setNewSubCategory] = useState("");
   const [colors, setColors] = useState([]);
   const [newColor, setNewColor] = useState("");
+  const [newColorNepali, setNewColorNepali] = useState("");
 
   const fetchCategories = async () => {
     try {
@@ -150,6 +151,7 @@ const Categories = ({ token }) => {
       if (response.data.success) {
         toast.success(response.data.message);
         setNewColor("");
+        setNewColorNepali("");
         fetchColors();
       } else {
         toast.error(response.data.message);
@@ -290,8 +292,15 @@ const Categories = ({ token }) => {
             placeholder="Add new color (e.g. Red, Navy Blue)"
             value={newColor}
             onChange={(e) => setNewColor(e.target.value)}
-            className="border px-3 py-2 rounded flex-1 max-w-[400px]"
+            className="border px-3 py-2 rounded flex-1 max-w-[260px]"
             required
+          />
+          <input
+            type="text"
+            placeholder="Nepali name (e.g. रातो)"
+            value={newColorNepali}
+            onChange={(e) => setNewColorNepali(e.target.value)}
+            className="border px-3 py-2 rounded flex-1 max-w-[260px]"
           />
           <button
             type="submit"

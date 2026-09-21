@@ -1,15 +1,16 @@
 import { prisma } from "../config/db.js";
 
-const defaultLetterBody = `Dear {{customer.first_name}},
+const defaultLetterBody = `प्रिय {{customer.first_name}} ज्यू,
 
 {{opening}}
 
-{{story_content}}
+{{story.title}} को यो अध्याय हामीले तपाईको लागि नरम र जीवन्त ढंगले प्रस्तुत गर्न चाहन्छौं। {{letter.content}}
 
-{{continuity}}
+तपाईंले {{product.color}} {{product.name}} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ। यो सामान तपाईको दैनिक जीवनमा सहजता, आत्मविश्वास र सन्तोष थप्नेछ। हामीलाई पूरा विश्वास छ कि {{product.color}} {{product.name}} तपाईको रोजमर्रा जीवनलाई सजिलो र सुन्दर बनाउनेछ।
 
 {{closing}}
 
+सधैं तपाईको साथमा,
 {{signature}}`;
 
 const ensureDefaultStorySeed = async () => {
@@ -20,8 +21,8 @@ const ensureDefaultStorySeed = async () => {
 
   const story = await prisma.story.create({
     data: {
-      title: "The Welcome Story",
-      description: "A gentle onboarding story for new customers.",
+      title: "स्वागत कथाको यात्रा",
+      description: "नयाँ ग्राहकहरूको लागि नरम र मनमोहक सुरुवाती कथा।",
       status: "ACTIVE",
       assignmentEnabled: true,
       allowNewCustomers: true,
@@ -33,24 +34,24 @@ const ensureDefaultStorySeed = async () => {
   const letters = [
     {
       sequenceNumber: 1,
-      title: "The First Greeting",
-      summary: "A friendly introduction to the story world.",
-      continuitySummary: "The journey begins with a quiet hello and a hopeful glance toward tomorrow.",
-      content: "A small note arrives carrying a promise of wonder, and the story begins with curiosity, comfort, and a new beginning.",
+      title: "प्रथम नमस्कार",
+      summary: "कथाको संसारमाfreundली परिचय।",
+      continuitySummary: "यात्रा न्यानो नमस्कारसँग शुरू हुन्छ र भविष्यको आशा लिएर अगाडि बढ्छ।",
+      content: "एक सानो पत्र आउँछ जसले आशा र जादूको वाचा लिएर, कथाको सुरुवात जिज्ञासा, आराम र नयाँ शुरुआतसँग हुन्छ।",
     },
     {
       sequenceNumber: 2,
-      title: "The Hidden Door",
-      summary: "The first clue appears in plain sight.",
-      continuitySummary: "The door was noticed before, but now it seems to be gently waiting for the right moment.",
-      content: "An unexpected clue appears in the evening light, guiding the next step toward the forgotten route behind the house.",
+      title: "लुकेको ढोका",
+      summary: "पहिलो संकेत सजिलै देखिन्छ।",
+      continuitySummary: "ढोका पहिले नै देखिएको थियो, तर अहिले यो सही समयको प्रतीक्षा गर्दै नरम रूपमा छ।",
+      content: "शामको उज्यालोमा एक भनौठो संकेत देखा पर्दछ, र घर पछाडिको बिर्सिएको बाटोको अगाडि अर्को पाइलाको मार्ग देखाउँछ।",
     },
     {
       sequenceNumber: 3,
-      title: "The Promised Path",
-      summary: "The story reaches its first full turn.",
-      continuitySummary: "The path finally feels decided, and the next chapter is ready to be discovered.",
-      content: "With a steady heart, the path becomes clear and the promise of the next chapter begins to unfold with quiet confidence.",
+      title: "वाचा गरिएको बाटो",
+      summary: "कथाले आफ्नो पहिलो मोड पूरा गर्‍यो।",
+      continuitySummary: "बाटो अन्ततः निश्चित हुन्छ, र अर्को अध्यायको खोज सुरु गर्न तयार हुन्छ।",
+      content: "स्थिर हृदयले बाटोलाई स्पष्ट बनाउँछ र अर्को अध्यायको वाचा शान्त आत्मविश्वाससहित खुल्दै जान्छ।",
     },
   ];
 
@@ -66,8 +67,8 @@ const ensureDefaultStorySeed = async () => {
 
   const templates = [
     {
-      name: "Universal Welcome Letter",
-      description: "Default template for any customer.",
+      name: "सार्वभौमिक स्वागत पत्र",
+      description: "कुनै पनि ग्राहकको लागि पूर्वनिर्धारित टेम्प्लेट।",
       status: "ACTIVE",
       targetGender: "ANY",
       selectionWeight: 1,
@@ -75,8 +76,8 @@ const ensureDefaultStorySeed = async () => {
       body: defaultLetterBody,
     },
     {
-      name: "Male Story Letter",
-      description: "Male-specific story template.",
+      name: "पुरुष कथाको पत्र",
+      description: "पुरुषका लागि विशेष कथाको टेम्प्लेट।",
       status: "ACTIVE",
       targetGender: "MALE",
       selectionWeight: 1,
@@ -84,8 +85,8 @@ const ensureDefaultStorySeed = async () => {
       body: defaultLetterBody,
     },
     {
-      name: "Female Story Letter",
-      description: "Female-specific story template.",
+      name: "महिला कथाको पत्र",
+      description: "महिलाका लागि विशेष कथाको टेम्प्लेट।",
       status: "ACTIVE",
       targetGender: "FEMALE",
       selectionWeight: 1,
@@ -203,26 +204,54 @@ export const buildPrintIdempotencyKey = ({ orderId, assignmentId = null, letterI
   return `PERSONALIZED_LETTER:${safeOrderId}:${safeAssignmentId}:${safeLetterId}`;
 };
 
-const buildStoryOpening = (customerName, storyTitle, isFirstLetter, isLastLetter, isNewStory) => {
-  if (isNewStory) return `This is where our story begins for ${customerName}, and the first spark of ${storyTitle} starts to glow.`;
-  if (isFirstLetter) return `This is where our story begins again for ${customerName}, and the path before us feels full of possibility.`;
-  if (isLastLetter) return `The final turn of ${storyTitle} is here, and the ending arrives with a warm and hopeful glow.`;
-  return `The story continues for ${customerName}, and the next page of ${storyTitle} opens with a gentle promise.`;
+const stripSizeFromVariant = (value = "") => {
+  const clean = normalizeText(value, "");
+  if (!clean) return "";
+
+  return clean
+    .replace(/\b(XXS|XS|S|M|L|XL|XXL|XXXL|SIZE|Sizes?)\b/gi, "")
+    .replace(/[-_/|,]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 };
 
-const buildRenderedTemplate = (templateBody, context) => {
+const resolveProductDisplayName = (product = {}, fallback = "सामान") => {
+  const directName = normalizeText(product.nepaliName || product.nameNepali || product.name || "", "");
+  return directName || fallback;
+};
+
+const resolveColorDisplayName = (colorValue = "", fallback = "रंग") => {
+  const value = normalizeText(colorValue, "");
+  if (!value) return fallback;
+  return value;
+};
+
+const buildStoryOpening = (customerName, storyTitle, isFirstLetter, isLastLetter, isNewStory) => {
+  if (isNewStory) return `${customerName} को लागि हाम्रो कथाको सुरुवात हुन्छ, र ${storyTitle} को पहिलो उज्यालो चम्किन्छ।`;
+  if (isFirstLetter) return `${customerName} को लागि कथाको फेरि सुरुवात हुन्छ, र आशा र सम्भावना नयाँ ढंगले अघि बढ्छ।`;
+  if (isLastLetter) return `${storyTitle} को अन्तिम अध्याय आइपुग्यो, र यो यात्रा शान्ति र आशा साथ समाप्त हुन्छ।`;
+  return `${customerName} को कथा निरन्तर जारी छ, र ${storyTitle} को अर्को पन्ना नरम आशा साथ खुल्दछ।`;
+};
+
+export const buildRenderedTemplate = (templateBody, context) => {
   const customerFirstName = normalizeText(context.customer?.firstName || context.customer?.name || "Customer", "Customer");
   const customerLastName = normalizeText(context.customer?.lastName || "", "");
-  const productName = normalizeText(context.product?.name || context.order?.productName || "your item", "your item");
-  const storyTitle = normalizeText(context.story?.title || "the story", "the story");
-  const letterTitle = normalizeText(context.letter?.title || "the letter", "the letter");
+  const productName = resolveProductDisplayName(context.product || context.order?.product || {}, "सामान");
+  const productVariantRaw = normalizeText(context.product?.variant || context.order?.productVariant || context.order?.variant || context.product?.variantLabel || "", "");
+  const productVariant = stripSizeFromVariant(productVariantRaw);
+  const productColor = resolveColorDisplayName(context.product?.color || context.order?.colorName || context.order?.color || "", "रंग");
+  const storyTitle = normalizeText(context.story?.title || "कथा", "कथा");
+  const letterTitle = normalizeText(context.letter?.title || "पत्र", "पत्र");
   const letterContent = normalizeText(context.letter?.content || "", "");
   const previousContinuity = normalizeText(context.previousLetter?.continuitySummary || context.previousLetter?.summary || "", "");
   const opening = normalizeText(context.opening || buildStoryOpening(customerFirstName, storyTitle, context.flags?.isFirstLetterOfStory, context.flags?.isLastLetterOfStory, context.flags?.isNewStory), "");
-  const continuity = normalizeText(context.continuity || previousContinuity || "The path ahead feels warm and full of wonder.", "The path ahead feels warm and full of wonder.");
-  const storyContent = normalizeText(context.story_content || letterContent || "The story unfolds gently and beautifully.", "The story unfolds gently and beautifully.");
-  const closing = normalizeText(context.closing || `Until then, enjoy your ${productName}.`, `Until then, enjoy your ${productName}.`);
-  const signature = normalizeText(context.signature || "With love,\nThe Aama Story Team", "With love,\nThe Aama Story Team");
+  const continuity = normalizeText(context.continuity || previousContinuity || "अगाडि बढ्दै कथाको धारणा नरम र आशावादी हुँदै जान्छ।", "अगाडि बढ्दै कथाको धारणा नरम र आशावादी हुँदै जान्छ।");
+  const storyContent = normalizeText(context.story_content || letterContent || "कथा सन्तुलित र मनमोहक रूपमा विकास हुँदै छ।", "कथा सन्तुलित र मनमोहक रूपमा विकास हुँदै छ।");
+  const closing = normalizeText(
+    context.closing || `तपाईंले ${productColor} ${productName} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ। यो सामान तपाईको दैनिक जीवनमा सहजता, आत्मविश्वास र सन्तोष थप्नेछ।`,
+    `तपाईंले ${productColor} ${productName} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ। यो सामान तपाईको दैनिक जीवनमा सहजता, आत्मविश्वास र सन्तोष थप्नेछ।`
+  );
+  const signature = normalizeText(context.signature || "प्रेम सहित,\nThe Aama Story Team", "प्रेम सहित,\nThe Aama Story Team");
 
   let output = templateBody;
   const replacements = {
@@ -230,6 +259,8 @@ const buildRenderedTemplate = (templateBody, context) => {
     "{{customer.last_name}}": customerLastName,
     "{{customer.display_name}}": `${customerFirstName} ${customerLastName}`.trim() || customerFirstName,
     "{{product.name}}": productName,
+    "{{product.variant}}": productVariant,
+    "{{product.color}}": productColor,
     "{{story.title}}": storyTitle,
     "{{letter.title}}": letterTitle,
     "{{letter.content}}": letterContent,
@@ -676,21 +707,58 @@ export const printPersonalizedLetter = async (orderId, manufacturerId, idempoten
       orderBy: { createdAt: "desc" },
     });
 
+    const firstOrderItem = Array.isArray(order.items) ? order.items[0] : null;
+    const productId = firstOrderItem?.productId || firstOrderItem?._id || firstOrderItem?.id || "";
+    let productRecord = null;
+    if (productId) {
+      productRecord = await tx.product.findUnique({
+        where: { id: productId },
+        select: { name: true, nepaliName: true },
+      });
+    }
+
+    const productDisplayName = resolveProductDisplayName(
+      {
+        name: productRecord?.name || firstOrderItem?.name || firstOrderItem?.productName || "सामान",
+        nepaliName: productRecord?.nepaliName || firstOrderItem?.nepaliName || firstOrderItem?.productNepaliName || firstOrderItem?.product?.nepaliName || "",
+      },
+      "सामान"
+    );
+    const variantDisplayName = stripSizeFromVariant(
+      normalizeText(
+        firstOrderItem?.variant || firstOrderItem?.variantName || firstOrderItem?.variantLabel || firstOrderItem?.color || "",
+        ""
+      )
+    );
+    const colorDisplayName = resolveColorDisplayName(
+      firstOrderItem?.colorNepaliName || firstOrderItem?.colorNameNepali || firstOrderItem?.color || "",
+      "रंग"
+    );
+
     const renderedContent = buildRenderedTemplate(template.body || defaultLetterBody, {
       customer,
+      product: {
+        name: productDisplayName,
+        nepaliName: productDisplayName,
+        variant: variantDisplayName,
+        variantLabel: variantDisplayName,
+        color: colorDisplayName,
+      },
       order: {
         id: order.id,
-        productName: Array.isArray(order.items) ? (order.items[0]?.name || order.items[0]?.product?.name || "your item") : "your item",
+        productName: productDisplayName,
+        productVariant: variantDisplayName,
+        colorName: colorDisplayName,
       },
       ...({
         story: { id: story.id, title: story.title },
         letter: nextLetter,
         previousLetter: previousDelivery ? { continuitySummary: previousDelivery.renderedContent || "" } : null,
         opening: buildStoryOpening(customerFirstNameText(customer), story.title, assignment.nextSequenceNumber === 1, false, assignment.nextSequenceNumber === 1),
-        continuity: previousDelivery ? "Last time, the story continued with quiet certainty and a sense of promise." : "This is where our story begins...",
+        continuity: previousDelivery ? "अघिल्लो पटक कथाले शान्त विश्वास र आशाको साथरहेर अगाडि बढ्यो।" : "कथाको यो नयाँ अध्याय सुरु हुन्छ।",
         story_content: nextLetter.content,
-        closing: `Until then, enjoy your ${Array.isArray(order.items) ? (order.items[0]?.name || order.items[0]?.product?.name || "item") : "item"}.`,
-        signature: "With love,\nThe Aama Story Team",
+        closing: `तपाईंले ${productDisplayName}${variantDisplayName ? ` ${variantDisplayName}` : ""} चयन गर्नुभएकोमा हामीलाई विशेष खुशी लागेको छ।`,
+        signature: "प्रेम सहित,\nThe Aama Story Team",
       }),
       flags: {
         isFirstLetterOfStory: assignment.nextSequenceNumber === 1,

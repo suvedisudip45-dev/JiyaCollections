@@ -65,12 +65,12 @@ const StoryLetterLibrary = ({ token }) => {
 
   const samplePreview = useMemo(() => {
     return templateForm.body
-      .replace(/{{customer\.first_name}}/g, "आरव")
-      .replace(/{{opening}}/g, "यो हाम्रो कथाको शुरुवात हो, जहाँ भविष्यको उज्यालो हामीलाई मुस्कुराउँछ।")
-      .replace(/{{story_content}}/g, "सहज एउटा पत्र आउँछ जसले हाम्रा मनमा आशा र खुशीको नयाँ कथालाई लिएर आउँछ।")
-      .replace(/{{continuity}}/g, "यो यात्रा न्यानो हावा, विश्वास र उज्यालो भविष्यको साथ अगाडि बढिरहेको छ।")
-      .replace(/{{closing}}/g, "तत्कालका लागि, यो स्मरणीय पत्रले तपाईको जीवनमा प्रसन्नता र आशाको भावना दिन्छ।")
-      .replace(/{{signature}}/g, "प्रेम सहित,\nद आमा स्टोरी टीम");
+      .replace(/{{customer\.first_name}}/g, "Aarav")
+      .replace(/{{opening}}/g, "This is where our story begins, and the future gently smiles toward us.")
+      .replace(/{{story_content}}/g, "A simple letter arrives carrying a warm new chapter of hope and joy.")
+      .replace(/{{continuity}}/g, "The journey continues with gentle wind, trust, and the glow of a bright tomorrow.")
+      .replace(/{{closing}}/g, "For now, this special letter brings warmth and comfort to your heart.")
+      .replace(/{{signature}}/g, "With love,\nThe Aama Story Team");
   }, [templateForm.body]);
 
   const fetchLibrary = async () => {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { prisma } from "../config/db.js";
-import { resolveOrderReference } from "../services/personalizedLetterService.js";
+import { buildRenderedTemplate, resolveOrderReference } from "../services/personalizedLetterService.js";
 
 test("resolveOrderReference accepts an actual order id and returns the matching order", async () => {
   const originalFindUnique = prisma.order.findUnique;
@@ -66,4 +66,16 @@ test("resolveOrderReference falls back to the assignment record when the caller 
     prisma.order.findUnique = originalOrderFindUnique;
     prisma.orderAssignment.findUnique = originalAssignmentFindUnique;
   }
+});
+
+test("buildRenderedTemplate keeps the product color and Nepali product name together in the letter", () => {
+  const rendered = buildRenderedTemplate("तपाईंले {{product.color}} {{product.name}} चयन गर्नुभएकोमा", {
+    customer: { firstName: "दीप" },
+    product: { name: "टी-शर्ट", color: "कालो" },
+    story: { title: "स्वागत यात्रा" },
+    letter: { title: "प्रथम पत्र", content: "भेटामा नमस्कार" },
+  });
+
+  assert.match(rendered, /कालो टी-शर्ट/);
+  assert.doesNotMatch(rendered, /M|L|XL/);
 });

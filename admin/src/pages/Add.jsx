@@ -17,6 +17,7 @@ const Add = ({ token }) => {
   const [featuredTarget, setFeaturedTarget] = useState({ type: "gallery", index: 0 });
 
   const [name, setName] = useState("");
+  const [nepaliName, setNepaliName] = useState("");
   const [description, setDesription] = useState("");
   const [price, setPrice] = useState("");
   const [discount, setDiscount] = useState("");
@@ -190,6 +191,7 @@ const Add = ({ token }) => {
 
       const formData = new FormData();
       formData.append("name", name);
+      formData.append("nepaliName", nepaliName);
       formData.append("description", description);
       formData.append("price", price);
       formData.append("discount", discount);
@@ -241,6 +243,7 @@ const Add = ({ token }) => {
       if (response.data.success) {
         toast.success(response.data.message || "Product & Varieties Added Successfully!");
         setName("");
+        setNepaliName("");
         setDesription("");
         setImage1(false);
         setImage2(false);
@@ -358,6 +361,17 @@ const Add = ({ token }) => {
             type="text"
             placeholder="e.g. Pure Cotton Classic Oxford Shirt"
             required
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-bold text-slate-700 mb-1">Product Nepali Name</label>
+          <input
+            onChange={(e) => setNepaliName(e.target.value)}
+            value={nepaliName}
+            className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-slate-900"
+            type="text"
+            placeholder="जस्तै: टि-शर्ट, कालो स्वेटर"
           />
         </div>
 

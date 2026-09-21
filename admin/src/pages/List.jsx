@@ -12,6 +12,7 @@ const List = ({ token }) => {
 
   // Edit Modal State
   const [editName, setEditName] = useState("");
+  const [editNepaliName, setEditNepaliName] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [editPrice, setEditPrice] = useState("");
   const [editDiscount, setEditDiscount] = useState("");
@@ -109,6 +110,7 @@ const List = ({ token }) => {
   const openEditModal = (product) => {
     setEditingProduct(product);
     setEditName(product.name || "");
+    setEditNepaliName(product.nepaliName || "");
     setEditDescription(product.description || "");
     setEditPrice(product.price || "");
     setEditDiscount(product.discount || 0);
@@ -224,6 +226,7 @@ const List = ({ token }) => {
       const formData = new FormData();
       formData.append("id", editingProduct._id || editingProduct.id);
       formData.append("name", editName);
+      formData.append("nepaliName", editNepaliName);
       formData.append("description", editDescription);
       formData.append("price", editPrice);
       formData.append("discount", editDiscount);
@@ -504,6 +507,17 @@ const List = ({ token }) => {
                   onChange={(e) => setEditName(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-indigo-500"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block mb-1 font-bold text-slate-700">Nepali Product Name</label>
+                <input
+                  type="text"
+                  value={editNepaliName}
+                  onChange={(e) => setEditNepaliName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-slate-900 font-medium focus:outline-none focus:border-indigo-500"
+                  placeholder="जस्तै: कालो टी-शर्ट"
                 />
               </div>
 
