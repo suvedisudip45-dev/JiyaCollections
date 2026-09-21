@@ -6,6 +6,7 @@ import {
 } from "../services/accountingPostingEngine.js";
 import { runAllocationEngine } from "./orderAssignmentController.js";
 import { resolveDistrictShippingFee } from "./shippingController.js";
+import { createInactiveSocialCustomerProfile } from "./userController.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -686,13 +687,56 @@ const adminCreateOrder = async (req, res) => {
     if (client.email && client.email.trim()) {
       try {
         const existingUser = await prisma.user.findUnique({
-          where: { email: client.email.trim() },
+          where: { email: client.email.trim().toLowerCase() },
         });
         if (existingUser) {
           orderUserId = existingUser.id;
         }
       } catch (e) {
         console.error("Error checking user for admin order:", e);
+      }
+    }
+
+    const isSocialOrder = /social|instagram|facebook|whatsapp|tiktok|messenger|phone/i.test(
+      String(client.source || "Social Media")
+    );
+
+    let socialCustomerProfile = null;
+    if (isSocialOrder && client.phone) {
+      try {
+        socialCustomerProfile = await createInactiveSocialCustomerProfile({
+          firstName: client.firstName,
+          lastName: client.lastName,
+          phone: client.phone,
+          email: client.email,
+          gender: client.gender,
+          city: client.city,
+          district: client.district,
+          state: client.state,
+          country: client.country,
+          address: {
+            firstName: client.firstName,
+            lastName: client.lastName,
+            phone: client.phone,
+            city: client.city || client.district || "Kathmandu",
+            district: client.district || client.city || "Kathmandu",
+            state: client.state || "Bagmati Province",
+            country: client.country || "Nepal",
+            street: client.street || "",
+            landmark: client.landmark || "",
+            zipcode: client.zipcode || "44600",
+          },
+          socialUsername: client.socialUsername || "",
+          source: client.source || "Social Media",
+          loyaltyTier: client.loyaltyTier || "",
+          orderId: "",
+        });
+
+        if (socialCustomerProfile?.success && socialCustomerProfile.user) {
+          orderUserId = socialCustomerProfile.user.id;
+        }
+      } catch (profileErr) {
+        console.error("Error creating inactive social customer profile in admin order:", profileErr);
       }
     }
 

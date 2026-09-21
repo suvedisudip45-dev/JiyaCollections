@@ -8,16 +8,21 @@ datasource db {
 }
 
 model User {
-  id        String  @id @default(uuid())
-  firstName String? @default("")
-  lastName  String? @default("")
-  phone     String? @default("")
-  gender    String? @default("PREFER_NOT_TO_SAY") // MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
-  name      String
-  email     String  @unique
-  password  String
-  cartData  Json    @default("{}")
-  addresses Json    @default("[]")
+  id                  String  @id @default(uuid())
+  firstName           String? @default("")
+  lastName            String? @default("")
+  phone               String? @default("")
+  gender              String? @default("PREFER_NOT_TO_SAY") // MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
+  name                String
+  email               String  @unique
+  password            String
+  socialCustomerCode  String? @unique
+  socialCustomerPhone String? @default("")
+  loyaltyTier         String? @default("")
+  isInactiveProfile   Boolean @default(false)
+  inactiveProfileData Json    @default("{}")
+  cartData            Json    @default("{}")
+  addresses           Json    @default("[]")
 
   storyAssignments CustomerStoryAssignment[] @relation("CustomerStoryAssignmentCustomer")
   letterDeliveries LetterDelivery[] @relation("CustomerLetterDeliveryCustomer")

@@ -253,6 +253,7 @@ const Customers = ({ token }) => {
                 <tr className="bg-gray-50/80 border-b border-gray-200 text-gray-500 font-bold uppercase tracking-wider text-[10px]">
                   <th className="py-3 px-4">Customer</th>
                   <th className="py-3 px-4">Loyalty Level</th>
+                  <th className="py-3 px-4">Social Code</th>
                   <th className="py-3 px-4">Total Spend</th>
                   <th className="py-3 px-4">Orders</th>
                   <th className="py-3 px-4">Letters Sent</th>
@@ -289,6 +290,21 @@ const Customers = ({ token }) => {
                           <span>{lvl.badgeIcon}</span>
                           <span>{lvl.name}</span>
                         </span>
+                      </td>
+
+                      <td className="py-3 px-4">
+                        {c.socialCustomerCode ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="inline-flex w-fit items-center gap-1 rounded-full bg-violet-100 text-violet-700 font-black px-2 py-1 border border-violet-200">
+                              {c.socialCustomerCode}
+                            </span>
+                            {c.loyaltyTier && (
+                              <span className="text-[10px] text-gray-500">Tier: {c.loyaltyTier}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 text-[11px]">—</span>
+                        )}
                       </td>
 
                       <td className="py-3 px-4 font-black text-gray-900">

@@ -3,6 +3,12 @@ import validator from "validator";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { decryptAES } from "../utils/crypto.js";
+import {
+  buildInactiveSocialProfile,
+  generateSocialCustomerCode,
+  normalizeGender,
+  normalizePhoneNumber,
+} from "../utils/socialCustomerProfile.js";
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET);
@@ -177,6 +183,309 @@ const registerUser = async (req, res) => {
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+export const createInactiveSocialCustomerProfile = async (payload = {}) => {
+  const {
+    firstName = "",
+    lastName = "",
+    phone = "",
+    email = "",
+    gender = "",
+    city = "",
+    district = "",
+    state = "",
+    country = "",
+    address = {},
+    socialUsername = "",
+    source = "Social Media",
+    loyaltyTier = "",
+    orderId = "",
+  } = payload;
+
+  const normalizedPhone = normalizePhoneNumber(phone);
+  if (!normalizedPhone) {
+    throw new Error("Phone number is required to create a social media profile");
+  }
+
+  let code = generateSocialCustomerCode();
+  let attempts = 0;
+  while (attempts < 10) {
+    const existingCode = await prisma.user.findUnique({ where: { socialCustomerCode: code } });
+    if (!existingCode) break;
+    code = generateSocialCustomerCode();
+    attempts += 1;
+  }
+
+  const existingProfile = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { phone: normalizedPhone },
+        { socialCustomerPhone: normalizedPhone },
+      ],
+    },
+  });
+
+  if (existingProfile && existingProfile.isInactiveProfile) {
+    return {
+      success: true,
+      code: existingProfile.socialCustomerCode,
+      user: existingProfile,
+      message: "Inactive social profile already exists for this phone number",
+    };
+  }
+
+  if (existingProfile && !existingProfile.isInactiveProfile) {
+    return {
+      success: false,
+      code: null,
+      user: existingProfile,
+      message: "This phone number is already linked to an active website account",
+    };
+  }
+
+  const baseProfile = buildInactiveSocialProfile({
+    firstName,
+    lastName,
+    phone: normalizedPhone,
+    email,
+    gender,
+    city,
+    district,
+    state,
+    country,
+    address,
+    socialUsername,
+    source,
+    loyaltyTier,
+    orderId,
+  });
+
+  const generatedCode = baseProfile.socialCustomerCode;
+  const activeCode = code && code.length === 8 ? code : generatedCode;
+  const candidateEmail = (email && validator.isEmail(email.trim()))
+    ? email.trim().toLowerCase()
+    : `social.${normalizedPhone}.${activeCode.toLowerCase()}@inactive.local`;
+
+  const duplicateEmail = await prisma.user.findUnique({ where: { email: candidateEmail } });
+  const finalEmail = duplicateEmail ? `social.${normalizedPhone}.${Date.now()}.${activeCode.toLowerCase()}@inactive.local` : candidateEmail;
+  const socialPassword = await bcrypt.hash(`social-${activeCode.toLowerCase()}`, 10);
+  const socialAddress = Array.isArray(address) ? address : (address && Object.keys(address).length ? [address] : []);
+
+  const user = await prisma.user.create({
+    data: {
+      firstName: (firstName || "").trim() || "",
+      lastName: (lastName || "").trim() || "",
+      name: `${(firstName || "").trim()} ${(lastName || "").trim()}`.trim() || "Social Media Customer",
+      phone: normalizedPhone,
+      gender: normalizeGender(gender),
+      email: finalEmail,
+      password: socialPassword,
+      socialCustomerCode: activeCode,
+      socialCustomerPhone: normalizedPhone,
+      loyaltyTier: String(loyaltyTier || "").trim(),
+      isInactiveProfile: true,
+      inactiveProfileData: {
+        ...baseProfile.inactiveProfileData,
+        source: String(source || "Social Media").trim() || "Social Media",
+        loyaltyTier: String(loyaltyTier || "").trim(),
+      },
+      cartData: {},
+      addresses: socialAddress,
+    },
+  });
+
+  return {
+    success: true,
+    code: activeCode,
+    user,
+    message: "Inactive website profile created for social media customer",
+  };
+};
+
+export const validateSocialCustomerProfile = async (req, res) => {
+  try {
+    const { phone, code } = req.body;
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedCode = String(code || "").trim().toUpperCase();
+
+    if (!normalizedPhone || !normalizedCode) {
+      return res.json({
+        success: false,
+        message: "Mobile number and secret code are required",
+      });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        phone: normalizedPhone,
+        socialCustomerCode: normalizedCode,
+        isInactiveProfile: true,
+      },
+    });
+
+    if (!user) {
+      const active = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: normalizedPhone },
+            { socialCustomerPhone: normalizedPhone },
+          ],
+          isInactiveProfile: false,
+        },
+      });
+
+      if (active) {
+        return res.json({
+          success: false,
+          message: "This mobile number already belongs to an active website profile. Please log in.",
+        });
+      }
+
+      return res.json({
+        success: false,
+        message: "Invalid mobile number or secret code. Please check the code provided during your social-media purchase.",
+      });
+    }
+
+    const inactiveProfileData = typeof user.inactiveProfileData === "string"
+      ? JSON.parse(user.inactiveProfileData || "{}")
+      : (user.inactiveProfileData || {});
+
+    return res.json({
+      success: true,
+      customer: {
+        id: user.id,
+        firstName: user.firstName || inactiveProfileData.firstName || "",
+        lastName: user.lastName || inactiveProfileData.lastName || "",
+        name: user.name || `${user.firstName || inactiveProfileData.firstName || ""} ${user.lastName || inactiveProfileData.lastName || ""}`.trim() || "Social Customer",
+        phone: user.phone || user.socialCustomerPhone || normalizedPhone,
+        gender: user.gender || inactiveProfileData.gender || "PREFER_NOT_TO_SAY",
+        socialCustomerCode: user.socialCustomerCode,
+        loyaltyTier: user.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+        inactiveProfileData,
+      },
+    });
+  } catch (error) {
+    console.error("Error validating social customer profile:", error);
+    res.json({ success: false, message: error.message || "Unable to validate profile" });
+  }
+};
+
+export const activateSocialCustomerProfile = async (req, res) => {
+  try {
+    const {
+      phone,
+      code,
+      email,
+      password,
+      firstName,
+      lastName,
+      gender,
+      extraData = {},
+    } = req.body;
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedCode = String(code || "").trim().toUpperCase();
+
+    if (!normalizedPhone || !normalizedCode) {
+      return res.json({
+        success: false,
+        message: "Mobile number and secret code are required",
+      });
+    }
+
+    if (!email || !validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
+
+    if (!password || String(password).length < 8) {
+      return res.json({
+        success: false,
+        message: "Please enter a strong password (minimum 8 characters)",
+      });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        phone: normalizedPhone,
+        socialCustomerCode: normalizedCode,
+        isInactiveProfile: true,
+      },
+    });
+
+    if (!user) {
+      return res.json({
+        success: false,
+        message: "Invalid mobile number or secret code. Please check the code provided during your purchase.",
+      });
+    }
+
+    const candidateEmail = String(email).trim().toLowerCase();
+    const existingEmailUser = await prisma.user.findUnique({ where: { email: candidateEmail } });
+    if (existingEmailUser && existingEmailUser.id !== user.id) {
+      return res.json({ success: false, message: "This email is already registered to another account" });
+    }
+
+    const inactiveProfileData = typeof user.inactiveProfileData === "string"
+      ? JSON.parse(user.inactiveProfileData || "{}")
+      : (user.inactiveProfileData || {});
+
+    const finalFirstName = String(firstName || inactiveProfileData.firstName || user.firstName || "").trim();
+    const finalLastName = String(lastName || inactiveProfileData.lastName || user.lastName || "").trim();
+    const finalGender = normalizeGender(gender || inactiveProfileData.gender || user.gender || "");
+    const profileAddress = Array.isArray(inactiveProfileData.addresses)
+      ? inactiveProfileData.addresses
+      : (Array.isArray(user.addresses) ? user.addresses : []);
+    const mergedAddresses = Array.isArray(extraData.addresses) ? extraData.addresses : profileAddress;
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        firstName: finalFirstName,
+        lastName: finalLastName,
+        name: `${finalFirstName} ${finalLastName}`.trim() || "Social Customer",
+        email: candidateEmail,
+        password: hashedPassword,
+        phone: normalizedPhone,
+        gender: finalGender,
+        isInactiveProfile: false,
+        inactiveProfileData: {
+          ...inactiveProfileData,
+          email: candidateEmail,
+          phone: normalizedPhone,
+          gender: finalGender,
+          activationCompletedAt: new Date().toISOString(),
+          ...extraData,
+        },
+        addresses: mergedAddresses,
+      },
+    });
+
+    const token = createToken(updatedUser.id);
+
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: updatedUser.id,
+        firstName: updatedUser.firstName || "",
+        lastName: updatedUser.lastName || "",
+        name: updatedUser.name,
+        email: updatedUser.email,
+        phone: updatedUser.phone || "",
+        gender: updatedUser.gender || "PREFER_NOT_TO_SAY",
+        addresses: mergedAddresses,
+      },
+      loyaltyTier: updatedUser.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+    });
+  } catch (error) {
+    console.error("Error activating social customer profile:", error);
+    res.json({ success: false, message: error.message || "Unable to activate loyalty profile" });
   }
 };
 

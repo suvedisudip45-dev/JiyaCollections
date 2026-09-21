@@ -27,6 +27,12 @@ export const listAllCustomers = async (req, res) => {
           name: true,
           email: true,
           phone: true,
+          gender: true,
+          socialCustomerCode: true,
+          socialCustomerPhone: true,
+          loyaltyTier: true,
+          isInactiveProfile: true,
+          inactiveProfileData: true,
           addresses: true,
         },
       }),
@@ -92,13 +98,21 @@ export const listAllCustomers = async (req, res) => {
         ? addresses[0].city
         : (latestOrder ? parseJson(latestOrder.address, {})?.city : "");
 
+      const inactiveProfileData = parseJson(user.inactiveProfileData, {});
+
       return {
         id: user.id,
         firstName: user.firstName || "",
         lastName: user.lastName || "",
         name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Customer",
         email: user.email,
-        phone: user.phone || (addresses[0]?.phone || ""),
+        phone: user.phone || (addresses[0]?.phone || "") || user.socialCustomerPhone || "",
+        gender: user.gender || inactiveProfileData.gender || "PREFER_NOT_TO_SAY",
+        socialCustomerCode: user.socialCustomerCode || "",
+        socialCustomerPhone: user.socialCustomerPhone || user.phone || "",
+        loyaltyTier: user.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+        isInactiveProfile: Boolean(user.isInactiveProfile),
+        inactiveProfileData,
         city: primaryCity || "",
         totalSpend,
         totalOrders,
@@ -115,8 +129,8 @@ export const listAllCustomers = async (req, res) => {
         (c) =>
           c.name.toLowerCase().includes(query) ||
           c.email.toLowerCase().includes(query) ||
-          (c.phone && c.phone.toLowerCase().includes(query)) ||
-          (c.city && c.city.toLowerCase().includes(query)) ||
+          (c.phone && c.phone.toLowerCase().includes(query)) ||          (c.socialCustomerCode && c.socialCustomerCode.toLowerCase().includes(query)) ||
+          (c.loyaltyTier && c.loyaltyTier.toLowerCase().includes(query)) ||          (c.city && c.city.toLowerCase().includes(query)) ||
           c.currentLevel.name.toLowerCase().includes(query)
       );
     }
@@ -163,6 +177,8 @@ export const getCustomerDetails = async (req, res) => {
       address: parseJson(o.address, {}),
     }));
 
+    const inactiveProfileData = parseJson(user.inactiveProfileData, {});
+
     res.json({
       success: true,
       customer: {
@@ -172,6 +188,12 @@ export const getCustomerDetails = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone || "",
+        gender: user.gender || inactiveProfileData.gender || "PREFER_NOT_TO_SAY",
+        socialCustomerCode: user.socialCustomerCode || "",
+        socialCustomerPhone: user.socialCustomerPhone || user.phone || "",
+        loyaltyTier: user.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+        isInactiveProfile: Boolean(user.isInactiveProfile),
+        inactiveProfileData,
         addresses,
       },
       loyalty: loyaltyStatus,
