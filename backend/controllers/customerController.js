@@ -123,8 +123,9 @@ export const listAllCustomers = async (req, res) => {
     });
 
     // Apply search filter
-    if (search.trim()) {
-      const query = search.toLowerCase().trim();
+    const searchStr = typeof search === "string" ? search.trim() : "";
+    if (searchStr) {
+      const query = searchStr.toLowerCase();
       customerList = customerList.filter(
         (c) =>
           c.name.toLowerCase().includes(query) ||

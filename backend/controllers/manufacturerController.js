@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import validator from "validator";
 import { v2 as cloudinary } from "cloudinary";
 import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } from "../services/ncmClient.js";
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
@@ -82,6 +83,10 @@ const loginManufacturer = async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password)
       return res.json({ success: false, message: "Email and password required" });
+
+    if (!validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
 
     const manufacturer = await prisma.manufacturer.findUnique({
       where: { email: email.toLowerCase().trim() },
@@ -187,6 +192,18 @@ const registerManufacturer = async (req, res) => {
       return res.json({ success: false, message: "Business name, email, password, phone, and city are required" });
     }
 
+    if (!validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
+
+    const rateToCheck = commissionRate !== undefined ? commissionRate : agreedCommissionRate;
+    if (rateToCheck !== undefined && rateToCheck !== null && rateToCheck !== "") {
+      const numRate = Number(rateToCheck);
+      if (isNaN(numRate) || numRate < 0 || numRate > 100) {
+        return res.json({ success: false, message: "Commission rate must be between 0% and 100%" });
+      }
+    }
+
     const normalizedPhone = normalizePhoneNumber(phone);
     const normalizedPickupContactPhone = pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "";
     if (!isValidMobileNumber(normalizedPhone)) {
@@ -196,7 +213,8 @@ const registerManufacturer = async (req, res) => {
       return res.json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97" });
     }
 
-    const existing = await prisma.manufacturer.findUnique({ where: { email: email.toLowerCase().trim() } });
+    const cleanEmail = email.toLowerCase().trim();
+    const existing = await prisma.manufacturer.findUnique({ where: { email: cleanEmail } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
 
     const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });

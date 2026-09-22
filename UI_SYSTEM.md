@@ -74,6 +74,14 @@ Purpose
 - Image uploads (admin): multi-file selection, preview before upload, progress indicator.
 - Notifications: react-toastify for toasts; consistent placement top-right and dismiss behavior.
 
+### Admin Direct-Order Step Flow
+- Step 1: enter and validate a digits-only contact number.
+- Step 2: show `New customer` when no profile or historical order exists; show blank required fields.
+- Step 3: show `Code required` for a known contact. The admin enters the code provided by the customer; the code is never displayed by lookup.
+- Step 4: show either `Verified customer` or `Existing customer - loyalty excluded`, and populate prior customer data for both states.
+- Step 5: collect or review delivery details, select products, review payment, and confirm creation.
+- Verification status must be communicated with text and accessible status messaging, not color alone. Existing account data is used as an order draft and is not overwritten implicitly.
+
 9. Testing & visual regression
 - Unit tests: none enforced in frontend; recommend jest + react-testing-library for unit and integration tests.
 - E2E: recommend Playwright for critical flows (checkout, login, product lifecycle).

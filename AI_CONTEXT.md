@@ -54,7 +54,16 @@ Purpose
 - Use prisma client for DB interactions; prefer prisma.* APIs over raw SQL unless necessary.
 - Maintain backward compatibility for APIs unless user specifies breaking-change versioning.
 
-7. Security and privacy constraints
+7. Security, Injection Defense & Validation Constraints (MANDATORY FOR ALL AI MODELS)
+- **Injection Attack Prevention & Sanitization Mandate**:
+  - Global middleware `backend/middleware/sanitize.js` is required in `backend/server.js`. Never remove or bypass it.
+  - Client sanitizers: Always import `sanitizeInput` / `sanitizeFormData` from `src/utils/sanitize.js` in `frontend/`, `admin/`, and `manufacturer/` when creating new forms, text inputs, search fields, or textareas.
+  - Backend controllers: Always validate data types (e.g. `typeof str === "string"`) and sanitize free-text inputs with `sanitizeText(str)`.
+  - Database queries: Never construct raw SQL strings (`$queryRawUnsafe`, string concatenation). Always use parameterized Prisma queries.
+  - Prototype Pollution: Never allow `__proto__`, `constructor`, or `prototype` keys from user payloads into state or database objects.
+  - Null bytes: Always strip `\0` and `%00` from incoming strings.
+  - XSS Prevention: Never use `dangerouslySetInnerHTML` for unescaped user-supplied content.
+  - Automated tests: Always verify new or modified endpoints by running `node --test tests/injectionProtection.test.js`.
 - Never output or hardcode JWT_SECRET, AES keys, payment keys, or DB credentials in code or generated examples.
 - When adding logging, redact PII and tokens.
 

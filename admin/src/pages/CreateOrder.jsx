@@ -36,6 +36,7 @@ const CreateOrder = ({ token }) => {
     firstName: "",
     lastName: "",
     phone: "",
+    socialCode: "",
     email: "",
     gender: "PREFER_NOT_TO_SAY",
     province: "Bagmati Province",
@@ -86,6 +87,10 @@ const CreateOrder = ({ token }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdOrderForPrint, setCreatedOrderForPrint] = useState(null);
   const [isPrintingModalActive, setIsPrintingModalActive] = useState(false);
+  const [existingCustomer, setExistingCustomer] = useState(null);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [customerLookupMessage, setCustomerLookupMessage] = useState("");
+  const [customerVerificationState, setCustomerVerificationState] = useState("IDLE");
 
   // Load Shipping Config, Products & Categories
   useEffect(() => {
@@ -160,9 +165,19 @@ const CreateOrder = ({ token }) => {
 
   // Client form changes handler
   const handleClientChange = (e) => {
-    const { name, value } = e.target;
+    const { name } = e.target;
+    const value = name === "phone"
+      ? e.target.value.replace(/\D/g, "").slice(0, 10)
+      : e.target.value;
     setClient((prev) => {
       const updated = { ...prev, [name]: value };
+
+      if (name === "phone") {
+        updated.socialCode = "";
+        setExistingCustomer(null);
+        setCustomerLookupMessage("");
+        setCustomerVerificationState("IDLE");
+      }
 
       if (name === "province") {
         const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
@@ -201,6 +216,108 @@ const CreateOrder = ({ token }) => {
       return updated;
     });
   };
+
+  const lookupCustomerByPhone = async (phoneValue = client.phone) => {
+    if (!phoneValue.trim()) return;
+    setCustomerLookupLoading(true);
+    setCustomerLookupMessage("");
+    try {
+      const response = await axios.get(`${backendUrl}/api/order/admin-customer`, {
+        params: { phone: phoneValue.trim() },
+        headers: { token },
+      });
+      if (!response.data.success) {
+        setExistingCustomer(null);
+        setCustomerVerificationState("ERROR");
+        setCustomerLookupMessage(response.data.message || "Unable to check this contact number.");
+      } else if (response.data.found) {
+        setExistingCustomer(response.data.customer);
+        setCustomerVerificationState("CODE_REQUIRED");
+        setCustomerLookupMessage("Existing customer found. Enter the social code to verify this order.");
+      } else {
+        setExistingCustomer(null);
+        setCustomerVerificationState("NEW_CUSTOMER");
+        setCustomerLookupMessage("New contact number. Continue entering the customer details.");
+      }
+    } catch (error) {
+      setExistingCustomer(null);
+      setCustomerVerificationState("ERROR");
+      setCustomerLookupMessage(error.response?.data?.message || "Unable to check this contact number.");
+    } finally {
+      setCustomerLookupLoading(false);
+    }
+  };
+
+  const applyCustomerSnapshot = (customer) => {
+    if (!customer) return;
+    const address = customer.address || {};
+    setClient((prev) => ({
+      ...prev,
+      firstName: customer.firstName || prev.firstName,
+      lastName: customer.lastName || prev.lastName,
+      email: customer.email || prev.email,
+      gender: customer.gender || prev.gender,
+      phone: customer.phone || prev.phone,
+      province: address.province || prev.province,
+      district: address.district || prev.district,
+      city: address.city || prev.city,
+      ncmBranch: address.ncmBranch || prev.ncmBranch,
+      state: address.state || prev.state,
+      zipcode: address.zipcode || prev.zipcode,
+      country: address.country || prev.country,
+      street: address.street || prev.street,
+      landmark: address.landmark || prev.landmark,
+    }));
+  };
+
+  const verifyCustomerCode = async (codeValue = client.socialCode) => {
+    if (!existingCustomer || !codeValue.trim()) return;
+    setCustomerLookupLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/order/admin-customer/verify`, {
+        phone: client.phone,
+        code: codeValue.trim(),
+      }, { headers: { token } });
+
+      if (!response.data.success) {
+        setCustomerVerificationState("ERROR");
+        setCustomerLookupMessage(response.data.message || "Unable to verify this social code.");
+        return;
+      }
+
+      setCustomerVerificationState(response.data.verified ? "VERIFIED" : "UNVERIFIED");
+      setCustomerLookupMessage(
+        response.data.verified
+          ? "Verified customer. Loyalty and gift benefits remain active."
+          : "Customer data loaded, but this order will not receive loyalty or gift benefits."
+      );
+      applyCustomerSnapshot(response.data.customer);
+    } catch (error) {
+      setCustomerVerificationState("ERROR");
+      setCustomerLookupMessage(error.response?.data?.message || "Unable to verify this social code.");
+    } finally {
+      setCustomerLookupLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const phoneDigits = client.phone.replace(/\D/g, "");
+    if (!/^9[78]\d{8}$/.test(phoneDigits)) return undefined;
+
+    const lookupTimer = setTimeout(() => {
+      lookupCustomerByPhone(phoneDigits);
+    }, 300);
+
+    return () => clearTimeout(lookupTimer);
+  }, [client.phone]);
+
+  useEffect(() => {
+    if (existingCustomer && client.socialCode.trim().length >= 8) {
+      const verifyTimer = setTimeout(() => verifyCustomerCode(client.socialCode), 300);
+      return () => clearTimeout(verifyTimer);
+    }
+    return undefined;
+  }, [client.socialCode, existingCustomer]);
 
   useEffect(() => {
     const fetchNcmBranches = async () => {
@@ -628,7 +745,8 @@ const CreateOrder = ({ token }) => {
       socialUsername: "",
       firstName: "",
       lastName: "",
-      phone: "",
+        phone: "",
+        socialCode: "",
       email: "",
       gender: "PREFER_NOT_TO_SAY",
       province: "Bagmati Province",
@@ -651,6 +769,10 @@ const CreateOrder = ({ token }) => {
     setUseCustomShipping(false);
     setCreatedOrderForPrint(null);
     setIsPrintingModalActive(false);
+    setExistingCustomer(null);
+    setCustomerLookupLoading(false);
+    setCustomerLookupMessage("");
+    setCustomerVerificationState("IDLE");
   };
 
   return (
@@ -698,6 +820,65 @@ const CreateOrder = ({ token }) => {
       <form onSubmit={handleSubmitOrder} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* ================= LEFT COLUMN: CLIENT & SOCIAL DETAILS (5 cols) ================= */}
         <div className="lg:col-span-5 space-y-6">
+          {/* Contact Verification Step */}
+          <div className="bg-white rounded-2xl p-5 border border-indigo-200 shadow-xs space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
+                <span className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center text-[10px]">1</span>
+                Contact Verification
+              </h3>
+              <span className="text-[10px] text-gray-500">Required before details</span>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Contact Number <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">📞</span>
+                <input
+                  type="tel"
+                  name="phone"
+                  required
+                  placeholder="98XXXXXXXX"
+                  inputMode="numeric"
+                  pattern="9[78][0-9]{8}"
+                  maxLength={10}
+                  value={client.phone}
+                  onChange={handleClientChange}
+                  onBlur={() => lookupCustomerByPhone(client.phone)}
+                  className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
+                />
+              </div>
+              {customerLookupLoading && <p className="mt-1 text-[10px] text-gray-500">Checking previous purchases...</p>}
+              {!customerLookupLoading && customerLookupMessage && (
+                <p role="status" className={`mt-1 text-[10px] ${customerVerificationState === "VERIFIED" ? "text-emerald-700" : customerVerificationState === "UNVERIFIED" ? "text-amber-700" : customerVerificationState === "ERROR" ? "text-rose-700" : "text-gray-600"}`}>
+                  {customerLookupMessage}
+                </p>
+              )}
+            </div>
+            {existingCustomer && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Step 2: Customer Code</span>
+                  <span className="text-[10px] text-amber-800">{existingCustomer.name || "Existing customer"}</span>
+                </div>
+                <input
+                  type="text"
+                  name="socialCode"
+                  required
+                  maxLength={8}
+                  autoComplete="off"
+                  placeholder="Ask the customer for their social code"
+                  value={client.socialCode}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-white border border-amber-300 rounded-lg focus:border-amber-500 focus:outline-none uppercase"
+                />
+                {customerVerificationState === "VERIFIED" && <p className="text-[10px] font-semibold text-emerald-700">Verified. Loyalty and gifts are eligible.</p>}
+                {customerVerificationState === "UNVERIFIED" && <p className="text-[10px] font-semibold text-amber-800">Data loaded for dispatch only. Loyalty and gifts are disabled.</p>}
+              </div>
+            )}
+          </div>
+
           {/* Social Channel Selector Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
@@ -747,7 +928,7 @@ const CreateOrder = ({ token }) => {
           {/* Client Identity & Contact Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-              <span>👤</span> Customer Details
+              <span>3</span> Customer Details
             </h3>
 
             <div className="grid grid-cols-2 gap-3">
@@ -768,11 +949,12 @@ const CreateOrder = ({ token }) => {
 
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Last Name
+                  Last Name <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
                   name="lastName"
+                  required
                   placeholder="Last name"
                   value={client.lastName}
                   onChange={handleClientChange}
@@ -798,26 +980,7 @@ const CreateOrder = ({ token }) => {
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Contact Number <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">📞</span>
-                  <input
-                    type="tel"
-                    name="phone"
-                    required
-                    placeholder="98XXXXXXXX"
-                    value={client.phone}
-                    onChange={handleClientChange}
-                    className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
-                  />
-                </div>
-              </div>
-
-              <div>
+            <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
                   Email Address
                 </label>
@@ -832,7 +995,6 @@ const CreateOrder = ({ token }) => {
                     className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
-              </div>
             </div>
           </div>
 
@@ -840,7 +1002,7 @@ const CreateOrder = ({ token }) => {
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                <span>📍</span> Delivery Location
+                <span>4</span> Delivery Location
               </h3>
               <span className="text-[10px] text-indigo-600 font-semibold bg-indigo-50 px-2 py-0.5 rounded-full">
                 For 4x6 Dispatch Slip
@@ -962,7 +1124,7 @@ const CreateOrder = ({ token }) => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <div>
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                  <span>👗</span> Product Selection
+                  <span>5</span> Product Selection
                 </h3>
                 <p className="text-[11px] text-gray-400 mt-0.5">
                   Search instantly or open the visual catalog to pick sizes, colors, and multiple items.
@@ -1094,7 +1256,7 @@ const CreateOrder = ({ token }) => {
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                <span>🛒</span> Order Items ({selectedItems.length})
+                <span>6</span> Order Items ({selectedItems.length})
               </h3>
               {selectedItems.length > 0 && (
                 <button
@@ -1202,7 +1364,7 @@ const CreateOrder = ({ token }) => {
           {/* Pricing, Shipping Rates, Manual Discount & Payment Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-              <span>💳</span> Shipping, Discount & Order Summary
+              <span>7</span> Shipping, Discount & Order Summary
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">

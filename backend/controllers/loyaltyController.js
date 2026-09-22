@@ -105,8 +105,17 @@ export const calculateUserLoyalty = async (userId) => {
     }),
   ]);
 
-  const totalOrders = orders.length;
-  const totalSpend = orders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
+  const eligibleOrders = orders.filter((order) => {
+    const rewardData = typeof order.rewardApplied === "string"
+      ? (() => {
+          try { return JSON.parse(order.rewardApplied); } catch { return {}; }
+        })()
+      : (order.rewardApplied || {});
+    return rewardData.loyaltyExcluded !== true;
+  });
+
+  const totalOrders = eligibleOrders.length;
+  const totalSpend = eligibleOrders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
 
   // Determine highest tier achieved where user meets BOTH minSpend AND minOrders
   let currentLevel = levels[0] || DEFAULT_LEVELS[0];

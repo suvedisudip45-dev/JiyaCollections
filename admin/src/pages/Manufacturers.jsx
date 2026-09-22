@@ -254,1038 +254,1054 @@ const Manufacturers = ({ token }) => {
   };
 
   const handleCreateSubmit = async (e) => {
-    e.preventDefault();
-    if (!formData.province || !formData.district || !formData.city) {
-      toast.error("Please select province, district, and NCM town branch");
-      return;
-    }
+      e.preventDefault();
+      if (!formData.businessName.trim()) {
+        toast.error("Please enter a business name.");
+        return;
+      }
 
-    try {
-      const formattedAddress = formData.address
-        ? formData.address
-        : [formData.street, formData.landmark, formData.city, formData.district, formData.province]
+      if (!formData.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+        toast.error("Please enter a valid email address.");
+        return;
+      }
+
+      if (formData.commissionRate !== undefined && formData.commissionRate !== null && formData.commissionRate !== "") {
+        const numRate = Number(formData.commissionRate);
+        if (isNaN(numRate) || numRate < 0 || numRate > 100) {
+          toast.error("Commission rate must be between 0% and 100%.");
+          return;
+        }
+      }
+
+      if (!formData.province || !formData.district || !formData.city) {
+        toast.error("Please select province, district, and NCM town branch");
+        return;
+      }
+
+      try {
+        const formattedAddress = formData.address
+          ? formData.address
+          : [formData.street, formData.landmark, formData.city, formData.district, formData.province]
             .filter(Boolean)
             .join(", ");
 
-      const formattedPickupAddress = formData.pickupAddress
-        ? formData.pickupAddress
-        : [formData.street, formData.landmark, formData.city].filter(Boolean).join(", ");
+        const formattedPickupAddress = formData.pickupAddress
+          ? formData.pickupAddress
+          : [formData.street, formData.landmark, formData.city].filter(Boolean).join(", ");
 
-      const payload = {
-        ...formData,
-        name: formData.businessName,
-        city: formData.city,
-        ncmPickupBranch: formData.city || formData.ncmPickupBranch,
-        address: formattedAddress,
-        pickupAddress: formattedPickupAddress,
-        pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
-        proposedCommissionRate: Number(formData.commissionRate || 12),
-        commissionStatus: "PENDING",
-        commissionLastProposedBy: "ADMIN",
-      };
+        const payload = {
+          ...formData,
+          name: formData.businessName,
+          city: formData.city,
+          ncmPickupBranch: formData.city || formData.ncmPickupBranch,
+          address: formattedAddress,
+          pickupAddress: formattedPickupAddress,
+          pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
+          proposedCommissionRate: Number(formData.commissionRate || 12),
+          commissionStatus: "PENDING",
+          commissionLastProposedBy: "ADMIN",
+        };
 
-      if (editingManufacturerId) {
-        const res = await axios.put(
-          `${backendUrl}/api/manufacturer/admin/update/${editingManufacturerId}`,
-          payload,
-          { headers: { token } }
-        );
-        if (res.data.success) {
-          toast.success("Manufacturer pickup settings updated successfully!");
-        } else {
-          throw new Error(res.data.message || "Failed to update manufacturer settings");
-        }
-      } else {
-        const res = await axios.post(
-          `${backendUrl}/api/manufacturer/admin/register`,
-          payload,
-          { headers: { token } }
-        );
-        if (res.data.success) {
-          toast.success("Manufacturer registered successfully!");
-        } else {
-          throw new Error(res.data.message || "Failed to register manufacturer");
-        }
-      }
-
-      setCreateModalOpen(false);
-      setEditingManufacturerId(null);
-      setFormData(defaultFormData);
-      fetchManufacturers();
-    } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Failed to save manufacturer settings");
-    }
-  };
-
-  const handleUpdateQuality = async (e) => {
-    e.preventDefault();
-    if (!selectedMfg) return;
-    try {
-      const res = await axios.put(
-        `${backendUrl}/api/manufacturer/admin/quality/${selectedMfg.id}`,
-        {
-          qualityRating: Number(qualityRating),
-          qualityNotes,
-        },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Quality score updated!");
-        setQualityModalOpen(false);
-        fetchManufacturers();
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to update rating");
-    }
-  };
-
-  const handleUpdateContract = async (e) => {
-    e.preventDefault();
-    if (!selectedMfg) return;
-    setContractLoading(true);
-    try {
-      // 1. Update contract dates & status
-      await axios.put(
-        `${backendUrl}/api/manufacturer/admin/contract/${selectedMfg.id}`,
-        {
-          contractStatus,
-          contractStart,
-          contractEnd,
-        },
-        { headers: { token } }
-      );
-
-      // 2. Upload file if provided
-      if (contractFile) {
-        const uploadData = new FormData();
-        uploadData.append("contractDoc", contractFile);
-        await axios.post(
-          `${backendUrl}/api/manufacturer/admin/contract-upload/${selectedMfg.id}`,
-          uploadData,
-          {
-            headers: {
-              token,
-              "Content-Type": "multipart/form-data",
-            },
+        if (editingManufacturerId) {
+          const res = await axios.put(
+            `${backendUrl}/api/manufacturer/admin/update/${editingManufacturerId}`,
+            payload,
+            { headers: { token } }
+          );
+          if (res.data.success) {
+            toast.success("Manufacturer pickup settings updated successfully!");
+          } else {
+            throw new Error(res.data.message || "Failed to update manufacturer settings");
           }
+        } else {
+          const res = await axios.post(
+            `${backendUrl}/api/manufacturer/admin/register`,
+            payload,
+            { headers: { token } }
+          );
+          if (res.data.success) {
+            toast.success("Manufacturer registered successfully!");
+          } else {
+            throw new Error(res.data.message || "Failed to register manufacturer");
+          }
+        }
+
+        setCreateModalOpen(false);
+        setEditingManufacturerId(null);
+        setFormData(defaultFormData);
+        fetchManufacturers();
+      } catch (err) {
+        toast.error(err.response?.data?.message || err.message || "Failed to save manufacturer settings");
+      }
+    };
+
+    const handleUpdateQuality = async (e) => {
+      e.preventDefault();
+      if (!selectedMfg) return;
+      try {
+        const res = await axios.put(
+          `${backendUrl}/api/manufacturer/admin/quality/${selectedMfg.id}`,
+          {
+            qualityRating: Number(qualityRating),
+            qualityNotes,
+          },
+          { headers: { token } }
+        );
+        if (res.data.success) {
+          toast.success("Quality score updated!");
+          setQualityModalOpen(false);
+          fetchManufacturers();
+        }
+      } catch (err) {
+        toast.error(err.response?.data?.message || "Failed to update rating");
+      }
+    };
+
+    const handleUpdateContract = async (e) => {
+      e.preventDefault();
+      if (!selectedMfg) return;
+      setContractLoading(true);
+      try {
+        // 1. Update contract dates & status
+        await axios.put(
+          `${backendUrl}/api/manufacturer/admin/contract/${selectedMfg.id}`,
+          {
+            contractStatus,
+            contractStart,
+            contractEnd,
+          },
+          { headers: { token } }
+        );
+
+        // 2. Upload file if provided
+        if (contractFile) {
+          const uploadData = new FormData();
+          uploadData.append("contractDoc", contractFile);
+          await axios.post(
+            `${backendUrl}/api/manufacturer/admin/contract-upload/${selectedMfg.id}`,
+            uploadData,
+            {
+              headers: {
+                token,
+                "Content-Type": "multipart/form-data",
+              },
+            }
+          );
+        }
+
+        toast.success("Contract terms & document updated!");
+        setContractModalOpen(false);
+        setContractFile(null);
+        fetchManufacturers();
+      } catch (err) {
+        toast.error(err.response?.data?.message || "Failed to update contract");
+      } finally {
+        setContractLoading(false);
+      }
+    };
+
+    const pendingManufacturers = manufacturers.filter(
+      (m) => (m.contractStatus || "ACTIVE").toUpperCase() === "PENDING"
+    );
+
+    const filteredMfg = manufacturers.filter((m) => {
+      if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        return (
+          m.businessName?.toLowerCase().includes(term) ||
+          m.city?.toLowerCase().includes(term) ||
+          m.email?.toLowerCase().includes(term)
         );
       }
+      return true;
+    });
 
-      toast.success("Contract terms & document updated!");
-      setContractModalOpen(false);
-      setContractFile(null);
-      fetchManufacturers();
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to update contract");
-    } finally {
-      setContractLoading(false);
-    }
-  };
-
-  const pendingManufacturers = manufacturers.filter(
-    (m) => (m.contractStatus || "ACTIVE").toUpperCase() === "PENDING"
-  );
-
-  const filteredMfg = manufacturers.filter((m) => {
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      return (
-        m.businessName?.toLowerCase().includes(term) ||
-        m.city?.toLowerCase().includes(term) ||
-        m.email?.toLowerCase().includes(term)
-      );
-    }
-    return true;
-  });
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900">
-            Regional Manufacturer Network
-          </h1>
-          <p className="text-xs text-slate-500">
-            Manage distributed apparel manufacturers, quality ratings, and legally binding agreements
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={handleSyncRatings}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs cursor-pointer"
-          >
-            <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-            <span>Sync Ratings from Customer Reviews</span>
-          </button>
-          <button
-            onClick={handleSyncNcmBranches}
-            disabled={syncingNcmBranches}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs disabled:opacity-60"
-          >
-            <MapPin className="w-3.5 h-3.5 text-teal-600" />
-            <span>{syncingNcmBranches ? "Syncing NCM branches..." : "Sync NCM branches"}</span>
-          </button>
-          <button
-            onClick={() => setCreateModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-xs cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Register New Manufacturer</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs">
-        <div className="relative">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="Search manufacturers by business name, city, email..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
-          />
-        </div>
-      </div>
-
-      {pendingManufacturers.length > 0 && (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 md:p-5 shadow-xs">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-700">Pending Applications</p>
-              <h2 className="text-lg font-black text-slate-900 mt-1">Manufacturer onboarding queue</h2>
-            </div>
-            <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
-              {pendingManufacturers.length} awaiting review
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-            {pendingManufacturers.map((m) => (
-              <div
-                key={m.id}
-                className="bg-white rounded-xl border border-amber-200 p-4 shadow-xs"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900">{m.businessName}</h3>
-                    <p className="text-[11px] text-slate-500 mt-1">{m.email}</p>
-                  </div>
-                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
-                    PENDING
-                  </span>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-600">
-                  <div className="bg-slate-50 rounded-lg p-2">
-                    <p className="text-slate-400">City</p>
-                    <p className="font-semibold text-slate-800 mt-1">{m.city || "Not set"}</p>
-                  </div>
-                  <div className="bg-slate-50 rounded-lg p-2">
-                    <p className="text-slate-400">Phone</p>
-                    <p className="font-semibold text-slate-800 mt-1">{m.phone || "Not set"}</p>
-                  </div>
-                  <div className="bg-slate-50 rounded-lg p-2 col-span-2">
-                    <p className="text-slate-400">Pickup address</p>
-                    <p className="font-semibold text-slate-800 mt-1">{m.pickupAddress || m.address || "Not provided"}</p>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex gap-2">
-                  <button
-                    onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
-                    className="flex-1 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
-                  >
-                    Accept
-                  </button>
-                  <button
-                    onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
-                    className="flex-1 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Grid of Manufacturer Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {loading ? (
-          <div className="col-span-full p-12 text-center text-slate-400">
-            <div className="w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-            <p className="text-xs">Loading manufacturers...</p>
-          </div>
-        ) : filteredMfg.length === 0 ? (
-          <div className="col-span-full p-12 text-center text-slate-400 bg-white rounded-2xl border border-slate-200/80">
-            <Factory className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-            <p className="font-semibold text-slate-600 text-sm">No manufacturers found</p>
-            <p className="text-xs text-slate-400 mt-1">
-              Click &quot;Register New Manufacturer&quot; to onboard your first partner hub.
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-black text-slate-900">
+              Regional Manufacturer Network
+            </h1>
+            <p className="text-xs text-slate-500">
+              Manage distributed apparel manufacturers, quality ratings, and legally binding agreements
             </p>
           </div>
-        ) : (
-          filteredMfg.map((m) => (
-            <div
-              key={m.id}
-              className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between space-y-4 hover:border-slate-300 transition-all"
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleSyncRatings}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs cursor-pointer"
             >
-              {/* Card Header */}
+              <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+              <span>Sync Ratings from Customer Reviews</span>
+            </button>
+            <button
+              onClick={handleSyncNcmBranches}
+              disabled={syncingNcmBranches}
+              className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs disabled:opacity-60"
+            >
+              <MapPin className="w-3.5 h-3.5 text-teal-600" />
+              <span>{syncingNcmBranches ? "Syncing NCM branches..." : "Sync NCM branches"}</span>
+            </button>
+            <button
+              onClick={() => setCreateModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Register New Manufacturer</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Search Bar */}
+        <div className="bg-white p-3 rounded-2xl border border-slate-200/80 shadow-xs">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Search manufacturers by business name, city, email..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
+            />
+          </div>
+        </div>
+
+        {pendingManufacturers.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 md:p-5 shadow-xs">
+            <div className="flex items-center justify-between gap-3 mb-4">
               <div>
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 leading-tight">
-                      {m.businessName}
-                    </h3>
-                    <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
-                      <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span>{m.city}, Nepal</span>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-700">Pending Applications</p>
+                <h2 className="text-lg font-black text-slate-900 mt-1">Manufacturer onboarding queue</h2>
+              </div>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                {pendingManufacturers.length} awaiting review
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+              {pendingManufacturers.map((m) => (
+                <div
+                  key={m.id}
+                  className="bg-white rounded-xl border border-amber-200 p-4 shadow-xs"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">{m.businessName}</h3>
+                      <p className="text-[11px] text-slate-500 mt-1">{m.email}</p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200">
+                      PENDING
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-600">
+                    <div className="bg-slate-50 rounded-lg p-2">
+                      <p className="text-slate-400">City</p>
+                      <p className="font-semibold text-slate-800 mt-1">{m.city || "Not set"}</p>
+                    </div>
+                    <div className="bg-slate-50 rounded-lg p-2">
+                      <p className="text-slate-400">Phone</p>
+                      <p className="font-semibold text-slate-800 mt-1">{m.phone || "Not set"}</p>
+                    </div>
+                    <div className="bg-slate-50 rounded-lg p-2 col-span-2">
+                      <p className="text-slate-400">Pickup address</p>
+                      <p className="font-semibold text-slate-800 mt-1">{m.pickupAddress || m.address || "Not provided"}</p>
                     </div>
                   </div>
 
-                  <span
-                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                      m.isAvailable
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                        : "bg-slate-100 text-slate-600 border-slate-200"
-                    }`}
-                  >
-                    {m.isAvailable ? "Online" : "Paused"}
-                  </span>
-                </div>
-
-                {/* Info Rows */}
-                <div className="mt-4 space-y-2 text-xs">
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Quality Score:</span>
-                    <span className="font-bold text-amber-600 flex items-center gap-1">
-                      <Star className="w-3.5 h-3.5 fill-amber-500" />
-                      {m.qualityRating?.toFixed(1) || "5.0"} / 5.0
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Total Fulfillments:</span>
-                    <span className="font-bold text-slate-800">
-                      {m.totalOrdersHandled || 0} orders
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">NCM Pickup Branch:</span>
-                    <span className="font-bold text-slate-800">
-                      {m.ncmPickupBranch || "Not assigned"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Agreement Status:</span>
-                    <span
-                      className={`font-semibold ${
-                        m.contractStatus === "ACTIVE" ? "text-emerald-600" : "text-amber-600"
-                      }`}
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
+                      className="flex-1 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
                     >
-                      {m.contractStatus || "ACTIVE"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Pickup Status:</span>
-                    <span className={`font-semibold ${m.pickupBranchStatus === "VERIFIED" ? "text-emerald-600" : "text-amber-600"}`}>
-                      {m.pickupBranchStatus || "UNVERIFIED"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Commission:</span>
-                    <span className="font-bold text-slate-800">
-                      Proposed {Number(m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12).toFixed(2)}% · Agreed {Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12).toFixed(2)}%
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                    <span className="text-slate-400">Commission Status:</span>
-                    <span className={`font-bold ${m.commissionStatus === "APPROVED" ? "text-emerald-600" : m.commissionStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"}`}>
-                      {m.commissionStatus || "PENDING"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center justify-between py-1">
-                    <span className="text-slate-400">Payout Model:</span>
-                    <span className="font-bold text-emerald-600">100% Agreed COGS</span>
+                      Accept
+                    </button>
+                    <button
+                      onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
+                      className="flex-1 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Reject
+                    </button>
                   </div>
                 </div>
-              </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-              {/* Action Buttons */}
-              <div className="pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => {
-                    setSelectedMfg(m);
-                    setQualityRating(m.qualityRating || 5.0);
-                    setQualityNotes(m.qualityNotes || "");
-                    setQualityModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-xs border border-amber-200 flex items-center justify-center gap-1 cursor-pointer"
-                >
-                  <Star className="w-3.5 h-3.5" />
-                  Rate Quality
-                </button>
+        {/* Grid of Manufacturer Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {loading ? (
+            <div className="col-span-full p-12 text-center text-slate-400">
+              <div className="w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+              <p className="text-xs">Loading manufacturers...</p>
+            </div>
+          ) : filteredMfg.length === 0 ? (
+            <div className="col-span-full p-12 text-center text-slate-400 bg-white rounded-2xl border border-slate-200/80">
+              <Factory className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+              <p className="font-semibold text-slate-600 text-sm">No manufacturers found</p>
+              <p className="text-xs text-slate-400 mt-1">
+                Click &quot;Register New Manufacturer&quot; to onboard your first partner hub.
+              </p>
+            </div>
+          ) : (
+            filteredMfg.map((m) => (
+              <div
+                key={m.id}
+                className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between space-y-4 hover:border-slate-300 transition-all"
+              >
+                {/* Card Header */}
+                <div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 leading-tight">
+                        {m.businessName}
+                      </h3>
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>{m.city}, Nepal</span>
+                      </div>
+                    </div>
 
-                <button
-                  onClick={() => {
-                    setSelectedMfg(m);
-                    setContractStatus(m.contractStatus || "ACTIVE");
-                    setContractStart(
-                      m.contractStart
-                        ? new Date(m.contractStart).toISOString().split("T")[0]
-                        : ""
-                    );
-                    setContractEnd(
-                      m.contractEnd
-                        ? new Date(m.contractEnd).toISOString().split("T")[0]
-                        : ""
-                    );
-                    setContractModalOpen(true);
-                  }}
-                  className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs flex items-center justify-center gap-1 cursor-pointer"
-                >
-                  <FileCheck className="w-3.5 h-3.5" />
-                  Contract
-                </button>
-              </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${m.isAvailable
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : "bg-slate-100 text-slate-600 border-slate-200"
+                        }`}
+                    >
+                      {m.isAvailable ? "Online" : "Paused"}
+                    </span>
+                  </div>
 
-              {m.contractStatus === "PENDING" && (
-                <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
+                  {/* Info Rows */}
+                  <div className="mt-4 space-y-2 text-xs">
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Quality Score:</span>
+                      <span className="font-bold text-amber-600 flex items-center gap-1">
+                        <Star className="w-3.5 h-3.5 fill-amber-500" />
+                        {m.qualityRating?.toFixed(1) || "5.0"} / 5.0
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Total Fulfillments:</span>
+                      <span className="font-bold text-slate-800">
+                        {m.totalOrdersHandled || 0} orders
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">NCM Pickup Branch:</span>
+                      <span className="font-bold text-slate-800">
+                        {m.ncmPickupBranch || "Not assigned"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Agreement Status:</span>
+                      <span
+                        className={`font-semibold ${m.contractStatus === "ACTIVE" ? "text-emerald-600" : "text-amber-600"
+                          }`}
+                      >
+                        {m.contractStatus || "ACTIVE"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Pickup Status:</span>
+                      <span className={`font-semibold ${m.pickupBranchStatus === "VERIFIED" ? "text-emerald-600" : "text-amber-600"}`}>
+                        {m.pickupBranchStatus || "UNVERIFIED"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Commission:</span>
+                      <span className="font-bold text-slate-800">
+                        Proposed {Number(m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12).toFixed(2)}% · Agreed {Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12).toFixed(2)}%
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
+                      <span className="text-slate-400">Commission Status:</span>
+                      <span className={`font-bold ${m.commissionStatus === "APPROVED" ? "text-emerald-600" : m.commissionStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"}`}>
+                        {m.commissionStatus || "PENDING"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between py-1">
+                      <span className="text-slate-400">Payout Model:</span>
+                      <span className="font-bold text-emerald-600">100% Agreed COGS</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
                   <button
-                    onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
+                    onClick={() => {
+                      setSelectedMfg(m);
+                      setQualityRating(m.qualityRating || 5.0);
+                      setQualityNotes(m.qualityNotes || "");
+                      setQualityModalOpen(true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 font-semibold text-xs border border-amber-200 flex items-center justify-center gap-1 cursor-pointer"
                   >
-                    Accept
+                    <Star className="w-3.5 h-3.5" />
+                    Rate Quality
                   </button>
+
                   <button
-                    onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
-                    className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
+                    onClick={() => {
+                      setSelectedMfg(m);
+                      setContractStatus(m.contractStatus || "ACTIVE");
+                      setContractStart(
+                        m.contractStart
+                          ? new Date(m.contractStart).toISOString().split("T")[0]
+                          : ""
+                      );
+                      setContractEnd(
+                        m.contractEnd
+                          ? new Date(m.contractEnd).toISOString().split("T")[0]
+                          : ""
+                      );
+                      setContractModalOpen(true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs flex items-center justify-center gap-1 cursor-pointer"
                   >
-                    Reject
+                    <FileCheck className="w-3.5 h-3.5" />
+                    Contract
                   </button>
                 </div>
-              )}
 
-              {((m.proposedCommissionRate !== null && m.proposedCommissionRate !== undefined) || (m.agreedCommissionRate !== null && m.agreedCommissionRate !== undefined)) &&
-                (m.commissionStatus === "PENDING" || !m.commissionStatus) &&
-                m.commissionLastProposedBy !== "ADMIN" && (
+                {m.contractStatus === "PENDING" && (
                   <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => handleCommissionDecision(m.id, "APPROVED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                      onClick={() => handleReviewManufacturer(m.id, "ACTIVE")}
                       className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
                     >
-                      Approve Rate
+                      Accept
                     </button>
                     <button
-                      onClick={() => handleCommissionDecision(m.id, "REJECTED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                      onClick={() => handleReviewManufacturer(m.id, "REJECTED")}
                       className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
                     >
-                      Reject Rate
+                      Reject
                     </button>
                   </div>
                 )}
 
-              <div className="pt-2 border-t border-slate-100">
-                <button
-                  onClick={() => {
-                    setSelectedMfg(m);
-                    setEditingManufacturerId(m.id);
-                    setFormData({
-                      ...defaultFormData,
-                      businessName: m.businessName || m.name || "",
-                      email: m.email || "",
-                      password: "",
-                      phone: m.phone || "",
-                      province: m.province || "Bagmati Province",
-                      district: m.district || "Kathmandu",
-                      city: m.city || m.ncmPickupBranch || "",
-                      street: m.street || "",
-                      landmark: m.landmark || "",
-                      address: m.address || "",
-                      ncmPickupBranch: m.ncmPickupBranch || m.city || "",
-                      pickupAddress: m.pickupAddress || "",
-                      pickupContactName: m.pickupContactName || "",
-                      pickupContactPhone: m.pickupContactPhone || "",
-                      pickupWindow: m.pickupWindow || "",
-                      returnInstructions: m.returnInstructions || "",
-                      pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
-                      commissionRate: Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12),
-                      contractStart: m.contractStartDate
-                        ? new Date(m.contractStartDate).toISOString().split("T")[0]
-                        : m.contractStart
-                        ? new Date(m.contractStart).toISOString().split("T")[0]
-                        : defaultFormData.contractStart,
-                      contractEnd: m.contractExpiryDate
-                        ? new Date(m.contractExpiryDate).toISOString().split("T")[0]
-                        : m.contractEnd
-                        ? new Date(m.contractEnd).toISOString().split("T")[0]
-                        : defaultFormData.contractEnd,
-                    });
-                    setCreateModalOpen(true);
-                  }}
-                  className="w-full px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 flex items-center justify-center gap-1 cursor-pointer"
-                >
-                  <MapPin className="w-3.5 h-3.5" />
-                  Pickup Config
-                </button>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* Register / Edit Partner Modal */}
-      {createModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {editingManufacturerId ? "Edit Partner / Logistics Hub" : "Register New Manufacturing Partner"}
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Configure partner details, Nepal geography, and NCM dispatch branch hub
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setCreateModalOpen(false);
-                  setEditingManufacturerId(null);
-                }}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateSubmit} className="space-y-5 text-xs">
-              {/* Section 1: Business Profile & Credentials */}
-              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
-                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                  <Factory className="w-3.5 h-3.5 text-slate-600" />
-                  1. Business Profile & Credentials
-                </h4>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Business / Factory Name <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Kathmandu Himalayan Textiles Pvt Ltd"
-                    value={formData.businessName}
-                    onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Commission Rate (%)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={formData.commissionRate}
-                      onChange={(e) => setFormData({ ...formData, commissionRate: Number(e.target.value || 0) })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Login Email <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="email"
-                      required
-                      placeholder="factory@textiles.com"
-                      value={formData.email}
-                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-                </div>
-
-                {!editingManufacturerId && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">Password *</label>
-                      <input
-                        type="password"
-                        required
-                        placeholder="Create password"
-                        value={formData.password}
-                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                      />
-                    </div>
-                    <div></div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Contact Phone <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="+977-98..."
-                      value={formData.phone}
-                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Section 2: Regional Location & NCM Logistics Hub */}
-              <div className="p-4 bg-emerald-50/40 border border-emerald-200/60 rounded-xl space-y-3">
-                <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                  2. Regional Location & NCM Hub Selection
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Province <span className="text-rose-500">*</span>
-                    </label>
-                    <select
-                      value={formData.province}
-                      onChange={(e) => {
-                        const newProv = e.target.value;
-                        const defaultDist = NEPAL_DISTRICTS_BY_PROVINCE[newProv]?.[0] || "";
-                        setFormData({
-                          ...formData,
-                          province: newProv,
-                          district: defaultDist,
-                          city: "",
-                          street: "",
-                        });
-                      }}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                    >
-                      {NEPAL_PROVINCES.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      District <span className="text-rose-500">*</span>
-                    </label>
-                    <select
-                      value={formData.district}
-                      onChange={(e) =>
-                        setFormData({
-                          ...formData,
-                          district: e.target.value,
-                          city: "",
-                          street: "",
-                        })
-                      }
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                    >
-                      {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((d) => (
-                        <option key={d} value={d}>
-                          {d}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      NCM Town / Branch Hub <span className="text-rose-500">*</span>
-                    </label>
-                    <select
-                      value={formData.city}
-                      onChange={(e) => setFormData({ ...formData, city: e.target.value, ncmPickupBranch: e.target.value, street: "" })}
-                      disabled={loadingNcmBranches || ncmBranches.length === 0}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 disabled:opacity-50"
-                    >
-                      {loadingNcmBranches ? (
-                        <option value="">Loading NCM branches...</option>
-                      ) : ncmBranches.length === 0 ? (
-                        <option value="">No branch available in this district</option>
-                      ) : (
-                        ncmBranches.map((branch) => (
-                          <option key={branch} value={branch}>
-                            {branch}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Street / Covered Area
-                    </label>
-                    {coveredAreas.length > 0 ? (
-                      <select
-                        value={formData.street}
-                        onChange={(e) => setFormData({ ...formData, street: e.target.value })}
-                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                {((m.proposedCommissionRate !== null && m.proposedCommissionRate !== undefined) || (m.agreedCommissionRate !== null && m.agreedCommissionRate !== undefined)) &&
+                  (m.commissionStatus === "PENDING" || !m.commissionStatus) &&
+                  m.commissionLastProposedBy !== "ADMIN" && (
+                    <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => handleCommissionDecision(m.id, "APPROVED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
                       >
-                        {coveredAreas.map((area) => (
-                          <option key={area} value={area}>
-                            {area}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="text"
-                        placeholder="e.g. Ward No. 4, Balaju Industrial Area"
-                        value={formData.street}
-                        onChange={(e) => setFormData({ ...formData, street: e.target.value })}
-                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                      />
-                    )}
-                  </div>
-                </div>
+                        Approve Rate
+                      </button>
+                      <button
+                        onClick={() => handleCommissionDecision(m.id, "REJECTED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
+                        className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
+                      >
+                        Reject Rate
+                      </button>
+                    </div>
+                  )}
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Nearest Landmark / Factory Unit Details
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Near Balaju Bypass Gate, Block C"
-                    value={formData.landmark}
-                    onChange={(e) => setFormData({ ...formData, landmark: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                  />
-                </div>
-              </div>
-
-              {/* Section 3: Dispatch & Pickup Operations */}
-              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
-                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                  <Phone className="w-3.5 h-3.5 text-slate-600" />
-                  3. Dispatch & Pickup Operations
-                </h4>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Specific Pickup Warehouse / Loading Dock Address
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Warehouse 2, Ground Floor Dispatch Dock"
-                    value={formData.pickupAddress}
-                    onChange={(e) => setFormData({ ...formData, pickupAddress: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Ramesh Karki"
-                      value={formData.pickupContactName}
-                      onChange={(e) => setFormData({ ...formData, pickupContactName: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Phone</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. +977-98..."
-                      value={formData.pickupContactPhone}
-                      onChange={(e) => setFormData({ ...formData, pickupContactPhone: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Pickup Time Window</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 10:00 AM - 4:00 PM"
-                      value={formData.pickupWindow}
-                      onChange={(e) => setFormData({ ...formData, pickupWindow: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Pickup Status</label>
-                    <select
-                      value={formData.pickupBranchStatus || "UNVERIFIED"}
-                      onChange={(e) => setFormData({ ...formData, pickupBranchStatus: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    >
-                      <option value="UNVERIFIED">UNVERIFIED</option>
-                      <option value="VERIFIED">VERIFIED</option>
-                      <option value="REJECTED">REJECTED</option>
-                    </select>
-                  </div>
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    onClick={() => {
+                      setSelectedMfg(m);
+                      setEditingManufacturerId(m.id);
+                      setFormData({
+                        ...defaultFormData,
+                        businessName: m.businessName || m.name || "",
+                        email: m.email || "",
+                        password: "",
+                        phone: m.phone || "",
+                        province: m.province || "Bagmati Province",
+                        district: m.district || "Kathmandu",
+                        city: m.city || m.ncmPickupBranch || "",
+                        street: m.street || "",
+                        landmark: m.landmark || "",
+                        address: m.address || "",
+                        ncmPickupBranch: m.ncmPickupBranch || m.city || "",
+                        pickupAddress: m.pickupAddress || "",
+                        pickupContactName: m.pickupContactName || "",
+                        pickupContactPhone: m.pickupContactPhone || "",
+                        pickupWindow: m.pickupWindow || "",
+                        returnInstructions: m.returnInstructions || "",
+                        pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
+                        commissionRate: Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12),
+                        contractStart: m.contractStartDate
+                          ? new Date(m.contractStartDate).toISOString().split("T")[0]
+                          : m.contractStart
+                            ? new Date(m.contractStart).toISOString().split("T")[0]
+                            : defaultFormData.contractStart,
+                        contractEnd: m.contractExpiryDate
+                          ? new Date(m.contractExpiryDate).toISOString().split("T")[0]
+                          : m.contractEnd
+                            ? new Date(m.contractEnd).toISOString().split("T")[0]
+                            : defaultFormData.contractEnd,
+                      });
+                      setCreateModalOpen(true);
+                    }}
+                    className="w-full px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    Pickup Config
+                  </button>
                 </div>
               </div>
+            ))
+          )}
+        </div>
 
-              {/* Section 4: Return Policy & Contract */}
-              <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
-                <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-slate-600" />
-                  4. Return Policy & Contract Period
-                </h4>
-
+        {/* Register / Edit Partner Modal */}
+        {createModalOpen && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Return / Handover Instructions</label>
-                  <textarea
-                    rows={2}
-                    placeholder="Instructions for return verification or quality check during handover..."
-                    value={formData.returnInstructions}
-                    onChange={(e) => setFormData({ ...formData, returnInstructions: e.target.value })}
-                    className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                  />
+                  <h3 className="text-base font-bold text-slate-900">
+                    {editingManufacturerId ? "Edit Partner / Logistics Hub" : "Register New Manufacturing Partner"}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Configure partner details, Nepal geography, and NCM dispatch branch hub
+                  </p>
                 </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Contract Start Date</label>
-                    <input
-                      type="date"
-                      value={formData.contractStart}
-                      onChange={(e) => setFormData({ ...formData, contractStart: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Contract Expiry Date</label>
-                    <input
-                      type="date"
-                      value={formData.contractEnd}
-                      onChange={(e) => setFormData({ ...formData, contractEnd: e.target.value })}
-                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Modal Action Buttons */}
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
-                  type="button"
                   onClick={() => {
                     setCreateModalOpen(false);
                     setEditingManufacturerId(null);
                   }}
-                  className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer transition"
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer transition shadow-md hover:shadow-lg"
-                >
-                  {editingManufacturerId ? "Save Changes" : "Register Partner"}
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
 
-      {/* Quality Rating Modal */}
-      {qualityModalOpen && selectedMfg && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Audit Quality Score: {selectedMfg.businessName}
-              </h3>
-              <button
-                onClick={() => setQualityModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <form onSubmit={handleCreateSubmit} className="space-y-5 text-xs">
+                {/* Section 1: Business Profile & Credentials */}
+                <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <Factory className="w-3.5 h-3.5 text-slate-600" />
+                    1. Business Profile & Credentials
+                  </h4>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Business / Factory Name <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Kathmandu Himalayan Textiles Pvt Ltd"
+                      value={formData.businessName}
+                      onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Commission Rate (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={formData.commissionRate}
+                        onChange={(e) => setFormData({ ...formData, commissionRate: Number(e.target.value || 0) })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Login Email <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="factory@textiles.com"
+                        value={formData.email}
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+                  </div>
+
+                  {!editingManufacturerId && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Password *</label>
+                        <input
+                          type="password"
+                          required
+                          placeholder="Create password"
+                          value={formData.password}
+                          onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div></div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Contact Phone <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="+977-98..."
+                        value={formData.phone}
+                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2: Regional Location & NCM Logistics Hub */}
+                <div className="p-4 bg-emerald-50/40 border border-emerald-200/60 rounded-xl space-y-3">
+                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                    <MapPin className="w-3.5 h-3.5 text-emerald-600" />
+                    2. Regional Location & NCM Hub Selection
+                  </h4>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Province <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={formData.province}
+                        onChange={(e) => {
+                          const newProv = e.target.value;
+                          const defaultDist = NEPAL_DISTRICTS_BY_PROVINCE[newProv]?.[0] || "";
+                          setFormData({
+                            ...formData,
+                            province: newProv,
+                            district: defaultDist,
+                            city: "",
+                            street: "",
+                          });
+                        }}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                      >
+                        {NEPAL_PROVINCES.map((p) => (
+                          <option key={p} value={p}>
+                            {p}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        District <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={formData.district}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            district: e.target.value,
+                            city: "",
+                            street: "",
+                          })
+                        }
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                      >
+                        {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        NCM Town / Branch Hub <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={formData.city}
+                        onChange={(e) => setFormData({ ...formData, city: e.target.value, ncmPickupBranch: e.target.value, street: "" })}
+                        disabled={loadingNcmBranches || ncmBranches.length === 0}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 disabled:opacity-50"
+                      >
+                        {loadingNcmBranches ? (
+                          <option value="">Loading NCM branches...</option>
+                        ) : ncmBranches.length === 0 ? (
+                          <option value="">No branch available in this district</option>
+                        ) : (
+                          ncmBranches.map((branch) => (
+                            <option key={branch} value={branch}>
+                              {branch}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Street / Covered Area
+                      </label>
+                      {coveredAreas.length > 0 ? (
+                        <select
+                          value={formData.street}
+                          onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                        >
+                          {coveredAreas.map((area) => (
+                            <option key={area} value={area}>
+                              {area}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          placeholder="e.g. Ward No. 4, Balaju Industrial Area"
+                          value={formData.street}
+                          onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                        />
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Nearest Landmark / Factory Unit Details
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Near Balaju Bypass Gate, Block C"
+                      value={formData.landmark}
+                      onChange={(e) => setFormData({ ...formData, landmark: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                    />
+                  </div>
+                </div>
+
+                {/* Section 3: Dispatch & Pickup Operations */}
+                <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <Phone className="w-3.5 h-3.5 text-slate-600" />
+                    3. Dispatch & Pickup Operations
+                  </h4>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Specific Pickup Warehouse / Loading Dock Address
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Warehouse 2, Ground Floor Dispatch Dock"
+                      value={formData.pickupAddress}
+                      onChange={(e) => setFormData({ ...formData, pickupAddress: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Ramesh Karki"
+                        value={formData.pickupContactName}
+                        onChange={(e) => setFormData({ ...formData, pickupContactName: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Pickup Contact Phone</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. +977-98..."
+                        value={formData.pickupContactPhone}
+                        onChange={(e) => setFormData({ ...formData, pickupContactPhone: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Pickup Time Window</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 10:00 AM - 4:00 PM"
+                        value={formData.pickupWindow}
+                        onChange={(e) => setFormData({ ...formData, pickupWindow: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Pickup Status</label>
+                      <select
+                        value={formData.pickupBranchStatus || "UNVERIFIED"}
+                        onChange={(e) => setFormData({ ...formData, pickupBranchStatus: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      >
+                        <option value="UNVERIFIED">UNVERIFIED</option>
+                        <option value="VERIFIED">VERIFIED</option>
+                        <option value="REJECTED">REJECTED</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 4: Return Policy & Contract */}
+                <div className="p-4 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-3">
+                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-slate-600" />
+                    4. Return Policy & Contract Period
+                  </h4>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Return / Handover Instructions</label>
+                    <textarea
+                      rows={2}
+                      placeholder="Instructions for return verification or quality check during handover..."
+                      value={formData.returnInstructions}
+                      onChange={(e) => setFormData({ ...formData, returnInstructions: e.target.value })}
+                      className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Contract Start Date</label>
+                      <input
+                        type="date"
+                        value={formData.contractStart}
+                        onChange={(e) => setFormData({ ...formData, contractStart: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Contract Expiry Date</label>
+                      <input
+                        type="date"
+                        value={formData.contractEnd}
+                        onChange={(e) => setFormData({ ...formData, contractEnd: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modal Action Buttons */}
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateModalOpen(false);
+                      setEditingManufacturerId(null);
+                    }}
+                    className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer transition shadow-md hover:shadow-lg"
+                  >
+                    {editingManufacturerId ? "Save Changes" : "Register Partner"}
+                  </button>
+                </div>
+              </form>
             </div>
+          </div>
+        )}
 
-            <p className="text-xs text-slate-500">
-              Set the audit quality rating (1.0 to 5.0). Higher scores prioritize this hub in the proximity auto-allocation engine.
-            </p>
-
-            <form onSubmit={handleUpdateQuality} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Quality Score (1.0 - 5.0)
-                </label>
-                <input
-                  type="number"
-                  step="0.1"
-                  min="1.0"
-                  max="5.0"
-                  required
-                  value={qualityRating}
-                  onChange={(e) => setQualityRating(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Quality Audit Feedback &amp; Notes
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="e.g. Excellent stitching precision. Fabric tested 100% compliant."
-                  value={qualityNotes}
-                  onChange={(e) => setQualityNotes(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-900 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
+        {/* Quality Rating Modal */}
+        {qualityModalOpen && selectedMfg && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-900">
+                  Audit Quality Score: {selectedMfg.businessName}
+                </h3>
                 <button
-                  type="button"
                   onClick={() => setQualityModalOpen(false)}
-                  className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl font-bold bg-amber-500 hover:bg-amber-600 text-white cursor-pointer"
-                >
-                  Save Rating
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
 
-      {/* Contract Management Modal */}
-      {contractModalOpen && selectedMfg && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Contract &amp; Agreement: {selectedMfg.businessName}
-              </h3>
-              <button
-                onClick={() => setContractModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <p className="text-xs text-slate-500">
+                Set the audit quality rating (1.0 to 5.0). Higher scores prioritize this hub in the proximity auto-allocation engine.
+              </p>
+
+              <form onSubmit={handleUpdateQuality} className="space-y-4 text-xs">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Quality Score (1.0 - 5.0)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="1.0"
+                    max="5.0"
+                    required
+                    value={qualityRating}
+                    onChange={(e) => setQualityRating(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Quality Audit Feedback &amp; Notes
+                  </label>
+                  <textarea
+                    rows={3}
+                    placeholder="e.g. Excellent stitching precision. Fabric tested 100% compliant."
+                    value={qualityNotes}
+                    onChange={(e) => setQualityNotes(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setQualityModalOpen(false)}
+                    className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl font-bold bg-amber-500 hover:bg-amber-600 text-white cursor-pointer"
+                  >
+                    Save Rating
+                  </button>
+                </div>
+              </form>
             </div>
-
-            <form onSubmit={handleUpdateContract} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Contract Status</label>
-                <select
-                  value={contractStatus}
-                  onChange={(e) => setContractStatus(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                >
-                  <option value="ACTIVE">ACTIVE</option>
-                  <option value="PENDING">PENDING</option>
-                  <option value="EXPIRED">EXPIRED</option>
-                  <option value="TERMINATED">TERMINATED</option>
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Contract Start Date</label>
-                  <input
-                    type="date"
-                    value={contractStart}
-                    onChange={(e) => setContractStart(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Contract End Date</label>
-                  <input
-                    type="date"
-                    value={contractEnd}
-                    onChange={(e) => setContractEnd(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Upload Signed Contract Document (PDF or Scan)
-                </label>
-                <input
-                  type="file"
-                  accept=".pdf,image/*"
-                  onChange={(e) => setContractFile(e.target.files[0])}
-                  className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800"
-                />
-                {selectedMfg.contractDocUrl && (
-                  <p className="text-[11px] text-emerald-600 mt-1">
-                    Current Document:{" "}
-                    <a
-                      href={selectedMfg.contractDocUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline font-bold"
-                    >
-                      View Signed Agreement (Cloudinary)
-                    </a>
-                  </p>
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setContractModalOpen(false)}
-                  className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={contractLoading}
-                  className="px-4 py-2 rounded-xl font-bold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer disabled:opacity-50"
-                >
-                  {contractLoading ? "Uploading & Saving..." : "Update Agreement"}
-                </button>
-              </div>
-            </form>
           </div>
-        </div>
-      )}
-    </div>
-  );
-};
+        )}
 
-export default Manufacturers;
+        {/* Contract Management Modal */}
+        {contractModalOpen && selectedMfg && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-slate-900">
+                  Contract &amp; Agreement: {selectedMfg.businessName}
+                </h3>
+                <button
+                  onClick={() => setContractModalOpen(false)}
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateContract} className="space-y-4 text-xs">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Contract Status</label>
+                  <select
+                    value={contractStatus}
+                    onChange={(e) => setContractStatus(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="PENDING">PENDING</option>
+                    <option value="EXPIRED">EXPIRED</option>
+                    <option value="TERMINATED">TERMINATED</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Contract Start Date</label>
+                    <input
+                      type="date"
+                      value={contractStart}
+                      onChange={(e) => setContractStart(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">Contract End Date</label>
+                    <input
+                      type="date"
+                      value={contractEnd}
+                      onChange={(e) => setContractEnd(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Upload Signed Contract Document (PDF or Scan)
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,image/*"
+                    onChange={(e) => setContractFile(e.target.files[0])}
+                    className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-slate-900 file:text-white hover:file:bg-slate-800"
+                  />
+                  {selectedMfg.contractDocUrl && (
+                    <p className="text-[11px] text-emerald-600 mt-1">
+                      Current Document:{" "}
+                      <a
+                        href={selectedMfg.contractDocUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline font-bold"
+                      >
+                        View Signed Agreement (Cloudinary)
+                      </a>
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setContractModalOpen(false)}
+                    className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={contractLoading}
+                    className="px-4 py-2 rounded-xl font-bold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer disabled:opacity-50"
+                  >
+                    {contractLoading ? "Uploading & Saving..." : "Update Agreement"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  export default Manufacturers;

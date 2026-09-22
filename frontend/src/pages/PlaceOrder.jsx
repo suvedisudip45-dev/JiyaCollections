@@ -380,6 +380,10 @@ const PlaceOrder = () => {
       toast.error("Please provide first and last name");
       return;
     }
+    if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+      toast.error("Please provide a valid email address");
+      return;
+    }
     if (!isValidNepalMobileNumber(formData.phone)) {
       toast.error("Please provide a valid mobile number starting with 98 or 97");
       return;

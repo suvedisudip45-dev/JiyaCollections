@@ -169,6 +169,10 @@ const DirectOrders = () => {
       toast.error("Customer Name and Phone number are required.");
       return;
     }
+    if (customerEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim())) {
+      toast.error("Please enter a valid customer email address.");
+      return;
+    }
 
     setSubmitting(true);
     try {

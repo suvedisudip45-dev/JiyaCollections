@@ -28,11 +28,15 @@ export const createExpense = async (req, res) => {
       notes,
     } = req.body;
 
-    if (!title || !category || amount === undefined || amount === null) {
+    if (!title || !category || amount === undefined || amount === null || amount === "") {
       return res.json({ success: false, message: "Title, Category, and Amount are required." });
     }
 
-    const numAmount = Math.max(0, Number(amount));
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.json({ success: false, message: "Expense amount must be a positive number." });
+    }
+
     const vatBill = isVatBill === true || isVatBill === "true";
     const computedVat = calculateVat(numAmount, vatBill, vatAmount);
 

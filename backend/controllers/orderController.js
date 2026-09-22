@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { randomUUID } from "node:crypto";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import {
   postSalesOrderAccounting,
@@ -7,6 +8,11 @@ import {
 import { runAllocationEngine } from "./orderAssignmentController.js";
 import { resolveDistrictShippingFee } from "./shippingController.js";
 import { createInactiveSocialCustomerProfile } from "./userController.js";
+import { isValidMobileNumber } from "../utils/socialCustomerProfile.js";
+import {
+  findAdminOrderCustomer,
+  getAdminOrderCustomerForCreation,
+} from "../services/adminOrderCustomerService.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -573,6 +579,40 @@ const cashReceived = async (req, res) => {
   }
 };
 
+const lookupAdminOrderCustomer = async (req, res) => {
+  try {
+    const result = await findAdminOrderCustomer(req.query.phone || "");
+    if (result.state === "INVALID_PHONE") {
+      return res.json({ success: false, message: "A valid contact number is required" });
+    }
+    res.json({ success: true, state: result.state, found: result.state !== "NEW_CUSTOMER", customer: result.customer || null });
+  } catch (error) {
+    console.error("Admin customer lookup error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+const verifyAdminOrderCustomer = async (req, res) => {
+  try {
+    const { phone, code } = req.body || {};
+    const result = await getAdminOrderCustomerForCreation(phone || "", code || "");
+    if (result.state === "INVALID_PHONE") {
+      return res.json({ success: false, message: "A valid contact number is required" });
+    }
+    res.json({
+      success: true,
+      state: result.state,
+      verified: result.state === "VERIFIED",
+      loyaltyEligible: result.loyaltyEligible,
+      giftEligible: result.giftEligible,
+      customer: result.customer || null,
+    });
+  } catch (error) {
+    console.error("Admin customer verification error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 // Admin Create Order for Social Media & Manual Phone Inquiries
 const adminCreateOrder = async (req, res) => {
   try {
@@ -586,10 +626,56 @@ const adminCreateOrder = async (req, res) => {
       status = "Order Placed",
     } = req.body;
 
-    if (!client || !client.firstName || !client.phone) {
+    if (!client || !client.phone) {
       return res.json({
         success: false,
-        message: "Customer first name and contact phone number are required",
+        message: "Customer contact phone number is required",
+      });
+    }
+
+    if (!/^\d{10}$/.test(String(client.phone).trim()) || !isValidMobileNumber(client.phone)) {
+      return res.json({
+        success: false,
+        message: "Contact number must contain exactly 10 digits and start with 97 or 98",
+      });
+    }
+
+    const customerDecision = await getAdminOrderCustomerForCreation(
+      client.phone,
+      client.socialCode || ""
+    );
+    if (customerDecision.state === "CODE_REQUIRED") {
+      return res.json({
+        success: false,
+        message: "This contact number already exists. Enter the social code provided by the customer.",
+      });
+    }
+
+    const customerData = customerDecision.customer;
+    const resolvedClient = customerData
+      ? {
+          ...client,
+          firstName: client.firstName || customerData.firstName,
+          lastName: client.lastName || customerData.lastName,
+          email: client.email || customerData.email,
+          gender: client.gender || customerData.gender,
+          phone: customerData.phone || client.phone,
+          province: client.province || customerData.address.province,
+          district: client.district || customerData.address.district,
+          city: client.city || customerData.address.city,
+          ncmBranch: client.ncmBranch || customerData.address.ncmBranch,
+          state: client.state || customerData.address.state,
+          zipcode: client.zipcode || customerData.address.zipcode,
+          country: client.country || customerData.address.country,
+          street: client.street || customerData.address.street,
+          landmark: client.landmark || customerData.address.landmark,
+        }
+      : client;
+
+    if (!resolvedClient.firstName || !resolvedClient.lastName || !resolvedClient.street || !resolvedClient.landmark) {
+      return res.json({
+        success: false,
+        message: "Complete the required customer and delivery details before creating the order",
       });
     }
 
@@ -662,8 +748,8 @@ const adminCreateOrder = async (req, res) => {
     // Dynamic shipping calculation according to shipment rates (ShippingConfig)
     let expectedFee = 50;
     try {
-      const customerDistrict = client.district || client.city || "";
-      const customerProvince = client.state || client.province || "";
+      const customerDistrict = resolvedClient.district || resolvedClient.city || "";
+      const customerProvince = resolvedClient.state || resolvedClient.province || "";
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
@@ -682,57 +768,46 @@ const adminCreateOrder = async (req, res) => {
     const manualDiscount = Math.max(0, Number(discount) || 0);
     const finalAmount = Math.max(0, itemsTotal + resolvedFee - manualDiscount);
 
-    // Associate userId: check if a user with client's email exists
-    let orderUserId = "admin_social_client";
-    if (client.email && client.email.trim()) {
-      try {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: client.email.trim().toLowerCase() },
-        });
-        if (existingUser) {
-          orderUserId = existingUser.id;
-        }
-      } catch (e) {
-        console.error("Error checking user for admin order:", e);
-      }
-    }
+    // Only a verified existing customer may be linked. Invalid-code orders use a
+    // unique anonymous identity so their loyalty history cannot be shared.
+    let orderUserId = customerDecision.userId || `admin_social_client_${randomUUID()}`;
 
     const isSocialOrder = /social|instagram|facebook|whatsapp|tiktok|messenger|phone/i.test(
-      String(client.source || "Social Media")
+      String(resolvedClient.source || "Social Media")
     );
 
     let socialCustomerProfile = null;
-    if (isSocialOrder && client.phone) {
+    if (isSocialOrder && resolvedClient.phone && customerDecision.state === "NEW_CUSTOMER") {
       try {
         socialCustomerProfile = await createInactiveSocialCustomerProfile({
-          firstName: client.firstName,
-          lastName: client.lastName,
-          phone: client.phone,
-          email: client.email,
-          gender: client.gender,
-          province: client.province || client.state || "Bagmati Province",
-          district: client.district || client.city || "Kathmandu",
-          city: client.city || client.ncmBranch || client.district || "Kathmandu",
-          ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
-          state: client.state || client.province || "Bagmati Province",
-          country: client.country || "Nepal",
+          firstName: resolvedClient.firstName,
+          lastName: resolvedClient.lastName,
+          phone: resolvedClient.phone,
+          email: resolvedClient.email,
+          gender: resolvedClient.gender,
+          province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+          district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+          city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+          ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+          state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+          country: resolvedClient.country || "Nepal",
           address: {
-            firstName: client.firstName,
-            lastName: client.lastName,
-            phone: client.phone,
-            province: client.province || client.state || "Bagmati Province",
-            district: client.district || client.city || "Kathmandu",
-            city: client.city || client.ncmBranch || client.district || "Kathmandu",
-            ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
-            state: client.state || client.province || "Bagmati Province",
-            country: client.country || "Nepal",
-            street: client.street || "",
-            landmark: client.landmark || "",
-            zipcode: client.zipcode || "44600",
+            firstName: resolvedClient.firstName,
+            lastName: resolvedClient.lastName,
+            phone: resolvedClient.phone,
+            province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+            district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+            city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+            ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+            state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+            country: resolvedClient.country || "Nepal",
+            street: resolvedClient.street || "",
+            landmark: resolvedClient.landmark || "",
+            zipcode: resolvedClient.zipcode || "44600",
           },
-          socialUsername: client.socialUsername || "",
-          source: client.source || "Social Media",
-          loyaltyTier: client.loyaltyTier || "",
+          socialUsername: resolvedClient.socialUsername || "",
+          source: resolvedClient.source || "Social Media",
+          loyaltyTier: resolvedClient.loyaltyTier || "",
           orderId: "",
         });
 
@@ -745,23 +820,26 @@ const adminCreateOrder = async (req, res) => {
     }
 
     const addressSnapshot = {
-      firstName: client.firstName.trim(),
-      lastName: (client.lastName || "").trim(),
-      email: (client.email || "").trim(),
-      phone: client.phone.trim(),
-      gender: client.gender || "PREFER_NOT_TO_SAY",
-      street: client.street || "",
-      landmark: client.landmark || "",
-      province: client.province || client.state || "Bagmati Province",
-      district: client.district || client.city || "Kathmandu",
-      city: client.city || client.ncmBranch || client.district || "Kathmandu",
-      ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
-      state: client.state || client.province || "Bagmati Province",
-      zipcode: client.zipcode || "44600",
-      country: client.country || "Nepal",
-      source: client.source || "Social Media",
-      socialUsername: client.socialUsername || "",
-      orderNotes: client.orderNotes || "",
+      firstName: resolvedClient.firstName.trim(),
+      lastName: (resolvedClient.lastName || "").trim(),
+      email: (resolvedClient.email || "").trim(),
+      phone: resolvedClient.phone.trim(),
+      gender: resolvedClient.gender || "PREFER_NOT_TO_SAY",
+      street: resolvedClient.street || "",
+      landmark: resolvedClient.landmark || "",
+      province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+      district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+      city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+      ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+      state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+      zipcode: resolvedClient.zipcode || "44600",
+      country: resolvedClient.country || "Nepal",
+      source: resolvedClient.source || "Social Media",
+      socialUsername: resolvedClient.socialUsername || "",
+      socialCode: resolvedClient.socialCode || "",
+      orderNotes: resolvedClient.orderNotes || "",
+      loyaltyExcluded: !customerDecision.loyaltyEligible,
+      giftEligible: customerDecision.giftEligible,
     };
 
     const newOrder = await prisma.order.create({
@@ -778,10 +856,14 @@ const adminCreateOrder = async (req, res) => {
         loyaltyDiscount: manualDiscount,
         orderType: "ADMIN_DIRECT", // Mark as admin-created for guard in updateStatus
         rewardApplied: JSON.stringify({
-          source: client.source || "Social Media",
+          source: resolvedClient.source || "Social Media",
           manualDiscount,
           deliveryFee: resolvedFee,
           adminCreated: true,
+          loyaltyExcluded: !customerDecision.loyaltyEligible,
+          giftEligible: customerDecision.giftEligible,
+          socialCodeVerified: customerDecision.state === "VERIFIED",
+          customerVerificationState: customerDecision.state,
         }),
       },
     });
@@ -867,7 +949,7 @@ const adminCreateOrder = async (req, res) => {
 
       // Record StockLog entry
       try {
-        const channelSource = (client.source || "admin").toLowerCase().replace(/\s+/g, "_");
+        const channelSource = (resolvedClient.source || "admin").toLowerCase().replace(/\s+/g, "_");
         const finalQty = updateData.stockQuantity !== undefined ? updateData.stockQuantity : (currentProd.stockQuantity || 0);
         await prisma.stockLog.create({
           data: {
@@ -880,7 +962,7 @@ const adminCreateOrder = async (req, res) => {
             newQty: finalQty,
             changeQty: -deduction.totalQty,
             reason: "order_sale",
-            note: `Manual Order (${client.source || "Social Media"})`,
+            note: `Manual Order (${resolvedClient.source || "Social Media"})`,
             source: channelSource || "admin",
           },
         });
@@ -925,5 +1007,7 @@ export {
   userOrders,
   updateStatus,
   cashReceived,
+  lookupAdminOrderCustomer,
+  verifyAdminOrderCustomer,
   adminCreateOrder,
 };

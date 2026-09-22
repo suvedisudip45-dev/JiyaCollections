@@ -37,6 +37,12 @@ Legend
 - Acceptance criteria: admin can create product with images, view orders list and change statuses
 - Dependencies: admin app, auth middleware, productController, orderController
 
+### 5A. Admin Direct Social Order Identity
+- Status: In Progress
+- Requirements: Search a contact number across customer profiles and historical orders; require a customer-provided social code for known contacts; auto-populate previous customer data; preserve loyalty only for an exact phone/code match; exclude invalid-code orders from account linking, loyalty, and gifts.
+- Acceptance criteria: new contacts require required fields; matching contacts show verified status and retain loyalty; mismatched contacts show prior data but create a unique unlinked, reward-ineligible order; phone-only lookup never reveals the code.
+- Dependencies: `orderController`, `userController`, `Order.rewardApplied`, admin Create Order workflow
+
 6. Reviews & Ratings
 - Status: Implemented
 - Requirements: Submit reviews, compute product ratings, display review list

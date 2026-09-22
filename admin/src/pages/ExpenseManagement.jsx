@@ -158,12 +158,18 @@ const ExpenseManagement = ({ token }) => {
       return;
     }
 
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Expense amount must be a positive number.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const payload = {
         title: title.trim(),
         category,
-        amount: parseFloat(amount),
+        amount: parsedAmount,
         isVatBill,
         vatAmount: parseFloat(vatAmount) || 0,
         date,

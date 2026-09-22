@@ -1,6 +1,7 @@
 import { v2 as cloudinary } from "cloudinary";
 import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
+import { sanitizeText } from "../middleware/sanitize.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -156,23 +157,49 @@ const addProduct = async (req, res) => {
       });
     }
 
-    const resolvedNepaliName = (nepaliName || nameNepali || name || "").trim();
+    const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
+    const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
+    const cleanDescription = sanitizeText(description) || "";
+    const cleanSubCategory = sanitizeText(subCategory, { stripAllHtml: true }) || "";
+
+    if (!cleanName) {
+      return res.json({ success: false, message: "Product name is required" });
+    }
+
+    const numPrice = Number(price);
+    if (isNaN(numPrice) || numPrice <= 0) {
+      return res.json({ success: false, message: "Price must be a valid positive number" });
+    }
+
+    const numDiscount = discount !== undefined && discount !== null && discount !== "" ? Number(discount) : 0;
+    if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+      return res.json({ success: false, message: "Discount percentage must be between 0% and 100%" });
+    }
+
+    const numCostPrice = costPrice !== undefined && costPrice !== null && costPrice !== "" ? Number(costPrice) : 0;
+    if (isNaN(numCostPrice) || numCostPrice < 0) {
+      return res.json({ success: false, message: "Cost price cannot be negative" });
+    }
+
+    const numLowStockThreshold = lowStockThreshold !== undefined && lowStockThreshold !== null && lowStockThreshold !== ""
+      ? Math.max(0, parseInt(lowStockThreshold, 10))
+      : 5;
 
     const productData = {
-      name,
-      nepaliName: resolvedNepaliName,
-      description,
-      price: Number(price),
+      name: cleanName,
+      nepaliName: cleanNepaliName,
+      description: cleanDescription,
+      price: numPrice,
       category: JSON.stringify(categoriesArray),
-      subCategory,
+      subCategory: cleanSubCategory,
       sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes,
       image: allImages,
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
-      discount: discount ? Number(discount) : 0,
-      costPrice: costPrice !== undefined && costPrice !== null && costPrice !== "" ? Number(costPrice) : 0,
-      stockQuantity: qty,
-      lowStockThreshold: lowStockThreshold !== undefined ? parseInt(lowStockThreshold, 10) : 5,
+      discount: numDiscount,
+      costPrice: numCostPrice,
+      stockQuantity: Math.max(0, qty),
+      lowStockThreshold: numLowStockThreshold,
       colors: typeof colors === "string" ? JSON.parse(colors) : colors || [],
       variants: parsedVariants,
       published: published === "false" || published === false ? false : true,
@@ -348,23 +375,53 @@ const updateProduct = async (req, res) => {
       }
     }
 
-    const resolvedNepaliName = (nepaliName || nameNepali || existingProduct.nepaliName || name || "").trim();
+    const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
+    const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
+    const cleanDescription = description !== undefined ? sanitizeText(description) : undefined;
+    const cleanSubCategory = subCategory ? sanitizeText(subCategory, { stripAllHtml: true }) : undefined;
+
+    let validatedPrice = undefined;
+    if (price !== undefined && price !== "") {
+      const numPrice = Number(price);
+      if (isNaN(numPrice) || numPrice <= 0) {
+        return res.json({ success: false, message: "Price must be a valid positive number" });
+      }
+      validatedPrice = numPrice;
+    }
+
+    let validatedDiscount = undefined;
+    if (discount !== undefined && discount !== "") {
+      const numDiscount = Number(discount);
+      if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+        return res.json({ success: false, message: "Discount percentage must be between 0% and 100%" });
+      }
+      validatedDiscount = numDiscount;
+    }
+
+    let validatedCostPrice = undefined;
+    if (costPrice !== undefined && costPrice !== "") {
+      const numCost = Number(costPrice);
+      if (isNaN(numCost) || numCost < 0) {
+        return res.json({ success: false, message: "Cost price cannot be negative" });
+      }
+      validatedCostPrice = numCost;
+    }
 
     const updateData = {
-      ...(name && { name }),
-      ...(resolvedNepaliName || existingProduct.nepaliName ? { nepaliName: resolvedNepaliName || existingProduct.nepaliName || "" } : {}),
-      ...(description && { description }),
-      ...(price !== undefined && { price: Number(price) }),
+      ...(cleanName && { name: cleanName }),
+      ...(cleanNepaliName || existingProduct.nepaliName ? { nepaliName: cleanNepaliName || existingProduct.nepaliName || "" } : {}),
+      ...(cleanDescription !== undefined && { description: cleanDescription }),
+      ...(validatedPrice !== undefined && { price: validatedPrice }),
       ...(categoryStorage !== undefined && { category: categoryStorage }),
-      ...(subCategory && { subCategory }),
+      ...(cleanSubCategory && { subCategory: cleanSubCategory }),
       ...(sizes && { sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes }),
       image: allImages,
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
-      ...(discount !== undefined && { discount: Number(discount) }),
-      ...(costPrice !== undefined && { costPrice: Number(costPrice) }),
-      stockQuantity: newQty,
-      ...(lowStockThreshold !== undefined && { lowStockThreshold: parseInt(lowStockThreshold, 10) }),
+      ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
+      ...(validatedCostPrice !== undefined && { costPrice: validatedCostPrice }),
+      stockQuantity: Math.max(0, newQty),
+      ...(lowStockThreshold !== undefined && { lowStockThreshold: Math.max(0, parseInt(lowStockThreshold, 10)) }),
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
       variants: parsedVariants,
       ...(published !== undefined && { published: published === "true" || published === true }),

@@ -107,10 +107,19 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    if (!password) {
+      toast.error("Please enter your password");
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await axios.post(`${backendUrl}/api/manufacturer/login`, {
-        email,
+        email: email.trim().toLowerCase(),
         password,
       });
       if (response.data.success) {
@@ -129,6 +138,18 @@ const Login = () => {
 
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
+    if (!registerForm.businessName.trim()) {
+      toast.error("Please enter a business name");
+      return;
+    }
+    if (!registerForm.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.email.trim())) {
+      toast.error("Please enter a valid email address");
+      return;
+    }
+    if (!registerForm.password || registerForm.password.length < 8) {
+      toast.error("Password must be at least 8 characters");
+      return;
+    }
     if (!registerForm.province || !registerForm.district || !registerForm.city) {
       toast.error("Please select province, district, and NCM town branch");
       return;

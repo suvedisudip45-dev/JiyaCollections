@@ -6,6 +6,8 @@ import { toast } from "react-toastify";
 import TermsAndConditionsModal from "../components/TermsAndConditionsModal";
 import CryptoJS from "crypto-js";
 
+import { sanitizeInput } from "../utils/sanitize";
+
 // Encrypt a plaintext password with AES-256-CBC using a random IV
 const encryptPassword = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
@@ -20,6 +22,10 @@ const encryptPassword = (plaintext) => {
     encryptedPassword: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
     iv: iv.toString(CryptoJS.enc.Hex),
   };
+};
+
+const isValidEmail = (val = "") => {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(val).trim());
 };
 
 const isValidNepalMobileNumber = (value = "") => {
@@ -92,8 +98,8 @@ const Login = () => {
         }
       }
 
-      if (!email.trim()) {
-        toast.error("Please enter your email address");
+      if (!email.trim() || !isValidEmail(email)) {
+        toast.error("Please enter a valid email address");
         return;
       }
       if (!password || password.length < 8) {
@@ -114,10 +120,10 @@ const Login = () => {
         const response = await axios.post(backendUrl + "/api/user/social/activate", {
           phone: existingCustomerPhone.trim(),
           code: existingCustomerCode.trim(),
-          email: email.trim().toLowerCase(),
+          email: sanitizeInput(email).toLowerCase(),
           password,
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
+          firstName: sanitizeInput(firstName, { stripAllHtml: true }),
+          lastName: sanitizeInput(lastName, { stripAllHtml: true }),
           gender,
         });
 
@@ -134,6 +140,11 @@ const Login = () => {
       } finally {
         setLoading(false);
       }
+      return;
+    }
+
+    if (!email.trim() || !isValidEmail(email)) {
+      toast.error("Please enter a valid email address");
       return;
     }
 
@@ -160,10 +171,10 @@ const Login = () => {
       setLoading(true);
       if (currentState === "Sign Up") {
         const response = await axios.post(backendUrl + "/api/user/register", {
-          firstName: firstName.trim(),
-          lastName: lastName.trim(),
+          firstName: sanitizeInput(firstName, { stripAllHtml: true }),
+          lastName: sanitizeInput(lastName, { stripAllHtml: true }),
           gender,
-          email: email.trim().toLowerCase(),
+          email: sanitizeInput(email).toLowerCase(),
           phone: phone.trim(),
           password,
         });
@@ -221,6 +232,27 @@ const Login = () => {
           <hr className="border-none h-[1.5px] w-8 bg-gray-800" />
         </div>
 
+        {/* Login fields — always shown in Login state */}
+        {currentState === "Login" && (
+          <>
+            <input
+              onChange={(e) => setEmail(e.target.value)}
+              value={email}
+              type="email"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black"
+              placeholder="Email address"
+              required
+            />
+            <input
+              onChange={(e) => setPassword(e.target.value)}
+              value={password}
+              type="password"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black"
+              placeholder="Password"
+              required
+            />
+          </>
+        )}
 
         {currentState === "Sign Up" && (
           <button
@@ -309,6 +341,45 @@ const Login = () => {
 
         {currentState === "Sign Up" && !(showExistingClient && !validatedExistingCustomer) && (
           <>
+            {/* First Name + Last Name */}
+            {!showExistingClient && (
+              <div className="w-full flex gap-3">
+                <input
+                  onChange={(e) => setFirstName(e.target.value)}
+                  value={firstName}
+                  type="text"
+                  className="w-1/2 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black"
+                  placeholder="First Name"
+                  required
+                />
+                <input
+                  onChange={(e) => setLastName(e.target.value)}
+                  value={lastName}
+                  type="text"
+                  className="w-1/2 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black"
+                  placeholder="Last Name"
+                  required
+                />
+              </div>
+            )}
+
+            {/* Gender */}
+            {!showExistingClient && (
+              <div className="w-full">
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">Gender</label>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-black bg-white"
+                >
+                  <option value="MALE">Male</option>
+                  <option value="FEMALE">Female</option>
+                  <option value="OTHER">Other</option>
+                  <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+                </select>
+              </div>
+            )}
+
             {/* Email Input */}
             <input
               onChange={(e) => setEmail(e.target.value)}

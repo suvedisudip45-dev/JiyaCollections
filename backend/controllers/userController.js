@@ -3,6 +3,7 @@ import validator from "validator";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { decryptAES } from "../utils/crypto.js";
+import { sanitizeText } from "../middleware/sanitize.js";
 import {
   buildInactiveSocialProfile,
   generateSocialCustomerCode,
@@ -34,6 +35,10 @@ const parseJsonArray = (val) => {
 const loginUser = async (req, res) => {
   try {
     const { email, encryptedPassword, iv } = req.body;
+
+    if (!email || !validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
 
     if (!encryptedPassword || !iv) {
       return res.json({ success: false, message: "Encrypted password and IV are required" });
@@ -67,6 +72,7 @@ const loginUser = async (req, res) => {
           name: user.name,
           email: user.email,
           phone: user.phone || "",
+          socialCustomerCode: user.socialCustomerCode || "",
           gender: user.gender || "PREFER_NOT_TO_SAY",
           addresses,
         },
@@ -90,8 +96,8 @@ const registerUser = async (req, res) => {
       : "PREFER_NOT_TO_SAY";
 
     // Validate name fields
-    let fName = (firstName || "").trim();
-    let lName = (lastName || "").trim();
+    let fName = sanitizeText(firstName || "", { stripAllHtml: true }) || "";
+    let lName = sanitizeText(lastName || "", { stripAllHtml: true }) || "";
     let fullName = "";
 
     if (fName && lName) {
@@ -99,7 +105,7 @@ const registerUser = async (req, res) => {
     } else if (fName) {
       fullName = fName;
     } else if (name) {
-      fullName = name.trim();
+      fullName = sanitizeText(name, { stripAllHtml: true }) || "";
       const parts = fullName.split(" ");
       fName = parts[0] || "";
       lName = parts.slice(1).join(" ") || "";
@@ -117,8 +123,10 @@ const registerUser = async (req, res) => {
       return res.json({ success: false, message: "Please enter your last name" });
     }
 
+    const cleanEmail = sanitizeText(email, { stripAllHtml: true }).toLowerCase();
+
     // Checking user already exists or not
-    const exists = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+    const exists = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (exists) {
       return res.json({ success: false, message: "User already exists with this email" });
     }
@@ -176,6 +184,8 @@ const registerUser = async (req, res) => {
         name: fName.concat(" ").concat(lName),
         email: email.trim().toLowerCase(),
         password: hashedPassword,
+        socialCustomerCode: generateSocialCustomerCode(),
+        socialCustomerPhone: normalizedPhone,
         cartData: {},
         addresses: [],
       },
@@ -193,6 +203,7 @@ const registerUser = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone,
+        socialCustomerCode: user.socialCustomerCode || "",
         gender: user.gender || "PREFER_NOT_TO_SAY",
         addresses: [],
       },
@@ -240,8 +251,8 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
   const existingProfile = await prisma.user.findFirst({
     where: {
       OR: [
-        { phone: normalizedPhone },
-        { socialCustomerPhone: normalizedPhone },
+        { phone: { in: [normalizedPhone, `977${normalizedPhone}`, `+977${normalizedPhone}`] } },
+        { socialCustomerPhone: { in: [normalizedPhone, `977${normalizedPhone}`, `+977${normalizedPhone}`] } },
       ],
     },
   });
@@ -498,6 +509,7 @@ export const activateSocialCustomerProfile = async (req, res) => {
         name: updatedUser.name,
         email: updatedUser.email,
         phone: updatedUser.phone || "",
+        socialCustomerCode: updatedUser.socialCustomerCode || "",
         gender: updatedUser.gender || "PREFER_NOT_TO_SAY",
         addresses: mergedAddresses,
       },
@@ -622,8 +634,8 @@ const updateUserProfile = async (req, res) => {
   try {
     const { userId, firstName, lastName, phone } = req.body;
 
-    let fName = (firstName || "").trim();
-    let lName = (lastName || "").trim();
+    let fName = sanitizeText(firstName || "", { stripAllHtml: true }) || "";
+    let lName = sanitizeText(lastName || "", { stripAllHtml: true }) || "";
 
     if (!fName) return res.json({ success: false, message: "First name is required" });
     if (!lName) return res.json({ success: false, message: "Last name is required" });
@@ -716,7 +728,11 @@ const adminLogin = async (req, res) => {
   try {
     const { email, encryptedPassword, iv } = req.body;
 
-    if (!email || !encryptedPassword || !iv) {
+    if (!email || !validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
+
+    if (!encryptedPassword || !iv) {
       return res.json({ success: false, message: "Email and encrypted password are required" });
     }
 

@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import jwt from "jsonwebtoken";
 import { syncManufacturerRatingForProduct } from "../services/manufacturerRatingService.js";
+import { sanitizeText } from "../middleware/sanitize.js";
 
 // Helper: Safely parse JSON array field from Prisma
 const parseJsonArray = (val) => {
@@ -70,7 +71,10 @@ const addReview = async (req, res) => {
       return res.json({ success: false, message: "Please select a valid rating between 1 and 5 stars" });
     }
 
-    if (!comment || !comment.trim()) {
+    const cleanTitle = sanitizeText(title, { stripAllHtml: true }) || "";
+    const cleanComment = sanitizeText(comment) || "";
+
+    if (!cleanComment) {
       return res.json({ success: false, message: "Please write a review comment" });
     }
 
@@ -106,8 +110,8 @@ const addReview = async (req, res) => {
         where: { id: existingReview.id },
         data: {
           rating: numRating,
-          title: title ? title.trim() : "",
-          comment: comment.trim(),
+          title: cleanTitle,
+          comment: cleanComment,
           userName: userFullName,
           userEmail: user.email,
           date: BigInt(Date.now()),
@@ -130,8 +134,8 @@ const addReview = async (req, res) => {
         userName: userFullName,
         userEmail: user.email,
         rating: numRating,
-        title: title ? title.trim() : "",
-        comment: comment.trim(),
+        title: cleanTitle,
+        comment: cleanComment,
         likes: [],
         dislikes: [],
         verified: true,

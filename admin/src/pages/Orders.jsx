@@ -88,10 +88,7 @@ const AdminOrderCard = ({
   order,
   isSelected,
   toggleSelect,
-  onStatusChange,
-  onCashReceived,
   onPrint,
-  onAutoAllocate,
   customerLoyaltyMap,
 }) => {
   const customerFullName = (order.address?.firstName || "")
@@ -110,8 +107,6 @@ const AdminOrderCard = ({
     0
   );
   const deliveryFee = Math.max(0, Math.round(Number(order.amount || 0) - itemsSubtotal));
-
-  const currentStatusIdx = ADMIN_ORDER_STATUSES.indexOf(order.status);
 
   return (
     <div
@@ -151,22 +146,6 @@ const AdminOrderCard = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Hub Allocation */}
-          {order.assignmentId ? (
-            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold">
-              Hub Allocated
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onAutoAllocate(order._id)}
-              className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-              title="Auto-allocate to optimal manufacturer hub"
-            >
-              Auto-Allocate Hub
-            </button>
-          )}
-
           <button
             type="button"
             onClick={() => onPrint([order])}
@@ -182,14 +161,6 @@ const AdminOrderCard = ({
             {order.status}
           </span>
 
-          {!order.payment && order.status === "Delivered" && (
-            <button
-              onClick={() => onCashReceived(order._id)}
-              className="ml-1 px-2 py-0.5 bg-green-600 text-white text-[10px] rounded hover:bg-green-700"
-            >
-              Mark Cash Received
-            </button>
-          )}
         </div>
       </div>
 
@@ -292,34 +263,7 @@ const AdminOrderCard = ({
             </div>
           </div>
 
-          {/* Status Stepper — only for admin-created orders */}
-          <div className="mt-3">
-            <span className="block text-[10px] font-bold text-gray-600 uppercase mb-1.5">Update Status:</span>
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => {
-                  if (currentStatusIdx > 1) {
-                    onStatusChange(order._id, ADMIN_ORDER_STATUSES[currentStatusIdx - 1]);
-                  }
-                }}
-                disabled={currentStatusIdx <= 1}
-                className="flex-1 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-[11px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                ← Prev
-              </button>
-              <button
-                onClick={() => {
-                  if (currentStatusIdx < ADMIN_ORDER_STATUSES.length - 1) {
-                    onStatusChange(order._id, ADMIN_ORDER_STATUSES[currentStatusIdx + 1]);
-                  }
-                }}
-                disabled={currentStatusIdx >= ADMIN_ORDER_STATUSES.length - 1}
-                className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                Next →
-              </button>
-            </div>
-          </div>
+          <p className="mt-3 text-[10px] text-gray-500">Fulfilment is handled by the manufacturer hub.</p>
         </div>
       </div>
     </div>
@@ -327,7 +271,7 @@ const AdminOrderCard = ({
 };
 
 // ─── ORDER CARD — Hub Monitor (read-only) ────────────────────────────────────
-const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }) => {
+const MonitorOrderCard = ({ order, onPrint, customerLoyaltyMap }) => {
   const customerFullName = (order.address?.firstName || "")
     .concat(" ")
     .concat(order.address?.lastName || "")
@@ -361,21 +305,6 @@ const MonitorOrderCard = ({ order, onPrint, onAutoAllocate, customerLoyaltyMap }
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Hub Allocation Status */}
-          {order.assignmentId ? (
-            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold flex items-center gap-1">
-              Hub Allocated
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={() => onAutoAllocate(order._id)}
-              className="px-2 py-0.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-md text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
-            >
-              Auto-Allocate Hub
-            </button>
-          )}
-
           {/* Fulfillment Status */}
           <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${getFulfillmentBadge(fs)}`}>
             {getFulfillmentLabel(fs)}
@@ -529,63 +458,6 @@ const Orders = ({ token }) => {
       toast.error(error.response?.data?.message || error.message);
     } finally {
       setLoadingMonitor(false);
-    }
-  };
-
-  const statusHandler = async (orderId, newStatus) => {
-    try {
-      const response = await axios.post(
-        backendUrl + "/api/order/status",
-        { orderId, status: newStatus },
-        { headers: { token } }
-      );
-      if (response.data.success) {
-        toast.success(`Status updated to "${newStatus}"`);
-        setAdminOrders((prev) =>
-          prev.map((o) => (o._id === orderId ? { ...o, status: newStatus } : o))
-        );
-      } else {
-        toast.error(response.data.message);
-      }
-    } catch (error) {
-      toast.error(error.response?.data?.message || error.message);
-    }
-  };
-
-  const handleCashReceived = async (orderId) => {
-    try {
-      const res = await axios.post(
-        `${backendUrl}/api/order/cash-received`,
-        { orderId },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Cash receipt recorded, order marked as paid");
-        fetchAdminOrders();
-      } else {
-        toast.error(res.data.message || "Failed to record cash receipt");
-      }
-    } catch (e) {
-      toast.error(e.message || "Error marking cash received");
-    }
-  };
-
-  const handleAutoAllocate = async (orderId) => {
-    try {
-      const res = await axios.post(
-        `${backendUrl}/api/order-assignment/assign`,
-        { orderId },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success(res.data.message || "Order allocated to manufacturer!");
-        fetchAdminOrders();
-        fetchAllOrders();
-      } else {
-        toast.error(res.data.message || "Could not allocate order");
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Error allocating order");
     }
   };
 
@@ -908,10 +780,7 @@ const Orders = ({ token }) => {
                   order={order}
                   isSelected={selectedOrderIds.has(order._id)}
                   toggleSelect={toggleSelectOrder}
-                  onStatusChange={statusHandler}
-                  onCashReceived={handleCashReceived}
                   onPrint={setPrintOrdersList}
-                  onAutoAllocate={handleAutoAllocate}
                   customerLoyaltyMap={customerLoyaltyMap}
                 />
               ))}
@@ -929,7 +798,7 @@ const Orders = ({ token }) => {
             <div>
               <h4 className="text-sm font-bold text-slate-800">Hub Monitor — Read Only</h4>
               <p className="text-xs text-slate-500 mt-0.5">
-                Website and storefront orders are fulfilled exclusively by assigned manufacturer hubs. Admin cannot change fulfillment status here. Use the auto-allocate button if an order hasn't been assigned yet.
+                Website and storefront orders are fulfilled exclusively by assigned manufacturer hubs. Admin can monitor orders and print courier slips, but cannot change fulfillment status here.
               </p>
             </div>
           </div>
@@ -1006,7 +875,6 @@ const Orders = ({ token }) => {
                   key={order._id || index}
                   order={order}
                   onPrint={setPrintOrdersList}
-                  onAutoAllocate={handleAutoAllocate}
                   customerLoyaltyMap={customerLoyaltyMap}
                 />
               ))}

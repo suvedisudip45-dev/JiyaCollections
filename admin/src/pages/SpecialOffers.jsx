@@ -109,6 +109,14 @@ const SpecialOffers = ({ token }) => {
       return;
     }
 
+    if (discount !== "" && discount !== null && discount !== undefined) {
+      const numDiscount = Number(discount);
+      if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+        toast.error("Discount percentage must be between 0% and 100%.");
+        return;
+      }
+    }
+
     try {
       const payload = {
         id: editingId,

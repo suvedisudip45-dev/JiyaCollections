@@ -29,6 +29,7 @@ import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
+import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
 // App Config
@@ -49,6 +50,7 @@ startServer();
 
 // Middleware
 app.use(express.json({ limit: "10mb" }));
+app.use(sanitizeMiddleware);
 
 app.use((req, res, next) => {
   const start = Date.now();
