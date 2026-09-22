@@ -50,6 +50,7 @@ const PlaceOrder = () => {
     district: "Kathmandu",
     city: "",
     ncmBranch: "",
+    deliveryInstruction: "",
     province: "Bagmati Province",
     state: "Bagmati Province",
     country: "Nepal",
@@ -103,6 +104,7 @@ const PlaceOrder = () => {
             district: firstAddr.district || "Kathmandu",
             city: firstAddr.city || "",
             ncmBranch: firstAddr.ncmBranch || firstAddr.city || "",
+            deliveryInstruction: firstAddr.deliveryInstruction || "",
             province: firstAddr.province || firstAddr.state || "Bagmati Province",
             state: firstAddr.state || "Bagmati Province",
             country: "Nepal",
@@ -336,6 +338,7 @@ const PlaceOrder = () => {
       email: addr.email || prev.email,
       phone: addr.phone || prev.phone,
       street: addr.street || "",
+      deliveryInstruction: addr.deliveryInstruction || "",
       landmark: addr.landmark || "",
       district: addr.district || "Kathmandu",
       city: addr.city || "",
@@ -452,6 +455,7 @@ const PlaceOrder = () => {
           province: formData.province,
           district: formData.district,
           ncmBranch: formData.ncmBranch || formData.city,
+          deliveryInstruction: formData.deliveryInstruction.trim(),
           country: "Nepal",
         },
         items: orderItems,
@@ -718,6 +722,22 @@ const PlaceOrder = () => {
             />
           </div>
 
+          <div>
+            <label className="block text-xs font-semibold text-gray-600 mb-1">
+              Delivery Instructions <span className="font-normal text-gray-400">(Optional)</span>
+            </label>
+            <textarea
+              name="deliveryInstruction"
+              value={formData.deliveryInstruction}
+              onChange={onChangeHandler}
+              rows={2}
+              maxLength={500}
+              placeholder="e.g. Call before delivery, leave with security, deliver after 5 PM"
+              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm resize-y focus:outline-none focus:border-black"
+            />
+            <p className="mt-1 text-[10px] text-gray-400">Shared with the delivery partner before dispatch.</p>
+          </div>
+
         </div>
 
         {/* --- Right Side: Summary & Payment --- */}
@@ -736,6 +756,7 @@ const PlaceOrder = () => {
                     }}
                   >
                     <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-xs font-bold text-white">
+
                       VIP
                     </div>
                     <div className="flex-1">

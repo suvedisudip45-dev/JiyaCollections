@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 
 // Helper: Safely parse JSON
@@ -588,7 +589,7 @@ const updateAssignmentStatus = async (req, res) => {
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
-    const manufacturerStatuses = new Set(["accepted", "preparing", "quality_check", "packed"]);
+    const manufacturerStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
     if (!manufacturerStatuses.has(normalizedStatus)) {
       return res.status(400).json({
         success: false,
@@ -608,18 +609,14 @@ const updateAssignmentStatus = async (req, res) => {
       });
     }
 
-    const existingNotes = (() => {
-      if (!assignment.notes) return {};
-      try {
-        return JSON.parse(assignment.notes);
-      } catch {
-        return {};
-      }
-    })();
+    const existingNotes = parseNotes(assignment.notes);
 
     const updateData = { status: normalizedStatus };
     const payload = {
       ...existingNotes,
+      stitchingBrandingCompleted: req.body.stitchingBrandingCompleted !== undefined
+        ? Boolean(req.body.stitchingBrandingCompleted)
+        : existingNotes.stitchingBrandingCompleted,
       packageWeight: packageWeight !== undefined ? packageWeight : existingNotes.packageWeight,
       packageDimensions: packageDimensions !== undefined ? packageDimensions : existingNotes.packageDimensions,
       packagingNotes: packagingNotes !== undefined ? packagingNotes : existingNotes.packagingNotes,
@@ -630,6 +627,15 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
       packagingChecklist: packagingChecklist !== undefined ? packagingChecklist : existingNotes.packagingChecklist,
     };
+    const transition = validateFulfillmentTransition({
+      currentStatus: assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : assignment.status,
+      nextStatus: normalizedStatus,
+      notes: assignment.notes,
+      packageData: payload,
+    });
+    if (!transition.valid) {
+      return res.status(409).json({ success: false, message: transition.message });
+    }
     if (Object.keys(payload).some((key) => payload[key] !== undefined)) {
       updateData.notes = JSON.stringify(payload);
     }
@@ -637,7 +643,7 @@ const updateAssignmentStatus = async (req, res) => {
     await prisma.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
     await prisma.order.update({
       where: { id: assignment.orderId },
-      data: { fulfillmentStatus: status.toLowerCase() },
+      data: { fulfillmentStatus: normalizedStatus },
     });
 
     res.json({ success: true, message: `Status updated to ${status}` });

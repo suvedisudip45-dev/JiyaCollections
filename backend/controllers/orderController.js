@@ -679,6 +679,13 @@ const adminCreateOrder = async (req, res) => {
       });
     }
 
+    if (!String(resolvedClient.ncmBranch || "").trim() || !String(resolvedClient.ncmCoveredArea || "").trim()) {
+      return res.json({
+        success: false,
+        message: "Select the NCM branch and covered delivery location before creating the order",
+      });
+    }
+
     if (!items || items.length === 0) {
       return res.json({
         success: false,
@@ -831,6 +838,7 @@ const adminCreateOrder = async (req, res) => {
       district: resolvedClient.district || resolvedClient.city || "Kathmandu",
       city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
       ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+      ncmCoveredArea: resolvedClient.ncmCoveredArea || "",
       state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
       zipcode: resolvedClient.zipcode || "44600",
       country: resolvedClient.country || "Nepal",
@@ -838,6 +846,7 @@ const adminCreateOrder = async (req, res) => {
       socialUsername: resolvedClient.socialUsername || "",
       socialCode: resolvedClient.socialCode || "",
       orderNotes: resolvedClient.orderNotes || "",
+      deliveryInstruction: resolvedClient.deliveryInstruction || resolvedClient.orderNotes || "",
       loyaltyExcluded: !customerDecision.loyaltyEligible,
       giftEligible: customerDecision.giftEligible,
     };

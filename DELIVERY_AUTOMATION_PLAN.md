@@ -59,7 +59,7 @@ The design must preserve the existing `Order`, `OrderAssignment`, manufacturer i
 
 Use a controlled transition service with an allow-list. Keep the existing summary fields synchronized for compatibility, but make the new delivery record and event history authoritative.
 
-`PENDING_ASSIGNMENT -> ASSIGNED -> ACCEPTED -> MANUFACTURING -> QUALITY_CHECK -> PACKED -> READY_TO_DELIVER -> SUBMISSION_PENDING -> NCM_CREATED -> PICKUP_CONFIRMED -> IN_TRANSIT -> ARRIVED_AT_DESTINATION -> OUT_FOR_DELIVERY -> DELIVERED`
+`PENDING_ASSIGNMENT -> ASSIGNED -> ACCEPTED -> PREPARING -> QUALITY_CHECK -> LETTER_READY -> CHECKLIST_COMPLETE -> PACKED -> PACKAGE_DETAILS_COMPLETE -> READY_TO_DELIVER -> SUBMISSION_PENDING -> NCM_CREATED -> PICKUP_CONFIRMED -> IN_TRANSIT -> ARRIVED_AT_DESTINATION -> OUT_FOR_DELIVERY -> DELIVERED`
 
 Failure and exception states:
 
@@ -67,8 +67,8 @@ Failure and exception states:
 
 Rules:
 
-1. A manufacturer can move only its assigned order through preparation states and can request `READY_TO_DELIVER`.
-2. `READY_TO_DELIVER` requires a locked package snapshot, validated customer phone/address, mapped origin/destination branches, package weight/type, and an inventory reservation.
+1. A manufacturer can move only its assigned order through the controlled preparation sequence: acceptance, stitching/branding, quality check, compulsory customer letter, complete checklist, packing, and package details.
+2. `READY_TO_DELIVER` requires a locked package snapshot, validated customer phone/address, mapped origin/destination branches, package weight/type, a compulsory customer letter, a complete checklist, and an inventory reservation.
 3. Only a backend worker or admin-approved command may move `READY_TO_DELIVER` to `SUBMISSION_PENDING` and call NCM.
 4. A successful NCM response creates exactly one local carrier order mapping and moves the order to `NCM_CREATED`.
 5. Carrier statuses update the local timeline, but a webhook must not directly post cash, restock inventory, or close a return without the relevant business transition.

@@ -15,8 +15,9 @@ import {
   requestOrderReturn,
   shippingRateTypeForNcm,
 } from "./ncmClient.js";
+import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 
-const VALID_READY_STATES = new Set(["packed"]);
+const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
 
 const getNcmBranchNames = async () => {
@@ -341,7 +342,10 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
 
   const phone = String(address.phone || "").trim();
   const name = String(address.name || `${address.firstName || ""} ${address.lastName || ""}`).trim();
-  const customerAddress = String(address.street || address.address || "").trim();
+  const customerAddress = [address.ncmCoveredArea, address.street || address.address]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(", ");
   if (!name || !phone || !customerAddress) {
     const error = new Error("Customer name, phone, and address are required before delivery");
     error.code = "DELIVERY_CUSTOMER_DATA_REQUIRED";
@@ -417,6 +421,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
   const existingNotes = parsePackagingMeta(assignment.notes);
   const packagingMeta = {
     ...existingNotes,
+    packageWeight: packageWeight ?? existingNotes.packageWeight ?? "",
     productType: productType ?? existingNotes.productType ?? "",
     productDescription: productDescription ?? existingNotes.productDescription ?? "",
     packageType: packageType ?? existingNotes.packageType ?? "Box",
@@ -427,13 +432,25 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     packagingChecklist: packagingChecklist ?? existingNotes.packagingChecklist ?? null,
   };
 
+  const transition = validateFulfillmentTransition({
+    currentStatus: assignment.status,
+    nextStatus: "ready_for_pickup",
+    notes: assignment.notes,
+    packageData: packagingMeta,
+  });
+  if (!transition.valid && assignment.status !== "ready_for_pickup") {
+    const error = new Error(transition.message);
+    error.code = "DELIVERY_INVALID_STATE";
+    throw error;
+  }
+
   const existing = await prisma.deliveryOrder.findUnique({ where: { orderId } });
   const submittedStates = ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"];
   if (existing && submittedStates.includes(existing.state)) {
     return { delivery: existing, alreadySubmitted: true };
   }
 
-  const isPacked = VALID_READY_STATES.has(assignment.status) || order.fulfillmentStatus === "packed";
+  const isPacked = VALID_READY_STATES.has(assignment.status);
   const isRetryingHandoff = assignment.status === "ready_for_pickup" && existing && ["SUBMISSION_PENDING", "SUBMISSION_FAILED"].includes(existing.state);
   if (!isPacked && !isRetryingHandoff) {
     const error = new Error(`Order must be packed before delivery submission; current state is ${assignment.status}`);
