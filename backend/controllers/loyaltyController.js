@@ -90,6 +90,67 @@ const ensureSeedLevels = async () => {
   }
 };
 
+const toPublicLoyaltyLevel = (level = null) => {
+  if (!level) return null;
+
+  return {
+    id: level.id,
+    levelNumber: level.levelNumber,
+    name: level.name,
+    badgeIcon: level.badgeIcon,
+    color: level.color,
+    minSpend: Number(level.minSpend || 0),
+    minOrders: Number(level.minOrders || 0),
+    rewardType: level.rewardType,
+    rewardValue: Number(level.rewardValue || 0),
+    rewardTitle: level.rewardTitle,
+    rewardDescription: level.rewardDescription,
+    rewardOrderLimit: Number(level.rewardOrderLimit || 3),
+    freeShipping: Boolean(level.freeShipping),
+    discountAmount: Number(level.discountAmount || 0),
+    giftAmount: Number(level.giftAmount || 0),
+    giftDescription: level.giftDescription || "",
+    letterIncluded: Boolean(level.letterIncluded),
+    customPerk: level.customPerk || "",
+  };
+};
+
+export const buildPublicLoyaltySummary = (loyaltyData = {}) => {
+  const currentLevel = toPublicLoyaltyLevel(loyaltyData.currentLevel);
+  const nextLevel = toPublicLoyaltyLevel(loyaltyData.nextLevel);
+  const activeReward = loyaltyData.activeReward || {};
+  const allLevels = Array.isArray(loyaltyData.allLevels)
+    ? loyaltyData.allLevels.map((level) => toPublicLoyaltyLevel(level))
+    : [];
+
+  return {
+    totalSpend: Number(loyaltyData.totalSpend || 0),
+    totalOrders: Number(loyaltyData.totalOrders || 0),
+    currentLevel,
+    nextLevel,
+    progressPercentage: Number(loyaltyData.progressPercentage || 0),
+    remainingSpend: Number(loyaltyData.remainingSpend || 0),
+    remainingOrders: Number(loyaltyData.remainingOrders || 0),
+    activeReward: {
+      freeShipping: Boolean(activeReward.freeShipping),
+      discountAmount: Number(activeReward.discountAmount || 0),
+      giftAmount: Number(activeReward.giftAmount || 0),
+      giftDescription: activeReward.giftDescription || "",
+      letterIncluded: Boolean(activeReward.letterIncluded),
+      customPerk: activeReward.customPerk || "",
+      perkTags: Array.isArray(activeReward.perkTags) ? activeReward.perkTags : [],
+      title: activeReward.title,
+      description: activeReward.description,
+      orderLimit: Number(activeReward.orderLimit || 0),
+      remainingUses: Number(activeReward.remainingUses || 0),
+      currentUseIndex: Number(activeReward.currentUseIndex || 0),
+      isEligible: Boolean(activeReward.isEligible),
+      usageBadge: activeReward.usageBadge,
+    },
+    allLevels,
+  };
+};
+
 // Helper to calculate a user's loyalty status based on their orders and configured levels
 export const calculateUserLoyalty = async (userId) => {
   await ensureSeedLevels();
@@ -345,7 +406,7 @@ export const getUserLoyaltyStatus = async (req, res) => {
     }
 
     const loyaltyData = await calculateUserLoyalty(userId);
-    res.json({ success: true, loyalty: loyaltyData });
+    res.json({ success: true, loyalty: buildPublicLoyaltySummary(loyaltyData) });
   } catch (error) {
     console.error("Error fetching user loyalty status:", error);
     res.json({ success: false, message: error.message });
@@ -390,7 +451,7 @@ export const getCustomerLoyaltyByPhone = async (req, res) => {
         email: user.email,
         phone: user.phone,
       },
-      loyalty: loyaltyData,
+      loyalty: buildPublicLoyaltySummary(loyaltyData),
     });
   } catch (error) {
     console.error("Error fetching customer loyalty by phone:", error);
@@ -470,16 +531,17 @@ export const getHubCustomers = async (req, res) => {
         if (c.userId) {
           try {
             const loyaltyData = await calculateUserLoyalty(c.userId);
+            const publicLoyalty = buildPublicLoyaltySummary(loyaltyData);
             return {
               ...c,
               lastVisit: c.lastVisit > 0 ? new Date(c.lastVisit).toISOString() : null,
               loyalty: {
-                currentLevel: loyaltyData.currentLevel,
-                totalSpend: loyaltyData.totalSpend,
-                totalOrders: loyaltyData.totalOrders,
-                progressPercentage: loyaltyData.progressPercentage,
-                nextLevel: loyaltyData.nextLevel,
-                activeReward: loyaltyData.activeReward,
+                currentLevel: publicLoyalty.currentLevel,
+                totalSpend: publicLoyalty.totalSpend,
+                totalOrders: publicLoyalty.totalOrders,
+                progressPercentage: publicLoyalty.progressPercentage,
+                nextLevel: publicLoyalty.nextLevel,
+                activeReward: publicLoyalty.activeReward,
               },
               isRegistered: true,
             };

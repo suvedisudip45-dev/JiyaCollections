@@ -17,6 +17,70 @@ import {
 // global variables
 const deliveryCharge = 50;
 
+const buildOrderListItem = (order) => {
+  const parsedReward = (() => {
+    if (!order?.rewardApplied) return null;
+    if (typeof order.rewardApplied === "string") {
+      try {
+        return JSON.parse(order.rewardApplied);
+      } catch {
+        return null;
+      }
+    }
+    return order.rewardApplied;
+  })();
+
+  const parsedItems = (() => {
+    if (Array.isArray(order?.items)) return order.items;
+    if (typeof order?.items === "string") {
+      try {
+        return JSON.parse(order.items);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  })();
+
+  const address = (() => {
+    if (!order?.address) return {};
+    if (typeof order.address === "string") {
+      try {
+        return JSON.parse(order.address);
+      } catch {
+        return {};
+      }
+    }
+    return order.address;
+  })();
+
+  return {
+    id: order.id,
+    _id: order.id,
+    userId: order.userId,
+    items: parsedItems,
+    amount: Number(order.amount || 0),
+    deliveryFee: Number(order.deliveryFee || 0),
+    address,
+    status: order.status,
+    paymentMethod: order.paymentMethod,
+    payment: Boolean(order.payment),
+    date: Number(order.date || 0),
+    loyaltyDiscount: Number(order.loyaltyDiscount || 0),
+    rewardApplied: parsedReward,
+    fulfillmentStatus: order.fulfillmentStatus,
+    assignmentId: order.assignmentId,
+    deliveryJobId: order.deliveryJobId,
+    orderType: order.orderType,
+    directOrderType: order.directOrderType,
+    manufacturerId: order.manufacturerId,
+    directNotes: order.directNotes,
+    delivery: order.deliveryOrder || null,
+    deliveryOrder: order.deliveryOrder || null,
+    totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
+  };
+};
+
 // Helper to validate stock before order placement
 const validateOrderStock = (items, dbProducts) => {
   for (const cartItem of items) {
@@ -408,12 +472,7 @@ const allOrders = async (req, res) => {
         },
       },
     });
-    const orders = rawOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
+    const orders = rawOrders.map((item) => buildOrderListItem(item));
     res.json({ success: true, orders });
   } catch (error) {
     console.log(error);
@@ -460,12 +519,7 @@ const allAdminOrders = async (req, res) => {
       return false;
     });
 
-    const orders = adminOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
+    const orders = adminOrders.map((item) => buildOrderListItem(item));
     res.json({ success: true, orders });
   } catch (error) {
     console.log(error);
@@ -496,12 +550,7 @@ const userOrders = async (req, res) => {
         },
       },
     });
-    const orders = rawOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
+    const orders = rawOrders.map((item) => buildOrderListItem(item));
     res.json({ success: true, orders });
   } catch (error) {
     console.log(error);
@@ -1019,4 +1068,5 @@ export {
   lookupAdminOrderCustomer,
   verifyAdminOrderCustomer,
   adminCreateOrder,
+  buildOrderListItem,
 };

@@ -271,12 +271,37 @@ const updateStock = async (req, res) => {
 };
 
 // ─── ADMIN: GET ALL INVENTORY (Multi-Hub Monitor) ─────────────────────────────
+const buildAdminInventoryItem = (inventory, product) => ({
+  id: inventory.id,
+  productId: inventory.productId,
+  productName: inventory.productName,
+  quantity: inventory.quantity,
+  reservedQty: inventory.reservedQty,
+  manufacturer: {
+    id: inventory.manufacturer.id,
+    name: inventory.manufacturer.name,
+    city: inventory.manufacturer.city,
+    businessName: inventory.manufacturer.name,
+  },
+  product: product || {
+    id: inventory.productId,
+    name: inventory.productName,
+  },
+  availableQty: Math.max(0, inventory.quantity - inventory.reservedQty),
+  lowStockThreshold: 5,
+});
+
 const getAllInventory = async (req, res) => {
   try {
     const allInventory = await prisma.manufacturerInventory.findMany({
-      include: {
+      select: {
+        id: true,
+        productId: true,
+        productName: true,
+        quantity: true,
+        reservedQty: true,
         manufacturer: {
-          select: { id: true, name: true, city: true, qualityRating: true, isActive: true },
+          select: { id: true, name: true, city: true },
         },
       },
       orderBy: { productName: "asc" },
@@ -285,27 +310,14 @@ const getAllInventory = async (req, res) => {
     const productIds = [...new Set(allInventory.map((i) => i.productId))];
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, name: true, image: true, price: true, category: true, sizes: true, colors: true },
+      select: { id: true, name: true, image: true, price: true, category: true },
     });
     const productMap = {};
     products.forEach((p) => {
       productMap[p.id] = p;
     });
 
-    const enriched = allInventory.map((inv) => ({
-      ...inv,
-      manufacturer: {
-        ...inv.manufacturer,
-        businessName: inv.manufacturer.name,
-      },
-      product: productMap[inv.productId] || {
-        id: inv.productId,
-        name: inv.productName,
-      },
-      variantsStock: parseJSON(inv.variantsStock, []),
-      availableQty: Math.max(0, inv.quantity - inv.reservedQty),
-      lowStockThreshold: 5,
-    }));
+    const enriched = allInventory.map((inv) => buildAdminInventoryItem(inv, productMap[inv.productId]));
 
     res.json({ success: true, inventory: enriched });
   } catch (error) {
@@ -341,4 +353,10 @@ const getLowStockAlerts = async (req, res) => {
   }
 };
 
-export { getMyInventory, updateStock, getAllInventory, getLowStockAlerts };
+export {
+  getMyInventory,
+  updateStock,
+  getAllInventory,
+  getLowStockAlerts,
+  buildAdminInventoryItem,
+};
