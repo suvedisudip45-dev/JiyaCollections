@@ -22,27 +22,27 @@ const Hero = () => {
     : null;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-gradient-to-br from-gray-50 via-white to-gray-100/70 shadow-xs flex flex-col sm:flex-row items-stretch">
+    <div className="relative flex flex-col items-stretch overflow-hidden border border-[#d9d6cc] bg-[#e5e2d8] sm:min-h-[560px] sm:flex-row">
       {/* Hero Left Content */}
-      <div className="w-full sm:w-1/2 flex flex-col justify-center px-6 py-8 sm:py-12 md:px-12">
+      <div className="relative z-10 flex w-full flex-col justify-center px-7 py-12 sm:w-[45%] sm:px-10 md:px-16">
         <div className="space-y-4">
           <div className="flex items-center gap-2.5">
-            <span className="inline-block w-8 md:w-10 h-[2px] bg-gray-900"></span>
-            <span className="font-bold text-xs uppercase tracking-widest text-gray-700">
+            <span className="inline-block h-px w-8 bg-[#9a5945] md:w-10"></span>
+            <span className="eyebrow">
               {featuredProduct?.newInStore ? "FEATURED ARRIVAL" : "TRENDING NOW"}
             </span>
           </div>
 
           <div>
-            <h1 className="prata-regular text-3xl sm:text-4xl lg:text-5xl text-gray-900 leading-tight">
-              NEW IN STORE
+            <h1 className="prata-regular text-5xl leading-[0.95] text-[#161714] sm:text-6xl lg:text-7xl">
+              New in store
             </h1>
             {featuredProduct ? (
-              <p className="mt-2 text-base sm:text-lg font-medium text-gray-700 truncate max-w-md">
+              <p className="mt-4 max-w-md truncate text-base font-medium text-[#5d5d55] sm:text-lg">
                 {featuredProduct.name}
               </p>
             ) : (
-              <p className="mt-2 text-sm text-gray-500">
+              <p className="mt-4 text-sm text-[#77776e]">
                 Discover the latest arrivals hand-picked for this season.
               </p>
             )}
@@ -51,17 +51,17 @@ const Hero = () => {
           {featuredProduct && (
             <div className="flex items-center gap-3 pt-1">
               <div className="flex items-baseline gap-2">
-                <span className="text-2xl sm:text-3xl font-bold text-gray-900">
+                <span className="text-2xl font-bold text-[#161714] sm:text-3xl">
                   {currency}{finalPrice}
                 </span>
                 {featuredProduct.discount > 0 && (
-                  <span className="text-sm text-gray-400 line-through">
+                    <span className="text-sm text-[#77776e] line-through">
                     {currency}{featuredProduct.price}
                   </span>
                 )}
               </div>
               {featuredProduct.discount > 0 && (
-                <span className="bg-red-600 text-white text-xs font-bold px-2.5 py-0.5 rounded-full shadow-2xs">
+                <span className="bg-[#9a5945] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
                   {featuredProduct.discount}% OFF
                 </span>
               )}
@@ -72,7 +72,7 @@ const Hero = () => {
             {featuredProduct ? (
               <Link
                 to={`/product/${featuredProduct._id}`}
-                className="inline-flex items-center gap-2 bg-gray-900 hover:bg-black text-white px-6 py-3 rounded-xl font-medium text-sm transition-all duration-200 shadow-xs hover:shadow-md transform hover:-translate-y-0.5"
+                className="inline-flex items-center gap-2 bg-[#161714] px-6 py-3 text-sm font-semibold text-white transition-all duration-200 hover:bg-[#5d6855]"
               >
                 <span>Shop Product</span>
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -82,7 +82,7 @@ const Hero = () => {
             ) : null}
             <Link
               to="/collection"
-              className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-800 border border-gray-300 px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:border-gray-400"
+              className="inline-flex items-center gap-2 border border-[#aaa89e] bg-transparent px-5 py-3 text-sm font-semibold text-[#161714] transition-all duration-200 hover:border-[#161714]"
             >
               <span>Explore Collection</span>
             </Link>
@@ -91,16 +91,16 @@ const Hero = () => {
       </div>
 
       {/* Hero Right Image */}
-      <div className="w-full sm:w-1/2 relative bg-gray-100 flex items-center justify-center overflow-hidden min-h-[280px] sm:min-h-[420px]">
+      <div className="relative min-h-[330px] w-full overflow-hidden bg-[#c9c3b6] sm:min-h-[560px] sm:w-[55%]">
         {featuredProduct ? (
           <Link to={`/product/${featuredProduct._id}`} className="block w-full h-full group relative">
             <img
-              className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
+              className="h-full w-full object-cover object-center transition-transform duration-700 group-hover:scale-105"
               src={heroImage}
               alt={featuredProduct.name || "New In Store"}
             />
             <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent opacity-40 group-hover:opacity-20 transition-opacity"></div>
-            <div className="absolute bottom-4 right-4 bg-white/95 backdrop-blur-md px-3.5 py-1.5 rounded-lg shadow-sm text-xs font-semibold text-gray-900 border border-gray-100">
+            <div className="absolute bottom-5 left-5 border border-white/40 bg-[#161714]/75 px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-sm">
               Featured Item
             </div>
           </Link>

@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { ShopContext } from "../context/ShopContext";
 import { assets } from "../assets/assets";
 import Title from "../components/Title";
@@ -167,12 +167,12 @@ const Collection = () => {
   }, [sortType]);
 
   return (
-    <div className="flex flex-col sm:flex-row gap-1 sm:gap-10 pt-10 border-t">
+    <div className="flex flex-col gap-8 border-t border-[#d9d6cc] pt-10 sm:flex-row sm:gap-10">
       {/* Filter Options */}
       <div className="min-w-60">
         <p
           onClick={() => setShowFilter(!showFilter)}
-          className="my-2 text-xl flex items-center cursor-pointer gap-2"
+          className="my-2 flex cursor-pointer items-center gap-2 text-xl font-semibold tracking-tight text-[#161714]"
         >
           FILTERS
           <img
@@ -183,16 +183,16 @@ const Collection = () => {
         </p>
         {/* Category Filter */}
         <div
-          className={`border border-gray-300 pl-5 py-3 mt-6 ${
+          className={`mt-6 border border-[#d9d6cc] bg-[#fffefa] py-4 pl-5 ${
             showFilter ? "" : "hidden"
           } sm:block`}
         >
-          <p className="mb-3 text-sm font-medium">CATEGORIES</p>
-          <div className="flex flex-col gap-2 text-sm font-light text-gray-700">
+          <p className="eyebrow mb-3">Categories</p>
+          <div className="flex flex-col gap-3 text-sm font-medium text-[#5d5d55]">
             {categoriesList.map((cat, idx) => (
               <p className="flex gap-2" key={idx}>
                 <input
-                  className="w-3"
+                  className="h-4 w-4 accent-[#9a5945]"
                   type="checkbox"
                   value={cat}
                   onChange={toggleCategory}
@@ -204,16 +204,16 @@ const Collection = () => {
         </div>
         {/* SubCategory Filter */}
         <div
-          className={`border border-gray-300 pl-5 py-3 my-5 ${
+          className={`my-5 border border-[#d9d6cc] bg-[#fffefa] py-4 pl-5 ${
             showFilter ? "" : "hidden"
           } sm:block`}
         >
-          <p className="mb-3 text-sm font-medium">TYPE</p>
-          <div className="flex flex-col gap-2 text-sm font-light text-gray-700">
+          <p className="eyebrow mb-3">Type</p>
+          <div className="flex flex-col gap-3 text-sm font-medium text-[#5d5d55]">
             {subCategoriesList.map((sub, idx) => (
               <p className="flex gap-2" key={idx}>
                 <input
-                  className="w-3"
+                  className="h-4 w-4 accent-[#9a5945]"
                   type="checkbox"
                   value={sub}
                   onChange={toogleSubCategory}
@@ -226,12 +226,12 @@ const Collection = () => {
       </div>
       {/* Right Side */}
       <div className="flex-1">
-        <div className="flex justify-between text-base sm:text-2xl mb-4">
+        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <Title text1={"ALL"} text2={"COLLECTIONS"} />
           {/* Product Sort */}
           <select
             onChange={(e) => setSortType(e.target.value)}
-            className="border-2 border-gray-300 text-sm px-2 py-1 rounded"
+            className="border border-[#c9c6bc] bg-[#fffefa] px-3 py-2 text-xs font-semibold text-[#45463f] outline-none"
           >
             <option value="relavent">Sort by: Relevant</option>
             <option value="newest">Sort by: Newest Arrivals</option>
@@ -241,7 +241,7 @@ const Collection = () => {
           </select>
         </div>
         {/* Map Products */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 gap-y-6">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
           {filterProducts.map((item, index) => (
             <ProductItem
               key={index}

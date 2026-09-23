@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Prata&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -9,13 +9,66 @@ a.active hr {
 }
 
 * {
-  font-family: Outfit;
+  font-family: "DM Sans", sans-serif;
+  box-sizing: border-box;
+}
+
+:root {
+  color: #161714;
+  background: #f7f6f1;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --ink: #161714;
+  --paper: #f7f6f1;
+  --white: #fffefa;
+  --stone: #e5e2d8;
+  --muted: #77776e;
+  --olive: #5d6855;
+  --terracotta: #9a5945;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 .prata-regular {
-  font-family: "Prata", serif;
+  font-family: "Instrument Serif", serif;
   font-weight: 400;
   font-style: normal;
+}
+
+.fashion-shell {
+  background:
+    linear-gradient(180deg, rgba(255, 254, 250, 0.78), transparent 18rem),
+    var(--paper);
+}
+
+.eyebrow {
+  color: var(--olive);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -24,7 +77,7 @@ a.active hr {
 
 @media (max-width: 640px) {
   a.active {
-    background-color: black;
+    background-color: var(--ink);
     color: white;
   }
 }

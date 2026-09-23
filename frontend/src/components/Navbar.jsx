@@ -1,4 +1,4 @@
-import React, { useContext, useState } from "react";
+import { useContext, useState } from "react";
 import { assets } from "../assets/assets";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
@@ -32,36 +32,39 @@ const Navbar = () => {
 
 
   return (
-    <nav className="relative z-40 flex items-center justify-between py-5 font-medium">
-      <Link to={"/"} className="z-10">
-        <img src={assets.logo} className="w-36" alt="Logo" />
+    <nav className="relative z-40 flex items-center justify-between border-b border-[#dedbd1] py-5 font-medium">
+      <Link to={"/"} className="z-10 flex items-center gap-3">
+        <img src={assets.logo} className="w-32 sm:w-36" alt="Logo" />
+        <span className="hidden border-l border-[#c9c6bc] pl-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#77776e] sm:block">
+          Kathmandu / Nepal
+        </span>
       </Link>
 
       {/* Desktop Navigation Links */}
-      <ul className="hidden sm:flex gap-5 text-sm text-gray-700">
-        <NavLink to="/" className="flex flex-col items-center gap-1">
-          <p>HOME</p>
+      <ul className="hidden gap-8 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#77776e] sm:flex">
+        <NavLink to="/" className="flex flex-col items-center gap-1 transition-colors hover:text-[#161714]">
+          <p>Home</p>
           <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
         </NavLink>
-        <NavLink to="/collection" className="flex flex-col items-center gap-1">
-          <p>COLLECTION</p>
+        <NavLink to="/collection" className="flex flex-col items-center gap-1 transition-colors hover:text-[#161714]">
+          <p>Collection</p>
           <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
         </NavLink>
-        <NavLink to="/about" className="flex flex-col items-center gap-1">
-          <p>ABOUT</p>
+        <NavLink to="/about" className="flex flex-col items-center gap-1 transition-colors hover:text-[#161714]">
+          <p>About</p>
           <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
         </NavLink>
-        <NavLink to="/contact" className="flex flex-col items-center gap-1">
-          <p>CONTACT</p>
+        <NavLink to="/contact" className="flex flex-col items-center gap-1 transition-colors hover:text-[#161714]">
+          <p>Contact</p>
           <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
         </NavLink>
       </ul>
 
-      <div className="flex items-center gap-6 z-10">
+      <div className="z-10 flex items-center gap-4 sm:gap-5">
         <img
           onClick={handleSearchClick}
           src={assets.search_icon}
-          className="w-5 cursor-pointer hover:opacity-80 transition-opacity"
+          className="h-5 w-5 cursor-pointer opacity-70 transition-opacity hover:opacity-100"
           alt="Search"
         />
 
@@ -70,27 +73,27 @@ const Navbar = () => {
           <img
             onClick={() => (token ? null : navigate("/login"))}
             src={assets.profile_icon}
-            className="w-5 cursor-pointer hover:opacity-80 transition-opacity"
+            className="h-5 w-5 cursor-pointer opacity-70 transition-opacity hover:opacity-100"
             alt="Profile"
           />
           {token && (
             <div className="group-hover:block hidden absolute right-0 pt-4 z-50">
-              <div className="flex flex-col gap-2 w-36 py-3 px-5 bg-white border border-gray-200 shadow-xl text-gray-600 rounded-xl text-sm">
+              <div className="flex w-40 flex-col gap-3 rounded-none border border-[#dedbd1] bg-[#fffefa] px-5 py-4 text-sm text-[#77776e] shadow-xl">
                 <p
                   onClick={() => navigate("/profile")}
-                  className="cursor-pointer hover:text-black transition-colors"
+                  className="cursor-pointer transition-colors hover:text-[#161714]"
                 >
                   My Profile
                 </p>
                 <p
                   onClick={() => navigate("/orders")}
-                  className="cursor-pointer hover:text-black transition-colors"
+                  className="cursor-pointer transition-colors hover:text-[#161714]"
                 >
                   Orders
                 </p>
                 <p
                   onClick={logout}
-                  className="cursor-pointer text-red-600 hover:text-red-700 font-semibold transition-colors"
+                  className="cursor-pointer font-semibold text-[#9a5945] transition-colors hover:text-[#641f2b]"
                 >
                   Logout
                 </p>
@@ -102,7 +105,7 @@ const Navbar = () => {
         {/* Cart Icon */}
         <Link to="/cart" className="relative">
           <img src={assets.cart_icon} className="w-5 min-w-5" alt="Cart" />
-          <p className="absolute right-[-5px] bottom-[-5px] w-4 text-center leading-4 bg-black text-white aspect-square rounded-full text-[8px] font-bold">
+          <p className="absolute bottom-[-5px] right-[-5px] aspect-square w-4 rounded-full bg-[#161714] text-center text-[8px] font-bold leading-4 text-white">
             {getCartCount()}
           </p>
         </Link>
@@ -111,7 +114,7 @@ const Navbar = () => {
         <img
           onClick={() => setVisible(true)}
           src={assets.menu_icon}
-          className="w-5 cursor-pointer sm:hidden hover:opacity-80 transition-opacity"
+          className="w-5 cursor-pointer opacity-70 transition-opacity hover:opacity-100 sm:hidden"
           alt="Open Menu"
         />
       </div>
