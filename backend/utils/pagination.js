@@ -1,6 +1,6 @@
 const DEFAULT_PAGE = 1;
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 10;
+const DEFAULT_LIMIT = 12;
+const MAX_LIMIT = 50;
 
 const parsePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);

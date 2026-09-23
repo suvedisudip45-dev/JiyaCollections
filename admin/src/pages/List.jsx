@@ -5,6 +5,7 @@ import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import { Package, Eye, Edit3, Trash2, Layers, DollarSign, ShieldAlert, Check } from "lucide-react";
+import ProductImageCarousel from "../components/ProductImageCarousel";
 
 const List = ({ token }) => {
   const [list, setList] = useState([]);
@@ -35,6 +36,13 @@ const List = ({ token }) => {
   // Color options
   const [colorsList, setColorsList] = useState([]);
   const [categoriesList, setCategoriesList] = useState([]);
+  const [subCategoriesList, setSubCategoriesList] = useState([]);
+
+  // Filters
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [filterSubCategory, setFilterSubCategory] = useState("all");
+  const [filterBestseller, setFilterBestseller] = useState("all");
 
   const fetchList = async () => {
     try {
@@ -43,6 +51,27 @@ const List = ({ token }) => {
       });
       if (response.data.success) {
         setList(response.data.products || []);
+      } else {
+        toast.error(response.data.message);
+      }
+    } catch (error) {
+      console.log(error);
+      toast.error(error.message);
+    }
+  };
+
+  const toggleBestsellerHandler = async (id) => {
+    try {
+      const response = await axios.post(
+        backendUrl + "/api/product/toggle-bestseller",
+        { id },
+        { headers: { token } }
+      );
+      if (response.data.success) {
+        toast.success(response.data.message);
+        setList((prev) =>
+          prev.map((p) => ((p._id || p.id) === id ? { ...p, bestseller: response.data.bestseller } : p))
+        );
       } else {
         toast.error(response.data.message);
       }
@@ -286,15 +315,19 @@ const List = ({ token }) => {
 
   const fetchColorsAndCategories = async () => {
     try {
-      const [colRes, catRes] = await Promise.all([
+      const [colRes, catRes, subRes] = await Promise.all([
         axios.get(backendUrl + "/api/color/list"),
         axios.get(backendUrl + "/api/category/list"),
+        axios.get(backendUrl + "/api/subcategory/list"),
       ]);
       if (colRes.data.success && colRes.data.colors.length > 0) {
         setColorsList(colRes.data.colors);
       }
       if (catRes.data.success && catRes.data.categories.length > 0) {
         setCategoriesList(catRes.data.categories);
+      }
+      if (subRes.data.success && subRes.data.subCategories.length > 0) {
+        setSubCategoriesList(subRes.data.subCategories);
       }
     } catch (error) {
       console.log(error);
@@ -306,13 +339,37 @@ const List = ({ token }) => {
     fetchColorsAndCategories();
   }, []);
 
+  const filteredList = list.filter((item) => {
+    const q = searchQuery.toLowerCase().trim();
+    const matchSearch =
+      !q ||
+      item.name.toLowerCase().includes(q) ||
+      (item.subCategory && item.subCategory.toLowerCase().includes(q)) ||
+      (item.nepaliName && item.nepaliName.toLowerCase().includes(q));
+
+    const itemCats = item.categories && item.categories.length > 0 ? item.categories : parseArray(item.category);
+    const matchCategory =
+      filterCategory === "all" ||
+      itemCats.some((c) => c.toLowerCase() === filterCategory.toLowerCase());
+
+    const matchSubCategory =
+      filterSubCategory === "all" ||
+      (item.subCategory && item.subCategory.toLowerCase() === filterSubCategory.toLowerCase());
+
+    const matchBestseller =
+      filterBestseller === "all" ||
+      (filterBestseller === "bestseller" ? item.bestseller : !item.bestseller);
+
+    return matchSearch && matchCategory && matchSubCategory && matchBestseller;
+  });
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Product Catalog Management</h1>
           <p className="text-xs text-slate-500">
-            Define garment styles, retail pricing, and size/color varieties. Stock quantities are submitted by licensed manufacturer hubs.
+            Define garment styles, retail pricing, subcategories, and <strong>Subcategory Best Sellers ⭐</strong>.
           </p>
         </div>
         <button
@@ -323,6 +380,66 @@ const List = ({ token }) => {
         </button>
       </div>
 
+      {/* Filter & Search Bar */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center gap-3">
+        <input
+          type="text"
+          placeholder="Search products by name / subcategory..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-xs font-medium focus:outline-none focus:border-indigo-500 flex-1 min-w-[200px]"
+        />
+
+        <select
+          value={filterCategory}
+          onChange={(e) => setFilterCategory(e.target.value)}
+          className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+        >
+          <option value="all">All Categories</option>
+          {categoriesList.map((cat) => (
+            <option key={cat.id} value={cat.name}>{cat.name}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterSubCategory}
+          onChange={(e) => setFilterSubCategory(e.target.value)}
+          className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+        >
+          <option value="all">All Subcategories</option>
+          {subCategoriesList.map((sub) => (
+            <option key={sub.id} value={sub.name}>
+              {sub.name} {sub.category?.name ? `(${sub.category.name})` : ""}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={filterBestseller}
+          onChange={(e) => setFilterBestseller(e.target.value)}
+          className="bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 outline-none"
+        >
+          <option value="all">All Items</option>
+          <option value="bestseller">⭐ Subcategory Best Sellers</option>
+          <option value="standard">Standard Items</option>
+        </select>
+
+        {(searchQuery || filterCategory !== "all" || filterSubCategory !== "all" || filterBestseller !== "all") && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchQuery("");
+              setFilterCategory("all");
+              setFilterSubCategory("all");
+              setFilterBestseller("all");
+            }}
+            className="text-xs text-rose-600 font-bold hover:underline"
+          >
+            Reset Filters
+          </button>
+        )}
+      </div>
+
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
@@ -330,6 +447,7 @@ const List = ({ token }) => {
               <tr>
                 <th className="py-3 px-4">Garment</th>
                 <th className="py-3 px-4">Categories</th>
+                <th className="py-3 px-4">Subcategory Best Seller</th>
                 <th className="py-3 px-4">Retail Price</th>
                 <th className="py-3 px-4">Varieties (Admin Locked)</th>
                 <th className="py-3 px-4 text-center">Hub Network Stock</th>
@@ -338,38 +456,28 @@ const List = ({ token }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-medium">
-              {list.length === 0 ? (
+              {filteredList.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400">
-                    <p className="font-semibold text-sm">No products found in catalog.</p>
+                  <td colSpan={8} className="py-12 text-center text-slate-400">
+                    <p className="font-semibold text-sm">No products found matching filters.</p>
                     <p className="text-xs text-slate-400 mt-1">
-                      Use the &quot;Add Items&quot; tab on the sidebar to create your first garment variety.
+                      Try adjusting your search query or category filters.
                     </p>
                   </td>
                 </tr>
               ) : (
-                list.map((item, index) => {
+                filteredList.map((item, index) => {
                   const sizes = parseArray(item.sizes);
                   const colors = parseArray(item.colors);
                   const isOutOfStock = (item.stockQuantity || 0) <= 0;
                   const isLowStock = (item.stockQuantity || 0) <= 5 && !isOutOfStock;
-                  const imgThumb = Array.isArray(item.image) && item.image.length > 0 ? item.image[0] : (typeof item.image === "string" ? item.image : "");
+                  const productImages = Array.isArray(item.image) ? item.image : [item.image];
 
                   return (
                     <tr key={index} className={`hover:bg-slate-50/80 transition-colors ${!item.published ? "bg-slate-50/50" : ""}`}>
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
-                          {imgThumb ? (
-                            <img
-                              className="w-11 h-11 object-cover rounded-xl border border-slate-200"
-                              src={imgThumb}
-                              alt=""
-                            />
-                          ) : (
-                            <div className="w-11 h-11 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs font-bold">
-                              No Img
-                            </div>
-                          )}
+                          <ProductImageCarousel images={productImages} alt={item.name} />
                         <div>
                           <p className="font-bold text-slate-900">{item.name}</p>
                           <span className="text-[10px] text-slate-400">Sub: {item.subCategory || "General"}</span>
@@ -381,7 +489,7 @@ const List = ({ token }) => {
                             )}
                             {item.bestseller && (
                               <span className="text-[9px] bg-yellow-100 text-yellow-800 px-1 py-0.2 rounded font-bold">
-                                Bestseller
+                                Best Seller ⭐
                               </span>
                             )}
                           </div>
@@ -403,6 +511,22 @@ const List = ({ token }) => {
                           </span>
                         ))}
                       </div>
+                    </td>
+
+                    {/* Subcategory Best Seller Interactive Toggle */}
+                    <td className="py-3 px-4">
+                      <button
+                        type="button"
+                        onClick={() => toggleBestsellerHandler(item._id || item.id)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
+                          item.bestseller
+                            ? "bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200"
+                            : "bg-slate-100 text-slate-500 hover:bg-slate-200 border border-slate-200"
+                        }`}
+                        title={`Toggle Best Seller for ${item.subCategory || "subcategory"}`}
+                      >
+                        <span>{item.bestseller ? "⭐ Best Seller" : "☆ Set Best Seller"}</span>
+                      </button>
                     </td>
 
                     <td className="py-3 px-4">
@@ -483,6 +607,7 @@ const List = ({ token }) => {
           </table>
         </div>
       </div>
+
 
       {/* --- EDIT PRODUCT MODAL (Admin defines varieties & pricing) --- */}
       {editingProduct && (
@@ -775,10 +900,10 @@ const List = ({ token }) => {
                     id="editBestseller"
                     checked={editBestseller}
                     onChange={(e) => setEditBestseller(e.target.checked)}
-                    className="cursor-pointer"
+                    className="cursor-pointer accent-amber-500 w-4 h-4"
                   />
-                  <label htmlFor="editBestseller" className="cursor-pointer font-bold text-slate-700">
-                    Bestseller
+                  <label htmlFor="editBestseller" className="cursor-pointer font-bold text-slate-800 text-xs">
+                    ⭐ Subcategory Best Seller <span className="text-slate-400 font-normal">({editSubCategory || "Subcategory"})</span>
                   </label>
                 </div>
 

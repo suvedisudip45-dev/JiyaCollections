@@ -26,6 +26,7 @@ const Add = ({ token }) => {
   const [subCategory, setSubCategory] = useState("Topwear");
   const [bestseller, setBestSeller] = useState(false);
   const [newInStore, setNewInStore] = useState(false);
+  const [showInNavigation, setShowInNavigation] = useState(false);
 
   // Variety builder state
   const [variants, setVariants] = useState([]); // [{ size, color, quantity: 0, imageFile: File | null, imagePreview: string | null }]
@@ -218,6 +219,7 @@ const Add = ({ token }) => {
         formData.append("subCategory", finalSubCategory);
         formData.append("bestseller", bestseller);
         formData.append("newInStore", newInStore);
+        formData.append("showInNavigation", showInNavigation);
 
         const computedStockQuantity = variants.reduce((sum, v) => sum + (Number(v.quantity) || 0), 0);
         formData.append("stockQuantity", computedStockQuantity);
@@ -273,6 +275,7 @@ const Add = ({ token }) => {
           setLowStockThreshold("5");
           setBestSeller(false);
           setNewInStore(false);
+          setShowInNavigation(false);
           setVariants([]);
           setVariantSize("S");
           setVariantColor(colorsList.length > 0 ? colorsList[0].name : "");
@@ -723,9 +726,12 @@ const Add = ({ token }) => {
                 onChange={() => setBestSeller((prev) => !prev)}
                 checked={bestseller}
                 type="checkbox"
-                className="w-4 h-4 accent-slate-900 cursor-pointer"
+                className="w-4 h-4 accent-amber-500 cursor-pointer"
               />
-              <span className="text-xs font-bold text-slate-800">Add to Bestseller</span>
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                <span>⭐ Mark as Subcategory Best Seller</span>
+                <span className="text-slate-400 font-normal">({subCategory || "Subcategory"})</span>
+              </span>
             </label>
 
             <label className="flex items-center gap-2 cursor-pointer">
@@ -751,6 +757,22 @@ const Add = ({ token }) => {
               Feature as &quot;New in Store&quot; (Hero Section)
               <span className="block text-[11px] font-normal text-amber-700">
                 Checking this flags this garment on the store hero banner.
+              </span>
+            </label>
+          </div>
+
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center gap-3">
+            <input
+              onChange={() => setShowInNavigation((prev) => !prev)}
+              checked={showInNavigation}
+              type="checkbox"
+              id="showInNavigation"
+              className="w-4 h-4 accent-slate-900 cursor-pointer shrink-0"
+            />
+            <label className="cursor-pointer text-xs font-bold text-slate-800" htmlFor="showInNavigation">
+              Show category in storefront navigation
+              <span className="block text-[11px] font-normal text-slate-500">
+                Adds this product&apos;s category and subcategory to the customer navbar when published.
               </span>
             </label>
           </div>

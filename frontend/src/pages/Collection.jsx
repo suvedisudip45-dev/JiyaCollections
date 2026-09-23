@@ -1,97 +1,148 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
-import { assets } from "../assets/assets";
-import Title from "../components/Title";
 import ProductItem from "../components/ProductItem";
 import axios from "axios";
+import { Loader2, ArrowUpDown } from "lucide-react";
 
 const Collection = () => {
-  const { products, search, showSearch, backendUrl } = useContext(ShopContext);
-  const [showFilter, setShowFilter] = useState(false);
-  const [filterProducts, setFilterProducts] = useState([]);
+  const { search, showSearch, backendUrl } = useContext(ShopContext);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Filters from URL
   const [category, setCategory] = useState([]);
   const [subCategory, setSubCategory] = useState([]);
   const [sortType, setSortType] = useState("relavent");
+  const featuredFilter = searchParams.get("featured");
 
-  const [categoriesList, setCategoriesList] = useState([]);
-  const [subCategoriesList, setSubCategoriesList] = useState([]);
+  // Metadata for subcategory / category banner & description
+  const [subcategoryMeta, setSubcategoryMeta] = useState(null);
+  const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
 
+  // Pagination & Chunked Data State
+  const [productsList, setProductsList] = useState([]);
+  const [page, setPage] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+
+  const loadMoreRef = useRef(null);
+
+  // Sync search params from URL
   useEffect(() => {
-    const fetchDynamicFilters = async () => {
+    const requestedCategory = searchParams.get("category");
+    const requestedSubcategory = searchParams.get("subcategory");
+    setCategory(requestedCategory ? [requestedCategory] : []);
+    setSubCategory(requestedSubcategory ? [requestedSubcategory] : []);
+    setIsDescriptionExpanded(false);
+  }, [searchParams]);
+
+  // Fetch subcategory banner & description metadata
+  useEffect(() => {
+    if (!subCategory[0]) {
+      setSubcategoryMeta(null);
+      return;
+    }
+    axios
+      .get(`${backendUrl}/api/subcategory/list`)
+      .then((response) => {
+        const list = response.data.subCategories || [];
+        const match =
+          list.find(
+            (item) =>
+              item.name.toLowerCase() === subCategory[0].toLowerCase() &&
+              (!category[0] ||
+                !item.category ||
+                item.category.name.toLowerCase() === category[0].toLowerCase())
+          ) || list.find((item) => item.name.toLowerCase() === subCategory[0].toLowerCase());
+        setSubcategoryMeta(match || null);
+      })
+      .catch(() => setSubcategoryMeta(null));
+  }, [backendUrl, subCategory, category]);
+
+  // Fetch first chunk of products whenever filters change
+  useEffect(() => {
+    const fetchFirstChunk = async () => {
+      setIsLoading(true);
       try {
-        const [catRes, subRes] = await Promise.all([
-          axios.get(backendUrl + "/api/category/list"),
-          axios.get(backendUrl + "/api/subcategory/list"),
-        ]);
-        if (catRes.data.success && catRes.data.categories.length > 0) {
-          setCategoriesList(catRes.data.categories.map((c) => c.name));
+        const params = new URLSearchParams();
+        if (category[0]) params.set("category", category[0]);
+        if (subCategory[0]) params.set("subcategory", subCategory[0]);
+        if (featuredFilter) params.set("featured", featuredFilter);
+        params.set("page", "1");
+        params.set("limit", "12");
+
+        const response = await axios.get(`${backendUrl}/api/product/list?${params.toString()}`);
+        if (response.data.success) {
+          const prods = response.data.products || [];
+          setProductsList(prods);
+          setPage(1);
+          setHasNextPage(Boolean(response.data.pagination?.hasNextPage));
+          setTotalCount(response.data.pagination?.total ?? prods.length);
         } else {
-          setCategoriesList(["Men", "Women", "Kids"]);
-        }
-        if (subRes.data.success && subRes.data.subCategories.length > 0) {
-          setSubCategoriesList(subRes.data.subCategories.map((s) => s.name));
-        } else {
-          setSubCategoriesList(["Topwear", "Bottomwear", "Winterwear"]);
+          setProductsList([]);
+          setHasNextPage(false);
+          setTotalCount(0);
         }
       } catch (error) {
-        console.log(error);
-        setCategoriesList(["Men", "Women", "Kids"]);
-        setSubCategoriesList(["Topwear", "Bottomwear", "Winterwear"]);
+        console.error("Error fetching collection products:", error);
+        setProductsList([]);
+        setHasNextPage(false);
+        setTotalCount(0);
+      } finally {
+        setIsLoading(false);
       }
     };
-    fetchDynamicFilters();
-  }, [backendUrl]);
 
-  // Dynamically include any custom categories present on products (e.g. Festival Offer)
+    fetchFirstChunk();
+  }, [backendUrl, category, subCategory, featuredFilter]);
+
+  // Infinite Scroll IntersectionObserver to fetch next chunk dynamically
   useEffect(() => {
-    if (products && products.length > 0) {
-      setCategoriesList((prev) => {
-        const prodCats = [];
-        products.forEach((p) => {
-          if (Array.isArray(p.categories)) {
-            prodCats.push(...p.categories);
-          } else if (typeof p.category === "string" && p.category) {
-            const trimmed = p.category.trim();
-            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-              try {
-                prodCats.push(...JSON.parse(trimmed));
-              } catch {
-                prodCats.push(trimmed);
-              }
-            } else {
-              prodCats.push(...trimmed.split(",").map((s) => s.trim()));
-            }
+    if (!hasNextPage || isLoading || isLoadingMore || !loadMoreRef.current) return undefined;
+
+    const observer = new IntersectionObserver(
+      async ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setIsLoadingMore(true);
+        try {
+          const nextPage = page + 1;
+          const params = new URLSearchParams();
+          if (category[0]) params.set("category", category[0]);
+          if (subCategory[0]) params.set("subcategory", subCategory[0]);
+          if (featuredFilter) params.set("featured", featuredFilter);
+          params.set("page", String(nextPage));
+          params.set("limit", "12");
+
+          const response = await axios.get(`${backendUrl}/api/product/list?${params.toString()}`);
+          if (response.data.success) {
+            const newItems = response.data.products || [];
+            setProductsList((prev) => [...prev, ...newItems]);
+            setPage(nextPage);
+            setHasNextPage(Boolean(response.data.pagination?.hasNextPage));
           }
-        });
-        const combined = Array.from(new Set([...prev, ...prodCats.filter(Boolean)]));
-        return combined;
-      });
-    }
-  }, [products]);
+        } catch (error) {
+          console.error("Error fetching next chunk of products:", error);
+        } finally {
+          setIsLoadingMore(false);
+        }
+      },
+      { rootMargin: "350px" }
+    );
 
-  const toggleCategory = (e) => {
-    if (category.includes(e.target.value)) {
-      setCategory((prev) => prev.filter((item) => item !== e.target.value));
-    } else {
-      setCategory((prev) => [...prev, e.target.value]);
-    }
-  };
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [backendUrl, category, subCategory, featuredFilter, hasNextPage, isLoading, isLoadingMore, page]);
 
-  const toogleSubCategory = (e) => {
-    if (subCategory.includes(e.target.value)) {
-      setSubCategory((prev) => prev.filter((item) => item !== e.target.value));
-    } else {
-      setSubCategory((prev) => [...prev, e.target.value]);
-    }
-  };
-
-  const applyFilter = () => {
-    let productsCopy = products.slice();
+  // Apply in-memory search and client-side sorting
+  const getProcessedProducts = () => {
+    let list = [...productsList];
 
     if (showSearch && search) {
       const q = search.toLowerCase().trim();
-      productsCopy = productsCopy.filter((item) => {
-        const matchName = item.name.toLowerCase().includes(q);
+      list = list.filter((item) => {
+        const matchName = item.name?.toLowerCase().includes(q);
         const matchSub = item.subCategory && item.subCategory.toLowerCase().includes(q);
         const matchCat = Array.isArray(item.categories)
           ? item.categories.some((c) => c.toLowerCase().includes(q))
@@ -100,165 +151,251 @@ const Collection = () => {
       });
     }
 
-    if (category.length > 0) {
-      productsCopy = productsCopy.filter((item) => {
-        let itemCats = [];
-        if (Array.isArray(item.categories)) {
-          itemCats = item.categories;
-        } else if (typeof item.category === "string") {
-          const trimmed = item.category.trim();
-          if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-            try {
-              itemCats = JSON.parse(trimmed);
-            } catch {
-              itemCats = [trimmed];
-            }
-          } else {
-            itemCats = trimmed.split(",").map((s) => s.trim()).filter(Boolean);
-          }
-        }
-        return itemCats.some((c) => category.includes(c));
-      });
-    }
-
-    if (subCategory.length > 0) {
-      productsCopy = productsCopy.filter((item) =>
-        subCategory.includes(item.subCategory)
-      );
-    }
-
-    setFilterProducts(productsCopy);
-  };
-
-  const sortProduct = () => {
-    let fpCopy = filterProducts.slice();
     switch (sortType) {
       case "low-high":
-        setFilterProducts(fpCopy.sort((a, b) => a.price - b.price));
-        break;
+        return list.sort((a, b) => a.price - b.price);
       case "high-low":
-        setFilterProducts(fpCopy.sort((a, b) => b.price - a.price));
-        break;
+        return list.sort((a, b) => b.price - a.price);
       case "newest":
-        setFilterProducts(fpCopy.sort((a, b) => Number(b.date || 0) - Number(a.date || 0)));
-        break;
+        return list.sort((a, b) => Number(b.date || 0) - Number(a.date || 0));
       case "top-rated":
-        setFilterProducts(
-          fpCopy.sort((a, b) => {
-            const rA = Number(a.rating || 0);
-            const rB = Number(b.rating || 0);
-            if (rB !== rA) return rB - rA;
-            return (b.reviewCount || 0) - (a.reviewCount || 0);
-          })
-        );
-        break;
+        return list.sort((a, b) => {
+          const rA = Number(a.rating || 0);
+          const rB = Number(b.rating || 0);
+          if (rB !== rA) return rB - rA;
+          return (b.reviewCount || 0) - (a.reviewCount || 0);
+        });
       default:
-        applyFilter();
-        break;
+        return list;
     }
   };
 
-  useEffect(() => {
-    applyFilter();
-  }, [category, subCategory, search, showSearch, products]);
+  const displayedProducts = getProcessedProducts();
 
-  useEffect(() => {
-    sortProduct();
-  }, [sortType]);
+  // Subcategory or Category Banner Title
+  const bannerTitle = subCategory[0]
+    ? subCategory[0].toUpperCase()
+    : category[0]
+    ? category[0].toUpperCase()
+    : featuredFilter === "new"
+    ? "NEW ARRIVALS"
+    : featuredFilter === "bestseller"
+    ? "BEST SELLERS"
+    : "ALL PRODUCTS";
+
+  const descriptionText =
+    subcategoryMeta?.description ||
+    (category[0]
+      ? `Explore our signature ${category[0]}'s collection, tailored for modern comfort, exceptional fit, and durable street aesthetic.`
+      : featuredFilter === "new"
+      ? "Discover the newest arrivals and trending drops crafted for effortless style."
+      : featuredFilter === "bestseller"
+      ? "Our most sought-after silhouettes and crowd favorites, loved by customers across Nepal."
+      : "Shop our complete catalog of clothing, essentials, and signature wear.");
+
+  const shouldTruncateDescription = descriptionText.length > 140;
 
   return (
-    <div className="flex flex-col gap-8 border-t border-[#d9d6cc] pt-10 sm:flex-row sm:gap-10">
-      {/* Filter Options */}
-      <div className="min-w-60">
-        <p
-          onClick={() => setShowFilter(!showFilter)}
-          className="my-2 flex cursor-pointer items-center gap-2 text-xl font-semibold tracking-tight text-[#161714]"
-        >
-          FILTERS
-          <img
-            className={`h-3 sm:hidden ${showFilter ? "rotate-90" : ""}`}
-            src={assets.dropdown_icon}
-            alt=""
-          />
-        </p>
-        {/* Category Filter */}
-        <div
-          className={`mt-6 border border-[#d9d6cc] bg-[#fffefa] py-4 pl-5 ${
-            showFilter ? "" : "hidden"
-          } sm:block`}
-        >
-          <p className="eyebrow mb-3">Categories</p>
-          <div className="flex flex-col gap-3 text-sm font-medium text-[#5d5d55]">
-            {categoriesList.map((cat, idx) => (
-              <p className="flex gap-2" key={idx}>
-                <input
-                  className="h-4 w-4 accent-[#9a5945]"
-                  type="checkbox"
-                  value={cat}
-                  onChange={toggleCategory}
-                />
-                {cat}
-              </p>
-            ))}
+    <div className="mx-auto w-full max-w-[1440px] pb-16">
+      {/* --- HERO BANNER & BREADCRUMBS SECTION (BONKERS CORNER STYLE) --- */}
+      <section className="relative w-full overflow-hidden bg-[var(--stone)]">
+        {subcategoryMeta?.image ? (
+          <div className="relative h-[280px] sm:h-[380px] md:h-[460px] w-full overflow-hidden">
+            <img
+              src={subcategoryMeta.image}
+              alt={bannerTitle}
+              className="h-full w-full object-cover object-center"
+            />
+            {/* Dark Vignette Overlay */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-black/30" />
+
+            {/* Breadcrumb over image */}
+            <div className="absolute top-4 left-4 sm:left-8 z-10 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-white/90">
+              <Link to="/" className="underline hover:text-white transition-colors">
+                Home
+              </Link>
+              <span className="text-white/60">/</span>
+              <Link to="/collection" className="underline hover:text-white transition-colors">
+                Shop
+              </Link>
+              {category[0] && (
+                <>
+                  <span className="text-white/60">/</span>
+                  <Link
+                    to={`/collection?category=${encodeURIComponent(category[0])}`}
+                    className="underline hover:text-white transition-colors"
+                  >
+                    {category[0]}
+                  </Link>
+                </>
+              )}
+              {subCategory[0] && (
+                <>
+                  <span className="text-white/60">/</span>
+                  <span className="text-white font-bold">{subCategory[0]}</span>
+                </>
+              )}
+            </div>
+
+            {/* Centered Large Bold Title */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-4">
+              <h1 className="text-3xl sm:text-5xl md:text-6xl font-black tracking-widest text-white text-center drop-shadow-md">
+                {bannerTitle}
+              </h1>
+            </div>
           </div>
-        </div>
-        {/* SubCategory Filter */}
-        <div
-          className={`my-5 border border-[#d9d6cc] bg-[#fffefa] py-4 pl-5 ${
-            showFilter ? "" : "hidden"
-          } sm:block`}
-        >
-          <p className="eyebrow mb-3">Type</p>
-          <div className="flex flex-col gap-3 text-sm font-medium text-[#5d5d55]">
-            {subCategoriesList.map((sub, idx) => (
-              <p className="flex gap-2" key={idx}>
-                <input
-                  className="h-4 w-4 accent-[#9a5945]"
-                  type="checkbox"
-                  value={sub}
-                  onChange={toogleSubCategory}
-                />
-                {sub}
+        ) : (
+          <div className="relative py-12 px-4 sm:px-8 border-b border-[var(--line)] bg-[var(--paper)] text-center">
+            {/* Breadcrumb for text banner */}
+            <div className="mb-4 flex items-center justify-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-[var(--muted)]">
+              <Link to="/" className="hover:text-[var(--ink)] underline transition-colors">
+                Home
+              </Link>
+              <span>/</span>
+              <Link to="/collection" className="hover:text-[var(--ink)] underline transition-colors">
+                Shop
+              </Link>
+              {category[0] && (
+                <>
+                  <span>/</span>
+                  <Link
+                    to={`/collection?category=${encodeURIComponent(category[0])}`}
+                    className="hover:text-[var(--ink)] underline transition-colors"
+                  >
+                    {category[0]}
+                  </Link>
+                </>
+              )}
+              {subCategory[0] && (
+                <>
+                  <span>/</span>
+                  <span className="text-[var(--ink)] font-bold">{subCategory[0]}</span>
+                </>
+              )}
+            </div>
+
+            <h1 className="text-3xl sm:text-4xl md:text-5xl font-black uppercase tracking-wider text-[var(--ink)]">
+              {bannerTitle}
+            </h1>
+          </div>
+        )}
+
+        {/* Subcategory Description with "Read more" / "Read less" */}
+        {descriptionText && (
+          <div className="border-b border-[var(--line)] bg-[var(--paper)] px-4 py-4 sm:px-8">
+            <div className="mx-auto max-w-4xl text-center">
+              <p className="text-xs sm:text-sm leading-relaxed text-[var(--muted)]">
+                {shouldTruncateDescription && !isDescriptionExpanded
+                  ? `${descriptionText.slice(0, 130)}...`
+                  : descriptionText}
+                {shouldTruncateDescription && (
+                  <button
+                    type="button"
+                    onClick={() => setIsDescriptionExpanded(!isDescriptionExpanded)}
+                    className="ml-2 inline-block font-bold text-[var(--ink)] underline hover:text-[var(--accent)] text-xs uppercase tracking-wider cursor-pointer"
+                  >
+                    {isDescriptionExpanded ? "Read less" : "Read more"}
+                  </button>
+                )}
               </p>
-            ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* --- TOOLBAR: PRODUCT COUNT & SORT DROPDOWN --- */}
+      <div className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--paper)]/95 backdrop-blur-md px-4 py-3 sm:px-8">
+        <div className="flex items-center justify-between gap-4">
+          {/* Left: Product Count */}
+          <div className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
+            <span>{totalCount} PRODUCTS</span>
+          </div>
+
+          {/* Right: Clean Sort Dropdown */}
+          <div className="flex items-center gap-2">
+            <ArrowUpDown size={14} className="text-[var(--muted)] hidden sm:inline-block" />
+            <select
+              value={sortType}
+              onChange={(e) => setSortType(e.target.value)}
+              className="border border-[var(--line)] bg-[var(--white)] px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[var(--ink)] outline-none rounded-md shadow-xs hover:border-[var(--ink)] cursor-pointer transition-colors"
+            >
+              <option value="relavent">Sort by: Relevant</option>
+              <option value="newest">Sort by: Newest Arrivals</option>
+              <option value="top-rated">Sort by: Top Rated</option>
+              <option value="low-high">Sort by: Price: Low to High</option>
+              <option value="high-low">Sort by: Price: High to Low</option>
+            </select>
           </div>
         </div>
       </div>
-      {/* Right Side */}
-      <div className="flex-1">
-        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <Title text1={"ALL"} text2={"COLLECTIONS"} />
-          {/* Product Sort */}
-          <select
-            onChange={(e) => setSortType(e.target.value)}
-            className="border border-[#c9c6bc] bg-[#fffefa] px-3 py-2 text-xs font-semibold text-[#45463f] outline-none"
-          >
-            <option value="relavent">Sort by: Relevant</option>
-            <option value="newest">Sort by: Newest Arrivals</option>
-            <option value="top-rated">Sort by: Top Rated</option>
-            <option value="low-high">Sort by: Price: Low to High</option>
-            <option value="high-low">Sort by: Price: High to Low</option>
-          </select>
-        </div>
-        {/* Map Products */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
-          {filterProducts.map((item, index) => (
-            <ProductItem
-              key={index}
-              name={item.name}
-              id={item._id}
-              price={item.price}
-              image={item.image}
-              discount={item.discount}
-              stockStatus={item.stockStatus}
-              stockQuantity={item.stockQuantity ?? 0}
-              variants={item.variants}
-              rating={item.rating}
-              reviewCount={item.reviewCount}
-              newInStore={item.newInStore}
-              bestseller={item.bestseller}
-            />
-          ))}
+
+      {/* --- PRODUCT GRID --- */}
+      <div className="px-4 sm:px-8 pt-8">
+        {isLoading ? (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+            {[...Array(8)].map((_, i) => (
+              <div key={i} className="animate-pulse flex flex-col space-y-3">
+                <div className="bg-gray-200 aspect-[3/4] w-full rounded-md" />
+                <div className="h-4 bg-gray-200 rounded w-3/4" />
+                <div className="h-3 bg-gray-200 rounded w-1/2" />
+              </div>
+            ))}
+          </div>
+        ) : displayedProducts.length === 0 ? (
+          <div className="py-20 text-center flex flex-col items-center justify-center">
+            <span className="text-4xl mb-3">🛍️</span>
+            <p className="text-lg font-bold uppercase tracking-wider text-[var(--ink)]">
+              No products found
+            </p>
+            <p className="text-xs text-[var(--muted)] mt-1 max-w-sm">
+              We couldn&apos;t find any items in this collection yet.
+            </p>
+            <Link
+              to="/collection"
+              className="mt-6 bg-black text-white px-6 py-2.5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-gray-800 transition-colors"
+            >
+              View All Products
+            </Link>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+            {displayedProducts.map((item, index) => (
+              <ProductItem
+                key={`${item._id || item.id}-${index}`}
+                name={item.name}
+                id={item._id || item.id}
+                price={item.price}
+                image={item.image}
+                discount={item.discount}
+                stockStatus={item.stockStatus}
+                stockQuantity={item.stockQuantity ?? 0}
+                variants={item.variants}
+                rating={item.rating}
+                reviewCount={item.reviewCount}
+                newInStore={item.newInStore}
+                bestseller={item.bestseller}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Dynamic Chunked Scroll Observer Anchor & Loading State */}
+        <div
+          ref={loadMoreRef}
+          className="flex min-h-24 items-center justify-center py-10 text-xs font-bold uppercase tracking-widest text-[var(--muted)]"
+        >
+          {isLoadingMore ? (
+            <div className="flex items-center gap-2 text-[var(--ink)]">
+              <Loader2 className="animate-spin" size={18} />
+              <span>Loading more products...</span>
+            </div>
+          ) : hasNextPage ? (
+            <span>Scroll down for more items</span>
+          ) : displayedProducts.length > 0 ? (
+            <span className="border-t border-[var(--line)] pt-4 w-full text-center text-gray-400">
+              Showing all {totalCount} products • End of collection
+            </span>
+          ) : null}
         </div>
       </div>
     </div>

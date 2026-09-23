@@ -58,6 +58,7 @@ const addProduct = async (req, res) => {
       sizes,
       bestseller,
       newInStore,
+      showInNavigation,
       discount,
       costPrice,
       stockQuantity,
@@ -151,13 +152,6 @@ const addProduct = async (req, res) => {
     const categoriesArray = normalizeCategories(category);
     const isNewInStore = newInStore === "true" || newInStore === true;
 
-    // If marked as new in store, ensure all existing products have newInStore = false
-    if (isNewInStore) {
-      await prisma.product.updateMany({
-        data: { newInStore: false },
-      });
-    }
-
     const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
     const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
     const cleanDescription = sanitizeText(description) || "";
@@ -197,6 +191,7 @@ const addProduct = async (req, res) => {
       image: allImages,
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
+      showInNavigation: showInNavigation === "true" || showInNavigation === true,
       discount: numDiscount,
       costPrice: numCostPrice,
       stockQuantity: Math.max(0, qty),
@@ -247,6 +242,7 @@ const updateProduct = async (req, res) => {
       sizes,
       bestseller,
       newInStore,
+      showInNavigation,
       discount,
       costPrice,
       stockQuantity,
@@ -368,13 +364,11 @@ const updateProduct = async (req, res) => {
     let isNewInStore = undefined;
     if (newInStore !== undefined) {
       isNewInStore = newInStore === "true" || newInStore === true;
-      if (isNewInStore) {
-        await prisma.product.updateMany({
-          where: { id: { not: id } },
-          data: { newInStore: false },
-        });
-      }
     }
+
+    const isShownInNavigation = showInNavigation !== undefined
+      ? showInNavigation === "true" || showInNavigation === true
+      : undefined;
 
     const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
     const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
@@ -419,6 +413,7 @@ const updateProduct = async (req, res) => {
       image: allImages,
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
+      ...(isShownInNavigation !== undefined && { showInNavigation: isShownInNavigation }),
       ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
       ...(validatedCostPrice !== undefined && { costPrice: validatedCostPrice }),
       stockQuantity: Math.max(0, newQty),
@@ -462,19 +457,93 @@ const togglePublish = async (req, res) => {
   }
 };
 
+// function to toggle product bestseller status
+const toggleBestseller = async (req, res) => {
+  try {
+    const { id } = req.body;
+    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    if (!existingProduct) {
+      return res.json({ success: false, message: "Product not found" });
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id },
+      data: { bestseller: !existingProduct.bestseller },
+    });
+
+    const statusText = updatedProduct.bestseller ? "marked as Best Seller" : "removed from Best Sellers";
+    res.json({
+      success: true,
+      message: `${updatedProduct.name} is now ${statusText} for ${updatedProduct.subCategory || "its subcategory"}`,
+      bestseller: updatedProduct.bestseller,
+    });
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+// function to get bestsellers by category & subcategory
+const getSubcategoryBestsellers = async (req, res) => {
+  try {
+    const { category, subcategory } = req.query;
+    const whereCondition = { published: true, bestseller: true };
+    if (category) {
+      whereCondition.category = { contains: category.replace(/"/g, "") };
+    }
+    if (subcategory) {
+      whereCondition.subCategory = { contains: subcategory };
+    }
+
+    const products = await prisma.product.findMany({
+      where: whereCondition,
+      orderBy: { date: "desc" },
+    });
+
+    const formatted = products.map((item) => ({
+      ...item,
+      _id: item.id,
+      date: Number(item.date),
+      image: toImageArray(item.image),
+      categories: normalizeCategories(item.category),
+    }));
+
+    res.json({ success: true, products: formatted });
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 // function for list products
 const listProducts = async (req, res) => {
   try {
     const isAdmin = req.headers.token || req.query.admin === "true";
     const pagination = getPagination(req.query);
+    const requestedCategoryValue = String(req.query.category || "").trim();
+    const requestedCategory = requestedCategoryValue.toLowerCase();
+    const requestedSubcategory = String(req.query.subcategory || "").trim().toLowerCase();
+    const requestedFeatured = String(req.query.featured || "").trim().toLowerCase();
+    const hasPublicFilters = !isAdmin && (requestedCategory || requestedSubcategory || requestedFeatured);
 
     // Synchronize current stockQuantity & variant stock from ManufacturerInventory
     await syncAllProductsStock();
 
     // Admin sees all products; Public customers see only published products
-    const whereCondition = isAdmin ? {} : { published: true };
+    const whereCondition = { ...(isAdmin ? {} : { published: true }) };
+    if (hasPublicFilters) {
+      if (requestedCategory) {
+        const categoryValue = requestedCategoryValue.replace(/"/g, "");
+        whereCondition.category = { contains: categoryValue };
+      }
+      if (requestedSubcategory) {
+        whereCondition.subCategory = { contains: requestedSubcategory };
+      }
+      if (requestedFeatured === "new") whereCondition.newInStore = true;
+      if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    }
 
-    const productQuery = isAdmin
+    const productQuery = isAdmin || hasPublicFilters
       ? prisma.product.findMany({
         where: whereCondition,
         orderBy: { date: "desc" },
@@ -503,7 +572,7 @@ const listProducts = async (req, res) => {
       reviewStatsMap[r.productId].count += 1;
     }
 
-    const products = rawProducts.map((item) => {
+    let products = rawProducts.map((item) => {
       const cats = normalizeCategories(item.category);
       const rStats = reviewStatsMap[item.id] || { sum: 0, count: 0 };
       const avgRating = rStats.count > 0 ? Number((rStats.sum / rStats.count).toFixed(1)) : 0;
@@ -516,6 +585,7 @@ const listProducts = async (req, res) => {
         categories: cats,
         category: cats.join(", "),
         newInStore: Boolean(item.newInStore),
+        showInNavigation: Boolean(item.showInNavigation),
         costPrice: Number(item.costPrice || 0),
         lowStockThreshold: item.lowStockThreshold || 5,
         rating: avgRating,
@@ -523,7 +593,21 @@ const listProducts = async (req, res) => {
       };
     });
 
-    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: total || pagination.limit, skip: 0 }, total));
+    if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
+      products = products.filter((product) => {
+        const matchesCategory = !requestedCategory || product.categories.some(
+          (category) => String(category).trim().toLowerCase() === requestedCategory
+        );
+        const matchesSubcategory = !requestedSubcategory || String(product.subCategory || "").trim().toLowerCase() === requestedSubcategory;
+        const matchesFeatured = requestedFeatured !== "new" || product.newInStore;
+        const matchesBestseller = requestedFeatured !== "bestseller" || product.bestseller;
+        return matchesCategory && matchesSubcategory && matchesFeatured && matchesBestseller;
+      });
+    }
+
+    const filteredTotal = products.length;
+
+    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: filteredTotal || pagination.limit, skip: 0 }, isAdmin ? total : filteredTotal));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -708,4 +792,16 @@ const getStockLogs = async (req, res) => {
   }
 };
 
-export { addProduct, updateProduct, togglePublish, listProducts, removeProduct, singleProduct, adjustStock, getStockLogs };
+export {
+  addProduct,
+  updateProduct,
+  togglePublish,
+  toggleBestseller,
+  getSubcategoryBestsellers,
+  listProducts,
+  removeProduct,
+  singleProduct,
+  adjustStock,
+  getStockLogs,
+};
+

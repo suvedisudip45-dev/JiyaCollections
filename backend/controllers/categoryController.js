@@ -49,6 +49,57 @@ const listCategories = async (req, res) => {
   }
 };
 
+const listCollectionNavigation = async (req, res) => {
+  try {
+    const [categories, products] = await Promise.all([
+      prisma.category.findMany({ orderBy: { name: "asc" } }),
+      prisma.product.findMany({
+        where: { published: true },
+        select: { category: true, subCategory: true, newInStore: true },
+      }),
+    ]);
+
+    const groups = new Map();
+
+    products.forEach((product) => {
+      let productCategories = [];
+      try {
+        productCategories = Array.isArray(product.category)
+          ? product.category
+          : JSON.parse(product.category || "[]");
+      } catch {
+        productCategories = String(product.category || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }
+
+      productCategories.forEach((category) => {
+        if (!groups.has(category)) {
+          groups.set(category, { subcategories: new Set(), newArrivalCount: 0 });
+        }
+        const group = groups.get(category);
+        if (product.subCategory) group.subcategories.add(product.subCategory);
+        if (product.newInStore) group.newArrivalCount += 1;
+      });
+    });
+
+    res.json({
+      success: true,
+      navigation: [...groups.entries()]
+        .sort(([first], [second]) => first.localeCompare(second))
+        .map(([name, group]) => ({
+        name,
+        subcategories: [...group.subcategories].sort((a, b) => a.localeCompare(b)),
+        newArrivalCount: group.newArrivalCount,
+      })),
+    });
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 // Remove Category
 const removeCategory = async (req, res) => {
   try {
@@ -63,4 +114,4 @@ const removeCategory = async (req, res) => {
   }
 };
 
-export { addCategory, listCategories, removeCategory };
+export { addCategory, listCategories, listCollectionNavigation, removeCategory };

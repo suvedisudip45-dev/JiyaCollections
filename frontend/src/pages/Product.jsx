@@ -4,13 +4,7 @@ import { ShopContext } from "../context/ShopContext";
 import { assets } from "../assets/assets";
 import RelatedProducts from "../components/RelatedProducts";
 import ReviewSection from "../components/ReviewSection";
-import {
-  playSwitchSound,
-  playCountSound,
-  playAddToCartSound,
-  isSoundEnabled,
-  toggleSound,
-} from "../utils/soundEffects";
+import { toast } from "react-toastify";
 
 const Product = () => {
   const { productId } = useParams();
@@ -21,20 +15,8 @@ const Product = () => {
   const [color, setColor] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [isImageTransitioning, setIsImageTransitioning] = useState(false);
-  const [soundActive, setSoundActive] = useState(isSoundEnabled());
   const [activeTab, setActiveTab] = useState("reviews"); // "description" | "reviews"
   const [reviewStats, setReviewStats] = useState({ totalReviews: 0, averageRating: 0 });
-
-  // Listen for sound setting changes
-  useEffect(() => {
-    const handleSoundChange = (e) => {
-      if (e.detail && e.detail.enabled !== undefined) {
-        setSoundActive(e.detail.enabled);
-      }
-    };
-    window.addEventListener("sound-setting-changed", handleSoundChange);
-    return () => window.removeEventListener("sound-setting-changed", handleSoundChange);
-  }, []);
 
   const fetchProductData = () => {
     const matched = products.find((item) => item._id === productId);
@@ -85,7 +67,6 @@ const Product = () => {
 
   // Switch variety by selecting color
   const handleSelectColor = (selectedColor) => {
-    playSwitchSound();
     setColor(selectedColor);
 
     if (productData) {
@@ -106,7 +87,6 @@ const Product = () => {
 
   // Switch size
   const handleSelectSize = (selectedSize) => {
-    playSwitchSound();
     setSize(selectedSize);
 
     if (productData) {
@@ -130,7 +110,6 @@ const Product = () => {
 
   // Click thumbnail
   const handleThumbnailClick = (thumbUrl) => {
-    playSwitchSound();
     switchImageSmoothly(thumbUrl);
 
     // If this thumbnail matches a specific variety, auto-select that variety
@@ -153,11 +132,9 @@ const Product = () => {
     if (direction === "inc") {
       const next = quantity + 1;
       setQuantity(next);
-      playCountSound("inc", next);
     } else if (direction === "dec" && quantity > 1) {
       const next = quantity - 1;
       setQuantity(next);
-      playCountSound("dec", next);
     }
   };
 
@@ -268,7 +245,7 @@ const Product = () => {
 
   return (
     <div className="pt-6 pb-16 transition-opacity duration-300 opacity-100">
-      {/* --- Breadcrumb & Audio Experience Bar --- */}
+      {/* --- Breadcrumb --- */}
       <div className="flex flex-wrap items-center justify-between gap-3 pb-6 text-xs text-gray-500 border-b border-gray-100 mb-8">
         <div className="flex items-center gap-2">
           <span>Home</span>
@@ -277,24 +254,6 @@ const Product = () => {
           <span>/</span>
           <span className="font-semibold text-gray-900 truncate max-w-[240px]">{productData.name}</span>
         </div>
-
-        {/* Tactile Audio Mode Indicator */}
-        <button
-          onClick={() => {
-            const next = toggleSound();
-            setSoundActive(next);
-            if (next) playAddToCartSound();
-          }}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all cursor-pointer ${
-            soundActive
-              ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 shadow-2xs"
-              : "bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200"
-          }`}
-          title="Toggle interactive audio feedback"
-        >
-          <span className={`w-2 h-2 rounded-full ${soundActive ? "bg-emerald-500 animate-ping" : "bg-gray-400"}`}></span>
-          <span>{soundActive ? "🔊 Interactive Sound: ON" : "🔇 Sound: Muted"}</span>
-        </button>
       </div>
 
       {/* --- Main Product Section --- */}

@@ -3,6 +3,7 @@ import React, { useContext } from "react";
 import { assets } from "../assets/assets";
 import { ShopContext } from "../context/ShopContext";
 import { Link } from "react-router-dom";
+import { ArrowRight, Sparkles, Tag, ShieldCheck, Truck, RefreshCw } from "lucide-react";
 
 const Hero = () => {
   const { products, currency } = useContext(ShopContext);
@@ -22,97 +23,202 @@ const Hero = () => {
     : null;
 
   return (
-    <div className="relative flex flex-col items-stretch overflow-hidden border border-[#d9d6cc] bg-[#e5e2d8] sm:min-h-[560px] sm:flex-row">
-      {/* Hero Left Content */}
-      <div className="relative z-10 flex w-full flex-col justify-center px-7 py-12 sm:w-[45%] sm:px-10 md:px-16">
-        <div className="space-y-4">
-          <div className="flex items-center gap-2.5">
-            <span className="inline-block h-px w-8 bg-[#9a5945] md:w-10"></span>
-            <span className="eyebrow">
-              {featuredProduct?.newInStore ? "FEATURED ARRIVAL" : "TRENDING NOW"}
+    <section className="relative mx-auto w-full max-w-[1440px] overflow-hidden bg-[#111210] text-white">
+      {/* ========================================================
+          MOBILE VIEW (Full-Bleed Immersive Visual with Overlay)
+          ======================================================== */}
+      <div className="relative block lg:hidden min-h-[560px] sm:min-h-[620px] w-full">
+        {/* Background Model Image */}
+        <img
+          src={heroImage}
+          alt={featuredProduct?.name || "New in Store"}
+          className="absolute inset-0 h-full w-full object-cover object-top"
+        />
+
+        {/* Deep Cinematic Gradient Overlay */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/50 to-black/20" />
+
+        {/* Floating Top Pill */}
+        <div className="absolute top-5 left-5 z-20">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/20 text-[10px] font-extrabold uppercase tracking-widest text-amber-400 shadow-md">
+            <Sparkles size={11} />
+            <span>NEW IN STORE • 2026</span>
+          </span>
+        </div>
+
+        {/* Content Anchored at Bottom */}
+        <div className="absolute bottom-0 left-0 right-0 z-20 p-6 sm:p-8 space-y-4">
+          <div>
+            <h1 className="text-3xl sm:text-4xl font-black uppercase tracking-tight text-white leading-tight drop-shadow-md">
+              {featuredProduct?.name || "THE NEW STREET EDIT"}
+            </h1>
+            <p className="text-xs sm:text-sm text-white/80 font-medium line-clamp-1 mt-1">
+              Premium heavyweight cotton • Relaxed tailored silhouette
+            </p>
+          </div>
+
+          {/* Price Tag Bar */}
+          {featuredProduct && (
+            <div className="flex items-center gap-3 py-1">
+              <span className="text-2xl sm:text-3xl font-black text-white drop-shadow-sm">
+                {currency}{finalPrice}
+              </span>
+              {featuredProduct.discount > 0 && (
+                <>
+                  <span className="text-sm font-semibold text-white/60 line-through">
+                    {currency}{featuredProduct.price}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-md bg-rose-600 text-white font-black text-xs uppercase tracking-wider shadow-sm">
+                    {featuredProduct.discount}% OFF
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Action CTAs */}
+          <div className="flex items-center gap-3 pt-1">
+            {featuredProduct ? (
+              <Link
+                to={`/product/${featuredProduct._id}`}
+                className="flex-1 inline-flex items-center justify-center gap-2 bg-white text-black py-3.5 px-5 rounded-md text-xs font-black uppercase tracking-wider shadow-lg hover:bg-amber-400 transition-colors"
+              >
+                <span>Shop Product</span>
+                <ArrowRight size={15} />
+              </Link>
+            ) : null}
+            <Link
+              to="/collection"
+              className="flex-1 inline-flex items-center justify-center bg-white/15 backdrop-blur-md border border-white/30 text-white py-3.5 px-5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-white/25 transition-colors"
+            >
+              <span>Explore</span>
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================
+          DESKTOP VIEW (Editorial Split Screen with High Contrast)
+          ======================================================== */}
+      <div className="hidden lg:grid lg:grid-cols-12 min-h-[620px] items-stretch">
+        {/* Left Editorial Text Column */}
+        <div className="lg:col-span-6 xl:col-span-7 flex flex-col justify-center px-12 xl:px-16 py-16 z-10 space-y-7">
+          {/* Category Tag */}
+          <div className="flex items-center gap-3">
+            <span className="h-0.5 w-10 bg-amber-400 inline-block" />
+            <span className="text-xs font-extrabold uppercase tracking-widest text-amber-400">
+              FEATURED ARRIVAL • SEASON DROP
             </span>
           </div>
 
+          {/* Headline */}
           <div>
-            <h1 className="prata-regular text-5xl leading-[0.95] text-[#161714] sm:text-6xl lg:text-7xl">
-              New in store
+            <h1 className="text-6xl xl:text-7xl font-black uppercase tracking-tight text-white leading-[0.95]">
+              New in <br />
+              <span className="text-amber-400">Store</span>
             </h1>
-            {featuredProduct ? (
-              <p className="mt-4 max-w-md truncate text-base font-medium text-[#5d5d55] sm:text-lg">
-                {featuredProduct.name}
-              </p>
-            ) : (
-              <p className="mt-4 text-sm text-[#77776e]">
-                Discover the latest arrivals hand-picked for this season.
-              </p>
-            )}
+            <p className="mt-4 text-lg font-semibold text-white/90 capitalize max-w-md">
+              {featuredProduct?.name || "Signature Garments & Streetwear Essentials"}
+            </p>
+            <p className="text-xs text-white/60 mt-1 max-w-lg leading-relaxed">
+              Crafted from high-grade breathable cotton with a relaxed streetwear cut. Built for everyday durability and modern lifestyle movement.
+            </p>
           </div>
 
+          {/* Price Tag Card */}
           {featuredProduct && (
-            <div className="flex items-center gap-3 pt-1">
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold text-[#161714] sm:text-3xl">
+            <div className="inline-flex items-center gap-4 py-2 px-4 rounded-xl bg-white/10 backdrop-blur-md border border-white/15 w-fit">
+              <div className="flex items-baseline gap-2.5">
+                <span className="text-3xl font-black text-white">
                   {currency}{finalPrice}
                 </span>
                 {featuredProduct.discount > 0 && (
-                    <span className="text-sm text-[#77776e] line-through">
+                  <span className="text-base font-semibold text-white/50 line-through">
                     {currency}{featuredProduct.price}
                   </span>
                 )}
               </div>
               {featuredProduct.discount > 0 && (
-                <span className="bg-[#9a5945] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
+                <span className="bg-rose-600 text-white px-3 py-1 text-xs font-black uppercase tracking-wider rounded-md shadow-md">
                   {featuredProduct.discount}% OFF
                 </span>
               )}
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-3 pt-3">
-            {featuredProduct ? (
+          {/* Action CTAs */}
+          <div className="flex items-center gap-4 pt-2">
+            {featuredProduct && (
               <Link
                 to={`/product/${featuredProduct._id}`}
-                className="inline-flex items-center gap-2 bg-[#161714] px-6 py-3 text-sm font-semibold text-white transition-all duration-200 hover:bg-[#5d6855]"
+                className="group inline-flex items-center gap-3 bg-white text-black px-8 py-4 rounded-md text-xs font-black uppercase tracking-widest hover:bg-amber-400 transition-all duration-200 shadow-xl"
               >
                 <span>Shop Product</span>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
-                </svg>
+                <ArrowRight size={16} className="transition-transform group-hover:translate-x-1" />
               </Link>
-            ) : null}
+            )}
             <Link
               to="/collection"
-              className="inline-flex items-center gap-2 border border-[#aaa89e] bg-transparent px-5 py-3 text-sm font-semibold text-[#161714] transition-all duration-200 hover:border-[#161714]"
+              className="inline-flex items-center gap-2 border border-white/30 bg-transparent px-7 py-4 rounded-md text-xs font-bold uppercase tracking-widest text-white hover:bg-white/10 hover:border-white transition-all"
             >
               <span>Explore Collection</span>
             </Link>
           </div>
+
+          {/* Trust Value Badges */}
+          <div className="pt-6 border-t border-white/15 grid grid-cols-3 gap-3 text-[11px] font-bold uppercase tracking-wider text-white/70">
+            <div className="flex items-center gap-2">
+              <Truck size={15} className="text-amber-400 shrink-0" />
+              <span>Fast Nepal Delivery</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={15} className="text-amber-400 shrink-0" />
+              <span>100% Cotton Feel</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <RefreshCw size={15} className="text-amber-400 shrink-0" />
+              <span>Easy Exchanges</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Photo Column */}
+        <div className="lg:col-span-6 xl:col-span-5 relative min-h-[620px] overflow-hidden group">
+          {featuredProduct ? (
+            <Link to={`/product/${featuredProduct._id}`} className="block w-full h-full relative">
+              <img
+                src={heroImage}
+                alt={featuredProduct.name || "Hero"}
+                className="w-full h-full object-cover object-center transition-transform duration-700 group-hover:scale-105"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20 opacity-60 group-hover:opacity-40 transition-opacity" />
+
+              {/* Floating Featured Badge */}
+              <div className="absolute top-6 right-6 bg-black/75 backdrop-blur-md border border-white/20 px-4 py-1.5 rounded-full text-[10px] font-extrabold uppercase tracking-widest text-white shadow-xl">
+                ★ FEATURED PIECE
+              </div>
+
+              {/* Bottom Card */}
+              <div className="absolute bottom-6 left-6 right-6 p-4 rounded-xl bg-black/75 backdrop-blur-md text-white border border-white/20 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">Available In Stock</span>
+                  <p className="text-sm font-black truncate max-w-[220px]">{featuredProduct.name}</p>
+                </div>
+                <span className="text-xs font-bold underline flex items-center gap-1 hover:text-amber-400">
+                  Quick View <ArrowRight size={13} />
+                </span>
+              </div>
+            </Link>
+          ) : (
+            <img
+              src={heroImage}
+              alt="Hero"
+              className="w-full h-full object-cover object-center"
+            />
+          )}
         </div>
       </div>
-
-      {/* Hero Right Image */}
-      <div className="relative min-h-[330px] w-full overflow-hidden bg-[#c9c3b6] sm:min-h-[560px] sm:w-[55%]">
-        {featuredProduct ? (
-          <Link to={`/product/${featuredProduct._id}`} className="block w-full h-full group relative">
-            <img
-              className="h-full w-full object-cover object-center transition-transform duration-700 group-hover:scale-105"
-              src={heroImage}
-              alt={featuredProduct.name || "New In Store"}
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent opacity-40 group-hover:opacity-20 transition-opacity"></div>
-            <div className="absolute bottom-5 left-5 border border-white/40 bg-[#161714]/75 px-3.5 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white backdrop-blur-sm">
-              Featured Item
-            </div>
-          </Link>
-        ) : (
-          <img
-            className="w-full h-full object-cover object-center"
-            src={heroImage}
-            alt="Hero"
-          />
-        )}
-      </div>
-    </div>
+    </section>
   );
 };
 

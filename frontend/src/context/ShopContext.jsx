@@ -2,7 +2,6 @@ import { createContext, useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { playAddToCartSound, playCountSound } from "../utils/soundEffects";
 
 export const ShopContext = createContext();
 
@@ -14,6 +13,13 @@ const ShopContextProvider = (props) => {
   const [showSearch, setShowSearch] = useState(false);
   const [cartItems, setCartItems] = useState({});
   const [products, setProducts] = useState([]);
+  const [wishlist, setWishlist] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("wishlist") || "[]");
+    } catch {
+      return [];
+    }
+  });
   const [token, setToken] = useState("");
   const navigate = useNavigate();
 
@@ -158,9 +164,6 @@ const ShopContextProvider = (props) => {
     }
     setCartItems(cartData);
 
-    // Audio feedback for rewarding add to cart
-    playAddToCartSound();
-
     if (!token) {
       localStorage.setItem("cartItems", JSON.stringify(cartData));
     }
@@ -206,6 +209,16 @@ const ShopContextProvider = (props) => {
     return totalCount;
   };
 
+  const toggleWishlist = (itemId) => {
+    setWishlist((current) => {
+      const next = current.includes(itemId)
+        ? current.filter((id) => id !== itemId)
+        : [...current, itemId];
+      localStorage.setItem("wishlist", JSON.stringify(next));
+      return next;
+    });
+  };
+
   const updateQuantity = async (itemId, size, color, quantity) => {
     let cartData = structuredClone(cartItems);
     const variantKey = `${size}-${color}`;
@@ -220,13 +233,6 @@ const ShopContextProvider = (props) => {
         toast.error(`Only ${maxStock} item${maxStock > 1 ? "s" : ""} available in stock`);
         quantity = maxStock;
       }
-    }
-
-    const previousQty = (cartData[itemId] && cartData[itemId][variantKey]) || 0;
-    if (quantity > previousQty) {
-      playCountSound("inc", quantity);
-    } else if (quantity < previousQty) {
-      playCountSound("dec", quantity);
     }
 
     if (quantity <= 0) {
@@ -406,6 +412,8 @@ const ShopContextProvider = (props) => {
     getMaxStock,
     getProductsData,
     getUserCart,
+    wishlist,
+    toggleWishlist,
   };
 
   return (

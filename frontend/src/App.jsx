@@ -17,14 +17,16 @@ import SearchBar from "./components/SearchBar";
 import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import Verify from "./pages/Verify";
+import Wishlist from "./pages/Wishlist";
 
 const App = () => {
   return (
-    <div className="fashion-shell min-h-screen px-4 sm:px-[5vw] md:px-[7vw] lg:px-[8vw]">
+    <div className="fashion-shell min-h-screen">
       <ToastContainer />
       <Navbar />
       <SearchBar />
-      <Routes>
+      <main className="storefront-main px-3 sm:px-5 lg:px-8">
+        <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/collection" element={<Collection />} />
         <Route path="/about" element={<About />} />
@@ -36,7 +38,9 @@ const App = () => {
         <Route path="/orders" element={<Orders />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/verify" element={<Verify />} />
-      </Routes>
+        <Route path="/wishlist" element={<Wishlist />} />
+        </Routes>
+      </main>
       <Footer />
     </div>
   );

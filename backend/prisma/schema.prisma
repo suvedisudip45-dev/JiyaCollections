@@ -165,6 +165,7 @@ model Product {
   variants          Json      @default("[]")
   bestseller        Boolean   @default(false)
   newInStore        Boolean   @default(false)
+  showInNavigation  Boolean   @default(false)
   isSpecialOffer    Boolean   @default(false)
   offerTag          String?   @default("")
   offerEndDate      DateTime?
@@ -215,13 +216,21 @@ model Order {
 }
 
 model Category {
-  id   String @id @default(uuid())
-  name String @unique
+  id            String        @id @default(uuid())
+  name          String        @unique
+  subCategories SubCategory[]
 }
 
 model SubCategory {
-  id   String @id @default(uuid())
-  name String @unique
+  id          String    @id @default(uuid())
+  name        String
+  description String?   @db.Text
+  image       String?   @db.Text
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([categoryId])
+  @@unique([categoryId, name])
 }
 
 model Color {
