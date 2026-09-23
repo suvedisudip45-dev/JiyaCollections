@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper to safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -19,11 +20,16 @@ const parseJSON = (val, fallback = []) => {
 const getMyInventory = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const pagination = getPagination(req.query);
 
     // 1. Get all published products (with admin-defined sizes, colors, variants)
-    const allProducts = await prisma.product.findMany({
-      where: { published: true },
-      orderBy: { name: "asc" },
+    const productWhere = { published: true };
+    const [allProducts, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where: productWhere,
+        orderBy: { name: "asc" },
+        skip: pagination.skip,
+        take: pagination.limit,
       select: {
         id: true,
         name: true,
@@ -36,7 +42,9 @@ const getMyInventory = async (req, res) => {
         variants: true,
         stockQuantity: true,
       },
-    });
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
 
     // 2. Get manufacturer's inventory entries
     const myInventory = await prisma.manufacturerInventory.findMany({
@@ -151,7 +159,7 @@ const getMyInventory = async (req, res) => {
       };
     });
 
-    res.json({ success: true, inventory: merged });
+    res.json(paginatedResponse("inventory", merged, pagination, total));
   } catch (error) {
     console.error("getMyInventory error:", error);
     res.json({ success: false, message: error.message });
@@ -293,7 +301,9 @@ const buildAdminInventoryItem = (inventory, product) => ({
 
 const getAllInventory = async (req, res) => {
   try {
-    const allInventory = await prisma.manufacturerInventory.findMany({
+    const pagination = getPagination(req.query);
+    const [allInventory, total] = await prisma.$transaction([
+      prisma.manufacturerInventory.findMany({
       select: {
         id: true,
         productId: true,
@@ -305,7 +315,11 @@ const getAllInventory = async (req, res) => {
         },
       },
       orderBy: { productName: "asc" },
-    });
+      skip: pagination.skip,
+      take: pagination.limit,
+      }),
+      prisma.manufacturerInventory.count(),
+    ]);
 
     const productIds = [...new Set(allInventory.map((i) => i.productId))];
     const products = await prisma.product.findMany({
@@ -319,7 +333,7 @@ const getAllInventory = async (req, res) => {
 
     const enriched = allInventory.map((inv) => buildAdminInventoryItem(inv, productMap[inv.productId]));
 
-    res.json({ success: true, inventory: enriched });
+    res.json(paginatedResponse("inventory", enriched, pagination, total));
   } catch (error) {
     console.error("getAllInventory error:", error);
     res.json({ success: false, message: error.message });

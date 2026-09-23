@@ -5,6 +5,7 @@ import { ShopContext } from "../context/ShopContext";
 import Title from "../components/Title";
 import axios from "axios";
 import { toast } from "react-toastify";
+import Pagination from "../components/Pagination";
 import {
   Package,
   Truck,
@@ -31,6 +32,8 @@ import {
 const Orders = () => {
   const { backendUrl, token, setToken, currency, navigate } = useContext(ShopContext);
   const [orders, setOrders] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -60,7 +63,7 @@ const Orders = () => {
       const response = await axios.post(
         `${backendUrl}/api/order/userorders`,
         {},
-        { headers: { token } }
+        { headers: { token }, params: { page, limit: 10 } }
       );
 
       if (response.data.success) {
@@ -99,6 +102,7 @@ const Orders = () => {
         });
 
         setOrders(formattedOrders);
+        setPagination(response.data.pagination || null);
       } else {
         const msg = (response.data.message || "").toLowerCase();
         if (
@@ -131,7 +135,9 @@ const Orders = () => {
     loadOrderData();
     const interval = setInterval(() => loadOrderData(), 20000);
     return () => clearInterval(interval);
-  }, [token, backendUrl]);
+  }, [token, backendUrl, page]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
 
   // Order Metrics Summary Report
@@ -687,6 +693,13 @@ const Orders = () => {
                 </div>
               );
             })}
+            <Pagination
+              page={pagination?.page || page}
+              totalPages={pagination?.totalPages || 0}
+              total={pagination?.total || 0}
+              onPageChange={handlePageChange}
+              loading={loading}
+            />
           </div>
         )}
       </div>

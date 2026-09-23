@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { postExpenseAccounting } from "../services/accountingPostingEngine.js";
 
 // Helper: Calculate 13% embedded VAT amount
@@ -77,7 +78,8 @@ export const createExpense = async (req, res) => {
 // GET Expenses (with filters & search)
 export const getExpenses = async (req, res) => {
   try {
-    const { category, startDate, endDate, search, limit, offset } = req.query;
+    const { category, startDate, endDate, search } = req.query;
+    const pagination = getPagination(req.query);
 
     const where = {};
 
@@ -101,27 +103,24 @@ export const getExpenses = async (req, res) => {
       ];
     }
 
-    const take = parseInt(limit) || 100;
-    const skip = parseInt(offset) || 0;
-
-    const [expenses, total] = await Promise.all([
+    const [expenses, total, aggregate] = await Promise.all([
       prisma.operatingExpense.findMany({
         where,
         orderBy: { date: "desc" },
-        take,
-        skip,
+        take: pagination.limit,
+        skip: pagination.skip,
       }),
       prisma.operatingExpense.count({ where }),
+      prisma.operatingExpense.aggregate({ where, _sum: { amount: true, vatAmount: true } }),
     ]);
 
     // Aggregate metrics for filtered view
-    const totalAmount = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-    const totalVatClaimable = expenses.reduce((sum, e) => sum + (e.vatAmount || 0), 0);
+    const totalAmount = Number(aggregate._sum.amount || 0);
+    const totalVatClaimable = Number(aggregate._sum.vatAmount || 0);
 
     res.json({
       success: true,
-      expenses,
-      total,
+      ...paginatedResponse("expenses", expenses, pagination, total),
       metrics: {
         totalAmount,
         totalVatClaimable,

@@ -13,6 +13,7 @@ import {
   findAdminOrderCustomer,
   getAdminOrderCustomerForCreation,
 } from "../services/adminOrderCustomerService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -454,9 +455,8 @@ const placeOrder = async (req, res) => {
 // All Orders data for Admin Panel (monitor all orders - read-only context)
 const allOrders = async (req, res) => {
   try {
-    const rawOrders = await prisma.order.findMany({
-      orderBy: { date: "desc" },
-      include: {
+    const pagination = getPagination(req.query);
+    const orderInclude = {
         deliveryOrder: {
           select: {
             id: true,
@@ -470,10 +470,18 @@ const allOrders = async (req, res) => {
             deliveredAt: true,
           },
         },
-      },
-    });
+      };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        orderBy: { date: "desc" },
+        include: orderInclude,
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count(),
+    ]);
     const orders = rawOrders.map((item) => buildOrderListItem(item));
-    res.json({ success: true, orders });
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -486,41 +494,21 @@ const allOrders = async (req, res) => {
  */
 const allAdminOrders = async (req, res) => {
   try {
-    const rawOrders = await prisma.order.findMany({
-      orderBy: { date: "desc" },
-      include: {
-        deliveryOrder: {
-          select: {
-            id: true,
-            ncmOrderId: true,
-            state: true,
-            ncmStatus: true,
-            vendorReference: true,
-            originBranchName: true,
-            destinationBranchName: true,
-            pickedUpAt: true,
-            deliveredAt: true,
-          },
-        },
-      },
-    });
-
-    const adminOrders = rawOrders.filter((order) => {
-      // Check orderType field first
-      if (order.orderType === "ADMIN_DIRECT") return true;
-      // Check rewardApplied JSON flag (older format)
-      try {
-        const reward =
-          typeof order.rewardApplied === "string"
-            ? JSON.parse(order.rewardApplied)
-            : order.rewardApplied;
-        if (reward && reward.adminCreated === true) return true;
-      } catch {}
-      return false;
-    });
-
+    const pagination = getPagination(req.query);
+    const where = { orderType: "ADMIN_DIRECT" };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: { date: "desc" },
+        include: { deliveryOrder: { select: { id: true, ncmOrderId: true, state: true, ncmStatus: true, vendorReference: true, originBranchName: true, destinationBranchName: true, pickedUpAt: true, deliveredAt: true } } },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
+    const adminOrders = rawOrders;
     const orders = adminOrders.map((item) => buildOrderListItem(item));
-    res.json({ success: true, orders });
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -531,10 +519,13 @@ const allAdminOrders = async (req, res) => {
 const userOrders = async (req, res) => {
   try {
     const { userId } = req.body;
-    const rawOrders = await prisma.order.findMany({
-      where: { userId },
-      orderBy: { date: "desc" },
-      include: {
+    const pagination = getPagination(req.query);
+    const where = { userId };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: { date: "desc" },
+        include: {
         deliveryOrder: {
           select: {
             id: true,
@@ -548,10 +539,14 @@ const userOrders = async (req, res) => {
             deliveredAt: true,
           },
         },
-      },
-    });
+        },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
     const orders = rawOrders.map((item) => buildOrderListItem(item));
-    res.json({ success: true, orders });
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });

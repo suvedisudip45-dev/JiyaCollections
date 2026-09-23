@@ -6,6 +6,7 @@ import { v2 as cloudinary } from "cloudinary";
 import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } from "../services/ncmClient.js";
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -387,12 +388,16 @@ const registerManufacturerSelf = async (req, res) => {
 // ─── ADMIN: LIST ALL MANUFACTURERS ───────────────────────────────────────────
 const listManufacturers = async (req, res) => {
   try {
-    const manufacturers = await prisma.manufacturer.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        _count: { select: { assignments: true, inventory: true } },
-      },
-    });
+    const pagination = getPagination(req.query);
+    const [manufacturers, total] = await prisma.$transaction([
+      prisma.manufacturer.findMany({
+        orderBy: { createdAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: { _count: { select: { assignments: true, inventory: true } } },
+      }),
+      prisma.manufacturer.count(),
+    ]);
     const safe = manufacturers.map(({ password, ...m }) => ({
       ...m,
       businessName: m.name,
@@ -410,7 +415,7 @@ const listManufacturers = async (req, res) => {
         ? ((m.defectCount / m.totalOrdersFulfilled) * 100).toFixed(1)
         : "0.0",
     }));
-    res.json({ success: true, manufacturers: safe });
+    res.json(paginatedResponse("manufacturers", safe, pagination, total));
   } catch (error) {
     console.error("listManufacturers error:", error);
     res.json({ success: false, message: error.message });

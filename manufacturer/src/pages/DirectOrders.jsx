@@ -21,6 +21,7 @@ import {
   Layers,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
+import Pagination from "../components/Pagination";
 
 const DirectOrders = () => {
   const { token, backendUrl, currency, manufacturer } = useManufacturer();
@@ -29,6 +30,8 @@ const DirectOrders = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   // Modal State
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -59,7 +62,7 @@ const DirectOrders = () => {
     setLoading(true);
     try {
       const [ordersRes, invRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/manufacturer-order/my-orders`, {
+        axios.get(`${backendUrl}/api/manufacturer-order/my-orders?page=${page}&limit=10`, {
           headers: { token },
         }),
         axios.get(`${backendUrl}/api/manufacturer-inventory/my`, {
@@ -69,6 +72,7 @@ const DirectOrders = () => {
 
       if (ordersRes.data.success) {
         setDirectOrders(ordersRes.data.orders || []);
+        setPagination(ordersRes.data.pagination || null);
       }
       if (invRes.data.success) {
         setInventory(invRes.data.inventory || []);
@@ -78,11 +82,13 @@ const DirectOrders = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, backendUrl]);
+  }, [token, backendUrl, page]);
 
   useEffect(() => {
     fetchDirectOrders();
   }, [fetchDirectOrders]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const selectedProduct = inventory.find((i) => i.productId === selectedProductId);
   const selectedProductVariants = selectedProduct?.variantsStock || [];
@@ -516,6 +522,13 @@ const DirectOrders = () => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
 
       {/* --- CREATE DIRECT ORDER MODAL --- */}

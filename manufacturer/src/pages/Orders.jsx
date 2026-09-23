@@ -19,6 +19,7 @@ import {
 import { useManufacturer } from "../context/ManufacturerContext";
 import StatusBadge from "../components/StatusBadge";
 import ShippingLabelModal from "../components/ShippingLabelModal";
+import Pagination from "../components/Pagination";
 
 const Orders = () => {
   const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
@@ -26,6 +27,8 @@ const Orders = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
 
   const manufacturerPickupReadiness = (() => {
@@ -62,12 +65,13 @@ const Orders = () => {
     if (!token) return;
     setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/order-assignment/my`, {
+      const res = await axios.get(`${backendUrl}/api/order-assignment/my?page=${page}&limit=10`, {
         headers: { token },
       });
       if (res.data.success) {
         const list = res.data.assignments || [];
         setAssignments(list);
+        setPagination(res.data.pagination || null);
 
         const pending = list.filter((a) => a.status === "assigned").length;
         const accepted = list.filter((a) => a.status === "accepted").length;
@@ -92,13 +96,15 @@ const Orders = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, backendUrl, setStats]);
+  }, [token, backendUrl, setStats, page]);
 
   useEffect(() => {
     fetchOrders();
     const interval = setInterval(() => fetchOrders(), 15000);
     return () => clearInterval(interval);
   }, [fetchOrders]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const handleRejectSubmit = async (e) => {
     e.preventDefault();
@@ -109,6 +115,7 @@ const Orders = () => {
         { reason: rejectReason || "Out of capacity" },
         { headers: { token } }
       );
+
       if (res.data.success) {
         toast.info("Order declined. Auto-reallocating to next nearest hub.");
         setRejectModalOpen(false);
@@ -598,6 +605,14 @@ const Orders = () => {
           })}
         </div>
       )}
+
+      <Pagination
+        page={pagination?.page || page}
+        totalPages={pagination?.totalPages || 0}
+        total={pagination?.total || 0}
+        onPageChange={handlePageChange}
+        loading={loading}
+      />
 
       {/* Decline / Reallocation Modal */}
       {rejectModalOpen && (

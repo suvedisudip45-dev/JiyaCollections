@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { v2 as cloudinary } from "cloudinary";
 import { calculateUserLoyalty } from "./loyaltyController.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper to safely parse JSON arrays
 const parseJson = (val, fallback = []) => {
@@ -17,6 +18,7 @@ const parseJson = (val, fallback = []) => {
 export const listAllCustomers = async (req, res) => {
   try {
     const { search = "" } = req.query;
+    const pagination = getPagination(req.query);
 
     const [users, orders, letters, levels] = await Promise.all([
       prisma.user.findMany({
@@ -139,7 +141,9 @@ export const listAllCustomers = async (req, res) => {
     // Sort by total spend descending
     customerList.sort((a, b) => b.totalSpend - a.totalSpend);
 
-    res.json({ success: true, customers: customerList });
+    const total = customerList.length;
+    const pageCustomers = customerList.slice(pagination.skip, pagination.skip + pagination.limit);
+    res.json(paginatedResponse("customers", pageCustomers, pagination, total));
   } catch (error) {
     console.error("Error listing customers:", error);
     res.json({ success: false, message: error.message });

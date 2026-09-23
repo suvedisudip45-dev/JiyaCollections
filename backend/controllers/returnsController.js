@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { postCustomerReturnAccounting } from "../services/accountingPostingEngine.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // ==========================================
 // 1. CUSTOMER RETURNS (RMA & REFUNDS)
@@ -205,10 +206,12 @@ export const createCustomerReturn = async (req, res) => {
 
 export const getCustomerReturns = async (req, res) => {
   try {
-    const returns = await prisma.customerReturn.findMany({
-      orderBy: { returnDate: "desc" },
-    });
-    res.json({ success: true, returns });
+    const pagination = getPagination(req.query);
+    const [returns, total] = await prisma.$transaction([
+      prisma.customerReturn.findMany({ orderBy: { returnDate: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.customerReturn.count(),
+    ]);
+    res.json(paginatedResponse("returns", returns, pagination, total));
   } catch (error) {
     console.error("Get Customer Returns Error:", error);
     res.json({ success: false, message: error.message });
@@ -360,10 +363,12 @@ export const createSupplierReturn = async (req, res) => {
 
 export const getSupplierReturns = async (req, res) => {
   try {
-    const returns = await prisma.supplierReturn.findMany({
-      orderBy: { returnDate: "desc" },
-    });
-    res.json({ success: true, returns });
+    const pagination = getPagination(req.query);
+    const [returns, total] = await prisma.$transaction([
+      prisma.supplierReturn.findMany({ orderBy: { returnDate: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.supplierReturn.count(),
+    ]);
+    res.json(paginatedResponse("returns", returns, pagination, total));
   } catch (error) {
     console.error("Get Supplier Returns Error:", error);
     res.json({ success: false, message: error.message });

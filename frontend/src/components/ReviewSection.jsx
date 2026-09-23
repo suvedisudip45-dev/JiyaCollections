@@ -3,6 +3,7 @@ import { useState, useEffect, useContext } from "react";
 import axios from "axios";
 import { ShopContext } from "../context/ShopContext";
 import { toast } from "react-toastify";
+import Pagination from "./Pagination";
 
 const STAR_LABELS = {
   1: "Poor",
@@ -24,6 +25,8 @@ const ReviewSection = ({ productId, productName, onStatsUpdate }) => {
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState("likes");
   const [filterRating, setFilterRating] = useState(null); // null = all
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   // User review status
   const [userStatus, setUserStatus] = useState({
@@ -47,12 +50,13 @@ const ReviewSection = ({ productId, productName, onStatsUpdate }) => {
       setLoading(true);
       const headers = token ? { token } : {};
       const res = await axios.get(
-        `${backendUrl}/api/review/product/${productId}?sortBy=${sortBy}`,
+        `${backendUrl}/api/review/product/${productId}?sortBy=${sortBy}&page=${page}&limit=10`,
         { headers }
       );
 
       if (res.data.success) {
         setReviews(res.data.reviews || []);
+        setPagination(res.data.pagination || null);
         if (res.data.stats) {
           setStats(res.data.stats);
           if (onStatsUpdate) {
@@ -100,7 +104,9 @@ const ReviewSection = ({ productId, productName, onStatsUpdate }) => {
     if (productId) {
       fetchReviews();
     }
-  }, [productId, sortBy, token]);
+  }, [productId, sortBy, token, page]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   useEffect(() => {
     if (productId && token) {
@@ -642,6 +648,13 @@ const ReviewSection = ({ productId, productName, onStatsUpdate }) => {
             );
           })
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
 
       {/* Write / Edit Review Modal */}

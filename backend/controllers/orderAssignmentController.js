@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -403,19 +404,25 @@ const getMyAssignments = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const { status } = req.query;
+    const pagination = getPagination(req.query);
 
     const where = { manufacturerId };
     if (status && status !== "all") where.status = status;
 
-    const assignments = await prisma.orderAssignment.findMany({
-      where,
-      orderBy: { assignedAt: "desc" },
-      include: {
+    const [assignments, total] = await prisma.$transaction([
+      prisma.orderAssignment.findMany({
+        where,
+        orderBy: { assignedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
         manufacturer: {
           select: { id: true, name: true, city: true, phone: true, qualityRating: true },
         },
-      },
-    });
+        },
+      }),
+      prisma.orderAssignment.count({ where }),
+    ]);
 
     const orderIds = assignments.map((a) => a.orderId);
     const [orders, deliveryOrders] = await Promise.all([
@@ -486,7 +493,7 @@ const getMyAssignments = async (req, res) => {
       createdAt: a.assignedAt,
     }));
 
-    res.json({ success: true, assignments: enriched });
+    res.json(paginatedResponse("assignments", enriched, pagination, total));
   } catch (error) {
     console.error("getMyAssignments error:", error);
     res.json({ success: false, message: error.message });
@@ -656,15 +663,19 @@ const updateAssignmentStatus = async (req, res) => {
 // ─── ADMIN: GET ALL ASSIGNMENTS ───────────────────────────────────────────────
 const getAllAssignments = async (req, res) => {
   try {
+    const pagination = getPagination(req.query);
     const { status, manufacturerId } = req.query;
     const where = {};
     if (status && status !== "all") where.status = status;
     if (manufacturerId) where.manufacturerId = manufacturerId;
 
-    const assignments = await prisma.orderAssignment.findMany({
-      where,
-      orderBy: { assignedAt: "desc" },
-      include: {
+    const [assignments, total] = await prisma.$transaction([
+      prisma.orderAssignment.findMany({
+        where,
+        orderBy: { assignedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
         manufacturer: {
           select: {
             id: true,
@@ -679,8 +690,10 @@ const getAllAssignments = async (req, res) => {
             pickupWindow: true,
           },
         },
-      },
-    });
+        },
+      }),
+      prisma.orderAssignment.count({ where }),
+    ]);
 
     const orderIds = assignments.map((a) => a.orderId);
     const [orders, deliveryOrders] = await Promise.all([
@@ -751,7 +764,7 @@ const getAllAssignments = async (req, res) => {
       createdAt: a.assignedAt,
     }));
 
-    res.json({ success: true, assignments: enriched });
+    res.json(paginatedResponse("assignments", enriched, pagination, total));
   } catch (error) {
     console.error("getAllAssignments error:", error);
     res.json({ success: false, message: error.message });

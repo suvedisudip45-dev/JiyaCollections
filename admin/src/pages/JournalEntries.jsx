@@ -1,8 +1,9 @@
 /* eslint-disable react/prop-types */
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import Pagination from "../components/Pagination";
 
 const SOURCE_TYPE_BADGES = {
   SALES_INVOICE: "bg-blue-50 text-blue-700 border-blue-200",
@@ -28,6 +29,8 @@ const JournalEntries = ({ token }) => {
   const [sourceTypeFilter, setSourceTypeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [expandedEntryId, setExpandedEntryId] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   // Manual Journal Entry Modal State
   const [showManualModal, setShowManualModal] = useState(false);
@@ -48,12 +51,13 @@ const JournalEntries = ({ token }) => {
     try {
       setLoading(true);
       const [entriesRes, accountsRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/accounting/journal-entries`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/accounting/journal-entries?page=${page}&limit=10`, { headers: { token } }),
         axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, { headers: { token } }),
       ]);
 
       if (entriesRes.data.success) {
-        setEntries(entriesRes.data.entries || []);
+        setEntries(entriesRes.data.journalEntries || entriesRes.data.entries || []);
+        setPagination(entriesRes.data.pagination || null);
       }
       if (accountsRes.data.success) {
         setAccounts(accountsRes.data.accounts || []);
@@ -68,7 +72,9 @@ const JournalEntries = ({ token }) => {
 
   useEffect(() => {
     fetchData();
-  }, [token]);
+  }, [token, page]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const addLine = () => {
     setLines([...lines, { accountId: "", debit: 0, credit: 0, description: "" }]);
@@ -418,6 +424,14 @@ const JournalEntries = ({ token }) => {
           })
         )}
       </div>
+
+      <Pagination
+        page={pagination?.page || page}
+        totalPages={pagination?.totalPages || 0}
+        total={pagination?.total || 0}
+        onPageChange={handlePageChange}
+        loading={loading}
+      />
 
       {/* Manual Journal Entry Modal */}
       {showManualModal && (

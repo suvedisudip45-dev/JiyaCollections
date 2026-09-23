@@ -1,6 +1,7 @@
 import { v2 as cloudinary } from "cloudinary";
 import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
 
 // Helper: safely convert Prisma JSON field to plain array
@@ -465,6 +466,7 @@ const togglePublish = async (req, res) => {
 const listProducts = async (req, res) => {
   try {
     const isAdmin = req.headers.token || req.query.admin === "true";
+    const pagination = getPagination(req.query);
 
     // Synchronize current stockQuantity & variant stock from ManufacturerInventory
     await syncAllProductsStock();
@@ -472,11 +474,20 @@ const listProducts = async (req, res) => {
     // Admin sees all products; Public customers see only published products
     const whereCondition = isAdmin ? {} : { published: true };
 
-    const [rawProducts, allReviews] = await Promise.all([
-      prisma.product.findMany({
+    const productQuery = isAdmin
+      ? prisma.product.findMany({
         where: whereCondition,
         orderBy: { date: "desc" },
-      }),
+        skip: pagination.skip,
+        take: pagination.limit,
+      })
+      : prisma.product.findMany({
+        where: whereCondition,
+        orderBy: { date: "desc" },
+      });
+    const [rawProducts, total, allReviews] = await Promise.all([
+      productQuery,
+      prisma.product.count({ where: whereCondition }),
       prisma.review.findMany({
         select: { productId: true, rating: true },
       }),
@@ -512,7 +523,7 @@ const listProducts = async (req, res) => {
       };
     });
 
-    res.json({ success: true, products });
+    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: total || pagination.limit, skip: 0 }, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
