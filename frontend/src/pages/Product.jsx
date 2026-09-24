@@ -23,6 +23,26 @@ import {
   Layers,
 } from "lucide-react";
 
+const parseJsonArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const getColorImage = (product, selectedColor) => {
+  const key = String(selectedColor || "").trim().toLowerCase();
+  if (!key) return "";
+  const colorImages = parseJsonArray(product?.colorImages);
+  return colorImages.find((entry) => String(entry?.color || "").trim().toLowerCase() === key)?.image || "";
+};
+
 const Product = () => {
   const { productId } = useParams();
   const { products, currency, addToCart, wishlist, toggleWishlist, navigate } =
@@ -60,16 +80,13 @@ const Product = () => {
     if (matched) {
       setProductData(matched);
 
-      let initialImg = Array.isArray(matched.image) ? matched.image[0] : matched.image;
+      const imageList = [...new Set(parseJsonArray(matched.image).filter(Boolean))];
+      let initialImg = imageList[0] || "";
       let initialSize = matched.sizes && matched.sizes.length > 0 ? matched.sizes[0] : "";
       let initialColor = "";
 
       // Parse variants
-      let parsedVariants =
-        typeof matched.variants === "string"
-          ? JSON.parse(matched.variants || "[]")
-          : matched.variants || [];
-      if (!Array.isArray(parsedVariants)) parsedVariants = [];
+      const parsedVariants = parseJsonArray(matched.variants);
 
       // If there's a featured variant with an image, select it first
       const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
@@ -83,11 +100,11 @@ const Product = () => {
             ? matched.colors[0].name
             : matched.colors[0];
         initialColor = firstCol;
+        initialImg = getColorImage(matched, firstCol) || initialImg;
       }
 
       setImage(initialImg);
-      const imgList = Array.isArray(matched.image) ? matched.image : [matched.image];
-      const foundIdx = imgList.indexOf(initialImg);
+      const foundIdx = imageList.indexOf(initialImg);
       setActiveImageIndex(foundIdx >= 0 ? foundIdx : 0);
       setSize(initialSize);
       setColor(initialColor);
@@ -133,9 +150,7 @@ const Product = () => {
         setActiveImageIndex(index);
         resolvedIdx = index;
       } else if (productData) {
-        const imgList = Array.isArray(productData.image)
-          ? productData.image
-          : [productData.image];
+        const imgList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
         const idx = imgList.indexOf(newUrl);
         if (idx >= 0) {
           setActiveImageIndex(idx);
@@ -153,21 +168,8 @@ const Product = () => {
     setColor(selectedColor);
 
     if (productData) {
-      let parsedVariants =
-        typeof productData.variants === "string"
-          ? JSON.parse(productData.variants || "[]")
-          : productData.variants || [];
-      if (Array.isArray(parsedVariants)) {
-        // Find variant matching selected color
-        const matched = parsedVariants.find(
-          (v) =>
-            (v.color || "").toLowerCase() === (selectedColor || "").toLowerCase() &&
-            v.image
-        );
-        if (matched && matched.image) {
-          switchImageSmoothly(matched.image);
-        }
-      }
+      const colorImage = getColorImage(productData, selectedColor);
+      if (colorImage) switchImageSmoothly(colorImage);
     }
   };
 
@@ -175,23 +177,6 @@ const Product = () => {
   const handleSelectSize = (selectedSize) => {
     setSize(selectedSize);
 
-    if (productData) {
-      let parsedVariants =
-        typeof productData.variants === "string"
-          ? JSON.parse(productData.variants || "[]")
-          : productData.variants || [];
-      if (Array.isArray(parsedVariants)) {
-        const matched = parsedVariants.find(
-          (v) =>
-            (v.size || "").toLowerCase() === (selectedSize || "").toLowerCase() &&
-            (!color || (v.color || "").toLowerCase() === (color || "").toLowerCase()) &&
-            v.image
-        );
-        if (matched && matched.image) {
-          switchImageSmoothly(matched.image);
-        }
-      }
-    }
   };
 
   // Click thumbnail
@@ -200,32 +185,19 @@ const Product = () => {
 
     // If this thumbnail matches a specific variety, auto-select that variety
     if (productData) {
-      let parsedVariants =
-        typeof productData.variants === "string"
-          ? JSON.parse(productData.variants || "[]")
-          : productData.variants || [];
-      if (Array.isArray(parsedVariants)) {
-        const matched = parsedVariants.find((v) => v.image === thumbUrl);
-        if (matched) {
-          if (matched.color) setColor(matched.color);
-          if (matched.size) setSize(matched.size);
-        }
-      }
+      const colorImage = parseJsonArray(productData.colorImages).find((entry) => entry?.image === thumbUrl);
+      if (colorImage?.color) setColor(colorImage.color);
     }
   };
 
   const handleNextImage = () => {
-    const imgList = Array.isArray(productData.image)
-      ? productData.image
-      : [productData.image];
+    const imgList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
     const nextIdx = (activeImageIndex + 1) % imgList.length;
     handleThumbnailClick(imgList[nextIdx], nextIdx);
   };
 
   const handlePrevImage = () => {
-    const imgList = Array.isArray(productData.image)
-      ? productData.image
-      : [productData.image];
+    const imgList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
     const prevIdx = (activeImageIndex - 1 + imgList.length) % imgList.length;
     handleThumbnailClick(imgList[prevIdx], prevIdx);
   };
@@ -393,9 +365,7 @@ const Product = () => {
   const showLowStock =
     !isOutOfStock && currentVariantStock > 0 && currentVariantStock <= 5;
 
-  const imageList = Array.isArray(productData.image)
-    ? productData.image
-    : [productData.image];
+  const imageList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
 
   const currentActiveImage = image || imageList[0];
   const finalPrice =
@@ -498,17 +468,8 @@ const Product = () => {
                 if (newIdx !== activeImageIndex && newIdx >= 0 && newIdx < imageList.length) {
                   setActiveImageIndex(newIdx);
                   setImage(imageList[newIdx]);
-                  // Auto-select color/size from the variant whose image matches
-                  let pv = typeof productData.variants === "string"
-                    ? JSON.parse(productData.variants || "[]")
-                    : productData.variants || [];
-                  if (Array.isArray(pv)) {
-                    const mv = pv.find((v) => v.image === imageList[newIdx]);
-                    if (mv) {
-                      if (mv.color) setColor(mv.color);
-                      if (mv.size) setSize(mv.size);
-                    }
-                  }
+                  const colorImage = parseJsonArray(productData.colorImages).find((entry) => entry?.image === imageList[newIdx]);
+                  if (colorImage?.color) setColor(colorImage.color);
                 }
               }}
             >

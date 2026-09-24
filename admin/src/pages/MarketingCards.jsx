@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import QRCode from "qrcode";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import PrintSheetModal from "../components/PrintSheetModal";
@@ -297,25 +296,6 @@ const MarketingCards = ({ token }) => {
     } finally { setWorking(false); }
   };
 
-  const exportBatchForPrint = async (result) => {
-    const rows = (result.cards || []).map((card) => [result.batch.batchCode, card.cardCode, card.qrToken]);
-    const escapeCsv = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const csv = ["batchCode,cardCode,qrToken", ...rows.map((r) => r.map(escapeCsv).join(","))].join("\n");
-    const dl = (content, name, type) => {
-      const url = window.URL.createObjectURL(new Blob([content], { type }));
-      const a = document.createElement("a"); a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
-    };
-    dl(csv, `${result.batch.batchCode}-print-data.csv`, "text/csv;charset=utf-8");
-    const escHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-    const printableCards = await Promise.all((result.cards || []).map(async (card) => ({
-      cardCode: escHtml(card.cardCode),
-      qrDataUrl: await QRCode.toDataURL(card.qrToken, { errorCorrectionLevel: "M", margin: 1, width: 220 }),
-    })));
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(result.batch.batchCode)}</title><style>@page{size:A4;margin:12mm}body{font-family:Arial,sans-serif;margin:0}.sheet{display:grid;grid-template-columns:repeat(2,1fr);gap:10mm}.card{break-inside:avoid;border:1px solid #111;padding:8mm;text-align:center;min-height:72mm}.card img{width:42mm;height:42mm}.code{font:700 14px monospace;margin-top:5mm;letter-spacing:.5px}.batch{font-size:9px;color:#555;margin-top:2mm}</style></head><body><div class="sheet">${printableCards.map((c) => `<section class="card"><img src="${c.qrDataUrl}" alt="QR"><div class="code">${c.cardCode}</div><div class="batch">${escHtml(result.batch.batchCode)}</div></section>`).join("")}</div></body></html>`;
-    dl(html, `${result.batch.batchCode}-print-sheet.html`, "text/html;charset=utf-8");
-  };
-
   // ── Offer helpers ─────────────────────────────────────────────────────────
   const addOffer = () => setCampaign((prev) => ({ ...prev, offers: [...prev.offers, createDefaultOffer({ name: "", benefitType: "DISCOUNT", value: 5, allocationMode: "PERCENTAGE", percentage: 5 })] }));
   const removeOffer = (i) => setCampaign((prev) => ({ ...prev, offers: prev.offers.filter((_, idx) => idx !== i) }));
@@ -519,30 +499,6 @@ const MarketingCards = ({ token }) => {
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  const res = await axios.get(`${backendUrl}/api/marketing-cards/admin/cards?campaignId=${c.id}&pageSize=200`, { headers: { token } });
-                                  const cCards = res.data.cards || [];
-                                  if (!cCards.length) return toast.info("No cards generated for this campaign yet.");
-                                  setPrintModalData({
-                                    isOpen: true,
-                                    batchCode: cCards[0]?.batch?.batchCode || c.name,
-                                    partnerName: c.marketingPartner?.name || "Brand Partner",
-                                    campaignName: c.name,
-                                    campaignScope: c.targetScopeType || "Nationwide",
-                                    cardExpiresAt: c.cardExpiresAt || null,
-                                    cards: cCards,
-                                  });
-                                } catch {
-                                  toast.error("Unable to fetch cards for printing.");
-                                }
-                              }}
-                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50 shadow-sm"
-                            >
-                              🖨️ Print
-                            </button>
                             {isActive && (
                               <button
                                 disabled={working}

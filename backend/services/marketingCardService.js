@@ -107,6 +107,55 @@ const addEvent = (tx, { cardId, eventType, actorId, actorRole, fromStatus, toSta
   data: { cardId, eventType, actorId, actorRole, fromStatus, toStatus, referenceId, metadata },
 });
 
+const EXPIRABLE_CARD_STATUSES = ["GENERATED", "ASSIGNED", "AVAILABLE", "RESERVED"];
+
+const expireCampaignCardsInTransaction = async (tx, now) => {
+  const cards = await tx.marketingCard.findMany({
+    where: {
+      physicalStatus: { in: EXPIRABLE_CARD_STATUSES },
+      campaign: { endsAt: { lt: now } },
+    },
+    select: {
+      id: true,
+      campaignId: true,
+      physicalStatus: true,
+      assignments: { orderBy: { assignedAt: "desc" }, take: 1, select: { id: true, status: true } },
+    },
+  });
+
+  let cancelled = 0;
+  for (const card of cards) {
+    const changed = await tx.marketingCard.updateMany({
+      where: { id: card.id, physicalStatus: { in: EXPIRABLE_CARD_STATUSES } },
+      data: { physicalStatus: "CANCELLED" },
+    });
+    if (changed.count !== 1) continue;
+
+    const assignment = card.assignments[0];
+    if (assignment && assignment.status !== "CANCELLED") {
+      await tx.marketingCardAssignment.update({
+        where: { id: assignment.id },
+        data: { status: "CANCELLED", notes: "Campaign expired before card use." },
+      });
+    }
+    await addEvent(tx, {
+      cardId: card.id,
+      eventType: "CARD_CANCELLED",
+      actorRole: "SYSTEM",
+      fromStatus: card.physicalStatus,
+      toStatus: "CANCELLED",
+      metadata: { reason: "CAMPAIGN_EXPIRED", campaignId: card.campaignId },
+    });
+    cancelled += 1;
+  }
+  return cancelled;
+};
+
+export const expireCampaignCards = async ({ db = prisma, now = new Date() } = {}) => {
+  if (db === prisma) return prisma.$transaction((tx) => expireCampaignCardsInTransaction(tx, now));
+  return expireCampaignCardsInTransaction(db, now);
+};
+
 const assertQuantity = (quantity) => {
   const parsed = Number(quantity);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_BATCH_SIZE) {
@@ -339,6 +388,7 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
 };
 
 export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, status, page = 1, pageSize = 50, search } = {}) => {
+  await expireCampaignCards();
   const where = {
     ...(campaignId ? { campaignId } : {}),
     ...(partnerId && !campaignId ? { campaign: { marketingPartnerId: partnerId } } : {}),
@@ -367,6 +417,7 @@ export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, st
 };
 
 export const getAdminCardStats = async () => {
+  await expireCampaignCards();
   const [
     partnerStats,
     campaignStats,
@@ -483,6 +534,7 @@ export const adminInvalidateCards = async ({ cardIds, reason, actorId }) => {
 };
 
 export const getCardMetrics = async () => {
+  await expireCampaignCards();
   const [physicalStatuses, assignedCount, receivedCount, attachedCount, deliveredCount, activatedCount, redeemedCount] = await Promise.all([
     prisma.marketingCard.groupBy({ by: ["physicalStatus"], _count: { _all: true } }),
     prisma.marketingCardAssignment.count({ where: { status: { not: "CANCELLED" } } }),
@@ -504,6 +556,7 @@ export const getCardMetrics = async () => {
 };
 
 export const assignCards = async ({ campaignId, manufacturerId, quantity, cardIds, actorId }) => {
+  await expireCampaignCards();
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
   if (!manufacturer || !manufacturer.isActive) throw new Error("Active manufacturer not found.");
   const requestedIds = Array.isArray(cardIds) && cardIds.length ? cardIds : null;
@@ -537,16 +590,20 @@ export const assignCards = async ({ campaignId, manufacturerId, quantity, cardId
   }, { isolationLevel: "Serializable" });
 };
 
-export const getManufacturerInventory = ({ manufacturerId, status }) => prisma.marketingCard.findMany({
-  where: {
-    assignedManufacturerId: manufacturerId,
-    ...(status && status !== "all" ? { physicalStatus: status } : {}),
-  },
-  orderBy: { assignedAt: "desc" },
-  include: { campaign: { include: { marketingPartner: true } }, batch: true, orderLink: true, assignments: { orderBy: { assignedAt: "desc" }, take: 1, include: { receipt: true } } },
-});
+export const getManufacturerInventory = async ({ manufacturerId, status }) => {
+  await expireCampaignCards();
+  return prisma.marketingCard.findMany({
+    where: {
+      assignedManufacturerId: manufacturerId,
+      ...(status && status !== "all" ? { physicalStatus: status } : {}),
+    },
+    orderBy: { assignedAt: "desc" },
+    include: { campaign: { include: { marketingPartner: true } }, batch: true, orderLink: true, assignments: { orderBy: { assignedAt: "desc" }, take: 1, include: { receipt: true } } },
+  });
+};
 
 export const receiveCard = async ({ cardId, manufacturerId, notes }) => prisma.$transaction(async (tx) => {
+  await expireCampaignCards({ db: tx });
   const card = await tx.marketingCard.findUnique({ where: { id: cardId }, include: { assignments: { orderBy: { assignedAt: "desc" }, take: 1 } } });
   const assignment = card?.assignments?.[0];
   if (!card || !assignment || assignment.manufacturerId !== manufacturerId) throw new Error("Assigned card not found.");
@@ -572,6 +629,7 @@ export const bulkUpdateManufacturerCards = async ({ cardIds, action, manufacture
   if (!validActions.includes(action)) throw new Error(`Invalid action. Must be one of: ${validActions.join(", ")}.`);
 
   return prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
     // Fetch all cards scoped to this manufacturer
     const cards = await tx.marketingCard.findMany({
       where: { id: { in: cardIds }, assignedManufacturerId: manufacturerId },
@@ -627,6 +685,7 @@ export const bulkUpdateManufacturerCards = async ({ cardIds, action, manufacture
 };
 
 export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => prisma.$transaction(async (tx) => {
+  await expireCampaignCards({ db: tx });
   const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
   if (!order || order.manufacturerId !== manufacturerId) throw new Error("Order not found or unauthorized.");
   if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");

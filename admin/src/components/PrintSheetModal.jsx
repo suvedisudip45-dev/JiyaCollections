@@ -1,7 +1,8 @@
 /* eslint-disable react/prop-types */
 import { useEffect, useState, useMemo } from "react";
 import QRCode from "qrcode";
-import { Printer, Download, FileText, LayoutGrid, Tag, FileCheck, X, Sparkles, AlertCircle } from "lucide-react";
+import { jsPDF } from "jspdf";
+import { AlertCircle, FileCheck, LayoutGrid, Printer, Tag, X, Sparkles } from "lucide-react";
 
 export const PrintSheetModal = ({
   isOpen,
@@ -16,7 +17,7 @@ export const PrintSheetModal = ({
 }) => {
   const [layout, setLayout] = useState("GIFT_CARDS"); // GIFT_CARDS | STICKER_LABELS | SINGLE_PROOF
   const [inkSaver, setInkSaver] = useState(false);
-  const [qrPayloadType, setQrPayloadType] = useState("URL"); // URL | CODE | TOKEN
+  const [qrPayloadType] = useState("URL"); // URL | CODE | TOKEN
   const [qrMap, setQrMap] = useState({});
   const [generatingQr, setGeneratingQr] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -81,157 +82,53 @@ export const PrintSheetModal = ({
 
   if (!isOpen) return null;
 
-  // Direct Browser Print
-  const handlePrint = () => {
-    window.print();
-  };
+  const handleDownloadPdf = () => {
+    const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 8;
+    const columns = layout === "STICKER_LABELS" ? 3 : layout === "SINGLE_PROOF" ? 1 : 2;
+    const gap = 4;
+    const cardWidth = (pageWidth - margin * 2 - gap * (columns - 1)) / columns;
+    const cardHeight = layout === "STICKER_LABELS" ? 38 : layout === "SINGLE_PROOF" ? 105 : 62;
+    const qrSize = layout === "STICKER_LABELS" ? 23 : layout === "SINGLE_PROOF" ? 48 : 32;
+    const cardsPerPage = Math.max(1, Math.floor((pageHeight - margin * 2 + gap) / (cardHeight + gap)) * columns);
 
-  // Download Standalone Offline HTML Sheet
-  const handleDownloadHtml = () => {
-    const esc = (v) =>
-      String(v ?? "").replace(
-        /[&<>"']/g,
-        (m) =>
-          ({
-            "&": "&amp;",
-            "<": "&lt;",
-            ">": "&gt;",
-            '"': "&quot;",
-            "'": "&#39;",
-          }[m])
-      );
+    filteredCards.forEach((card, index) => {
+      const pageIndex = Math.floor(index / cardsPerPage);
+      if (index > 0 && index % cardsPerPage === 0) pdf.addPage();
 
-    const cardsHtml = cards
-      .map((c) => {
-        const qr = qrMap[c.id || c.cardCode] || "";
-        if (layout === "STICKER_LABELS") {
-          return `
-            <div class="sticker-card">
-              <div class="sticker-header">AAMA CLOTHINGS</div>
-              <img class="sticker-qr" src="${qr}" alt="QR" />
-              <div class="sticker-code">${esc(c.cardCode)}</div>
-              <div class="sticker-partner">${esc(partnerName)}</div>
-            </div>
-          `;
-        }
-        return `
-          <div class="gift-card ${inkSaver ? "ink-saver" : ""}">
-            <div class="card-brand">
-              <span>AAMA CLOTHINGS</span>
-              <span class="partner-badge">× ${esc(partnerName)}</span>
-            </div>
-            <div class="campaign-title">${esc(campaignName)}</div>
-            <div class="qr-container">
-              <img class="qr-img" src="${qr}" alt="QR" />
-            </div>
-            <div class="scratch-box">
-              <div class="scratch-inner">
-                <span class="scratch-label">SCAN OR SCRATCH REVEAL</span>
-                <span class="card-code">${esc(c.cardCode)}</span>
-              </div>
-            </div>
-            <div class="card-footer">
-              <span>Scope: ${esc(campaignScope)}</span>
-              <span>${cardExpiresAt ? `Expires: ${new Date(cardExpiresAt).toLocaleDateString()}` : "Active Offer"}</span>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
+      const indexOnPage = index - pageIndex * cardsPerPage;
+      const row = Math.floor(indexOnPage / columns);
+      const column = indexOnPage % columns;
+      const x = margin + column * (cardWidth + gap);
+      const y = margin + row * (cardHeight + gap);
+      const qrData = qrMap[card.id || card.cardCode];
 
-    const gridClass = layout === "STICKER_LABELS" ? "sticker-grid" : "gift-grid";
+      pdf.setDrawColor(15, 23, 42);
+      pdf.setLineWidth(0.35);
+      pdf.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "S");
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(layout === "STICKER_LABELS" ? 7 : 8);
+      pdf.text("AAMA CLOTHINGS", x + cardWidth / 2, y + 6, { align: "center" });
 
-    const fullHtml = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Aama Marketing Cards - ${esc(batchCode)}</title>
-  <style>
-    @page { size: A4 portrait; margin: 8mm; }
-    * { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 10px; background: #fff; color: #0f172a; }
-    .print-sheet { width: 100%; max-width: 210mm; margin: 0 auto; }
-    .gift-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6mm; }
-    .sticker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
-    
-    /* Gift Card 2x5 Styling */
-    .gift-card { border: 1.5px solid #0f172a; border-radius: 8px; padding: 10px; page-break-inside: avoid; background: #fdfdfd; min-height: 52mm; display: flex; flex-direction: column; justify-content: space-between; }
-    .gift-card.ink-saver { border: 1px dashed #64748b; background: #fff; }
-    .card-brand { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 900; letter-spacing: 0.08em; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
-    .partner-badge { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 9px; color: #b45309; }
-    .campaign-title { font-size: 10px; font-weight: 700; color: #334155; margin-top: 4px; text-align: center; }
-    .qr-container { display: flex; justify-content: center; margin: 4px 0; }
-    .qr-img { width: 28mm; height: 28mm; border-radius: 4px; }
-    .scratch-box { border: 1px dashed #cbd5e1; border-radius: 6px; padding: 4px; background: #f8fafc; text-align: center; }
-    .scratch-label { display: block; font-size: 7.5px; font-weight: 800; color: #64748b; letter-spacing: 0.05em; }
-    .card-code { font-family: monospace; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; color: #0f172a; display: block; margin-top: 2px; }
-    .card-footer { display: flex; justify-content: space-between; font-size: 8px; color: #64748b; margin-top: 4px; border-top: 1px solid #f1f5f9; padding-top: 2px; }
-    
-    /* Sticker Label 3x7 Styling */
-    .sticker-card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px; text-align: center; page-break-inside: avoid; min-height: 38mm; display: flex; flex-direction: column; justify-content: space-between; align-items: center; background: #fff; }
-    .sticker-header { font-size: 8px; font-weight: 900; letter-spacing: 0.05em; color: #475569; }
-    .sticker-qr { width: 20mm; height: 20mm; }
-    .sticker-code { font-family: monospace; font-size: 9.5px; font-weight: 800; color: #0f172a; }
-    .sticker-partner { font-size: 7.5px; color: #b45309; font-weight: 700; }
-  </style>
-</head>
-<body>
-  <div class="print-sheet">
-    <div class="${gridClass}">
-      ${cardsHtml}
-    </div>
-  </div>
-</body>
-</html>`;
+      if (qrData) {
+        pdf.addImage(qrData, "PNG", x + (cardWidth - qrSize) / 2, y + 9, qrSize, qrSize);
+      }
 
-    const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Aama-Marketing-Cards-${batchCode}-${layout}.html`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+      pdf.setFont("courier", "bold");
+      pdf.setFontSize(layout === "STICKER_LABELS" ? 7 : 9);
+      pdf.text(String(card.cardCode || ""), x + cardWidth / 2, y + cardHeight - 11, { align: "center" });
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(6.5);
+      pdf.text(String(partnerName || ""), x + cardWidth / 2, y + cardHeight - 6, { align: "center", maxWidth: cardWidth - 6 });
+    });
 
-  // Download CSV Data File
-  const handleDownloadCsv = () => {
-    const escCsv = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = [
-      "batchCode",
-      "cardCode",
-      "partnerName",
-      "campaignName",
-      "geographicScope",
-      "cardExpiresAt",
-      "qrScanUrl",
-    ];
-
-    const rows = cards.map((c) => [
-      batchCode,
-      c.cardCode || "",
-      partnerName,
-      campaignName,
-      campaignScope,
-      cardExpiresAt || "",
-      `${frontendUrl}/marketing-cards?code=${encodeURIComponent(c.cardCode || "")}`,
-    ]);
-
-    const csvContent = [headers.map(escCsv).join(","), ...rows.map((r) => r.map(escCsv).join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Marketing-Cards-${batchCode}-Data.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    pdf.save(`Aama-Marketing-Cards-${batchCode}-${layout}.pdf`);
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
+    <div id="print-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
       {/* Print-specific Isolated Styling */}
       <style>{`
         @media print {
@@ -242,13 +139,87 @@ export const PrintSheetModal = ({
             visibility: visible !important;
           }
           #printable-card-sheet {
-            position: absolute !important;
+            position: static !important;
             left: 0 !important;
             top: 0 !important;
             width: 100% !important;
+            max-width: none !important;
+            box-sizing: border-box !important;
             margin: 0 !important;
-            padding: 4mm !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
             background: #ffffff !important;
+          }
+          body,
+          #root {
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          body > #root,
+          body > #root > * {
+            display: block !important;
+            position: static !important;
+            min-height: 0 !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+          }
+          #print-modal {
+            display: block !important;
+            position: static !important;
+            min-height: 0 !important;
+            height: auto !important;
+            max-height: none !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+          }
+          #print-modal-content {
+            display: block !important;
+            position: static !important;
+            width: 100% !important;
+            max-width: none !important;
+            min-height: 0 !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            border: 0 !important;
+            box-shadow: none !important;
+          }
+          #print-modal-header,
+          #print-modal-toolbar {
+            display: none !important;
+          }
+          #print-sheet-scroll {
+            display: block !important;
+            position: static !important;
+            width: 100% !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            padding: 0 !important;
+            background: #ffffff !important;
+          }
+          #printable-card-sheet .grid-cols-2 {
+            display: grid !important;
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 4mm !important;
+            width: 100% !important;
+          }
+          #printable-card-sheet .grid-cols-3 {
+            display: grid !important;
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 3mm !important;
+            width: 100% !important;
+          }
+          #printable-card-sheet .grid-cols-2 > div,
+          #printable-card-sheet .grid-cols-3 > div,
+          #printable-card-sheet > div {
+            min-width: 0 !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+            break-inside: avoid !important;
           }
           @page {
             size: A4 portrait;
@@ -257,9 +228,9 @@ export const PrintSheetModal = ({
         }
       `}</style>
 
-      <div className="relative w-full max-w-5xl rounded-2xl bg-white shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
+      <div id="print-modal-content" className="relative w-full max-w-5xl rounded-2xl bg-white shadow-2xl border border-slate-200 flex flex-col max-h-[90vh]">
         {/* Modal Header */}
-        <div className="flex flex-wrap items-center justify-between border-b border-slate-100 px-6 py-4 gap-4 bg-slate-50 rounded-t-2xl">
+        <div id="print-modal-header" className="flex flex-wrap items-center justify-between border-b border-slate-100 px-6 py-4 gap-4 bg-slate-50 rounded-t-2xl">
           <div>
             <div className="flex items-center gap-2">
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-100 text-amber-800">
@@ -279,31 +250,13 @@ export const PrintSheetModal = ({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={handlePrint}
+              onClick={handleDownloadPdf}
               disabled={generatingQr}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white shadow hover:bg-slate-800 disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              title="Download an A4 PDF ready for printing"
             >
-              <Printer className="h-3.5 w-3.5" />
-              Print Sheet (A4)
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadHtml}
-              disabled={generatingQr}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-              title="Download standalone offline HTML file"
-            >
-              <Download className="h-3.5 w-3.5" />
-              HTML File
-            </button>
-            <button
-              type="button"
-              onClick={handleDownloadCsv}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-              title="Download CSV dataset for industrial printer machines"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              CSV Data
+              <FileCheck className="h-3.5 w-3.5" />
+              PDF File
             </button>
             <button
               type="button"
@@ -316,7 +269,7 @@ export const PrintSheetModal = ({
         </div>
 
         {/* Toolbar & Filter Controls */}
-        <div className="flex flex-wrap items-center justify-between border-b border-slate-100 px-6 py-3 gap-3 bg-white text-xs">
+        <div id="print-modal-toolbar" className="flex flex-wrap items-center justify-between border-b border-slate-100 px-6 py-3 gap-3 bg-white text-xs">
           {/* Layout Selector */}
           <div className="flex items-center gap-1.5">
             <span className="font-bold text-slate-500 mr-1">Layout:</span>
@@ -381,7 +334,7 @@ export const PrintSheetModal = ({
         </div>
 
         {/* Sheet Preview Scrollable Area */}
-        <div className="flex-1 overflow-y-auto p-6 bg-slate-100/70">
+        <div id="print-sheet-scroll" className="flex-1 overflow-y-auto p-6 bg-slate-100/70">
           {generatingQr && (
             <div className="flex items-center justify-center py-12 gap-2 text-slate-500 text-sm">
               <Sparkles className="h-5 w-5 animate-spin text-amber-600" />

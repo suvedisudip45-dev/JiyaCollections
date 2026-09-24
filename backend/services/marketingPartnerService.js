@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { expireCampaignCards } from "./marketingCardService.js";
 
 /**
  * Partner-scoped read-only service functions.
@@ -11,8 +12,9 @@ export const getPartnerById = (partnerId) =>
     select: { id: true, code: true, name: true, description: true, status: true, createdAt: true },
   });
 
-export const getPartnerCampaigns = ({ partnerId, status } = {}) =>
-  prisma.marketingCampaign.findMany({
+export const getPartnerCampaigns = async ({ partnerId, status } = {}) => {
+  await expireCampaignCards();
+  return prisma.marketingCampaign.findMany({
     where: {
       marketingPartnerId: partnerId,
       ...(status && status !== "all" ? { status } : {}),
@@ -25,8 +27,10 @@ export const getPartnerCampaigns = ({ partnerId, status } = {}) =>
       benefits: { select: { id: true, name: true, benefitType: true, value: true, percentage: true, status: true, expiresAt: true } },
     },
   });
+};
 
 export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {
+  await expireCampaignCards();
   const campaign = await prisma.marketingCampaign.findFirst({
     where: { id: campaignId, marketingPartnerId: partnerId },
     include: {
@@ -61,7 +65,8 @@ export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {
   return { ...campaign, stats: { physical, activated: activatedCount, redeemed: redeemedCount } };
 };
 
-export const getPartnerCards = ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
+export const getPartnerCards = async ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
+  await expireCampaignCards();
   const skip = (Number(page) - 1) * Number(limit);
   const where = {
     partnerId,
@@ -86,6 +91,7 @@ export const getPartnerCards = ({ partnerId, campaignId, status, page = 1, limit
 };
 
 export const getPartnerCardDetail = async ({ partnerId, cardId }) => {
+  await expireCampaignCards();
   const card = await prisma.marketingCard.findFirst({
     where: { id: cardId, partnerId },
     include: {
@@ -108,6 +114,7 @@ export const getPartnerCardDetail = async ({ partnerId, cardId }) => {
 };
 
 export const getPartnerMetrics = async (partnerId) => {
+  await expireCampaignCards();
   const [physicalStatuses, activatedCount, redeemedCount, campaignCount] = await Promise.all([
     prisma.marketingCard.groupBy({
       by: ["physicalStatus"],
@@ -135,7 +142,8 @@ export const getPartnerMetrics = async (partnerId) => {
   };
 };
 
-export const getPartnerRedemptions = ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
+export const getPartnerRedemptions = async ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
+  await expireCampaignCards();
   const skip = (Number(page) - 1) * Number(limit);
   const where = {
     card: { partnerId },
@@ -163,6 +171,7 @@ export const getPartnerRedemptions = ({ partnerId, campaignId, status, page = 1,
  * product list, card activation date & expiry, and offer reward details.
  */
 export const validatePartnerQr = async ({ partnerId, cardCode }) => {
+  await expireCampaignCards();
   const normalizedCode = String(cardCode || "").trim().toUpperCase();
   if (!normalizedCode) {
     const error = new Error("A valid card code is required.");
@@ -307,6 +316,7 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
 
 export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =>
   prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
     const card = await tx.marketingCard.findFirst({
       where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
       include: {
@@ -370,6 +380,7 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
 
 export const rejectPartnerCard = async ({ partnerId, cardCode, reason }) =>
   prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
     const card = await tx.marketingCard.findFirst({
       where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
       include: {

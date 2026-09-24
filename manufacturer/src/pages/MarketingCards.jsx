@@ -2,11 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, PackageCheck, PackageX,
-  Printer, RefreshCw, SearchX, Square, SquareCheck, X,
+  AlertTriangle, PackageCheck, PackageX,
+  RefreshCw, SearchX, X,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
-import PrintSheetModal from "../components/PrintSheetModal";
 
 /* ── Status badge ──────────────────────────────────────────── */
 const STATUS_META = {
@@ -140,7 +139,6 @@ const MarketingCards = () => {
   const [confirmAction, setConfirmAction] = useState(null); // "RECEIVE" | "DAMAGED" | "NOT_FOUND"
   const [working, setWorking] = useState(false);
   const [modalResults, setModalResults] = useState(null);
-  const [printOpen, setPrintOpen] = useState(false);
   const headerCheckRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -272,16 +270,6 @@ const MarketingCards = () => {
             Assigned card inventory
             {!loading && <span className="ml-2 text-slate-400 font-normal">({filtered.length} cards)</span>}
           </h2>
-          {filtered.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setPrintOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm"
-            >
-              <Printer className="h-3.5 w-3.5 text-amber-700" />
-              Print Stickers / Cards ({selected.size > 0 ? `${selected.size} Selected` : `${filtered.length} Cards`})
-            </button>
-          )}
         </div>
 
         {loading ? (
@@ -310,7 +298,6 @@ const MarketingCards = () => {
                   <th className="px-4 py-3">Partner / Campaign</th>
                   <th className="px-4 py-3">Target</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Benefit</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -342,13 +329,6 @@ const MarketingCards = () => {
                       </td>
                       <td className="px-4 py-3 text-slate-600">{card.campaign?.targetScopeType || "NATIONWIDE"}</td>
                       <td className="px-4 py-3"><StatusBadge status={card.physicalStatus} /></td>
-                      <td className="px-4 py-3 text-slate-500">
-                        {card.benefit ? (
-                          <span className="font-medium text-emerald-700">{card.benefit.name}</span>
-                        ) : (
-                          <span className="text-slate-300">—</span>
-                        )}
-                      </td>
                     </tr>
                   );
                 })}
@@ -412,15 +392,6 @@ const MarketingCards = () => {
         />
       )}
 
-      {/* Print Sheet Modal */}
-      {printOpen && (
-        <PrintSheetModal
-          isOpen={printOpen}
-          onClose={() => setPrintOpen(false)}
-          title="Manufacturer Packaging Stickers & Cards"
-          cards={selected.size > 0 ? cards.filter((c) => selected.has(c.id)) : filtered}
-        />
-      )}
     </div>
   );
 };

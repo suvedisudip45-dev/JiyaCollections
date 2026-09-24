@@ -164,6 +164,7 @@ model Product {
   subCategory       String
   sizes             Json
   colors            Json      @default("[]")
+  colorImages       Json      @default("[]")
   variants          Json      @default("[]")
   bestseller        Boolean   @default(false)
   newInStore        Boolean   @default(false)
