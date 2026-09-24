@@ -1,6 +1,7 @@
 /* eslint-disable react/prop-types */
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import QRCode from "qrcode";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 
@@ -55,18 +56,29 @@ const MarketingCards = ({ token }) => {
     } finally { setWorking(false); }
   };
 
-  const exportBatchForPrint = (result) => {
+  const exportBatchForPrint = async (result) => {
     const rows = (result.cards || []).map((card) => [result.batch.batchCode, card.cardCode, card.qrToken]);
     const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
     const csv = ["batchCode,cardCode,qrToken", ...rows.map((row) => row.map(escapeCsv).join(","))].join("\n");
-    const url = window.URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${result.batch.batchCode}-print-data.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
+    const download = (content, filename, type) => {
+      const url = window.URL.createObjectURL(new Blob([content], { type }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    };
+    download(csv, `${result.batch.batchCode}-print-data.csv`, "text/csv;charset=utf-8");
+
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[character]));
+    const printableCards = await Promise.all((result.cards || []).map(async (card) => ({
+      cardCode: escapeHtml(card.cardCode),
+      qrDataUrl: await QRCode.toDataURL(card.qrToken, { errorCorrectionLevel: "M", margin: 1, width: 220 }),
+    })));
+    const printSheet = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(result.batch.batchCode)} Marketing Cards</title><style>@page{size:A4;margin:12mm}body{font-family:Arial,sans-serif;color:#111;margin:0}.sheet{display:grid;grid-template-columns:repeat(2,1fr);gap:10mm}.card{break-inside:avoid;border:1px solid #111;padding:8mm;text-align:center;min-height:72mm}.card img{width:42mm;height:42mm}.code{font:700 14px monospace;margin-top:5mm;letter-spacing:.5px}.batch{font-size:9px;color:#555;margin-top:2mm}</style></head><body><div class="sheet">${printableCards.map((card) => `<section class="card"><img src="${card.qrDataUrl}" alt="QR code for ${card.cardCode}"><div class="code">${card.cardCode}</div><div class="batch">${escapeHtml(result.batch.batchCode)}</div></section>`).join("")}</div></body></html>`;
+    download(printSheet, `${result.batch.batchCode}-print-sheet.html`, "text/html;charset=utf-8");
   };
 
   const summary = cards.reduce((result, card) => {
@@ -120,7 +132,7 @@ const MarketingCards = ({ token }) => {
           <div className="mt-4 space-y-3">
             <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}><option value="">Select campaign</option>{campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
             <input type="number" min="1" max="5000" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.quantity} onChange={(e) => setBatch({ ...batch, quantity: Number(e.target.value) })} />
-            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/batches", batch, "Card batch generated and print data downloaded."); if (result) { exportBatchForPrint(result); setBatch({ campaignId: "", quantity: 1 }); } }} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Generate cards &amp; export</button>
+            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/batches", batch, "Card batch generated and print files downloaded."); if (result) { await exportBatchForPrint(result); setBatch({ campaignId: "", quantity: 1 }); } }} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Generate cards &amp; export</button>
           </div>
         </section>
       </div>

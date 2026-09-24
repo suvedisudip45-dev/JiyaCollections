@@ -2,6 +2,7 @@ import express from "express";
 import adminAuth from "../middleware/adminAuth.js";
 import authManufacturer from "../middleware/manufacturerAuth.js";
 import authUser from "../middleware/auth.js";
+import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import {
   adminAssignCards,
   adminCreateCampaign,
@@ -34,8 +35,8 @@ marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authManufacturer
 marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authManufacturer, manufacturerAttachCard);
 
 marketingCardRouter.get("/customer/cards", authUser, customerListCards);
-marketingCardRouter.post("/customer/cards/link", authUser, customerLinkCard);
-marketingCardRouter.post("/customer/cards/scan", authUser, customerScanCard);
-marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authUser, customerRedeemBenefit);
+marketingCardRouter.post("/customer/cards/link", authUser, marketingCardRateLimit("link"), customerLinkCard);
+marketingCardRouter.post("/customer/cards/scan", authUser, marketingCardRateLimit("scan"), customerScanCard);
+marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authUser, marketingCardRateLimit("redeem"), customerRedeemBenefit);
 
 export default marketingCardRouter;
