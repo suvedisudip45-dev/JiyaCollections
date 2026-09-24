@@ -55,6 +55,20 @@ const MarketingCards = ({ token }) => {
     } finally { setWorking(false); }
   };
 
+  const exportBatchForPrint = (result) => {
+    const rows = (result.cards || []).map((card) => [result.batch.batchCode, card.cardCode, card.qrToken]);
+    const escapeCsv = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const csv = ["batchCode,cardCode,qrToken", ...rows.map((row) => row.map(escapeCsv).join(","))].join("\n");
+    const url = window.URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${result.batch.batchCode}-print-data.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
   const summary = cards.reduce((result, card) => {
     result[card.physicalStatus] = (result[card.physicalStatus] || 0) + 1;
     return result;
@@ -106,7 +120,7 @@ const MarketingCards = ({ token }) => {
           <div className="mt-4 space-y-3">
             <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}><option value="">Select campaign</option>{campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
             <input type="number" min="1" max="5000" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.quantity} onChange={(e) => setBatch({ ...batch, quantity: Number(e.target.value) })} />
-            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/batches", batch, "Card batch generated."); if (result) { window.alert(`Generated ${result.cards?.length || 0} cards. QR print tokens were returned once by the API.`); setBatch({ campaignId: "", quantity: 1 }); } }} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Generate cards</button>
+            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/batches", batch, "Card batch generated and print data downloaded."); if (result) { exportBatchForPrint(result); setBatch({ campaignId: "", quantity: 1 }); } }} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Generate cards &amp; export</button>
           </div>
         </section>
       </div>
