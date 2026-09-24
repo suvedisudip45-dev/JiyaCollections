@@ -27,6 +27,7 @@ model User {
   storyAssignments CustomerStoryAssignment[] @relation("CustomerStoryAssignmentCustomer")
   letterDeliveries LetterDelivery[] @relation("CustomerLetterDeliveryCustomer")
   marketingCardLinks MarketingCardCustomer[] @relation("MarketingCardCustomerUser")
+  marketingBenefitRedemptions MarketingBenefitRedemption[]
 }
 
 model Story {
@@ -890,6 +891,7 @@ model MarketingCard {
   orderLink             MarketingCardOrder?
   customerLinks         MarketingCardCustomer[]
   events                MarketingCardEvent[]
+  benefitRedemptions    MarketingBenefitRedemption[]
 
   @@index([campaignId, physicalStatus])
   @@index([assignedManufacturerId, physicalStatus])
@@ -961,8 +963,25 @@ model MarketingBenefit {
   expiresAt   DateTime?
   status      String   @default("ACTIVE")
   campaign    MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  redemptions MarketingBenefitRedemption[]
 
   @@index([campaignId, status])
+}
+
+model MarketingBenefitRedemption {
+  id         String   @id @default(uuid())
+  cardId     String
+  benefitId  String
+  customerId String
+  status     String   @default("REDEEMED") // REDEEMED | CANCELLED
+  redeemedAt DateTime @default(now())
+  card       MarketingCard @relation(fields: [cardId], references: [id], onDelete: Restrict)
+  benefit    MarketingBenefit @relation(fields: [benefitId], references: [id], onDelete: Restrict)
+  customer   User @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@unique([cardId, benefitId])
+  @@index([customerId, status])
+  @@index([benefitId, redeemedAt])
 }
 
 model MarketingCardEvent {

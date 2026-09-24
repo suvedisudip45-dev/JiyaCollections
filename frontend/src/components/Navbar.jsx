@@ -128,6 +128,7 @@ const Navbar = () => {
               <div className="flex w-40 flex-col gap-3 border border-[var(--line)] bg-[var(--white)] px-5 py-4 text-sm text-[var(--muted)] shadow-xl">
                 <p onClick={() => navigate("/profile")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">My Profile</p>
                 <p onClick={() => navigate("/orders")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Orders</p>
+                <p onClick={() => navigate("/marketing-cards")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Marketing Cards</p>
                 <p onClick={logout} className="cursor-pointer font-semibold text-[var(--accent)] transition-colors hover:text-[var(--ink)]">Logout</p>
               </div>
             </div>

@@ -10,6 +10,12 @@ import {
   listPartners,
   receiveCard,
 } from "../services/marketingCardService.js";
+import {
+  linkCustomerCard,
+  listCustomerCards,
+  redeemCustomerBenefit,
+  resolveCustomerQr,
+} from "../services/marketingCardCustomerService.js";
 
 const sendError = (res, error) => {
   const status = error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400;
@@ -66,4 +72,20 @@ export const manufacturerReceiveCard = async (req, res) => {
 
 export const manufacturerAttachCard = async (req, res) => {
   try { return res.json({ success: true, card: await attachRandomCardToOrder({ orderId: req.params.orderId, manufacturerId: req.manufacturerId }), message: "Marketing card attached to the order." }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerListCards = async (req, res) => {
+  try { return res.json({ success: true, cards: await listCustomerCards(req.userId) }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerLinkCard = async (req, res) => {
+  try { return res.status(201).json({ success: true, card: await linkCustomerCard({ customerId: req.userId, cardCode: req.body.cardCode }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerScanCard = async (req, res) => {
+  try { return res.json({ success: true, card: await resolveCustomerQr({ customerId: req.userId, token: req.body.token }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerRedeemBenefit = async (req, res) => {
+  try { return res.status(201).json({ success: true, redemption: await redeemCustomerBenefit({ customerId: req.userId, cardId: req.params.cardId, benefitId: req.params.benefitId }), message: "Benefit redeemed successfully." }); } catch (error) { return sendError(res, error); }
 };
