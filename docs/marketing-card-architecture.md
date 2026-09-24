@@ -16,7 +16,7 @@
 2. Every normal online order requires a marketing card before manufacturer packaging/delivery handoff.
 3. Admin assigns card inventory to manufacturers using campaign demand and location analysis.
 4. A manufacturer randomly selects a card from its own received and available inventory for an order.
-5. Customer activation and benefits are designed for a later slice; this implementation keeps card ownership and assignment data ready for it.
+5. Customers can activate cards only after a delivered order has been verified; benefits are campaign-linked and redeemed per card/benefit.
 
 ## Data integrity design
 
@@ -26,6 +26,8 @@
 - A card can belong to only one manufacturer assignment and one order.
 - Manufacturer receipt is explicit; unreceived cards cannot be reserved.
 - Card reservation and order attachment happen in one database transaction.
+- Customer linking is unique per physical card and benefit redemption is unique per card/benefit pair.
+- QR resolution and redemption require the existing customer JWT and never expose raw token data.
 - Lifecycle events do not store raw QR tokens.
 
 ## Integration points
@@ -35,6 +37,7 @@
 - Existing `OrderAssignment` and delivery flow are preserved.
 - `prepareReadyDelivery` independently verifies that a required card is attached before creating or resubmitting a delivery order.
 - Admin and manufacturer navigation receive focused additions without changing their authentication or application shells.
+- Customer card listing, activation, QR resolution, and redemption use the existing storefront authentication state.
 
 ## Planned flow
 
@@ -47,6 +50,8 @@ Admin creates campaign and batch
   -> manufacturer selects a card for an assigned order
   -> transaction reserves card and attaches it to order
   -> existing packaging/delivery handoff validates the attachment again
+  -> delivered customer authenticates and links the card
+  -> customer verifies QR and redeems an eligible campaign benefit
 ```
 
 ## Risks and controls

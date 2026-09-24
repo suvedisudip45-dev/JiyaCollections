@@ -39,7 +39,7 @@ export const createPartner = ({ code, name, description }) => prisma.marketingPa
 
 export const listPartners = () => prisma.marketingPartner.findMany({ orderBy: { createdAt: "desc" } });
 
-export const createCampaign = async ({ marketingPartnerId, name, description, targetScopeType, targetProvince, targetDistrict, requestedQuantity, benefitConfig, startsAt, endsAt }) => {
+export const createCampaign = async ({ marketingPartnerId, name, description, targetScopeType, targetProvince, targetDistrict, requestedQuantity, benefitConfig, benefits, startsAt, endsAt }) => {
   const partner = await prisma.marketingPartner.findUnique({ where: { id: marketingPartnerId } });
   if (!partner || partner.status !== "ACTIVE") throw new Error("Active marketing partner not found.");
   const scope = String(targetScopeType || "NATIONWIDE").toUpperCase();
@@ -48,20 +48,33 @@ export const createCampaign = async ({ marketingPartnerId, name, description, ta
   if (scope === "DISTRICT" && !String(targetDistrict || "").trim()) throw new Error("District is required for district campaigns.");
   const requested = requestedQuantity === undefined || requestedQuantity === "" ? 0 : Number(requestedQuantity);
   if (!Number.isInteger(requested) || requested < 0 || requested > MAX_BATCH_SIZE) throw new Error(`Requested quantity must be an integer between 0 and ${MAX_BATCH_SIZE}.`);
-  return prisma.marketingCampaign.create({
-    data: {
-      marketingPartnerId,
-      name: String(name || "").trim(),
-      description: description || null,
-      targetScopeType: scope,
-      targetProvince: targetProvince || null,
-      targetDistrict: targetDistrict || null,
-      requestedQuantity: requested,
-      benefitConfig: Array.isArray(benefitConfig) ? benefitConfig : [],
-      startsAt: startsAt ? new Date(startsAt) : null,
-      endsAt: endsAt ? new Date(endsAt) : null,
-    },
-    include: { marketingPartner: true },
+  const campaignBenefits = (Array.isArray(benefits) ? benefits : []).filter((benefit) => String(benefit?.name || "").trim()).map((benefit) => ({
+    name: String(benefit.name).trim(),
+    description: benefit.description || null,
+    benefitType: String(benefit.benefitType || "CUSTOM").toUpperCase(),
+    value: Number(benefit.value || 0),
+    terms: benefit.terms || null,
+    startsAt: benefit.startsAt ? new Date(benefit.startsAt) : null,
+    expiresAt: benefit.expiresAt ? new Date(benefit.expiresAt) : null,
+  }));
+  if (campaignBenefits.some((benefit) => !Number.isFinite(benefit.value) || benefit.value < 0)) throw new Error("Benefit value must be a non-negative number.");
+  return prisma.$transaction(async (tx) => {
+    const campaign = await tx.marketingCampaign.create({
+      data: {
+        marketingPartnerId,
+        name: String(name || "").trim(),
+        description: description || null,
+        targetScopeType: scope,
+        targetProvince: targetProvince || null,
+        targetDistrict: targetDistrict || null,
+        requestedQuantity: requested,
+        benefitConfig: Array.isArray(benefitConfig) ? benefitConfig : campaignBenefits,
+        startsAt: startsAt ? new Date(startsAt) : null,
+        endsAt: endsAt ? new Date(endsAt) : null,
+      },
+    });
+    if (campaignBenefits.length) await tx.marketingBenefit.createMany({ data: campaignBenefits.map((benefit) => ({ ...benefit, campaignId: campaign.id })) });
+    return tx.marketingCampaign.findUnique({ where: { id: campaign.id }, include: { marketingPartner: true, benefits: true } });
   });
 };
 
