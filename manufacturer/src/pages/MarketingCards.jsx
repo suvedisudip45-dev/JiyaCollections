@@ -3,9 +3,10 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import {
   AlertTriangle, CheckCircle2, ChevronDown, PackageCheck, PackageX,
-  RefreshCw, SearchX, Square, SquareCheck, X,
+  Printer, RefreshCw, SearchX, Square, SquareCheck, X,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
+import PrintSheetModal from "../components/PrintSheetModal";
 
 /* ── Status badge ──────────────────────────────────────────── */
 const STATUS_META = {
@@ -139,6 +140,7 @@ const MarketingCards = () => {
   const [confirmAction, setConfirmAction] = useState(null); // "RECEIVE" | "DAMAGED" | "NOT_FOUND"
   const [working, setWorking] = useState(false);
   const [modalResults, setModalResults] = useState(null);
+  const [printOpen, setPrintOpen] = useState(false);
   const headerCheckRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -265,11 +267,21 @@ const MarketingCards = () => {
 
       {/* Card table */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-5 py-4">
+        <div className="border-b border-slate-100 px-5 py-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-black text-slate-900">
             Assigned card inventory
             {!loading && <span className="ml-2 text-slate-400 font-normal">({filtered.length} cards)</span>}
           </h2>
+          {filtered.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setPrintOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm"
+            >
+              <Printer className="h-3.5 w-3.5 text-amber-700" />
+              Print Stickers / Cards ({selected.size > 0 ? `${selected.size} Selected` : `${filtered.length} Cards`})
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -397,6 +409,16 @@ const MarketingCards = () => {
           results={modalResults.results}
           summary={modalResults.summary}
           onClose={() => setModalResults(null)}
+        />
+      )}
+
+      {/* Print Sheet Modal */}
+      {printOpen && (
+        <PrintSheetModal
+          isOpen={printOpen}
+          onClose={() => setPrintOpen(false)}
+          title="Manufacturer Packaging Stickers & Cards"
+          cards={selected.size > 0 ? cards.filter((c) => selected.has(c.id)) : filtered}
         />
       )}
     </div>

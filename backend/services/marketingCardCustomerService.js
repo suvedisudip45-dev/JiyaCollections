@@ -178,6 +178,13 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
       id: card.campaign.id,
       name: card.campaign.name,
     },
+    ad: card.campaign.adMediaType && card.campaign.adMediaType !== "NONE" && card.campaign.adMediaUrl ? {
+      mediaType: card.campaign.adMediaType,
+      mediaUrl: card.campaign.adMediaUrl,
+      headline: card.campaign.adHeadline || `${card.campaign.marketingPartner.name} Special Partner Offer`,
+      description: card.campaign.adDescription || "",
+      externalLink: card.campaign.adExternalLink || "",
+    } : null,
     message: "Card code verified! Proceed to scan the physical QR code.",
   };
 };

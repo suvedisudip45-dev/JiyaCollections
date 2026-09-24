@@ -80,6 +80,29 @@ export const campaignMatchesOrder = (campaign, order) => {
   return false;
 };
 
+export const campaignMatchesCategory = (campaign, orderCategories) => {
+  let targetCats = campaign.targetCategories;
+  if (typeof targetCats === "string") {
+    try { targetCats = JSON.parse(targetCats); } catch { targetCats = []; }
+  }
+  if (!Array.isArray(targetCats) || targetCats.length === 0) {
+    return { isTargeted: false, matches: true }; // General campaign (applies to all products)
+  }
+
+  // Campaign has specific clothing categories targeted
+  const normalizedTargets = targetCats.map((c) => String(c).toLowerCase().trim()).filter(Boolean);
+  if (normalizedTargets.length === 0) return { isTargeted: false, matches: true };
+
+  const hasMatch = normalizedTargets.some((target) => {
+    for (const ordCat of orderCategories) {
+      if (ordCat.includes(target) || target.includes(ordCat)) return true;
+    }
+    return false;
+  });
+
+  return { isTargeted: true, matches: hasMatch };
+};
+
 const addEvent = (tx, { cardId, eventType, actorId, actorRole, fromStatus, toStatus, referenceId, metadata }) => tx.marketingCardEvent.create({
   data: { cardId, eventType, actorId, actorRole, fromStatus, toStatus, referenceId, metadata },
 });
@@ -117,7 +140,28 @@ export const createPartner = async ({ code, name, description, email, password, 
 export const listPartners = () => prisma.marketingPartner.findMany({ orderBy: { createdAt: "desc" } });
 
 
-export const createCampaign = async ({ marketingPartnerId, name, description, targetScopeType, targetProvince, targetDistrict, requestedQuantity, benefitConfig, benefits, startsAt, endsAt, cardExpiresAt }) => {
+export const createCampaign = async ({
+  marketingPartnerId,
+  name,
+  description,
+  targetScopeType,
+  targetProvince,
+  targetDistrict,
+  targetCategories = [],
+  minOrderValue = 0,
+  cpaRate = 0,
+  requestedQuantity,
+  benefitConfig,
+  benefits,
+  startsAt,
+  endsAt,
+  cardExpiresAt,
+  adMediaType = "NONE",
+  adMediaUrl,
+  adHeadline,
+  adDescription,
+  adExternalLink,
+}) => {
   const partner = await prisma.marketingPartner.findUnique({ where: { id: marketingPartnerId } });
   if (!partner || partner.status !== "ACTIVE") throw new Error("Active marketing partner not found.");
   const scope = String(targetScopeType || "NATIONWIDE").toUpperCase();
@@ -139,6 +183,13 @@ export const createCampaign = async ({ marketingPartnerId, name, description, ta
     }
   }
 
+  const parsedCategories = Array.isArray(targetCategories)
+    ? targetCategories.map((c) => String(c).trim()).filter(Boolean)
+    : (typeof targetCategories === "string" ? (() => { try { return JSON.parse(targetCategories); } catch { return [targetCategories.trim()].filter(Boolean); } })() : []);
+
+  const parsedMinOrderValue = Math.max(0, Number(minOrderValue || 0));
+  const parsedCpaRate = Math.max(0, Number(cpaRate || 0));
+
   const campaignBenefits = (Array.isArray(benefits) ? benefits : []).filter((benefit) => String(benefit?.name || "").trim()).map((benefit) => ({
     name: String(benefit.name).trim(),
     description: benefit.description || null,
@@ -152,20 +203,32 @@ export const createCampaign = async ({ marketingPartnerId, name, description, ta
   }));
   if (campaignBenefits.some((benefit) => !Number.isFinite(benefit.value) || benefit.value < 0)) throw new Error("Benefit value must be a non-negative number.");
   return prisma.$transaction(async (tx) => {
+    const campaignData = {
+      marketingPartnerId,
+      name: String(name || "").trim(),
+      description: description || null,
+      targetScopeType: scope,
+      targetProvince: targetProvince || null,
+      targetDistrict: targetDistrict || null,
+      targetCategories: parsedCategories,
+      minOrderValue: parsedMinOrderValue,
+      cpaRate: parsedCpaRate,
+      requestedQuantity: requested,
+      benefitConfig: Array.isArray(benefitConfig) ? benefitConfig : campaignBenefits,
+      startsAt: startsAt ? new Date(startsAt) : null,
+      endsAt: parsedEndsAt,
+      cardExpiresAt: parsedCardExpiresAt,
+    };
+    if (adMediaType && adMediaType !== "NONE") {
+      campaignData.adMediaType = String(adMediaType).toUpperCase();
+      campaignData.adMediaUrl = adMediaUrl || null;
+      campaignData.adHeadline = adHeadline || null;
+      campaignData.adDescription = adDescription || null;
+      campaignData.adExternalLink = adExternalLink || null;
+    }
+
     const campaign = await tx.marketingCampaign.create({
-      data: {
-        marketingPartnerId,
-        name: String(name || "").trim(),
-        description: description || null,
-        targetScopeType: scope,
-        targetProvince: targetProvince || null,
-        targetDistrict: targetDistrict || null,
-        requestedQuantity: requested,
-        benefitConfig: Array.isArray(benefitConfig) ? benefitConfig : campaignBenefits,
-        startsAt: parsedEndsAt ? new Date(startsAt) : (startsAt ? new Date(startsAt) : null),
-        endsAt: parsedEndsAt,
-        cardExpiresAt: parsedCardExpiresAt,
-      },
+      data: campaignData,
     });
     if (campaignBenefits.length) await tx.marketingBenefit.createMany({ data: campaignBenefits.map((benefit) => ({ ...benefit, campaignId: campaign.id })) });
     return tx.marketingCampaign.findUnique({ where: { id: campaign.id }, include: { marketingPartner: true, benefits: true } });
@@ -576,49 +639,95 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
     select: { id: true, physicalStatus: true, campaign: true },
     take: 500,
   });
+
   const now = new Date();
-  const eligibleInventory = inventory.filter((card) => {
+  const orderAmount = Number(order.amount || 0);
+
+  // Extract clothing categories from order items
+  const parsedItems = (() => {
+    if (Array.isArray(order.items)) return order.items;
+    if (typeof order.items === "string") {
+      try { return JSON.parse(order.items); } catch { return []; }
+    }
+    return [];
+  })();
+
+  const orderCategories = new Set(
+    parsedItems
+      .flatMap((item) => [item.category, item.subCategory, item.name])
+      .filter(Boolean)
+      .map((str) => String(str).toLowerCase().trim())
+  );
+
+  let eligibleInventory = inventory.filter((card) => {
     const c = card.campaign;
     // Must be an active campaign
     if (!ACTIVE_CAMPAIGN_STATUSES.has(c.status)) return false;
     // Must not have passed the campaign end date (new attachments blocked after expiry)
     if (c.endsAt && now > new Date(c.endsAt)) return false;
+    // Must meet Minimum Order Value (MOV)
+    if (c.minOrderValue && orderAmount < Number(c.minOrderValue)) return false;
     // Must match order geography
     return campaignMatchesOrder(c, order);
   });
+
+  // Fallback if no strict MOV/geography matched: check if any active received cards exist for this manufacturer
   if (!eligibleInventory.length) {
-    const error = new Error("No received marketing cards match this order's active campaign and delivery geography. The campaign may have expired.");
-    error.code = "MARKETING_CARD_NOT_ELIGIBLE";
-    throw error;
+    const fallbackActive = inventory.filter((card) => {
+      const c = card.campaign;
+      return ACTIVE_CAMPAIGN_STATUSES.has(c.status) && (!c.endsAt || now <= new Date(c.endsAt));
+    });
+    if (!fallbackActive.length) {
+      const error = new Error("No received marketing cards match this order's active campaign, delivery geography, and minimum cart value. The campaign may have expired.");
+      error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+      throw error;
+    }
+    eligibleInventory = fallbackActive;
   }
 
-  // Partition eligible cards by geography hierarchy: DISTRICT, PROVINCE, NATIONWIDE
-  const districtCards = [];
-  const provinceCards = [];
-  const nationwideCards = [];
+  // Multi-tier Prioritized Allocation:
+  // Tiers prioritize Clothing Category match followed by Geography proximity:
+  // 1. CAT_DISTRICT    (Category Match + Local District)   -> Weight: 10
+  // 2. CAT_PROVINCE    (Category Match + Province Scope)   -> Weight: 8
+  // 3. CAT_NATIONWIDE  (Category Match + Nationwide Scope) -> Weight: 6
+  // 4. GEN_DISTRICT    (General / Broad + Local District)  -> Weight: 5
+  // 5. GEN_PROVINCE    (General / Broad + Province Scope)  -> Weight: 3
+  // 6. GEN_NATIONWIDE  (General / Broad + Nationwide)      -> Weight: 2
+  const candidateTiers = {
+    CAT_DISTRICT:   { tier: "CAT_DISTRICT",   weight: 10, cards: [] },
+    CAT_PROVINCE:   { tier: "CAT_PROVINCE",   weight: 8,  cards: [] },
+    CAT_NATIONWIDE: { tier: "CAT_NATIONWIDE", weight: 6,  cards: [] },
+    GEN_DISTRICT:   { tier: "GEN_DISTRICT",   weight: 5,  cards: [] },
+    GEN_PROVINCE:   { tier: "GEN_PROVINCE",   weight: 3,  cards: [] },
+    GEN_NATIONWIDE: { tier: "GEN_NATIONWIDE", weight: 2,  cards: [] },
+  };
 
   for (const card of eligibleInventory) {
-    if (card.campaign.targetScopeType === "DISTRICT") {
-      districtCards.push(card);
-    } else if (card.campaign.targetScopeType === "PROVINCE") {
-      provinceCards.push(card);
+    const c = card.campaign;
+    const catCheck = campaignMatchesCategory(c, orderCategories);
+    const isCatMatch = catCheck.isTargeted && catCheck.matches;
+    const scope = c.targetScopeType || "NATIONWIDE";
+
+    if (isCatMatch) {
+      if (scope === "DISTRICT") candidateTiers.CAT_DISTRICT.cards.push(card);
+      else if (scope === "PROVINCE") candidateTiers.CAT_PROVINCE.cards.push(card);
+      else candidateTiers.CAT_NATIONWIDE.cards.push(card);
+    } else if (!catCheck.isTargeted) {
+      if (scope === "DISTRICT") candidateTiers.GEN_DISTRICT.cards.push(card);
+      else if (scope === "PROVINCE") candidateTiers.GEN_PROVINCE.cards.push(card);
+      else candidateTiers.GEN_NATIONWIDE.cards.push(card);
     } else {
-      nationwideCards.push(card);
+      // Targeted to another category, fallback bucket
+      candidateTiers.GEN_NATIONWIDE.cards.push(card);
     }
   }
 
-  // Prioritized Weighted Random Distribution:
-  // 5 (District) : 3 (Province) : 2 (Nationwide)
-  const candidateTiers = [];
-  if (districtCards.length > 0) candidateTiers.push({ tier: "DISTRICT", weight: 5, cards: districtCards });
-  if (provinceCards.length > 0) candidateTiers.push({ tier: "PROVINCE", weight: 3, cards: provinceCards });
-  if (nationwideCards.length > 0) candidateTiers.push({ tier: "NATIONWIDE", weight: 2, cards: nationwideCards });
-
-  const totalWeight = candidateTiers.reduce((sum, item) => sum + item.weight, 0);
+  const activeTiers = Object.values(candidateTiers).filter((t) => t.cards.length > 0);
+  const totalWeight = activeTiers.reduce((sum, item) => sum + item.weight, 0);
   let randomWeight = Math.random() * totalWeight;
-  let chosenTierCards = candidateTiers[0].cards;
+  let chosenTierCards = activeTiers[0].cards;
 
-  for (const item of candidateTiers) {
+  for (const item of activeTiers) {
     if (randomWeight < item.weight) {
       chosenTierCards = item.cards;
       break;

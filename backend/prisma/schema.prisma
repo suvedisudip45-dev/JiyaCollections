@@ -830,6 +830,7 @@ model MarketingPartner {
   updatedAt    DateTime @updatedAt
   campaigns    MarketingCampaign[]
   cards        MarketingCard[]
+  settlements  MarketingPartnerSettlement[]
 
   @@index([status])
   @@index([email])
@@ -850,12 +851,21 @@ model MarketingCampaign {
   startsAt          DateTime?
   endsAt            DateTime?
   cardExpiresAt     DateTime? // Cards can be redeemed until this date (must be >= endsAt + 1 day)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  targetCategories  Json      @default("[]") // Array of clothing category names/IDs e.g. ["Women Dresses", "Hoodies"]
+  minOrderValue     Float     @default(0)    // Cart total threshold for smart card allocation
+  cpaRate           Float     @default(0)    // Platform commission or CPA fee per verified redemption
+  adMediaType       String?   @default("NONE") // NONE | IMAGE | VIDEO
+  adMediaUrl        String?   @db.Text
+  adHeadline        String?   @db.VarChar(255)
+  adDescription     String?   @db.Text
+  adExternalLink    String?   @db.VarChar(255)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
   marketingPartner  MarketingPartner @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
   batches           MarketingCardBatch[]
   cards             MarketingCard[]
   benefits          MarketingBenefit[]
+  settlements       MarketingPartnerSettlement[]
 
   @@index([marketingPartnerId, status])
   @@index([targetScopeType, targetProvince, targetDistrict])
@@ -950,14 +960,17 @@ model MarketingCardOrder {
 }
 
 model MarketingCardCustomer {
-  id         String   @id @default(uuid())
-  cardId     String
-  customerId String
-  linkedAt   DateTime @default(now())
-  activatedAt DateTime?
-  status     String   @default("LINKED") // LINKED | ACTIVE | CANCELLED
-  card       MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  customer   User @relation("MarketingCardCustomerUser", fields: [customerId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(uuid())
+  cardId              String
+  customerId          String
+  linkedAt            DateTime  @default(now())
+  activatedAt         DateTime?
+  status              String    @default("LINKED") // LINKED | ACTIVE | CANCELLED
+  inStoreOtp          String?   @db.VarChar(6)
+  otpExpiresAt        DateTime?
+  lastRedeemedLocation String?  @db.VarChar(255)
+  card                MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  customer            User @relation("MarketingCardCustomerUser", fields: [customerId], references: [id], onDelete: Cascade)
 
   @@unique([cardId])
   @@index([customerId, status])
@@ -1015,6 +1028,27 @@ model MarketingCardEvent {
 
   @@index([cardId, createdAt])
   @@index([eventType, createdAt])
+}
+
+model MarketingPartnerSettlement {
+  id               String    @id @default(uuid())
+  partnerId        String
+  campaignId       String?
+  periodStart      DateTime
+  periodEnd        DateTime
+  totalRedemptions Int       @default(0)
+  cpaRate          Float     @default(0)
+  totalAmount      Float     @default(0)
+  paymentStatus    String    @default("UNPAID") // UNPAID | PAID | WAIVED
+  paidAt           DateTime?
+  referenceNote    String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  partner          MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  campaign         MarketingCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([partnerId, paymentStatus])
+  @@index([createdAt])
 }
 
 model NcmBranch {

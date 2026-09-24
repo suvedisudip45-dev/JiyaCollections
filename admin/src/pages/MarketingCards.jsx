@@ -1,9 +1,9 @@
-/* eslint-disable react/prop-types */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import QRCode from "qrcode";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import PrintSheetModal from "../components/PrintSheetModal";
 import {
   NEPAL_PROVINCES,
   DISTRICTS_BY_PROVINCE,
@@ -80,6 +80,11 @@ const createInitialCampaign = () => ({
   requestedQuantity: 0,
   endsAt: "",
   cardExpiresAt: "",
+  adMediaType: "NONE",
+  adMediaUrl: "",
+  adHeadline: "",
+  adDescription: "",
+  adExternalLink: "",
   offers: [
     createDefaultOffer({ name: "10% Discount Voucher", description: "10% discount on orders", benefitType: "DISCOUNT", value: 10, allocationMode: "PERCENTAGE", percentage: 10 }),
   ],
@@ -164,6 +169,17 @@ const MarketingCards = ({ token }) => {
   const [campaign, setCampaign] = useState(createInitialCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
   const [assignment, setAssignment] = useState({ campaignId: "", manufacturerId: "", quantity: 1 });
+
+  // Print Sheet Modal state
+  const [printModalData, setPrintModalData] = useState({
+    isOpen: false,
+    batchCode: "BATCH",
+    partnerName: "Brand Partner",
+    campaignName: "Marketing Campaign",
+    campaignScope: "Nationwide",
+    cardExpiresAt: null,
+    cards: [],
+  });
 
   const [loading, setLoading] = useState(true);
   const [cardsLoading, setCardsLoading] = useState(false);
@@ -502,15 +518,41 @@ const MarketingCards = ({ token }) => {
                           ) : <span className="text-slate-300">No expiry</span>}
                         </td>
                         <td className="px-5 py-3">
-                          {isActive && (
+                          <div className="flex items-center gap-1.5">
                             <button
-                              disabled={working}
-                              onClick={() => handleDeactivateCampaign(c.id, c.name)}
-                              className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const res = await axios.get(`${backendUrl}/api/marketing-cards/admin/cards?campaignId=${c.id}&pageSize=200`, { headers: { token } });
+                                  const cCards = res.data.cards || [];
+                                  if (!cCards.length) return toast.info("No cards generated for this campaign yet.");
+                                  setPrintModalData({
+                                    isOpen: true,
+                                    batchCode: cCards[0]?.batch?.batchCode || c.name,
+                                    partnerName: c.marketingPartner?.name || "Brand Partner",
+                                    campaignName: c.name,
+                                    campaignScope: c.targetScopeType || "Nationwide",
+                                    cardExpiresAt: c.cardExpiresAt || null,
+                                    cards: cCards,
+                                  });
+                                } catch {
+                                  toast.error("Unable to fetch cards for printing.");
+                                }
+                              }}
+                              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50 shadow-sm"
                             >
-                              Deactivate
+                              🖨️ Print
                             </button>
-                          )}
+                            {isActive && (
+                              <button
+                                disabled={working}
+                                onClick={() => handleDeactivateCampaign(c.id, c.name)}
+                                className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                              >
+                                Deactivate
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -634,19 +676,41 @@ const MarketingCards = ({ token }) => {
           </div>
 
           {/* Results summary */}
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-slate-500">
               {cardsLoading ? "Loading…" : <><span className="font-bold text-slate-800">{fmt(cardTotal)}</span> cards found</>}
               {selected.size > 0 && <span className="ml-2 font-bold text-red-700">· {selected.size} selected</span>}
             </p>
-            {selected.size > 0 && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setShowInvalidate(true)}
-                className="rounded-xl bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700"
+                type="button"
+                onClick={() => {
+                  const toPrint = selected.size > 0 ? cards.filter((c) => selected.has(c.id)) : cards;
+                  if (!toPrint.length) return toast.info("No cards to print.");
+                  const fCard = toPrint[0];
+                  setPrintModalData({
+                    isOpen: true,
+                    batchCode: fCard?.batch?.batchCode || "BATCH",
+                    partnerName: fCard?.campaign?.marketingPartner?.name || "Brand Partner",
+                    campaignName: fCard?.campaign?.name || "Campaign Cards",
+                    campaignScope: fCard?.campaign?.targetScopeType || "Nationwide",
+                    cardExpiresAt: fCard?.campaign?.cardExpiresAt || null,
+                    cards: toPrint,
+                  });
+                }}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-800 hover:bg-slate-50 flex items-center gap-1.5 shadow-sm"
               >
-                ⚠️ Invalidate {selected.size} Selected
+                🖨️ Print Sheet ({selected.size > 0 ? `${selected.size} Selected` : `${cards.length} Cards`})
               </button>
-            )}
+              {selected.size > 0 && (
+                <button
+                  onClick={() => setShowInvalidate(true)}
+                  className="rounded-xl bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-700"
+                >
+                  ⚠️ Invalidate {selected.size} Selected
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Card table */}
@@ -776,9 +840,21 @@ const MarketingCards = ({ token }) => {
                   </div>
                   <button disabled={working || !batch.campaignId} onClick={async () => {
                     const r = await submit("/api/marketing-cards/admin/batches", batch, `Generated ${batch.quantity} cards.`);
-                    if (r) { await exportBatchForPrint(r); setBatch({ campaignId: "", quantity: 500 }); }
+                    if (r) {
+                      const selCampaign = campaigns.find((c) => c.id === batch.campaignId);
+                      setPrintModalData({
+                        isOpen: true,
+                        batchCode: r.batch.batchCode,
+                        partnerName: selCampaign?.marketingPartner?.name || "Brand Partner",
+                        campaignName: selCampaign?.name || "Marketing Campaign",
+                        campaignScope: selCampaign?.targetScopeType || "Nationwide",
+                        cardExpiresAt: selCampaign?.cardExpiresAt || null,
+                        cards: r.cards || [],
+                      });
+                      setBatch({ campaignId: "", quantity: 500 });
+                    }
                   }} className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50 flex items-center justify-center gap-2">
-                    🖨️ Generate Cards &amp; Download CSV/HTML
+                    🖨️ Generate Cards &amp; Open Print Sheet
                   </button>
                 </div>
               </section>
@@ -991,6 +1067,73 @@ const MarketingCards = ({ token }) => {
                     </div>
                   </div>
 
+                  {/* Sponsor Ad / Promo Interstitial */}
+                  <div className="rounded-xl bg-indigo-50/70 border border-indigo-200 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-black uppercase tracking-wider text-indigo-900">
+                        🎬 Sponsor Ad / Promo Media (Shown to Customer Before QR Scan)
+                      </p>
+                      <span className="text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded font-bold">Optional Ad Placement</span>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-12">
+                      <div className="sm:col-span-4">
+                        <label className="text-[11px] font-bold uppercase text-slate-500">Ad Format</label>
+                        <select
+                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
+                          value={campaign.adMediaType}
+                          onChange={(e) => setCampaign({ ...campaign, adMediaType: e.target.value })}
+                        >
+                          <option value="NONE">None (Direct QR Scan)</option>
+                          <option value="IMAGE">Image Banner (Photo / Poster)</option>
+                          <option value="VIDEO">Video Teaser (MP4 / Short Ad)</option>
+                        </select>
+                      </div>
+
+                      {campaign.adMediaType !== "NONE" && (
+                        <>
+                          <div className="sm:col-span-8">
+                            <label className="text-[11px] font-bold uppercase text-slate-500">Media URL (Photo / Video Direct Link)</label>
+                            <input
+                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono"
+                              placeholder="https://res.cloudinary.com/.../promo.mp4 or banner.jpg"
+                              value={campaign.adMediaUrl}
+                              onChange={(e) => setCampaign({ ...campaign, adMediaUrl: e.target.value })}
+                            />
+                          </div>
+                          <div className="sm:col-span-6">
+                            <label className="text-[11px] font-bold uppercase text-slate-500">Ad Headline</label>
+                            <input
+                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                              placeholder="e.g. Exclusive styling perks at our flagship salon!"
+                              value={campaign.adHeadline}
+                              onChange={(e) => setCampaign({ ...campaign, adHeadline: e.target.value })}
+                            />
+                          </div>
+                          <div className="sm:col-span-6">
+                            <label className="text-[11px] font-bold uppercase text-slate-500">External Store / Web Link</label>
+                            <input
+                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                              placeholder="https://partnerbrand.com"
+                              value={campaign.adExternalLink}
+                              onChange={(e) => setCampaign({ ...campaign, adExternalLink: e.target.value })}
+                            />
+                          </div>
+                          <div className="sm:col-span-12">
+                            <label className="text-[11px] font-bold uppercase text-slate-500">Ad Description / Call to Action</label>
+                            <textarea
+                              rows={2}
+                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                              placeholder="Brief message introducing the partner reward to the customer..."
+                              value={campaign.adDescription}
+                              onChange={(e) => setCampaign({ ...campaign, adDescription: e.target.value })}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Submit campaign */}
                   <button disabled={working}
                     onClick={async () => {
@@ -1016,6 +1159,11 @@ const MarketingCards = ({ token }) => {
                         targetDistrict: campaign.targetScopeType === "DISTRICT" ? campaign.targetDistrict : null,
                         endsAt: campaign.endsAt || null,
                         cardExpiresAt: campaign.cardExpiresAt || null,
+                        adMediaType: campaign.adMediaType || "NONE",
+                        adMediaUrl: campaign.adMediaUrl || null,
+                        adHeadline: campaign.adHeadline || null,
+                        adDescription: campaign.adDescription || null,
+                        adExternalLink: campaign.adExternalLink || null,
                         benefits: formattedBenefits,
                       };
                       const r = await submit("/api/marketing-cards/admin/campaigns", payload, `Campaign created with ${formattedBenefits.length} offer(s).`);
@@ -1034,6 +1182,14 @@ const MarketingCards = ({ token }) => {
       {/* Invalidate modal */}
       {showInvalidate && (
         <InvalidateModal count={selected.size} working={working} onConfirm={handleInvalidate} onClose={() => !working && setShowInvalidate(false)} />
+      )}
+
+      {/* Print Sheet Modal */}
+      {printModalData.isOpen && (
+        <PrintSheetModal
+          {...printModalData}
+          onClose={() => setPrintModalData((prev) => ({ ...prev, isOpen: false }))}
+        />
       )}
     </div>
   );

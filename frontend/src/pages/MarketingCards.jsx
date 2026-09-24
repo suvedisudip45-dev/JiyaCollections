@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 import { ShopContext } from "../context/ShopContext";
 import { useContext } from "react";
+import DigitalScratchCard from "../components/DigitalScratchCard";
+import SponsorAdModal from "../components/SponsorAdModal";
 
 const MarketingCards = () => {
   const { backendUrl, token, navigate } = useContext(ShopContext);
@@ -28,9 +30,11 @@ const MarketingCards = () => {
   // Verification step state
   const [step, setStep] = useState(1); // 1: Enter Code, 2: Scan QR, 3: Revealed Offer
   const [cardCode, setCardCode] = useState("");
-  const [verifiedCardInfo, setVerifiedCardInfo] = useState(null); // { cardId, cardCode, partner, campaign }
+  const [verifiedCardInfo, setVerifiedCardInfo] = useState(null); // { cardId, cardCode, partner, campaign, ad }
   const [qrToken, setQrToken] = useState("");
   const [scannedOfferResult, setScannedOfferResult] = useState(null); // { hasBenefit, benefit, partner, message }
+  const [sponsorAdOpen, setSponsorAdOpen] = useState(false);
+  const [isScratchRevealed, setIsScratchRevealed] = useState(false);
 
   // Camera scanner state
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -77,7 +81,11 @@ const MarketingCards = () => {
       if (!response.data.success) throw new Error(response.data.message);
 
       setVerifiedCardInfo(response.data);
-      setStep(2);
+      if (response.data.ad) {
+        setSponsorAdOpen(true);
+      } else {
+        setStep(2);
+      }
       toast.success(response.data.message || "Card code verified! Please scan the QR code.");
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "Unable to verify this card code.");
@@ -154,6 +162,8 @@ const MarketingCards = () => {
     setQrToken("");
     setScannedOfferResult(null);
     setScannerOpen(false);
+    setSponsorAdOpen(false);
+    setIsScratchRevealed(false);
   };
 
   // Live Camera QR Scanner lifecycle
@@ -443,14 +453,24 @@ const MarketingCards = () => {
         {/* STEP 3: Reveal Offer & Activate Card */}
         {step === 3 && scannedOfferResult && (
           <div className="space-y-6">
+            {/* Gamified Digital Scratch Card */}
+            <div className="space-y-3 text-center">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                ✨ Rub to Reveal Your Exclusive Partnership Reward ✨
+              </p>
+              <DigitalScratchCard
+                hasBenefit={scannedOfferResult.hasBenefit}
+                benefit={scannedOfferResult.benefit}
+                partner={scannedOfferResult.partner || {}}
+                onRevealed={() => setIsScratchRevealed(true)}
+              />
+            </div>
+
             {scannedOfferResult.hasBenefit && scannedOfferResult.benefit ? (
-              <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/70 p-6 sm:p-8 text-center space-y-4">
-                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-500 text-white shadow-md animate-bounce">
-                  <Gift size={32} />
-                </div>
+              <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/70 p-6 sm:p-8 text-center space-y-4 shadow-sm">
                 <div>
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-200/80 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-amber-900">
-                    🎉 You Won a Special Offer!
+                    🎉 Reward Unlocked!
                   </span>
                   <h3 className="mt-3 text-2xl font-black text-slate-900">
                     {scannedOfferResult.benefit.name}
@@ -509,6 +529,23 @@ const MarketingCards = () => {
           </div>
         )}
       </div>
+
+      {/* Sponsor Ad Interstitial Modal */}
+      {sponsorAdOpen && verifiedCardInfo?.ad && (
+        <SponsorAdModal
+          isOpen={sponsorAdOpen}
+          onClose={() => {
+            setSponsorAdOpen(false);
+            setStep(2);
+          }}
+          onProceed={() => {
+            setSponsorAdOpen(false);
+            setStep(2);
+          }}
+          ad={verifiedCardInfo.ad}
+          partner={verifiedCardInfo.partner}
+        />
+      )}
 
       {/* Activated Cards Section */}
       <div className="mt-12 space-y-4">
