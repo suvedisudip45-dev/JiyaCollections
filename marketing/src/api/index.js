@@ -23,6 +23,8 @@ export const qrApi = {
     api.post("/api/marketing-cards/partner/qr/validate", { cardCode }),
   redeem: ({ cardCode, benefitId }) =>
     api.post("/api/marketing-cards/partner/redemptions/redeem", { cardCode, benefitId }),
+  reject: ({ cardCode, reason }) =>
+    api.post("/api/marketing-cards/partner/redemptions/reject", { cardCode, reason }),
 };
 
 export const profileApi = {

@@ -4,9 +4,46 @@ import axios from "axios";
 import QRCode from "qrcode";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import {
+  NEPAL_PROVINCES,
+  DISTRICTS_BY_PROVINCE,
+  ALL_DISTRICTS,
+} from "../data/nepalLocations";
+
+const createDefaultOffer = (overrides = {}) => ({
+  id: Date.now() + Math.random(),
+  name: "",
+  description: "",
+  benefitType: "DISCOUNT",
+  value: 10,
+  allocationMode: "PERCENTAGE", // "PERCENTAGE" or "QUANTITY"
+  percentage: 10,
+  quantity: 20,
+  terms: "",
+  expiresAt: "",
+  ...overrides,
+});
 
 const emptyPartner = { code: "", name: "", description: "" };
-const emptyCampaign = { marketingPartnerId: "", name: "", targetScopeType: "NATIONWIDE", targetProvince: "", targetDistrict: "", requestedQuantity: 0, benefitName: "", benefitDescription: "", benefitType: "CUSTOM", benefitValue: 0, benefitTerms: "", benefitExpiresAt: "" };
+
+const createInitialCampaign = () => ({
+  marketingPartnerId: "",
+  name: "",
+  targetScopeType: "NATIONWIDE",
+  targetProvince: "",
+  targetDistrict: "",
+  requestedQuantity: 0,
+  offers: [
+    createDefaultOffer({
+      name: "10% Discount Voucher",
+      description: "10% discount on orders",
+      benefitType: "DISCOUNT",
+      value: 10,
+      allocationMode: "PERCENTAGE",
+      percentage: 10,
+    }),
+  ],
+});
 
 const MarketingCards = ({ token }) => {
   const [partners, setPartners] = useState([]);
@@ -15,8 +52,8 @@ const MarketingCards = ({ token }) => {
   const [cards, setCards] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [partner, setPartner] = useState(emptyPartner);
-  const [campaign, setCampaign] = useState(emptyCampaign);
-  const [batch, setBatch] = useState({ campaignId: "", quantity: 1 });
+  const [campaign, setCampaign] = useState(createInitialCampaign);
+  const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
   const [assignment, setAssignment] = useState({ campaignId: "", manufacturerId: "", quantity: 1 });
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -84,6 +121,84 @@ const MarketingCards = ({ token }) => {
     download(printSheet, `${result.batch.batchCode}-print-sheet.html`, "text/html;charset=utf-8");
   };
 
+  // Offer management helpers
+  const addOffer = () => {
+    setCampaign((prev) => ({
+      ...prev,
+      offers: [
+        ...prev.offers,
+        createDefaultOffer({
+          name: "",
+          description: "",
+          benefitType: "DISCOUNT",
+          value: 5,
+          allocationMode: "PERCENTAGE",
+          percentage: 5,
+        }),
+      ],
+    }));
+  };
+
+  const removeOffer = (index) => {
+    setCampaign((prev) => ({
+      ...prev,
+      offers: prev.offers.filter((_, i) => i !== index),
+    }));
+  };
+
+  const updateOffer = (index, field, value) => {
+    setCampaign((prev) => {
+      const nextOffers = [...prev.offers];
+      nextOffers[index] = { ...nextOffers[index], [field]: value };
+      return { ...prev, offers: nextOffers };
+    });
+  };
+
+  const loadExampleStrategy = () => {
+    setCampaign((prev) => ({
+      ...prev,
+      offers: [
+        createDefaultOffer({
+          name: "10% Discount Voucher",
+          description: "10% off entire order",
+          benefitType: "DISCOUNT",
+          value: 10,
+          allocationMode: "PERCENTAGE",
+          percentage: 10,
+        }),
+        createDefaultOffer({
+          name: "20% Super Discount Voucher",
+          description: "20% off entire order",
+          benefitType: "DISCOUNT",
+          value: 20,
+          allocationMode: "PERCENTAGE",
+          percentage: 5,
+        }),
+        createDefaultOffer({
+          name: "Free Accessory Gift (Worth Rs 100)",
+          description: "Complimentary accessory item included",
+          benefitType: "GIFT",
+          value: 100,
+          allocationMode: "PERCENTAGE",
+          percentage: 5,
+        }),
+      ],
+    }));
+    toast.info("Loaded example multi-offer strategy: 10% (10%), 20% (5%), Free Gift (5%), Better Luck (80%).");
+  };
+
+  // Distribution calculations
+  const totalPercentageAllocated = campaign.offers.reduce((acc, offer) => {
+    if (offer.allocationMode === "PERCENTAGE") {
+      return acc + (Number(offer.percentage) || 0);
+    }
+    return acc;
+  }, 0);
+
+  const betterLuckPercentage = Math.max(0, 100 - totalPercentageAllocated);
+
+  const selectedCampaignForBatch = campaigns.find((c) => c.id === batch.campaignId);
+
   const summary = cards.reduce((result, card) => {
     result[card.physicalStatus] = (result[card.physicalStatus] || 0) + 1;
     return result;
@@ -103,8 +218,8 @@ const MarketingCards = ({ token }) => {
     <div className="space-y-6">
       <div>
         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">Marketing Partners</p>
-        <h1 className="mt-1 text-2xl font-black text-slate-900">Card assignment control</h1>
-        <p className="mt-1 text-sm text-slate-500">Generate controlled inventory, then allocate it to the manufacturer best positioned for campaign demand.</p>
+        <h1 className="mt-1 text-2xl font-black text-slate-900">Card &amp; Offer Distribution Engine</h1>
+        <p className="mt-1 text-sm text-slate-500">Create multi-tier custom offers (e.g. 10% discount to 10%, 20% to 5%, Free gift to 5%, remaining 80% better luck next time) with random card distribution.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
@@ -116,53 +231,512 @@ const MarketingCards = ({ token }) => {
         ))}
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-3">
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-black text-slate-900">1. Create partner</h2>
-          <div className="mt-4 space-y-3">
-            <input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Partner code" value={partner.code} onChange={(e) => setPartner({ ...partner, code: e.target.value })} />
-            <input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Partner name" value={partner.name} onChange={(e) => setPartner({ ...partner, name: e.target.value })} />
-            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/partners", partner, "Partner created."); if (result) setPartner(emptyPartner); }} className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Create partner</button>
-          </div>
-        </section>
+      <div className="grid gap-6 lg:grid-cols-12">
+        {/* Step 1: Create Partner */}
+        <div className="lg:col-span-4 space-y-6">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-black text-slate-900">1. Create Partner</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Register brand partner before creating campaigns.</p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-[11px] font-bold uppercase text-slate-500">Partner Code (3-6 chars)</label>
+                <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm uppercase" placeholder="e.g. NIKE, AAMA, REDB" value={partner.code} onChange={(e) => setPartner({ ...partner, code: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-[11px] font-bold uppercase text-slate-500">Partner Name</label>
+                <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Nike Nepal, RedBull" value={partner.name} onChange={(e) => setPartner({ ...partner, name: e.target.value })} />
+              </div>
+              <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/partners", partner, "Partner created."); if (result) setPartner(emptyPartner); }} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-50">Create partner</button>
+            </div>
+          </section>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-black text-slate-900">2. Create campaign</h2>
-          <div className="mt-4 space-y-3">
-            <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.marketingPartnerId} onChange={(e) => setCampaign({ ...campaign, marketingPartnerId: e.target.value })}>
-              <option value="">Select partner</option>{partners.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}
-            </select>
-            <input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Campaign name" value={campaign.name} onChange={(e) => setCampaign({ ...campaign, name: e.target.value })} />
-            <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.targetScopeType} onChange={(e) => setCampaign({ ...campaign, targetScopeType: e.target.value })}><option>NATIONWIDE</option><option>PROVINCE</option><option>DISTRICT</option></select>
-            {campaign.targetScopeType !== "NATIONWIDE" && <input className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder={campaign.targetScopeType === "PROVINCE" ? "Province" : "District"} value={campaign.targetScopeType === "PROVINCE" ? campaign.targetProvince : campaign.targetDistrict} onChange={(e) => setCampaign({ ...campaign, [campaign.targetScopeType === "PROVINCE" ? "targetProvince" : "targetDistrict"]: e.target.value })} />}
-            <div className="border-t border-slate-100 pt-3"><p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Campaign benefit</p><input required className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Benefit name" value={campaign.benefitName} onChange={(e) => setCampaign({ ...campaign, benefitName: e.target.value })} /><textarea className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Benefit description" value={campaign.benefitDescription} onChange={(e) => setCampaign({ ...campaign, benefitDescription: e.target.value })} /><div className="mt-2 grid grid-cols-2 gap-2"><select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.benefitType} onChange={(e) => setCampaign({ ...campaign, benefitType: e.target.value })}><option value="CUSTOM">Custom</option><option value="DISCOUNT">Discount</option><option value="VOUCHER">Voucher</option><option value="GIFT">Gift</option></select><input type="number" min="0" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Value" value={campaign.benefitValue} onChange={(e) => setCampaign({ ...campaign, benefitValue: Number(e.target.value) })} /></div><input className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Terms" value={campaign.benefitTerms} onChange={(e) => setCampaign({ ...campaign, benefitTerms: e.target.value })} /><input type="date" className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.benefitExpiresAt} onChange={(e) => setCampaign({ ...campaign, benefitExpiresAt: e.target.value })} /></div>
-            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/campaigns", { ...campaign, benefits: [{ name: campaign.benefitName, description: campaign.benefitDescription, benefitType: campaign.benefitType, value: campaign.benefitValue, terms: campaign.benefitTerms, expiresAt: campaign.benefitExpiresAt || null }] }, "Campaign created with benefit."); if (result) setCampaign(emptyCampaign); }} className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Create campaign</button>
-          </div>
-        </section>
+          {/* Step 3: Generate Inventory */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-sm font-black text-slate-900">3. Generate Inventory &amp; Print QR</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Generates batch with randomly shuffled prize cards.</p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-[11px] font-bold uppercase text-slate-500">Select Campaign</label>
+                <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}>
+                  <option value="">-- Choose Campaign --</option>
+                  {campaigns.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.marketingPartner?.name || "Partner"})</option>)}
+                </select>
+              </div>
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="text-sm font-black text-slate-900">3. Generate inventory</h2>
-          <div className="mt-4 space-y-3">
-            <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}><option value="">Select campaign</option>{campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-            <input type="number" min="1" max="5000" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.quantity} onChange={(e) => setBatch({ ...batch, quantity: Number(e.target.value) })} />
-            <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/batches", batch, "Card batch generated and print files downloaded."); if (result) { await exportBatchForPrint(result); setBatch({ campaignId: "", quantity: 1 }); } }} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Generate cards &amp; export</button>
-          </div>
-        </section>
+              {selectedCampaignForBatch && (
+                <div className="rounded-xl bg-slate-50 p-3 border border-slate-200 text-xs space-y-1.5">
+                  <p className="font-bold text-slate-800">Campaign Offers Distribution Breakdown:</p>
+                  {selectedCampaignForBatch.benefits && selectedCampaignForBatch.benefits.length > 0 ? (
+                    selectedCampaignForBatch.benefits.map((b, idx) => {
+                      const estimatedCards = b.percentage ? Math.round((b.percentage / 100) * (batch.quantity || 0)) : (b.quantity || 0);
+                      return (
+                        <div key={b.id || idx} className="flex justify-between items-center text-slate-600">
+                          <span>🎁 {b.name} ({b.benefitType}):</span>
+                          <span className="font-bold text-amber-700">{b.percentage ? `${b.percentage}% (~${estimatedCards} cards)` : `${b.quantity} cards`}</span>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p className="text-slate-400 italic">No specific offers configured.</p>
+                  )}
+                  <div className="flex justify-between items-center pt-1 border-t border-slate-200 font-bold text-slate-700">
+                    <span>🍀 &quot;Better luck next time&quot;:</span>
+                    <span className="text-slate-500">Remainder of {batch.quantity || 0} cards</span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="text-[11px] font-bold uppercase text-slate-500">Number of Cards (e.g. 500)</label>
+                <input type="number" min="1" max="5000" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono font-bold" value={batch.quantity} onChange={(e) => setBatch({ ...batch, quantity: Number(e.target.value) })} />
+              </div>
+
+              <button disabled={working || !batch.campaignId} onClick={async () => {
+                const result = await submit("/api/marketing-cards/admin/batches", batch, `Generated ${batch.quantity} cards with random offer distribution.`);
+                if (result) {
+                  await exportBatchForPrint(result);
+                  setBatch({ campaignId: "", quantity: 500 });
+                }
+              }} className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50 flex items-center justify-center gap-2">
+                <span>🖨️</span> Generate Cards &amp; Download Print CSV/HTML
+              </button>
+            </div>
+          </section>
+        </div>
+
+        {/* Step 2: Create Campaign with Custom Offers Builder */}
+        <div className="lg:col-span-8">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h2 className="text-sm font-black text-slate-900">2. Create Campaign &amp; Configure Custom Offers</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Define custom discount tiers, gifts, and random distribution probabilities.</p>
+              </div>
+              <button type="button" onClick={loadExampleStrategy} className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition">
+                ⚡ Load Example Multi-Offer Strategy
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              {/* Campaign Basic Info */}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-[11px] font-bold uppercase text-slate-500">Partner</label>
+                  <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.marketingPartnerId} onChange={(e) => setCampaign({ ...campaign, marketingPartnerId: e.target.value })}>
+                    <option value="">Select partner</option>
+                    {partners.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.code})</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold uppercase text-slate-500">Campaign Name</label>
+                  <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Dashain Mega Offer 2083" value={campaign.name} onChange={(e) => setCampaign({ ...campaign, name: e.target.value })} />
+                </div>
+              </div>
+
+              {/* Geographic Targeting */}
+              <div className="rounded-xl bg-slate-50 p-4 border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-600">Geographic Targeting (Nepal 4-Char Mapping)</p>
+                  <span className="text-[11px] text-slate-400">Order allocation weights: District 5 : Province 3 : Nation 2</span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="text-[11px] font-bold uppercase text-slate-500">Scope Type</label>
+                    <select
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium"
+                      value={campaign.targetScopeType}
+                      onChange={(e) => {
+                        const scope = e.target.value;
+                        setCampaign({
+                          ...campaign,
+                          targetScopeType: scope,
+                          targetProvince: scope === "NATIONWIDE" ? "" : campaign.targetProvince,
+                          targetDistrict: scope === "DISTRICT" ? campaign.targetDistrict : "",
+                        });
+                      }}
+                    >
+                      <option value="NATIONWIDE">NATIONWIDE</option>
+                      <option value="PROVINCE">PROVINCE WISE</option>
+                      <option value="DISTRICT">DISTRICT WISE</option>
+                    </select>
+                  </div>
+
+                  {(campaign.targetScopeType === "PROVINCE" || campaign.targetScopeType === "DISTRICT") && (
+                    <div>
+                      <label className="text-[11px] font-bold uppercase text-slate-500">Target Province</label>
+                      <select
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                        value={campaign.targetProvince || ""}
+                        onChange={(e) => {
+                          const selectedProv = e.target.value;
+                          const allowedDistricts = DISTRICTS_BY_PROVINCE[selectedProv] || [];
+                          const newDistrict = allowedDistricts.includes(campaign.targetDistrict) ? campaign.targetDistrict : "";
+                          setCampaign({
+                            ...campaign,
+                            targetProvince: selectedProv,
+                            targetDistrict: newDistrict,
+                          });
+                        }}
+                      >
+                        <option value="">-- Select Province --</option>
+                        {NEPAL_PROVINCES.map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {campaign.targetScopeType === "DISTRICT" && (
+                    <div>
+                      <label className="text-[11px] font-bold uppercase text-slate-500">Target District</label>
+                      <select
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                        value={campaign.targetDistrict || ""}
+                        onChange={(e) => {
+                          const selectedDist = e.target.value;
+                          let prov = campaign.targetProvince;
+                          if (!prov && selectedDist) {
+                            for (const [pName, distList] of Object.entries(DISTRICTS_BY_PROVINCE)) {
+                              if (distList.includes(selectedDist)) {
+                                prov = pName;
+                                break;
+                              }
+                            }
+                          }
+                          setCampaign({
+                            ...campaign,
+                            targetProvince: prov,
+                            targetDistrict: selectedDist,
+                          });
+                        }}
+                      >
+                        <option value="">
+                          {campaign.targetProvince ? `-- District in ${campaign.targetProvince} --` : "-- Select District --"}
+                        </option>
+                        {(campaign.targetProvince
+                          ? DISTRICTS_BY_PROVINCE[campaign.targetProvince] || []
+                          : ALL_DISTRICTS
+                        ).map((d) => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Custom Offers Builder */}
+              <div className="space-y-3 pt-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Custom Offers &amp; Prize Distribution</h3>
+                    <p className="text-[11px] text-slate-500">Configure how many cards in any generated batch (e.g. 500 cards) win each offer.</p>
+                  </div>
+                  <button type="button" onClick={addOffer} className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 transition flex items-center gap-1">
+                    <span>+</span> Add Another Offer
+                  </button>
+                </div>
+
+                {/* Visual Distribution Summary Bar */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold">
+                    <span className="text-slate-700">Total Winning Cards Share: <span className={totalPercentageAllocated > 100 ? "text-rose-600 font-black" : "text-emerald-700 font-black"}>{totalPercentageAllocated}%</span></span>
+                    <span className="text-slate-500">🍀 &quot;Better luck next time&quot; Cards: <span className="text-slate-800 font-bold">{betterLuckPercentage}%</span></span>
+                  </div>
+
+                  {/* Multi-segment progress bar */}
+                  <div className="h-4 w-full overflow-hidden rounded-full bg-slate-200 flex">
+                    {campaign.offers.map((offer, idx) => {
+                      const pct = offer.allocationMode === "PERCENTAGE" ? Number(offer.percentage) || 0 : 0;
+                      if (pct <= 0) return null;
+                      const colors = ["bg-amber-500", "bg-indigo-500", "bg-emerald-500", "bg-purple-500", "bg-pink-500"];
+                      return (
+                        <div
+                          key={offer.id || idx}
+                          style={{ width: `${Math.min(100, pct)}%` }}
+                          className={`${colors[idx % colors.length]} flex items-center justify-center text-[9px] font-bold text-white transition-all`}
+                          title={`${offer.name || `Offer ${idx + 1}`}: ${pct}%`}
+                        >
+                          {pct >= 5 ? `${pct}%` : ""}
+                        </div>
+                      );
+                    })}
+                    {betterLuckPercentage > 0 && (
+                      <div
+                        style={{ width: `${betterLuckPercentage}%` }}
+                        className="bg-slate-300 flex items-center justify-center text-[9px] font-bold text-slate-600"
+                        title={`Better luck next time: ${betterLuckPercentage}%`}
+                      >
+                        {betterLuckPercentage >= 10 ? `${betterLuckPercentage}% No-Prize` : ""}
+                      </div>
+                    )}
+                  </div>
+                  {totalPercentageAllocated > 100 && (
+                    <p className="text-[11px] font-bold text-rose-600">⚠️ Total percentage exceeds 100%. Please adjust offer percentages.</p>
+                  )}
+                </div>
+
+                {/* Offer Cards List */}
+                <div className="space-y-3">
+                  {campaign.offers.map((offer, index) => (
+                    <div key={offer.id || index} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm relative space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-100 text-[11px] font-black text-amber-800">{index + 1}</span>
+                          <span className="text-xs font-bold text-slate-800">Offer #{index + 1}</span>
+                        </div>
+                        {campaign.offers.length > 1 && (
+                          <button type="button" onClick={() => removeOffer(index)} className="text-xs text-rose-500 hover:text-rose-700 font-bold">
+                            Remove
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-12">
+                        <div className="sm:col-span-6">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Offer Name</label>
+                          <input
+                            required
+                            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            placeholder="e.g. 10% Discount Voucher, Free Accessories"
+                            value={offer.name}
+                            onChange={(e) => updateOffer(index, "name", e.target.value)}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Benefit Type</label>
+                          <select
+                            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            value={offer.benefitType}
+                            onChange={(e) => updateOffer(index, "benefitType", e.target.value)}
+                          >
+                            <option value="DISCOUNT">DISCOUNT (%)</option>
+                            <option value="VOUCHER">VOUCHER (Rs)</option>
+                            <option value="GIFT">FREE GIFT / ITEM</option>
+                            <option value="CUSTOM">CUSTOM REWARD</option>
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-3">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Reward Value</label>
+                          <input
+                            type="number"
+                            min="0"
+                            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            placeholder={offer.benefitType === "DISCOUNT" ? "Discount % (e.g. 10)" : "Value in Rs"}
+                            value={offer.value}
+                            onChange={(e) => updateOffer(index, "value", Number(e.target.value))}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Distribution Mode</label>
+                          <select
+                            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium"
+                            value={offer.allocationMode}
+                            onChange={(e) => updateOffer(index, "allocationMode", e.target.value)}
+                          >
+                            <option value="PERCENTAGE">Percentage of Cards (%)</option>
+                            <option value="QUANTITY">Fixed Number of Cards</option>
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">
+                            {offer.allocationMode === "PERCENTAGE" ? "Offer Card Share (%)" : "Winning Cards Count"}
+                          </label>
+                          <div className="relative mt-1">
+                            <input
+                              type="number"
+                              min="0"
+                              max={offer.allocationMode === "PERCENTAGE" ? 100 : 5000}
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-bold"
+                              placeholder={offer.allocationMode === "PERCENTAGE" ? "e.g. 10 for 10%" : "e.g. 20 cards"}
+                              value={offer.allocationMode === "PERCENTAGE" ? offer.percentage : offer.quantity}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                if (offer.allocationMode === "PERCENTAGE") {
+                                  updateOffer(index, "percentage", val);
+                                } else {
+                                  updateOffer(index, "quantity", val);
+                                }
+                              }}
+                            />
+                            {offer.allocationMode === "PERCENTAGE" && (
+                              <span className="absolute right-3 top-2 text-sm font-bold text-slate-400">%</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Card Calculation Example</label>
+                          <div className="mt-1 rounded-lg bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border border-slate-100">
+                            {offer.allocationMode === "PERCENTAGE"
+                              ? `~${Math.round(((offer.percentage || 0) / 100) * 500)} cards per 500 batch`
+                              : `${offer.quantity || 0} cards total`}
+                          </div>
+                        </div>
+
+                        <div className="sm:col-span-6">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Description (Optional)</label>
+                          <input
+                            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            placeholder="e.g. Valid on all winter jackets"
+                            value={offer.description}
+                            onChange={(e) => updateOffer(index, "description", e.target.value)}
+                          />
+                        </div>
+
+                        <div className="sm:col-span-6">
+                          <label className="text-[11px] font-bold uppercase text-slate-500">Terms &amp; Expiration</label>
+                          <div className="mt-1 grid grid-cols-2 gap-2">
+                            <input
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs"
+                              placeholder="Terms (e.g. 1 use)"
+                              value={offer.terms}
+                              onChange={(e) => updateOffer(index, "terms", e.target.value)}
+                            />
+                            <input
+                              type="date"
+                              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs"
+                              value={offer.expiresAt}
+                              onChange={(e) => updateOffer(index, "expiresAt", e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Submit Campaign Button */}
+              <button
+                disabled={working}
+                onClick={async () => {
+                  if (!campaign.marketingPartnerId) {
+                    return toast.error("Please select a marketing partner.");
+                  }
+                  if (!campaign.name.trim()) {
+                    return toast.error("Please enter a campaign name.");
+                  }
+                  if (campaign.targetScopeType === "PROVINCE" && !campaign.targetProvince) {
+                    return toast.error("Please select a target province.");
+                  }
+                  if (campaign.targetScopeType === "DISTRICT" && !campaign.targetDistrict) {
+                    return toast.error("Please select a target district.");
+                  }
+                  if (campaign.offers.length === 0 || campaign.offers.some((o) => !o.name.trim())) {
+                    return toast.error("Please provide a name for all offers.");
+                  }
+                  if (totalPercentageAllocated > 100) {
+                    return toast.error("Total offer percentage cannot exceed 100%.");
+                  }
+
+                  const formattedBenefits = campaign.offers.map((offer) => ({
+                    name: offer.name.trim(),
+                    description: offer.description || null,
+                    benefitType: offer.benefitType,
+                    value: Number(offer.value || 0),
+                    percentage: offer.allocationMode === "PERCENTAGE" ? Number(offer.percentage || 0) : 0,
+                    quantity: offer.allocationMode === "QUANTITY" ? Number(offer.quantity || 0) : 0,
+                    terms: offer.terms || null,
+                    expiresAt: offer.expiresAt || null,
+                  }));
+
+                  const payload = {
+                    marketingPartnerId: campaign.marketingPartnerId,
+                    name: campaign.name.trim(),
+                    targetScopeType: campaign.targetScopeType,
+                    targetProvince: campaign.targetScopeType === "NATIONWIDE" ? null : campaign.targetProvince,
+                    targetDistrict: campaign.targetScopeType === "DISTRICT" ? campaign.targetDistrict : null,
+                    benefits: formattedBenefits,
+                  };
+
+                  const result = await submit("/api/marketing-cards/admin/campaigns", payload, `Campaign created with ${formattedBenefits.length} custom offer(s).`);
+                  if (result) setCampaign(createInitialCampaign());
+                }}
+                className="w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50"
+              >
+                Create Campaign with Configured Offers
+              </button>
+            </div>
+          </section>
+        </div>
       </div>
 
+      {/* Assign Inventory to Manufacturer */}
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-sm font-black text-slate-900">Assign inventory to manufacturer</h2><p className="mt-1 text-xs text-slate-500">Use campaign demand and manufacturer location when choosing the receiving hub.</p></div></div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-black text-slate-900">4. Assign Generated Cards to Manufacturer</h2>
+            <p className="mt-1 text-xs text-slate-500">Allocate generated cards to manufacturer hubs to attach to outgoing customer orders.</p>
+          </div>
+        </div>
         <div className="mt-4 grid gap-3 md:grid-cols-4">
-          <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}><option value="">Select campaign</option>{campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-          <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.manufacturerId} onChange={(e) => setAssignment({ ...assignment, manufacturerId: e.target.value })}><option value="">Select manufacturer</option>{manufacturers.filter((item) => item.isActive).map((item) => <option key={item.id} value={item.id}>{item.name} - {item.city}</option>)}</select>
-          <input type="number" min="1" max="5000" className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.quantity} onChange={(e) => setAssignment({ ...assignment, quantity: Number(e.target.value) })} />
+          <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}>
+            <option value="">Select campaign</option>
+            {campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.manufacturerId} onChange={(e) => setAssignment({ ...assignment, manufacturerId: e.target.value })}>
+            <option value="">Select manufacturer</option>
+            {manufacturers.filter((item) => item.isActive).map((item) => <option key={item.id} value={item.id}>{item.name} - {item.city}</option>)}
+          </select>
+          <input type="number" min="1" max="5000" className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono" value={assignment.quantity} onChange={(e) => setAssignment({ ...assignment, quantity: Number(e.target.value) })} />
           <button disabled={working} onClick={async () => { const result = await submit("/api/marketing-cards/admin/assignments", assignment, "Cards assigned."); if (result) setAssignment({ ...assignment, quantity: 1 }); }} className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Assign cards</button>
         </div>
       </section>
 
+      {/* Card Inventory Table */}
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-5 py-4"><h2 className="text-sm font-black text-slate-900">Card inventory</h2></div>
-        {loading ? <p className="p-6 text-sm text-slate-500">Loading card inventory...</p> : cards.length === 0 ? <p className="p-6 text-sm text-slate-500">No cards generated yet.</p> : <div className="overflow-x-auto"><table className="min-w-full text-left text-xs"><thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Card</th><th className="px-5 py-3">Campaign</th><th className="px-5 py-3">Manufacturer</th><th className="px-5 py-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100">{cards.map((card) => <tr key={card.id}><td className="px-5 py-3 font-mono font-bold text-slate-800">{card.cardCode}</td><td className="px-5 py-3 text-slate-600">{card.campaign?.name || "-"}</td><td className="px-5 py-3 text-slate-600">{card.assignedManufacturer?.name || "Unassigned"}</td><td className="px-5 py-3"><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-700">{card.physicalStatus}</span></td></tr>)}</tbody></table></div>}
+        <div className="border-b border-slate-100 px-5 py-4">
+          <h2 className="text-sm font-black text-slate-900">Live Card Inventory (Latest 500)</h2>
+        </div>
+        {loading ? (
+          <p className="p-6 text-sm text-slate-500">Loading card inventory...</p>
+        ) : cards.length === 0 ? (
+          <p className="p-6 text-sm text-slate-500">No cards generated yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
+                <tr>
+                  <th className="px-5 py-3">Card Code</th>
+                  <th className="px-5 py-3">Campaign</th>
+                  <th className="px-5 py-3">Assigned Reward / Offer</th>
+                  <th className="px-5 py-3">Manufacturer</th>
+                  <th className="px-5 py-3">Physical Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {cards.map((card) => (
+                  <tr key={card.id}>
+                    <td className="px-5 py-3 font-mono font-bold text-slate-800">{card.cardCode}</td>
+                    <td className="px-5 py-3 text-slate-600">{card.campaign?.name || "-"}</td>
+                    <td className="px-5 py-3">
+                      {card.hasBenefit && card.benefit ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 border border-amber-200">
+                          🎁 {card.benefit.name} {card.benefit.value ? `(${card.benefit.benefitType === "DISCOUNT" ? `${card.benefit.value}% off` : `Rs ${card.benefit.value}`})` : ""}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+                          🍀 Better luck next time
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-slate-600">{card.assignedManufacturer?.name || "Unassigned"}</td>
+                    <td className="px-5 py-3">
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700">
+                        {card.physicalStatus}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
   );

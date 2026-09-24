@@ -53,6 +53,28 @@ async function main() {
   });
 
   console.log(`✅ Marketing Partner seeded: ${partner.email} (Code: ${partner.code})`);
+
+  // Seed Nepal Location Mappings (Provinces & 77 Districts with 4-char unique codes)
+  const { NEPAL_LOCATION_MAP } = await import("../utils/nepalLocationData.js");
+  let seededLocations = 0;
+  for (const loc of NEPAL_LOCATION_MAP) {
+    await prisma.locationMapping.upsert({
+      where: { code: loc.code },
+      update: {
+        name: loc.name,
+        type: loc.type,
+        province: loc.province,
+      },
+      create: {
+        code: loc.code,
+        name: loc.name,
+        type: loc.type,
+        province: loc.province,
+      },
+    });
+    seededLocations += 1;
+  }
+  console.log(`✅ Nepal Location Mappings seeded: ${seededLocations} entries (4-char codes)`);
 }
 
 main()

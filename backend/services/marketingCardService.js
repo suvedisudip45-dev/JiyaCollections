@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import {
+  NEPAL_LOCATION_MAP,
+  NEPAL_PROVINCES,
+  get4CharCodeForCampaign,
+  resolveLocationEntry,
+} from "../utils/nepalLocationData.js";
 
 const MAX_BATCH_SIZE = 5000;
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["ACTIVE"]);
@@ -9,11 +15,7 @@ const normalizeCode = (value, fallback = "AAMA") => {
   return code.slice(0, 16) || fallback;
 };
 
-const geographyCode = (campaign) => {
-  if (campaign.targetScopeType === "PROVINCE") return normalizeCode(campaign.targetProvince, "PRO").slice(0, 3);
-  if (campaign.targetScopeType === "DISTRICT") return normalizeCode(campaign.targetDistrict, "DIS").slice(0, 3);
-  return "NAT";
-};
+const geographyCode = (campaign) => get4CharCodeForCampaign(campaign);
 
 const secureToken = () => crypto.randomBytes(32).toString("hex");
 const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
@@ -23,11 +25,45 @@ const parseJsonObject = (value) => {
   if (value && typeof value === "object") return value;
   try { return JSON.parse(value || "{}"); } catch { return {}; }
 };
-export const campaignMatchesOrder = (campaign, order) => {
+
+export const getOrderLocationCodes = (order) => {
   const address = parseJsonObject(order.address);
+  const districtRaw = address.district || address.city;
+  const provinceRaw = address.province || address.state;
+
+  const districtLoc = resolveLocationEntry(districtRaw);
+  const provinceLoc = resolveLocationEntry(provinceRaw) || (districtLoc?.province ? resolveLocationEntry(districtLoc.province) : null);
+
+  return {
+    districtCode: districtLoc?.code || null,
+    districtName: districtLoc?.name || districtRaw,
+    provinceCode: provinceLoc?.code || null,
+    provinceName: provinceLoc?.name || provinceRaw,
+    rawDistrict: districtRaw,
+    rawProvince: provinceRaw,
+  };
+};
+
+export const campaignMatchesOrder = (campaign, order) => {
   if (campaign.targetScopeType === "NATIONWIDE") return true;
-  if (campaign.targetScopeType === "PROVINCE") return normalizeLocation(campaign.targetProvince) === normalizeLocation(address.province || address.state);
-  if (campaign.targetScopeType === "DISTRICT") return normalizeLocation(campaign.targetDistrict) === normalizeLocation(address.district);
+  const loc = getOrderLocationCodes(order);
+
+  if (campaign.targetScopeType === "PROVINCE") {
+    const campaignProv = resolveLocationEntry(campaign.targetProvince);
+    if (campaignProv && loc.provinceCode) {
+      return campaignProv.code === loc.provinceCode;
+    }
+    return normalizeLocation(campaign.targetProvince) === normalizeLocation(loc.provinceName || loc.rawProvince);
+  }
+
+  if (campaign.targetScopeType === "DISTRICT") {
+    const campaignDist = resolveLocationEntry(campaign.targetDistrict);
+    if (campaignDist && loc.districtCode) {
+      return campaignDist.code === loc.districtCode;
+    }
+    return normalizeLocation(campaign.targetDistrict) === normalizeLocation(loc.districtName || loc.rawDistrict);
+  }
+
   return false;
 };
 
@@ -82,6 +118,8 @@ export const createCampaign = async ({ marketingPartnerId, name, description, ta
     description: benefit.description || null,
     benefitType: String(benefit.benefitType || "CUSTOM").toUpperCase(),
     value: Number(benefit.value || 0),
+    percentage: Number(benefit.percentage || 0),
+    quantity: Number(benefit.quantity || benefit.maxQuantity || 0),
     terms: benefit.terms || null,
     startsAt: benefit.startsAt ? new Date(benefit.startsAt) : null,
     expiresAt: benefit.expiresAt ? new Date(benefit.expiresAt) : null,
@@ -109,12 +147,12 @@ export const createCampaign = async ({ marketingPartnerId, name, description, ta
 
 export const listCampaigns = () => prisma.marketingCampaign.findMany({
   orderBy: { createdAt: "desc" },
-  include: { marketingPartner: true, _count: { select: { cards: true, batches: true } } },
+  include: { marketingPartner: true, benefits: true, _count: { select: { cards: true, batches: true } } },
 });
 
 export const generateBatch = async ({ campaignId, quantity, actorId }) => {
   const count = assertQuantity(quantity);
-  const campaign = await prisma.marketingCampaign.findUnique({ where: { id: campaignId }, include: { marketingPartner: true } });
+  const campaign = await prisma.marketingCampaign.findUnique({ where: { id: campaignId }, include: { marketingPartner: true, benefits: true } });
   if (!campaign) throw new Error("Campaign not found.");
   if (!ACTIVE_CAMPAIGN_STATUSES.has(campaign.status)) throw new Error("Only active campaigns can generate cards.");
 
@@ -122,11 +160,58 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
   const batchSegment = randomBatchSuffix().slice(0, 4);
   const created = await prisma.$transaction(async (tx) => {
     const batch = await tx.marketingCardBatch.create({ data: { campaignId, batchCode, quantity: count } });
+
+    // Fetch active benefits to allocate to cards in this batch
+    const activeBenefits = await tx.marketingBenefit.findMany({
+      where: { campaignId, status: "ACTIVE" },
+      orderBy: { id: "asc" },
+    });
+
+    // Build array of benefit assignments for this batch
+    const benefitAssignments = [];
+    for (const benefit of activeBenefits) {
+      let targetCount = 0;
+      if (benefit.percentage && benefit.percentage > 0) {
+        // Percentage-based offer allocation (e.g. 10% of 500 = 50 cards)
+        targetCount = Math.round((Number(benefit.percentage) / 100) * count);
+      } else if (benefit.quantity && benefit.quantity > 0) {
+        // Fixed quantity offer allocation
+        const unassigned = Math.max(0, benefit.quantity - (benefit.assignedQuantity || 0));
+        targetCount = unassigned;
+      }
+
+      const toAssign = Math.min(count - benefitAssignments.length, targetCount);
+      for (let i = 0; i < toAssign; i++) {
+        benefitAssignments.push(benefit.id);
+      }
+      if (toAssign > 0) {
+        await tx.marketingBenefit.update({
+          where: { id: benefit.id },
+          data: { assignedQuantity: { increment: toAssign } },
+        });
+      }
+    }
+
+    // Fill remaining cards in the batch with null (non-winning cards: "Better luck next time")
+    while (benefitAssignments.length < count) {
+      benefitAssignments.push(null);
+    }
+
+    // Randomly shuffle benefit assignments across the batch (Fisher-Yates shuffle)
+    for (let i = benefitAssignments.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(i + 1);
+      const temp = benefitAssignments[i];
+      benefitAssignments[i] = benefitAssignments[j];
+      benefitAssignments[j] = temp;
+    }
+
     const cards = [];
     for (let index = 1; index <= count; index += 1) {
       const token = secureToken();
       const serial = String(campaign.generatedQuantity + index).padStart(5, "0");
       const cardCode = `AAMA-${geographyCode(campaign)}-${normalizeCode(campaign.marketingPartner.code).slice(0, 3)}-${batchSegment}B${serial}`;
+      const assignedBenefitId = benefitAssignments[index - 1] || null;
+
       const card = await tx.marketingCard.create({
         data: {
           cardCode,
@@ -134,10 +219,12 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
           partnerId: campaign.marketingPartnerId,
           campaignId,
           batchId: batch.id,
+          hasBenefit: !!assignedBenefitId,
+          benefitId: assignedBenefitId,
         },
       });
-      await addEvent(tx, { cardId: card.id, eventType: "CARD_CREATED", actorId, actorRole: "ADMIN", toStatus: "GENERATED", metadata: { batchId: batch.id } });
-      cards.push({ id: card.id, cardCode: card.cardCode, qrToken: token });
+      await addEvent(tx, { cardId: card.id, eventType: "CARD_CREATED", actorId, actorRole: "ADMIN", toStatus: "GENERATED", metadata: { batchId: batch.id, hasBenefit: !!assignedBenefitId, benefitId: assignedBenefitId } });
+      cards.push({ id: card.id, cardCode: card.cardCode, qrToken: token, hasBenefit: !!assignedBenefitId });
     }
     await tx.marketingCampaign.update({ where: { id: campaignId }, data: { generatedQuantity: { increment: count } } });
     return { batch, cards };
@@ -153,7 +240,12 @@ export const listAdminCards = ({ campaignId, manufacturerId, status } = {}) => p
   },
   orderBy: { createdAt: "desc" },
   take: 500,
-  include: { campaign: { include: { marketingPartner: true } }, batch: true, assignedManufacturer: { select: { id: true, name: true, city: true } } },
+  include: {
+    campaign: { include: { marketingPartner: true } },
+    benefit: true,
+    batch: true,
+    assignedManufacturer: { select: { id: true, name: true, city: true } },
+  },
 });
 
 export const getCardMetrics = async () => {
@@ -252,7 +344,42 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
     error.code = "MARKETING_CARD_NOT_ELIGIBLE";
     throw error;
   }
-  const selected = eligibleInventory[crypto.randomInt(eligibleInventory.length)];
+
+  // Partition eligible cards by geography hierarchy: DISTRICT, PROVINCE, NATIONWIDE
+  const districtCards = [];
+  const provinceCards = [];
+  const nationwideCards = [];
+
+  for (const card of eligibleInventory) {
+    if (card.campaign.targetScopeType === "DISTRICT") {
+      districtCards.push(card);
+    } else if (card.campaign.targetScopeType === "PROVINCE") {
+      provinceCards.push(card);
+    } else {
+      nationwideCards.push(card);
+    }
+  }
+
+  // Prioritized Weighted Random Distribution:
+  // 5 (District) : 3 (Province) : 2 (Nationwide)
+  const candidateTiers = [];
+  if (districtCards.length > 0) candidateTiers.push({ tier: "DISTRICT", weight: 5, cards: districtCards });
+  if (provinceCards.length > 0) candidateTiers.push({ tier: "PROVINCE", weight: 3, cards: provinceCards });
+  if (nationwideCards.length > 0) candidateTiers.push({ tier: "NATIONWIDE", weight: 2, cards: nationwideCards });
+
+  const totalWeight = candidateTiers.reduce((sum, item) => sum + item.weight, 0);
+  let randomWeight = Math.random() * totalWeight;
+  let chosenTierCards = candidateTiers[0].cards;
+
+  for (const item of candidateTiers) {
+    if (randomWeight < item.weight) {
+      chosenTierCards = item.cards;
+      break;
+    }
+    randomWeight -= item.weight;
+  }
+
+  const selected = chosenTierCards[crypto.randomInt(chosenTierCards.length)];
   const claimed = await tx.marketingCard.updateMany({ where: { id: selected.id, assignedManufacturerId: manufacturerId, physicalStatus: "AVAILABLE" }, data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() } });
   if (claimed.count !== 1) throw new Error("Card inventory changed during attachment. Please retry.");
   const link = await tx.marketingCardOrder.create({ data: { cardId: selected.id, orderId, manufacturerId } });
@@ -269,6 +396,18 @@ export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufactur
     throw error;
   }
   return order.marketingCardOrder;
+};
+
+export const getLocationMappingsService = async () => {
+  try {
+    const locations = await prisma.locationMapping.findMany({
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    });
+    if (locations && locations.length > 0) return locations;
+  } catch (_err) {
+    // Fallback if table not ready
+  }
+  return NEPAL_LOCATION_MAP;
 };
 
 export const cardTokenHash = hashToken;

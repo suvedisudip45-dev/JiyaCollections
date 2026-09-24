@@ -13,10 +13,14 @@ import {
   adminCardMetrics,
   adminListCampaigns,
   adminListPartners,
+  adminGetLocations,
   manufacturerAttachCard,
   manufacturerListCards,
   manufacturerReceiveCard,
   customerListCards,
+  customerVerifyCode,
+  customerVerifyQr,
+  customerActivateCard,
   customerLinkCard,
   customerScanCard,
   customerRedeemBenefit,
@@ -34,11 +38,16 @@ import {
   listRedemptions,
   validateQr,
   redeemBenefit,
+  rejectCard,
 } from "../controllers/marketingPartnerController.js";
 
 const marketingCardRouter = express.Router();
 
+// ── Shared / Public routes ──────────────────────────────────
+marketingCardRouter.get("/locations", adminGetLocations);
+
 // ── Admin routes ─────────────────────────────────────────────
+marketingCardRouter.get("/admin/locations", adminAuth, adminGetLocations);
 marketingCardRouter.get("/admin/partners", adminAuth, adminListPartners);
 marketingCardRouter.post("/admin/partners", adminAuth, adminCreatePartner);
 marketingCardRouter.get("/admin/campaigns", adminAuth, adminListCampaigns);
@@ -55,6 +64,9 @@ marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authManufacture
 
 // ── Customer routes ──────────────────────────────────────────
 marketingCardRouter.get("/customer/cards", authUser, customerListCards);
+marketingCardRouter.post("/customer/cards/verify-code", authUser, marketingCardRateLimit("link"), customerVerifyCode);
+marketingCardRouter.post("/customer/cards/verify-qr", authUser, marketingCardRateLimit("scan"), customerVerifyQr);
+marketingCardRouter.post("/customer/cards/:cardId/activate", authUser, marketingCardRateLimit("link"), customerActivateCard);
 marketingCardRouter.post("/customer/cards/link", authUser, marketingCardRateLimit("link"), customerLinkCard);
 marketingCardRouter.post("/customer/cards/scan", authUser, marketingCardRateLimit("scan"), customerScanCard);
 marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authUser, marketingCardRateLimit("redeem"), customerRedeemBenefit);
@@ -72,6 +84,8 @@ marketingCardRouter.get("/partner/metrics", marketingPartnerAuth, getMetrics);
 marketingCardRouter.get("/partner/redemptions", marketingPartnerAuth, listRedemptions);
 marketingCardRouter.post("/partner/qr/validate", marketingPartnerAuth, marketingCardRateLimit("scan"), validateQr);
 marketingCardRouter.post("/partner/redemptions/redeem", marketingPartnerAuth, marketingCardRateLimit("redeem"), redeemBenefit);
+marketingCardRouter.post("/partner/redemptions/reject", marketingPartnerAuth, marketingCardRateLimit("redeem"), rejectCard);
 
 export default marketingCardRouter;
+
 

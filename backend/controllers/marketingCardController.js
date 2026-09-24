@@ -10,6 +10,7 @@ import {
   listCampaigns,
   listPartners,
   receiveCard,
+  getLocationMappingsService,
 } from "../services/marketingCardService.js";
 import {
   linkCustomerCard,
@@ -21,6 +22,10 @@ import {
 const sendError = (res, error) => {
   const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403 : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" ? 409 : 400;
   return res.status(status).json({ success: false, message: error.message || "Marketing card operation failed.", code: error.code || "MARKETING_CARD_ERROR" });
+};
+
+export const adminGetLocations = async (_req, res) => {
+  try { return res.json({ success: true, locations: await getLocationMappingsService() }); } catch (error) { return sendError(res, error); }
 };
 
 export const adminListPartners = async (_req, res) => {
@@ -83,6 +88,30 @@ export const customerListCards = async (req, res) => {
   try { return res.json({ success: true, cards: await listCustomerCards(req.userId) }); } catch (error) { return sendError(res, error); }
 };
 
+export const customerVerifyCode = async (req, res) => {
+  try {
+    const { verifyCustomerCardCode } = await import("../services/marketingCardCustomerService.js");
+    const result = await verifyCustomerCardCode({ customerId: req.userId, cardCode: req.body.cardCode });
+    return res.json({ success: true, ...result });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const customerVerifyQr = async (req, res) => {
+  try {
+    const { verifyCustomerQr } = await import("../services/marketingCardCustomerService.js");
+    const result = await verifyCustomerQr({ customerId: req.userId, cardCode: req.body.cardCode, token: req.body.token });
+    return res.json({ success: true, ...result });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const customerActivateCard = async (req, res) => {
+  try {
+    const { activateCustomerCard } = await import("../services/marketingCardCustomerService.js");
+    const card = await activateCustomerCard({ customerId: req.userId, cardId: req.params.cardId || req.body.cardId });
+    return res.json({ success: true, card, message: "Card activated successfully! Present your physical card to the partner store to claim your reward." });
+  } catch (error) { return sendError(res, error); }
+};
+
 export const customerLinkCard = async (req, res) => {
   try { return res.status(201).json({ success: true, card: await linkCustomerCard({ customerId: req.userId, cardCode: req.body.cardCode }) }); } catch (error) { return sendError(res, error); }
 };
@@ -94,3 +123,4 @@ export const customerScanCard = async (req, res) => {
 export const customerRedeemBenefit = async (req, res) => {
   try { return res.status(201).json({ success: true, redemption: await redeemCustomerBenefit({ customerId: req.userId, cardId: req.params.cardId, benefitId: req.params.benefitId }), message: "Benefit redeemed successfully." }); } catch (error) { return sendError(res, error); }
 };
+

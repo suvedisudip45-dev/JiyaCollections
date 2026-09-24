@@ -882,6 +882,8 @@ model MarketingCard {
   campaignId            String
   batchId               String
   assignedManufacturerId String?
+  hasBenefit            Boolean  @default(false)
+  benefitId             String?
   physicalStatus        String   @default("GENERATED") // GENERATED | ASSIGNED | RECEIVED | AVAILABLE | RESERVED | ATTACHED | CANCELLED
   assignedAt            DateTime?
   receivedAt            DateTime?
@@ -892,6 +894,7 @@ model MarketingCard {
   partner               MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
   campaign              MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
   batch                 MarketingCardBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  benefit               MarketingBenefit? @relation(fields: [benefitId], references: [id], onDelete: SetNull)
   assignedManufacturer Manufacturer? @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
   assignments           MarketingCardAssignment[]
   orderLink             MarketingCardOrder?
@@ -902,6 +905,7 @@ model MarketingCard {
   @@index([campaignId, physicalStatus])
   @@index([assignedManufacturerId, physicalStatus])
   @@index([batchId, physicalStatus])
+  @@index([benefitId])
 }
 
 model MarketingCardAssignment {
@@ -958,18 +962,22 @@ model MarketingCardCustomer {
 }
 
 model MarketingBenefit {
-  id          String   @id @default(uuid())
-  campaignId  String
-  name        String
-  description String?  @db.Text
-  benefitType String   @default("CUSTOM")
-  value       Float    @default(0)
-  terms       String?  @db.Text
-  startsAt    DateTime?
-  expiresAt   DateTime?
-  status      String   @default("ACTIVE")
-  campaign    MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  redemptions MarketingBenefitRedemption[]
+  id               String   @id @default(uuid())
+  campaignId       String
+  name             String
+  description      String?  @db.Text
+  benefitType      String   @default("CUSTOM")
+  value            Float    @default(0)
+  percentage       Float    @default(0) // Percentage of customer cards (e.g. 10 for 10% of customers)
+  quantity         Int      @default(0) // Fixed number of cards allocated for this benefit
+  assignedQuantity Int      @default(0) // Number of cards assigned this benefit during generation
+  terms            String?  @db.Text
+  startsAt         DateTime?
+  expiresAt        DateTime?
+  status           String   @default("ACTIVE")
+  campaign         MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  cards            MarketingCard[]
+  redemptions      MarketingBenefitRedemption[]
 
   @@index([campaignId, status])
 }
@@ -1254,4 +1262,19 @@ model OperatingExpense {
   @@index([category])
   @@index([date])
   @@index([isVatBill])
+}
+
+// Nepal Location Mapping (4-character unique code map for provinces and 77 districts)
+model LocationMapping {
+  id        String   @id @default(uuid())
+  code      String   @unique @db.VarChar(4) // e.g., '0KTM', 'PRBT', 'REST', 'RWST', 'BAGM', 'NATW'
+  name      String   @db.VarChar(120)
+  type      String   @db.VarChar(32) // 'NATIONWIDE' | 'PROVINCE' | 'DISTRICT'
+  province  String?  @db.VarChar(120) // Parent province for district
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([name])
+  @@index([province])
 }

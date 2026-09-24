@@ -161,6 +161,23 @@ export const redeemBenefit = async (req, res) => {
   } catch (error) { return sendError(res, error); }
 };
 
+// POST /partner/redemptions/reject
+export const rejectCard = async (req, res) => {
+  try {
+    const { cardCode, reason } = req.body;
+    if (!cardCode) {
+      return res.status(400).json({ success: false, message: "cardCode is required." });
+    }
+    const result = await (await import("../services/marketingPartnerService.js")).rejectPartnerCard({
+      partnerId: req.partnerId,
+      cardCode,
+      reason,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) { return sendError(res, error); }
+};
+
+
 // PUT /partner/profile
 export const updateProfile = async (req, res) => {
   try {

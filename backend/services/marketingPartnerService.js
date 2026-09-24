@@ -22,7 +22,7 @@ export const getPartnerCampaigns = ({ partnerId, status } = {}) =>
       _count: {
         select: { cards: true, batches: true, benefits: true },
       },
-      benefits: { select: { id: true, name: true, benefitType: true, value: true, status: true, expiresAt: true } },
+      benefits: { select: { id: true, name: true, benefitType: true, value: true, percentage: true, status: true, expiresAt: true } },
     },
   });
 
@@ -90,6 +90,7 @@ export const getPartnerCardDetail = async ({ partnerId, cardId }) => {
     where: { id: cardId, partnerId },
     include: {
       campaign: { include: { benefits: true } },
+      benefit: true,
       assignedManufacturer: { select: { id: true, name: true, city: true } },
       customerLinks: { select: { id: true, status: true, linkedAt: true, activatedAt: true } },
       benefitRedemptions: { select: { id: true, benefitId: true, status: true, redeemedAt: true } },
@@ -156,6 +157,11 @@ export const getPartnerRedemptions = ({ partnerId, campaignId, status, page = 1,
   ]);
 };
 
+/**
+ * Validates a card presentation at the partner's physical shopping store.
+ * Returns full customer details (name, phone, email), delivered order info,
+ * product list, card activation date & expiry, and offer reward details.
+ */
 export const validatePartnerQr = async ({ partnerId, cardCode }) => {
   const normalizedCode = String(cardCode || "").trim().toUpperCase();
   if (!normalizedCode) {
@@ -167,34 +173,130 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
   const card = await prisma.marketingCard.findFirst({
     where: { cardCode: normalizedCode, partnerId },
     include: {
-      campaign: { include: { benefits: true } },
-      customerLinks: { where: { status: { not: "CANCELLED" } }, take: 1 },
-      benefitRedemptions: { where: { status: "REDEEMED" } },
+      campaign: { select: { id: true, name: true, targetScopeType: true, targetProvince: true, targetDistrict: true, endsAt: true } },
+      benefit: true,
+      customerLinks: {
+        where: { status: { not: "CANCELLED" } },
+        include: { customer: { select: { id: true, name: true, firstName: true, lastName: true, email: true, phone: true } } },
+        take: 1,
+      },
+      orderLink: {
+        include: {
+          order: true,
+        },
+      },
+      benefitRedemptions: true,
     },
   });
 
   if (!card) {
-    return { valid: false, genuine: false, message: "Card not found or does not belong to this partner." };
+    return { valid: false, genuine: false, message: "Card not found or does not belong to your brand partner organization." };
   }
 
-  const isActivated = card.customerLinks.length > 0;
-  const redemptions = card.benefitRedemptions;
+  const customerLink = card.customerLinks[0] || null;
+  const isActivated = Boolean(customerLink && customerLink.status === "ACTIVE" && customerLink.activatedAt);
+  const redemptions = card.benefitRedemptions || [];
+  const isRedeemed = redemptions.some((r) => r.status === "REDEEMED");
+  const isRejected = redemptions.some((r) => r.status === "REJECTED");
+  const hasBenefit = Boolean(card.hasBenefit && card.benefit);
+
+  // Extract customer info from customer profile or order shipping address
+  const orderObj = card.orderLink?.order || null;
+  let address = {};
+  if (orderObj?.address) {
+    if (typeof orderObj.address === "object") {
+      address = orderObj.address;
+    } else if (typeof orderObj.address === "string") {
+      try { address = JSON.parse(orderObj.address); } catch { address = {}; }
+    }
+  }
+
+  const user = customerLink?.customer || null;
+  const customerName = user?.name || `${address?.firstName || ""} ${address?.lastName || ""}`.trim() || "Verified Customer";
+  const customerPhone = user?.phone || address?.phone || "N/A";
+  const customerEmail = user?.email || address?.email || "N/A";
+
+  // Extract ordered products
+  let orderedProducts = [];
+  if (orderObj?.items) {
+    let rawItems = [];
+    if (Array.isArray(orderObj.items)) {
+      rawItems = orderObj.items;
+    } else if (typeof orderObj.items === "string") {
+      try { rawItems = JSON.parse(orderObj.items); } catch { rawItems = []; }
+    }
+    orderedProducts = rawItems.map((item) => ({
+      name: item.name || item.title || "Store Item",
+      quantity: item.quantity || 1,
+      size: item.size || "-",
+      price: item.price || 0,
+      image: item.image || item.images?.[0] || null,
+    }));
+  }
+
+  const expiryDate = card.benefit?.expiresAt || card.campaign?.endsAt || null;
+
+  const benefits = hasBenefit && card.benefit
+    ? [
+        {
+          id: card.benefit.id,
+          name: card.benefit.name,
+          description: card.benefit.description,
+          benefitType: card.benefit.benefitType,
+          value: card.benefit.value,
+          terms: card.benefit.terms,
+          expiresAt: expiryDate,
+          status: isRedeemed ? "REDEEMED" : isRejected ? "REJECTED" : card.benefit.status,
+          redeemedAt: redemptions.find((r) => r.status === "REDEEMED")?.redeemedAt || null,
+        },
+      ]
+    : [];
 
   return {
     valid: true,
     genuine: true,
+    cardId: card.id,
     cardCode: card.cardCode,
     physicalStatus: card.physicalStatus,
     isActivated,
-    campaign: { id: card.campaign.id, name: card.campaign.name, targetScopeType: card.campaign.targetScopeType },
-    benefits: card.campaign.benefits.map((b) => ({
-      id: b.id,
-      name: b.name,
-      benefitType: b.benefitType,
-      value: b.value,
-      status: redemptions.find((r) => r.benefitId === b.id) ? "REDEEMED" : b.status,
-      redeemedAt: redemptions.find((r) => r.benefitId === b.id)?.redeemedAt || null,
-    })),
+    activatedAt: customerLink?.activatedAt || null,
+    linkedAt: customerLink?.linkedAt || null,
+    expiresAt: expiryDate,
+    hasBenefit,
+    isRedeemed,
+    isRejected,
+    message: isRejected
+      ? "⚠️ This card has been marked as REJECTED / Suspicious."
+      : isRedeemed
+      ? "⚠️ This card offer has already been redeemed."
+      : !isActivated
+      ? "ℹ️ This card has not been activated by the customer yet."
+      : hasBenefit
+      ? "✅ Valid and active card ready for redemption."
+      : "🍀 Better luck next time! No reward is attached to this card.",
+    customer: {
+      id: user?.id || null,
+      name: customerName,
+      phone: customerPhone,
+      email: customerEmail,
+    },
+    order: orderObj
+      ? {
+          id: orderObj.id,
+          date: orderObj.date ? Number(orderObj.date) : null,
+          status: orderObj.status,
+          amount: orderObj.amount,
+          products: orderedProducts,
+        }
+      : null,
+    campaign: {
+      id: card.campaign.id,
+      name: card.campaign.name,
+      targetScopeType: card.campaign.targetScopeType,
+      targetProvince: card.campaign.targetProvince,
+      targetDistrict: card.campaign.targetDistrict,
+    },
+    benefits,
   };
 };
 
@@ -203,7 +305,8 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
     const card = await tx.marketingCard.findFirst({
       where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
       include: {
-        campaign: { include: { benefits: true } },
+        campaign: true,
+        benefit: true,
         customerLinks: { where: { status: { not: "CANCELLED" } } },
       },
     });
@@ -212,9 +315,12 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       error.code = "PARTNER_FORBIDDEN";
       throw error;
     }
-    const benefit = card.campaign.benefits.find((b) => b.id === benefitId);
-    if (!benefit || benefit.status !== "ACTIVE") {
-      throw new Error("Benefit is not active or not found in this campaign.");
+    if (!card.hasBenefit || !card.benefit || card.benefitId !== benefitId) {
+      throw new Error("This card does not carry any claimable benefit. Better luck next time!");
+    }
+    const benefit = card.benefit;
+    if (benefit.status !== "ACTIVE") {
+      throw new Error("Benefit is not active.");
     }
     const existing = await tx.marketingBenefitRedemption.findFirst({
       where: { cardId: card.id, benefitId, status: "REDEEMED" },
@@ -222,10 +328,11 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
     if (existing) {
       throw new Error("Benefit has already been redeemed for this card.");
     }
-    const customerId = card.customerLinks[0]?.customerId;
-    if (!customerId) {
-      throw new Error("Card must be activated by a customer before benefit redemption.");
+    const customerLink = card.customerLinks[0];
+    if (!customerLink || customerLink.status !== "ACTIVE" || !customerLink.activatedAt) {
+      throw new Error("Card must be activated by the customer before benefit redemption.");
     }
+    const customerId = customerLink.customerId;
 
     const redemption = await tx.marketingBenefitRedemption.create({
       data: { cardId: card.id, benefitId, customerId, status: "REDEEMED" },
@@ -249,6 +356,62 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
     };
   });
 
+export const rejectPartnerCard = async ({ partnerId, cardCode, reason }) =>
+  prisma.$transaction(async (tx) => {
+    const card = await tx.marketingCard.findFirst({
+      where: { cardCode: String(cardCode).trim().toUpperCase(), partnerId },
+      include: {
+        campaign: { include: { benefits: true } },
+        benefit: true,
+        customerLinks: { where: { status: { not: "CANCELLED" } } },
+        orderLink: { include: { order: true } },
+      },
+    });
+    if (!card) {
+      const error = new Error("Card not found or does not belong to this partner.");
+      error.code = "PARTNER_FORBIDDEN";
+      throw error;
+    }
+
+    let customerId = card.customerLinks[0]?.customerId || card.orderLink?.order?.userId;
+    if (!customerId) {
+      const firstUser = await tx.user.findFirst({ select: { id: true } });
+      customerId = firstUser?.id;
+    }
+
+    const benefitId = card.benefitId || card.campaign.benefits[0]?.id;
+
+    let rejectionId = null;
+    if (benefitId && customerId) {
+      const rejection = await tx.marketingBenefitRedemption.create({
+        data: {
+          cardId: card.id,
+          benefitId,
+          customerId,
+          status: "REJECTED",
+        },
+      });
+      rejectionId = rejection.id;
+    }
+
+    await tx.marketingCardEvent.create({
+      data: {
+        cardId: card.id,
+        eventType: "CARD_REJECTED_BY_PARTNER",
+        actorRole: "MARKETING_PARTNER",
+        actorId: partnerId,
+        metadata: { reason: reason || "Suspicious or invalid card presented", rejectionId },
+      },
+    });
+
+    return {
+      success: true,
+      cardCode: card.cardCode,
+      status: "REJECTED",
+      reason: reason || "Suspicious card flagged",
+    };
+  });
+
 export const updatePartnerProfile = async ({ partnerId, name, contactPhone, website, address }) =>
   prisma.marketingPartner.update({
     where: { id: partnerId },
@@ -260,4 +423,3 @@ export const updatePartnerProfile = async ({ partnerId, name, contactPhone, webs
     },
     select: { id: true, code: true, name: true, email: true, status: true, contactPhone: true, website: true, address: true },
   });
-
