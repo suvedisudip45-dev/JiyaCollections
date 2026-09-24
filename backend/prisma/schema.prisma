@@ -816,17 +816,23 @@ model Manufacturer {
 // ============================================================
 
 model MarketingPartner {
-  id          String   @id @default(uuid())
-  code        String   @unique @db.VarChar(32)
-  name        String
-  description String?  @db.Text
-  status      String   @default("ACTIVE") // ACTIVE | INACTIVE
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  campaigns   MarketingCampaign[]
-  cards       MarketingCard[]
+  id           String   @id @default(uuid())
+  code         String   @unique @db.VarChar(32)
+  name         String
+  description  String?  @db.Text
+  status       String   @default("ACTIVE") // ACTIVE | INACTIVE
+  email        String?  @unique @db.VarChar(255) // Portal login email
+  passwordHash String?  @db.VarChar(255)         // bcrypt hash for portal login
+  contactPhone String?  @db.VarChar(32)
+  website      String?  @db.VarChar(255)
+  address      String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  campaigns    MarketingCampaign[]
+  cards        MarketingCard[]
 
   @@index([status])
+  @@index([email])
 }
 
 model MarketingCampaign {

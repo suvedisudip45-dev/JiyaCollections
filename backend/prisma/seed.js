@@ -30,6 +30,29 @@ async function main() {
   console.log(
     "⚠️  Remember to change the default password via the Admin Panel → Change Password."
   );
+
+  // Seed Demo Marketing Partner
+  const partnerEmail = "partner@aamaclothings.com";
+  const partnerPassword = process.env.PARTNER_SEED_PASSWORD || "Partner@1234";
+  const hashedPartnerPassword = await bcrypt.hash(partnerPassword, salt);
+
+  const partner = await prisma.marketingPartner.upsert({
+    where: { email: partnerEmail },
+    update: {},
+    create: {
+      code: "DEMO_PARTNER",
+      name: "Aama Marketing Partner",
+      email: partnerEmail,
+      passwordHash: hashedPartnerPassword,
+      status: "ACTIVE",
+      description: "Official demo marketing partner for promotional campaigns.",
+      contactPhone: "+977 9800000000",
+      website: "https://aamaclothings.com",
+      address: "Kathmandu, Nepal",
+    },
+  });
+
+  console.log(`✅ Marketing Partner seeded: ${partner.email} (Code: ${partner.code})`);
 }
 
 main()

@@ -45,11 +45,28 @@ const assertQuantity = (quantity) => {
   return parsed;
 };
 
-export const createPartner = ({ code, name, description }) => prisma.marketingPartner.create({
-  data: { code: normalizeCode(code), name: String(name || "").trim(), description: description || null },
-});
+export const createPartner = async ({ code, name, description, email, password, contactPhone, website, address }) => {
+  let passwordHash = null;
+  if (password) {
+    const bcrypt = await import("bcryptjs");
+    passwordHash = await bcrypt.default.hash(String(password), 10);
+  }
+  return prisma.marketingPartner.create({
+    data: {
+      code: normalizeCode(code),
+      name: String(name || "").trim(),
+      description: description || null,
+      email: email ? String(email).trim().toLowerCase() : null,
+      passwordHash,
+      contactPhone: contactPhone || null,
+      website: website || null,
+      address: address || null,
+    },
+  });
+};
 
 export const listPartners = () => prisma.marketingPartner.findMany({ orderBy: { createdAt: "desc" } });
+
 
 export const createCampaign = async ({ marketingPartnerId, name, description, targetScopeType, targetProvince, targetDistrict, requestedQuantity, benefitConfig, benefits, startsAt, endsAt }) => {
   const partner = await prisma.marketingPartner.findUnique({ where: { id: marketingPartnerId } });

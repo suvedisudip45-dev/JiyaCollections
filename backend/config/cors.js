@@ -2,6 +2,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:5173",
   "http://localhost:5174",
   "http://localhost:5175",
+  "http://localhost:5176",
 ];
 
 const normalizeOrigin = (value) => {
@@ -23,7 +24,9 @@ export const getAllowedOrigins = () => {
     ...parseOrigins(process.env.FRONTEND_URL),
     ...parseOrigins(process.env.ADMIN_URL),
     ...parseOrigins(process.env.MANUFACTURER_URL),
+    ...parseOrigins(process.env.MARKETING_URL),
   ];
+
 
   return [...new Set(origins.filter(Boolean))];
 };
