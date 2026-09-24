@@ -29,6 +29,7 @@ import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
+import marketingCardRouter from "./routes/marketingCardRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
@@ -112,6 +113,7 @@ app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);
 app.use("/api/personalized-letter", personalizedLetterRouter);
 app.use("/api/admin/story-letter", storyLetterAdminRouter);
+app.use("/api/marketing-cards", marketingCardRouter);
 app.use("/webhooks", deliveryRouter);
 app.use("/api/ncm-webhook", deliveryRouter);
 

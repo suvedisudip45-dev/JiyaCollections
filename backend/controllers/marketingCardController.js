@@ -1,0 +1,69 @@
+import {
+  assignCards,
+  attachRandomCardToOrder,
+  createCampaign,
+  createPartner,
+  generateBatch,
+  getManufacturerInventory,
+  listAdminCards,
+  listCampaigns,
+  listPartners,
+  receiveCard,
+} from "../services/marketingCardService.js";
+
+const sendError = (res, error) => {
+  const status = error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400;
+  return res.status(status).json({ success: false, message: error.message || "Marketing card operation failed.", code: error.code || "MARKETING_CARD_ERROR" });
+};
+
+export const adminListPartners = async (_req, res) => {
+  try { return res.json({ success: true, partners: await listPartners() }); } catch (error) { return sendError(res, error); }
+};
+
+export const adminCreatePartner = async (req, res) => {
+  try {
+    if (!req.body.name?.trim() || !req.body.code?.trim()) return res.status(400).json({ success: false, message: "Partner name and code are required." });
+    return res.status(201).json({ success: true, partner: await createPartner(req.body) });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminListCampaigns = async (_req, res) => {
+  try { return res.json({ success: true, campaigns: await listCampaigns() }); } catch (error) { return sendError(res, error); }
+};
+
+export const adminCreateCampaign = async (req, res) => {
+  try {
+    if (!req.body.name?.trim() || !req.body.marketingPartnerId) return res.status(400).json({ success: false, message: "Campaign name and marketing partner are required." });
+    return res.status(201).json({ success: true, campaign: await createCampaign(req.body) });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminGenerateBatch = async (req, res) => {
+  try {
+    const result = await generateBatch({ ...req.body, actorId: req.adminId });
+    return res.status(201).json({ success: true, batch: result.batch, cards: result.cards, message: "Card batch generated. QR tokens are returned only for this print/export operation." });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminAssignCards = async (req, res) => {
+  try {
+    const result = await assignCards({ ...req.body, actorId: req.adminId });
+    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the manufacturer.` });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminListCards = async (req, res) => {
+  try { return res.json({ success: true, cards: await listAdminCards(req.query) }); } catch (error) { return sendError(res, error); }
+};
+
+export const manufacturerListCards = async (req, res) => {
+  try { return res.json({ success: true, cards: await getManufacturerInventory({ manufacturerId: req.manufacturerId, status: req.query.status }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const manufacturerReceiveCard = async (req, res) => {
+  try { return res.json({ success: true, card: await receiveCard({ cardId: req.params.cardId, manufacturerId: req.manufacturerId, notes: req.body.notes }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const manufacturerAttachCard = async (req, res) => {
+  try { return res.json({ success: true, card: await attachRandomCardToOrder({ orderId: req.params.orderId, manufacturerId: req.manufacturerId }), message: "Marketing card attached to the order." }); } catch (error) { return sendError(res, error); }
+};

@@ -26,6 +26,7 @@ model User {
 
   storyAssignments CustomerStoryAssignment[] @relation("CustomerStoryAssignmentCustomer")
   letterDeliveries LetterDelivery[] @relation("CustomerLetterDeliveryCustomer")
+  marketingCardLinks MarketingCardCustomer[] @relation("MarketingCardCustomerUser")
 }
 
 model Story {
@@ -203,8 +204,10 @@ model Order {
   directOrderType   String?        @default("") // HUB_VISIT | PHONE_ORDER
   manufacturerId    String? // Fulfilled directly by manufacturer
   directNotes       String?        @db.Text
+  marketingCardRequired Boolean    @default(true)
   deliveryOrder     DeliveryOrder?
   letterDeliveries  LetterDelivery[] @relation("OrderLetterDelivery")
+  marketingCardOrder MarketingCardOrder?
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -799,9 +802,184 @@ model Manufacturer {
   updatedAt            DateTime  @updatedAt
   inventory   ManufacturerInventory[]
   assignments OrderAssignment[]
+  marketingCardAssignments MarketingCardAssignment[]
+  marketingCards MarketingCard[] @relation("MarketingCardManufacturer")
+  marketingCardOrders MarketingCardOrder[]
 
   @@index([city])
   @@index([isActive, isAvailable])
+}
+
+// ============================================================
+// MARKETING CARD DOMAIN
+// ============================================================
+
+model MarketingPartner {
+  id          String   @id @default(uuid())
+  code        String   @unique @db.VarChar(32)
+  name        String
+  description String?  @db.Text
+  status      String   @default("ACTIVE") // ACTIVE | INACTIVE
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  campaigns   MarketingCampaign[]
+  cards       MarketingCard[]
+
+  @@index([status])
+}
+
+model MarketingCampaign {
+  id                String   @id @default(uuid())
+  marketingPartnerId String
+  name              String
+  description       String?  @db.Text
+  targetScopeType   String   @default("NATIONWIDE") // NATIONWIDE | PROVINCE | DISTRICT
+  targetProvince    String?  @db.VarChar(120)
+  targetDistrict    String?  @db.VarChar(120)
+  benefitConfig     Json     @default("[]")
+  requestedQuantity Int      @default(0)
+  generatedQuantity Int      @default(0)
+  status            String   @default("ACTIVE") // DRAFT | ACTIVE | PAUSED | EXPIRED | CANCELLED
+  startsAt          DateTime?
+  endsAt            DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  marketingPartner  MarketingPartner @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
+  batches           MarketingCardBatch[]
+  cards             MarketingCard[]
+  benefits          MarketingBenefit[]
+
+  @@index([marketingPartnerId, status])
+  @@index([targetScopeType, targetProvince, targetDistrict])
+}
+
+model MarketingCardBatch {
+  id         String   @id @default(uuid())
+  campaignId String
+  batchCode  String   @unique @db.VarChar(64)
+  quantity   Int
+  status     String   @default("GENERATED") // GENERATED | ASSIGNED | COMPLETED | CANCELLED
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  campaign   MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  cards      MarketingCard[]
+
+  @@index([campaignId, status])
+}
+
+model MarketingCard {
+  id                    String   @id @default(uuid())
+  cardCode              String   @unique @db.VarChar(64)
+  qrTokenHash           String   @unique @db.Char(64)
+  partnerId             String
+  campaignId            String
+  batchId               String
+  assignedManufacturerId String?
+  physicalStatus        String   @default("GENERATED") // GENERATED | ASSIGNED | RECEIVED | AVAILABLE | RESERVED | ATTACHED | CANCELLED
+  assignedAt            DateTime?
+  receivedAt            DateTime?
+  reservedAt            DateTime?
+  attachedAt            DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  partner               MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  campaign              MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  batch                 MarketingCardBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  assignedManufacturer Manufacturer? @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
+  assignments           MarketingCardAssignment[]
+  orderLink             MarketingCardOrder?
+  customerLinks         MarketingCardCustomer[]
+  events                MarketingCardEvent[]
+
+  @@index([campaignId, physicalStatus])
+  @@index([assignedManufacturerId, physicalStatus])
+  @@index([batchId, physicalStatus])
+}
+
+model MarketingCardAssignment {
+  id             String   @id @default(uuid())
+  cardId         String
+  manufacturerId String
+  assignedBy     String
+  assignedAt     DateTime @default(now())
+  status         String   @default("ASSIGNED") // ASSIGNED | RECEIVED | DISPUTED | CANCELLED
+  confirmedAt    DateTime?
+  notes          String?  @db.Text
+  card           MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  receipt        MarketingCardReceipt?
+
+  @@index([manufacturerId, status])
+  @@index([cardId, assignedAt])
+}
+
+model MarketingCardReceipt {
+  id           String   @id @default(uuid())
+  assignmentId String   @unique
+  confirmedBy  String
+  confirmedAt  DateTime @default(now())
+  notes        String?  @db.Text
+  assignment   MarketingCardAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+}
+
+model MarketingCardOrder {
+  id             String   @id @default(uuid())
+  cardId         String   @unique
+  orderId        String   @unique
+  manufacturerId String
+  attachedAt     DateTime @default(now())
+  card           MarketingCard @relation(fields: [cardId], references: [id], onDelete: Restrict)
+  order           Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+
+  @@index([manufacturerId, attachedAt])
+}
+
+model MarketingCardCustomer {
+  id         String   @id @default(uuid())
+  cardId     String
+  customerId String
+  linkedAt   DateTime @default(now())
+  activatedAt DateTime?
+  status     String   @default("LINKED") // LINKED | ACTIVE | CANCELLED
+  card       MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  customer   User @relation("MarketingCardCustomerUser", fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId])
+  @@index([customerId, status])
+}
+
+model MarketingBenefit {
+  id          String   @id @default(uuid())
+  campaignId  String
+  name        String
+  description String?  @db.Text
+  benefitType String   @default("CUSTOM")
+  value       Float    @default(0)
+  terms       String?  @db.Text
+  startsAt    DateTime?
+  expiresAt   DateTime?
+  status      String   @default("ACTIVE")
+  campaign    MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, status])
+}
+
+model MarketingCardEvent {
+  id         String   @id @default(uuid())
+  cardId     String
+  eventType  String
+  actorId    String?
+  actorRole  String?
+  fromStatus String?
+  toStatus   String?
+  referenceId String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  card       MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model NcmBranch {

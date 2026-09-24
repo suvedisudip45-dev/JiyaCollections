@@ -34,6 +34,7 @@ import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
+import MarketingCards from "./pages/MarketingCards";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 
@@ -91,6 +92,7 @@ const App = () => {
                   <Route path="/delivery-monitor" element={<DeliveryMonitor token={token} />} />
                   <Route path="/manufacturers" element={<Manufacturers token={token} />} />
                   <Route path="/manufacturer-inventory" element={<ManufacturerInventoryMonitor token={token} />} />
+                  <Route path="/marketing-cards" element={<MarketingCards token={token} />} />
                   <Route path="/customers" element={<Customers token={token} />} />
                   <Route path="/loyalty-levels" element={<LoyaltyLevels token={token} />} />
                   <Route path="/categories" element={<Categories token={token} />} />

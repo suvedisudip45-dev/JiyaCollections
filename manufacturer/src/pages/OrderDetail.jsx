@@ -51,6 +51,8 @@ const OrderDetail = () => {
   const [deliveryInstruction, setDeliveryInstruction] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
   const [storyLetter, setStoryLetter] = useState(null);
+  const [marketingCard, setMarketingCard] = useState(null);
+  const [marketingCardLoading, setMarketingCardLoading] = useState(false);
   const [checklistModalOpen, setChecklistModalOpen] = useState(false);
 
   // Pre-Dispatch Packaging Checklist State
@@ -151,10 +153,25 @@ const OrderDetail = () => {
     }
   }, [assignment?.order?.id, backendUrl, token]);
 
+  const fetchMarketingCardStatus = useCallback(async () => {
+    if (!token || !assignment?.order?.id) return;
+    try {
+      const res = await axios.get(`${backendUrl}/api/marketing-cards/manufacturer/cards?status=all`, { headers: { token } });
+      const linked = (res.data.cards || []).find((card) => card.orderLink?.orderId === assignment.order.id);
+      setMarketingCard(linked || null);
+    } catch (error) {
+      setMarketingCard(null);
+    }
+  }, [assignment?.order?.id, backendUrl, token]);
+
   useEffect(() => {
     fetchAssignment();
     fetchStoryLetterStatus();
   }, [fetchAssignment, fetchStoryLetterStatus]);
+
+  useEffect(() => {
+    fetchMarketingCardStatus();
+  }, [fetchMarketingCardStatus]);
 
   const validateChecklist = () => {
     const benefits = assignment?.order?.fulfillmentBenefits || {};
@@ -173,7 +190,27 @@ const OrderDetail = () => {
       toast.warning("Please enter the Marketing Partner Card ID.");
       return false;
     }
+    if (assignment?.order?.marketingCardRequired !== false && !marketingCard) {
+      toast.warning("Attach a received marketing card before packing this order.");
+      return false;
+    }
     return true;
+  };
+
+  const handleAttachMarketingCard = async () => {
+    if (!assignment?.order?.id || marketingCardLoading) return;
+    setMarketingCardLoading(true);
+    try {
+      const res = await axios.post(`${backendUrl}/api/marketing-cards/manufacturer/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
+      if (!res.data.success) throw new Error(res.data.message);
+      setMarketingCard(res.data.card);
+      setChecklist((previous) => ({ ...previous, marketingCard: true, marketingCardId: res.data.card?.card?.cardCode || res.data.card?.cardCode || "attached" }));
+      toast.success("Marketing card attached to this order.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to attach a marketing card.");
+    } finally {
+      setMarketingCardLoading(false);
+    }
   };
 
   const toggleChecklistField = (field) => {
@@ -459,6 +496,18 @@ const OrderDetail = () => {
         previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
         busy={actionLoading}
       >
+        {order?.marketingCardRequired !== false && (
+          <div className={`rounded-2xl border px-4 py-4 ${marketingCard ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-black uppercase tracking-wider text-slate-900">Marketing card required</p>
+                <p className="mt-1 text-xs text-slate-600">Use one card from your confirmed inventory before packaging handoff.</p>
+                {marketingCard && <p className="mt-2 font-mono text-xs font-bold text-emerald-800">Attached: {marketingCard.card?.cardCode || marketingCard.cardCode}</p>}
+              </div>
+              {!marketingCard && !isDispatchLocked && <button type="button" onClick={handleAttachMarketingCard} disabled={marketingCardLoading} className="shrink-0 rounded-xl bg-slate-950 px-3 py-2 text-[11px] font-bold text-white disabled:opacity-50">{marketingCardLoading ? "Attaching..." : "Attach random card"}</button>}
+            </div>
+          </div>
+        )}
         {workflowStatus === "quality_check" && (
           <button type="button" onClick={handlePrintPersonalizedLetter} disabled={actionLoading} className="w-full rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-left transition hover:border-violet-300 hover:bg-violet-100 disabled:opacity-50">
             <span className="flex items-center gap-2 text-sm font-black text-violet-900"><Printer className="h-4 w-4" /> Print compulsory customer letter</span>
