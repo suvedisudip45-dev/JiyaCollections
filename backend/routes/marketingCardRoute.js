@@ -9,6 +9,7 @@ import {
   adminCreatePartner,
   adminGenerateBatch,
   adminListCards,
+  adminCardMetrics,
   adminListCampaigns,
   adminListPartners,
   manufacturerAttachCard,
@@ -29,6 +30,7 @@ marketingCardRouter.post("/admin/campaigns", adminAuth, adminCreateCampaign);
 marketingCardRouter.post("/admin/batches", adminAuth, adminGenerateBatch);
 marketingCardRouter.post("/admin/assignments", adminAuth, adminAssignCards);
 marketingCardRouter.get("/admin/cards", adminAuth, adminListCards);
+marketingCardRouter.get("/admin/metrics", adminAuth, adminCardMetrics);
 
 marketingCardRouter.get("/manufacturer/cards", authManufacturer, manufacturerListCards);
 marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authManufacturer, manufacturerReceiveCard);

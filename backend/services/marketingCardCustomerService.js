@@ -83,7 +83,12 @@ export const linkCustomerCard = async ({ customerId, cardCode }) => prisma.$tran
     },
   });
   if (!card || card.physicalStatus === "CANCELLED") throw new Error("Card not found or cancelled.");
-  if (!card.orderLink?.order || card.orderLink.order.userId !== customerId || !isDelivered(card.orderLink.order)) {
+  if (card.orderLink?.order?.userId && card.orderLink.order.userId !== customerId) {
+    const error = new Error("This card is not available to this customer.");
+    error.code = "MARKETING_CARD_FORBIDDEN";
+    throw error;
+  }
+  if (!card.orderLink?.order || !isDelivered(card.orderLink.order)) {
     throw new Error("This card is not eligible for activation by this customer.");
   }
   if (!campaignWindowIsValid(card.campaign)) throw new Error("This card campaign is not currently active.");
@@ -106,13 +111,22 @@ export const resolveCustomerQr = async ({ customerId, token }) => {
       campaign: { include: { marketingPartner: true, benefits: { include: { redemptions: { where: { customerId, status: "REDEEMED" }, take: 1 } } } } },
     },
   });
-  if (!card || !card.customerLinks.length || card.physicalStatus === "CANCELLED") throw new Error("QR token is invalid or not available to this customer.");
+  if (!card) throw new Error("QR token is invalid.");
+  if (!card.customerLinks.length || card.physicalStatus === "CANCELLED") {
+    const error = new Error("QR token is not available to this customer.");
+    error.code = "MARKETING_CARD_FORBIDDEN";
+    throw error;
+  }
   return safeCard({ link: card.customerLinks[0], card });
 };
 
 export const redeemCustomerBenefit = async ({ customerId, cardId, benefitId }) => prisma.$transaction(async (tx) => {
   const link = await tx.marketingCardCustomer.findFirst({ where: { cardId, customerId, status: { not: "CANCELLED" } } });
-  if (!link) throw new Error("Card is not linked to this customer.");
+  if (!link) {
+    const error = new Error("Card is not linked to this customer.");
+    error.code = "MARKETING_CARD_FORBIDDEN";
+    throw error;
+  }
   const benefit = await tx.marketingBenefit.findUnique({ where: { id: benefitId }, include: { campaign: true } });
   const card = await tx.marketingCard.findUnique({ where: { id: cardId }, include: { campaign: true } });
   if (!benefit || !card || benefit.campaignId !== card.campaignId || !campaignWindowIsValid(card.campaign)) throw new Error("Benefit is not eligible.");
@@ -121,4 +135,3 @@ export const redeemCustomerBenefit = async ({ customerId, cardId, benefitId }) =
   await addEvent(tx, { cardId, eventType: "BENEFIT_REDEEMED", actorId: customerId, referenceId: redemption.id });
   return redemption;
 }, { isolationLevel: "Serializable" });
-EOF

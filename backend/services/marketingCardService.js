@@ -18,6 +18,18 @@ const geographyCode = (campaign) => {
 const secureToken = () => crypto.randomBytes(32).toString("hex");
 const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
 const randomBatchSuffix = () => crypto.randomBytes(4).toString("hex").toUpperCase();
+const normalizeLocation = (value) => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+const parseJsonObject = (value) => {
+  if (value && typeof value === "object") return value;
+  try { return JSON.parse(value || "{}"); } catch { return {}; }
+};
+export const campaignMatchesOrder = (campaign, order) => {
+  const address = parseJsonObject(order.address);
+  if (campaign.targetScopeType === "NATIONWIDE") return true;
+  if (campaign.targetScopeType === "PROVINCE") return normalizeLocation(campaign.targetProvince) === normalizeLocation(address.province || address.state);
+  if (campaign.targetScopeType === "DISTRICT") return normalizeLocation(campaign.targetDistrict) === normalizeLocation(address.district);
+  return false;
+};
 
 const addEvent = (tx, { cardId, eventType, actorId, actorRole, fromStatus, toStatus, referenceId, metadata }) => tx.marketingCardEvent.create({
   data: { cardId, eventType, actorId, actorRole, fromStatus, toStatus, referenceId, metadata },
@@ -127,6 +139,27 @@ export const listAdminCards = ({ campaignId, manufacturerId, status } = {}) => p
   include: { campaign: { include: { marketingPartner: true } }, batch: true, assignedManufacturer: { select: { id: true, name: true, city: true } } },
 });
 
+export const getCardMetrics = async () => {
+  const [physicalStatuses, assignedCount, receivedCount, attachedCount, deliveredCount, activatedCount, redeemedCount] = await Promise.all([
+    prisma.marketingCard.groupBy({ by: ["physicalStatus"], _count: { _all: true } }),
+    prisma.marketingCardAssignment.count({ where: { status: { not: "CANCELLED" } } }),
+    prisma.marketingCardReceipt.count(),
+    prisma.marketingCardOrder.count(),
+    prisma.marketingCardOrder.count({ where: { order: { fulfillmentStatus: "delivered" } } }),
+    prisma.marketingCardCustomer.count({ where: { status: "ACTIVE" } }),
+    prisma.marketingBenefitRedemption.count({ where: { status: "REDEEMED" } }),
+  ]);
+  return {
+    physical: Object.fromEntries(physicalStatuses.map((item) => [item.physicalStatus, item._count._all])),
+    assigned: assignedCount,
+    received: receivedCount,
+    attached: attachedCount,
+    delivered: deliveredCount,
+    activated: activatedCount,
+    redeemed: redeemedCount,
+  };
+};
+
 export const assignCards = async ({ campaignId, manufacturerId, quantity, cardIds, actorId }) => {
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
   if (!manufacturer || !manufacturer.isActive) throw new Error("Active manufacturer not found.");
@@ -193,11 +226,16 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
 
   const inventory = await tx.marketingCard.findMany({
     where: { assignedManufacturerId: manufacturerId, physicalStatus: "AVAILABLE", assignments: { some: { manufacturerId, status: "RECEIVED", receipt: { isNot: null } } } },
-    select: { id: true, physicalStatus: true },
+    select: { id: true, physicalStatus: true, campaign: true },
     take: 500,
   });
-  if (!inventory.length) throw new Error("No received marketing cards are available for this manufacturer.");
-  const selected = inventory[crypto.randomInt(inventory.length)];
+  const eligibleInventory = inventory.filter((card) => ACTIVE_CAMPAIGN_STATUSES.has(card.campaign.status) && campaignMatchesOrder(card.campaign, order));
+  if (!eligibleInventory.length) {
+    const error = new Error("No received marketing cards match this order's active campaign and delivery geography.");
+    error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+    throw error;
+  }
+  const selected = eligibleInventory[crypto.randomInt(eligibleInventory.length)];
   const claimed = await tx.marketingCard.updateMany({ where: { id: selected.id, assignedManufacturerId: manufacturerId, physicalStatus: "AVAILABLE" }, data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() } });
   if (claimed.count !== 1) throw new Error("Card inventory changed during attachment. Please retry.");
   const link = await tx.marketingCardOrder.create({ data: { cardId: selected.id, orderId, manufacturerId } });

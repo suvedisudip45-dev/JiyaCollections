@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper: Safely parse JSON
@@ -607,6 +608,18 @@ const updateAssignmentStatus = async (req, res) => {
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
+
+    if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
+      try {
+        await ensureOrderCardAttached({ orderId: assignment.orderId, manufacturerId });
+      } catch (error) {
+        return res.status(error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400).json({
+          success: false,
+          message: error.message,
+          code: error.code || "MARKETING_CARD_VALIDATION_FAILED",
+        });
+      }
+    }
 
     const lockedStatuses = new Set(["ready_for_pickup", "picked_up", "in_transit", "delivered", "return_requested"]);
     if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined || packagingChecklist !== undefined)) {

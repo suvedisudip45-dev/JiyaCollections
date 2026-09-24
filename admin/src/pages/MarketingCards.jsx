@@ -13,6 +13,7 @@ const MarketingCards = ({ token }) => {
   const [campaigns, setCampaigns] = useState([]);
   const [manufacturers, setManufacturers] = useState([]);
   const [cards, setCards] = useState([]);
+  const [metrics, setMetrics] = useState(null);
   const [partner, setPartner] = useState(emptyPartner);
   const [campaign, setCampaign] = useState(emptyCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 1 });
@@ -23,16 +24,18 @@ const MarketingCards = ({ token }) => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [partnerRes, campaignRes, manufacturerRes, cardRes] = await Promise.all([
+      const [partnerRes, campaignRes, manufacturerRes, cardRes, metricsRes] = await Promise.all([
         axios.get(`${backendUrl}/api/marketing-cards/admin/partners`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/campaigns`, { headers: { token } }),
         axios.get(`${backendUrl}/api/manufacturer/admin/list`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/cards?status=all`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/marketing-cards/admin/metrics`, { headers: { token } }),
       ]);
       setPartners(partnerRes.data.partners || []);
       setCampaigns(campaignRes.data.campaigns || []);
       setManufacturers(manufacturerRes.data.manufacturers || []);
       setCards(cardRes.data.cards || []);
+      setMetrics(metricsRes.data.metrics || null);
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to load marketing card data.");
     } finally {
@@ -85,6 +88,16 @@ const MarketingCards = ({ token }) => {
     result[card.physicalStatus] = (result[card.physicalStatus] || 0) + 1;
     return result;
   }, {});
+  const lifecycleMetrics = {
+    ...summary,
+    ...(metrics?.physical || {}),
+    ASSIGNED: metrics?.physical?.ASSIGNED || metrics?.assigned || 0,
+    RECEIVED: metrics?.physical?.RECEIVED || metrics?.received || 0,
+    ATTACHED: metrics?.physical?.ATTACHED || metrics?.attached || 0,
+    DELIVERED: metrics?.delivered || 0,
+    ACTIVATED: metrics?.activated || 0,
+    REDEEMED: metrics?.redeemed || 0,
+  };
 
   return (
     <div className="space-y-6">
@@ -94,11 +107,11 @@ const MarketingCards = ({ token }) => {
         <p className="mt-1 text-sm text-slate-500">Generate controlled inventory, then allocate it to the manufacturer best positioned for campaign demand.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        {["GENERATED", "ASSIGNED", "AVAILABLE", "ATTACHED", "CANCELLED"].map((status) => (
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+        {["GENERATED", "ASSIGNED", "RECEIVED", "AVAILABLE", "ATTACHED", "DELIVERED", "ACTIVATED", "REDEEMED"].map((status) => (
           <div key={status} className="rounded-xl border border-slate-200 bg-white p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{status}</p>
-            <p className="mt-2 text-2xl font-black text-slate-900">{summary[status] || 0}</p>
+            <p className="mt-2 text-2xl font-black text-slate-900">{lifecycleMetrics[status] || 0}</p>
           </div>
         ))}
       </div>

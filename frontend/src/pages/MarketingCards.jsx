@@ -150,14 +150,14 @@ const MarketingCards = () => {
           <button disabled={working} className="mt-3 w-full bg-[var(--ink)] px-4 py-3 text-xs font-bold uppercase tracking-wider text-white disabled:opacity-50">{working ? "Verifying..." : "Activate card"}</button>
         </form>
 
-        <form onSubmit={resolveQr} className="border border-[var(--line)] bg-[#f2eee6] p-5 sm:p-6">
+        {cards.length > 0 ? <form onSubmit={resolveQr} className="border border-[var(--line)] bg-[#f2eee6] p-5 sm:p-6">
           <div className="flex items-center gap-3"><LockKeyhole size={20} /><h2 className="text-sm font-black uppercase tracking-wider">Verify QR token</h2></div>
           <p className="mt-3 text-xs leading-5 text-[var(--muted)]">QR verification is authenticated and reveals no card details to anonymous visitors.</p>
           <button type="button" onClick={() => setScannerOpen((open) => !open)} className="mt-4 inline-flex items-center gap-2 border border-[var(--ink)] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-[var(--ink)]">{scannerOpen ? "Close camera" : "Scan with camera"}</button>
           {scannerOpen && <div className="mt-4 overflow-hidden border border-[var(--line)] bg-black"><video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline aria-label="Marketing card QR scanner" />{scannerError && <p className="bg-white px-3 py-2 text-xs text-[var(--muted)]">{scannerError}</p>}</div>}
           <input value={qrToken} onChange={(event) => setQrToken(event.target.value)} placeholder="Paste secure QR token" className="mt-5 w-full border border-[var(--line)] bg-white px-3 py-3 font-mono text-xs outline-none focus:border-[var(--ink)]" maxLength={64} required />
           <button disabled={working} className="mt-3 w-full border border-[var(--ink)] px-4 py-3 text-xs font-bold uppercase tracking-wider text-[var(--ink)] disabled:opacity-50">Verify authenticated QR</button>
-        </form>
+        </form> : <section className="border border-[var(--line)] bg-[#f2eee6] p-5 sm:p-6"><div className="flex items-center gap-3"><LockKeyhole size={20} /><h2 className="text-sm font-black uppercase tracking-wider">QR verification locked</h2></div><p className="mt-3 text-xs leading-5 text-[var(--muted)]">Activate a delivered card first. Authenticated QR verification becomes available after the card is linked to your account.</p></section>}
       </div>
 
       <div className="mt-10">

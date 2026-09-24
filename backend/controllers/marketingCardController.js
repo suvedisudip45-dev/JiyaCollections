@@ -6,6 +6,7 @@ import {
   generateBatch,
   getManufacturerInventory,
   listAdminCards,
+  getCardMetrics,
   listCampaigns,
   listPartners,
   receiveCard,
@@ -18,7 +19,7 @@ import {
 } from "../services/marketingCardCustomerService.js";
 
 const sendError = (res, error) => {
-  const status = error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400;
+  const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403 : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" ? 409 : 400;
   return res.status(status).json({ success: false, message: error.message || "Marketing card operation failed.", code: error.code || "MARKETING_CARD_ERROR" });
 };
 
@@ -60,6 +61,10 @@ export const adminAssignCards = async (req, res) => {
 
 export const adminListCards = async (req, res) => {
   try { return res.json({ success: true, cards: await listAdminCards(req.query) }); } catch (error) { return sendError(res, error); }
+};
+
+export const adminCardMetrics = async (_req, res) => {
+  try { return res.json({ success: true, metrics: await getCardMetrics() }); } catch (error) { return sendError(res, error); }
 };
 
 export const manufacturerListCards = async (req, res) => {
