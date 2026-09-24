@@ -849,6 +849,7 @@ model MarketingCampaign {
   status            String   @default("ACTIVE") // DRAFT | ACTIVE | PAUSED | EXPIRED | CANCELLED
   startsAt          DateTime?
   endsAt            DateTime?
+  cardExpiresAt     DateTime? // Cards can be redeemed until this date (must be >= endsAt + 1 day)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   marketingPartner  MarketingPartner @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
@@ -859,6 +860,7 @@ model MarketingCampaign {
   @@index([marketingPartnerId, status])
   @@index([targetScopeType, targetProvince, targetDistrict])
 }
+
 
 model MarketingCardBatch {
   id         String   @id @default(uuid())

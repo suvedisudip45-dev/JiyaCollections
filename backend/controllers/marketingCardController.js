@@ -1,9 +1,13 @@
 import {
   assignCards,
   attachRandomCardToOrder,
+  adminInvalidateCards,
+  bulkUpdateManufacturerCards,
   createCampaign,
   createPartner,
+  deactivateCampaign,
   generateBatch,
+  getAdminCardStats,
   getManufacturerInventory,
   listAdminCards,
   getCardMetrics,
@@ -50,6 +54,15 @@ export const adminCreateCampaign = async (req, res) => {
   } catch (error) { return sendError(res, error); }
 };
 
+export const adminDeactivateCampaign = async (req, res) => {
+  try {
+    const { campaignId } = req.params;
+    if (!campaignId) return res.status(400).json({ success: false, message: "campaignId is required." });
+    const campaign = await deactivateCampaign({ campaignId, actorId: req.adminId, reason: req.body.reason });
+    return res.json({ success: true, campaign, message: `Campaign "${campaign.name}" has been deactivated. Existing customer cards remain valid until card expiry.` });
+  } catch (error) { return sendError(res, error); }
+};
+
 export const adminGenerateBatch = async (req, res) => {
   try {
     const result = await generateBatch({ ...req.body, actorId: req.adminId });
@@ -65,11 +78,27 @@ export const adminAssignCards = async (req, res) => {
 };
 
 export const adminListCards = async (req, res) => {
-  try { return res.json({ success: true, cards: await listAdminCards(req.query) }); } catch (error) { return sendError(res, error); }
+  try {
+    const { partnerId, campaignId, manufacturerId, status, page, pageSize, search } = req.query;
+    const result = await listAdminCards({ partnerId, campaignId, manufacturerId, status, page, pageSize, search });
+    return res.json({ success: true, ...result });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminCardStats = async (_req, res) => {
+  try { return res.json({ success: true, stats: await getAdminCardStats() }); } catch (error) { return sendError(res, error); }
 };
 
 export const adminCardMetrics = async (_req, res) => {
   try { return res.json({ success: true, metrics: await getCardMetrics() }); } catch (error) { return sendError(res, error); }
+};
+
+export const adminInvalidate = async (req, res) => {
+  try {
+    const { cardIds, reason } = req.body;
+    const result = await adminInvalidateCards({ cardIds, reason, actorId: req.adminId });
+    return res.json({ success: true, ...result, message: `${result.summary.succeeded} card(s) invalidated successfully.` });
+  } catch (error) { return sendError(res, error); }
 };
 
 export const manufacturerListCards = async (req, res) => {
@@ -78,6 +107,22 @@ export const manufacturerListCards = async (req, res) => {
 
 export const manufacturerReceiveCard = async (req, res) => {
   try { return res.json({ success: true, card: await receiveCard({ cardId: req.params.cardId, manufacturerId: req.manufacturerId, notes: req.body.notes }) }); } catch (error) { return sendError(res, error); }
+};
+
+export const manufacturerBulkUpdateCards = async (req, res) => {
+  try {
+    const { cardIds, action, notes } = req.body;
+    if (!Array.isArray(cardIds) || cardIds.length === 0) return res.status(400).json({ success: false, message: "cardIds array is required." });
+    if (!action) return res.status(400).json({ success: false, message: "action is required (RECEIVE, DAMAGED, NOT_FOUND)." });
+    const results = await bulkUpdateManufacturerCards({ cardIds, action: String(action).toUpperCase(), manufacturerId: req.manufacturerId, notes });
+    const total = results.succeeded.length + results.skipped.length + results.failed.length;
+    return res.json({
+      success: true,
+      results,
+      summary: { total, succeeded: results.succeeded.length, skipped: results.skipped.length, failed: results.failed.length },
+      message: `${results.succeeded.length} of ${total} card(s) updated successfully.`,
+    });
+  } catch (error) { return sendError(res, error); }
 };
 
 export const manufacturerAttachCard = async (req, res) => {

@@ -13,9 +13,18 @@ const addEvent = (tx, { cardId, eventType, actorId, fromStatus, toStatus, refere
 });
 
 const campaignWindowIsValid = (campaign, now = new Date()) => {
-  if (!campaign || campaign.status !== "ACTIVE") return false;
+  if (!campaign) return false;
+  // Allow CANCELLED campaigns for already-linked cards; block only for new verifications
+  if (!["ACTIVE", "PAUSED"].includes(campaign.status) && campaign.status !== "CANCELLED") return false;
   if (campaign.startsAt && campaign.startsAt > now) return false;
   if (campaign.endsAt && campaign.endsAt < now) return false;
+  return true;
+};
+
+/** Returns true if card expiry date has not passed (customers can still activate / partners can still redeem). */
+const cardExpiryIsValid = (campaign, now = new Date()) => {
+  if (!campaign) return false;
+  if (campaign.cardExpiresAt && new Date(campaign.cardExpiresAt) < now) return false;
   return true;
 };
 
@@ -60,6 +69,8 @@ const safeCard = (linkOrWrapper) => {
     benefitMessage: hasBenefit
       ? "Congratulations! You have an exclusive reward."
       : "Better luck next time!",
+    cardExpiresAt: card.campaign?.cardExpiresAt || null,
+    isCardExpired: card.campaign?.cardExpiresAt ? new Date() > new Date(card.campaign.cardExpiresAt) : false,
     partner: {
       id: card.campaign.marketingPartner.id,
       name: card.campaign.marketingPartner.name,
@@ -68,11 +79,13 @@ const safeCard = (linkOrWrapper) => {
     campaign: {
       id: card.campaign.id,
       name: card.campaign.name,
+      status: card.campaign.status,
       targetScopeType: card.campaign.targetScopeType,
       targetProvince: card.campaign.targetProvince,
       targetDistrict: card.campaign.targetDistrict,
       startsAt: card.campaign.startsAt,
       endsAt: card.campaign.endsAt,
+      cardExpiresAt: card.campaign.cardExpiresAt,
     },
     benefits,
   };
@@ -140,8 +153,11 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
     throw error;
   }
 
-  if (!campaignWindowIsValid(card.campaign)) {
-    throw new Error("This card campaign is not currently active.");
+  // Allow verification for active campaigns only (campaign must not have ended)
+  const isActive = card.campaign.status === "ACTIVE";
+  const hasEnded = card.campaign.endsAt && new Date() > new Date(card.campaign.endsAt);
+  if (!isActive || hasEnded) {
+    throw new Error("This card's campaign is no longer active and cannot accept new verifications.");
   }
 
   if (card.customerLinks.length && card.customerLinks[0].customerId !== customerId) {
@@ -190,7 +206,9 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
     },
   });
 
-  if (!card) throw new Error("Card not found.");
+  if (!card || card.physicalStatus === "CANCELLED") {
+    throw new Error("Card not found or has been cancelled.");
+  }
 
   // Validate QR hash match
   const expectedHash = hashToken(rawToken);
@@ -275,7 +293,9 @@ export const activateCustomerCard = async ({ customerId, cardId }) => prisma.$tr
     },
   });
 
-  if (!card) throw new Error("Card not found.");
+  if (!card || card.physicalStatus === "CANCELLED") {
+    throw new Error("Card not found or has been cancelled.");
+  }
 
   if (!card.customerLinks.length) {
     throw new Error("Card must be verified by scanning the QR code before activation.");
@@ -284,6 +304,11 @@ export const activateCustomerCard = async ({ customerId, cardId }) => prisma.$tr
   const link = card.customerLinks[0];
   if (link.status === "ACTIVE" && link.activatedAt) {
     return safeCard({ link, card });
+  }
+
+  // Check card expiry — campaign can be inactive/cancelled but card can still be activated if not expired
+  if (!cardExpiryIsValid(card.campaign)) {
+    throw new Error(`This card has expired. The card expiry date was ${new Date(card.campaign.cardExpiresAt).toLocaleDateString()}. No further activation is possible.`);
   }
 
   const updatedLink = await tx.marketingCardCustomer.update({

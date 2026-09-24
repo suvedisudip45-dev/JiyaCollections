@@ -7,14 +7,18 @@ import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import {
   adminAssignCards,
   adminCreateCampaign,
+  adminDeactivateCampaign,
   adminCreatePartner,
   adminGenerateBatch,
   adminListCards,
   adminCardMetrics,
+  adminCardStats,
+  adminInvalidate,
   adminListCampaigns,
   adminListPartners,
   adminGetLocations,
   manufacturerAttachCard,
+  manufacturerBulkUpdateCards,
   manufacturerListCards,
   manufacturerReceiveCard,
   customerListCards,
@@ -52,13 +56,17 @@ marketingCardRouter.get("/admin/partners", adminAuth, adminListPartners);
 marketingCardRouter.post("/admin/partners", adminAuth, adminCreatePartner);
 marketingCardRouter.get("/admin/campaigns", adminAuth, adminListCampaigns);
 marketingCardRouter.post("/admin/campaigns", adminAuth, adminCreateCampaign);
+marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", adminAuth, adminDeactivateCampaign);
 marketingCardRouter.post("/admin/batches", adminAuth, adminGenerateBatch);
 marketingCardRouter.post("/admin/assignments", adminAuth, adminAssignCards);
 marketingCardRouter.get("/admin/cards", adminAuth, adminListCards);
+marketingCardRouter.post("/admin/cards/invalidate", adminAuth, adminInvalidate);
 marketingCardRouter.get("/admin/metrics", adminAuth, adminCardMetrics);
+marketingCardRouter.get("/admin/stats", adminAuth, adminCardStats);
 
 // ── Manufacturer routes ──────────────────────────────────────
 marketingCardRouter.get("/manufacturer/cards", authManufacturer, manufacturerListCards);
+marketingCardRouter.post("/manufacturer/cards/bulk-status", authManufacturer, manufacturerBulkUpdateCards);
 marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authManufacturer, manufacturerReceiveCard);
 marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authManufacturer, manufacturerAttachCard);
 

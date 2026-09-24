@@ -252,12 +252,15 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
       ]
     : [];
 
+  const isCancelled = card.physicalStatus === "CANCELLED";
+
   return {
-    valid: true,
+    valid: !isCancelled,
     genuine: true,
     cardId: card.id,
     cardCode: card.cardCode,
     physicalStatus: card.physicalStatus,
+    isCancelled,
     isActivated,
     activatedAt: customerLink?.activatedAt || null,
     linkedAt: customerLink?.linkedAt || null,
@@ -265,7 +268,9 @@ export const validatePartnerQr = async ({ partnerId, cardCode }) => {
     hasBenefit,
     isRedeemed,
     isRejected,
-    message: isRejected
+    message: isCancelled
+      ? "⚠️ This card has been CANCELLED (Damaged, Lost, or Invalidated). Redemption is blocked."
+      : isRejected
       ? "⚠️ This card has been marked as REJECTED / Suspicious."
       : isRedeemed
       ? "⚠️ This card offer has already been redeemed."
@@ -315,6 +320,9 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       error.code = "PARTNER_FORBIDDEN";
       throw error;
     }
+    if (card.physicalStatus === "CANCELLED") {
+      throw new Error("This card has been cancelled and cannot be redeemed.");
+    }
     if (!card.hasBenefit || !card.benefit || card.benefitId !== benefitId) {
       throw new Error("This card does not carry any claimable benefit. Better luck next time!");
     }
@@ -331,6 +339,10 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
     const customerLink = card.customerLinks[0];
     if (!customerLink || customerLink.status !== "ACTIVE" || !customerLink.activatedAt) {
       throw new Error("Card must be activated by the customer before benefit redemption.");
+    }
+    // Check card expiry — campaign can be deactivated but card is still redeemable until cardExpiresAt
+    if (card.campaign?.cardExpiresAt && new Date() > new Date(card.campaign.cardExpiresAt)) {
+      throw new Error(`This card has expired as of ${new Date(card.campaign.cardExpiresAt).toLocaleDateString()}. The offer can no longer be redeemed.`);
     }
     const customerId = customerLink.customerId;
 

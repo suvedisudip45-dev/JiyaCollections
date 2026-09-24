@@ -31,8 +31,13 @@ export const getAllowedOrigins = () => {
   return [...new Set(origins.filter(Boolean))];
 };
 
+const LOCALHOST_ORIGIN_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/i;
+
 export const isOriginAllowed = (origin) => {
   if (!origin) return true;
   const normalizedOrigin = normalizeOrigin(origin);
+  if (LOCALHOST_ORIGIN_REGEX.test(normalizedOrigin)) {
+    return true;
+  }
   return getAllowedOrigins().includes(normalizedOrigin);
 };
