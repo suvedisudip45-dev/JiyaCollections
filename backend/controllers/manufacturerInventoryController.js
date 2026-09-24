@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper to safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -19,11 +20,16 @@ const parseJSON = (val, fallback = []) => {
 const getMyInventory = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const pagination = getPagination(req.query);
 
     // 1. Get all published products (with admin-defined sizes, colors, variants)
-    const allProducts = await prisma.product.findMany({
-      where: { published: true },
-      orderBy: { name: "asc" },
+    const productWhere = { published: true };
+    const [allProducts, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where: productWhere,
+        orderBy: { name: "asc" },
+        skip: pagination.skip,
+        take: pagination.limit,
       select: {
         id: true,
         name: true,
@@ -36,7 +42,9 @@ const getMyInventory = async (req, res) => {
         variants: true,
         stockQuantity: true,
       },
-    });
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
 
     // 2. Get manufacturer's inventory entries
     const myInventory = await prisma.manufacturerInventory.findMany({
@@ -151,7 +159,7 @@ const getMyInventory = async (req, res) => {
       };
     });
 
-    res.json({ success: true, inventory: merged });
+    res.json(paginatedResponse("inventory", merged, pagination, total));
   } catch (error) {
     console.error("getMyInventory error:", error);
     res.json({ success: false, message: error.message });
@@ -271,43 +279,61 @@ const updateStock = async (req, res) => {
 };
 
 // ─── ADMIN: GET ALL INVENTORY (Multi-Hub Monitor) ─────────────────────────────
+const buildAdminInventoryItem = (inventory, product) => ({
+  id: inventory.id,
+  productId: inventory.productId,
+  productName: inventory.productName,
+  quantity: inventory.quantity,
+  reservedQty: inventory.reservedQty,
+  manufacturer: {
+    id: inventory.manufacturer.id,
+    name: inventory.manufacturer.name,
+    city: inventory.manufacturer.city,
+    businessName: inventory.manufacturer.name,
+  },
+  product: product || {
+    id: inventory.productId,
+    name: inventory.productName,
+  },
+  availableQty: Math.max(0, inventory.quantity - inventory.reservedQty),
+  lowStockThreshold: 5,
+});
+
 const getAllInventory = async (req, res) => {
   try {
-    const allInventory = await prisma.manufacturerInventory.findMany({
-      include: {
+    const pagination = getPagination(req.query);
+    const [allInventory, total] = await prisma.$transaction([
+      prisma.manufacturerInventory.findMany({
+      select: {
+        id: true,
+        productId: true,
+        productName: true,
+        quantity: true,
+        reservedQty: true,
         manufacturer: {
-          select: { id: true, name: true, city: true, qualityRating: true, isActive: true },
+          select: { id: true, name: true, city: true },
         },
       },
       orderBy: { productName: "asc" },
-    });
+      skip: pagination.skip,
+      take: pagination.limit,
+      }),
+      prisma.manufacturerInventory.count(),
+    ]);
 
     const productIds = [...new Set(allInventory.map((i) => i.productId))];
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, name: true, image: true, price: true, category: true, sizes: true, colors: true },
+      select: { id: true, name: true, image: true, price: true, category: true },
     });
     const productMap = {};
     products.forEach((p) => {
       productMap[p.id] = p;
     });
 
-    const enriched = allInventory.map((inv) => ({
-      ...inv,
-      manufacturer: {
-        ...inv.manufacturer,
-        businessName: inv.manufacturer.name,
-      },
-      product: productMap[inv.productId] || {
-        id: inv.productId,
-        name: inv.productName,
-      },
-      variantsStock: parseJSON(inv.variantsStock, []),
-      availableQty: Math.max(0, inv.quantity - inv.reservedQty),
-      lowStockThreshold: 5,
-    }));
+    const enriched = allInventory.map((inv) => buildAdminInventoryItem(inv, productMap[inv.productId]));
 
-    res.json({ success: true, inventory: enriched });
+    res.json(paginatedResponse("inventory", enriched, pagination, total));
   } catch (error) {
     console.error("getAllInventory error:", error);
     res.json({ success: false, message: error.message });
@@ -341,4 +367,10 @@ const getLowStockAlerts = async (req, res) => {
   }
 };
 
-export { getMyInventory, updateStock, getAllInventory, getLowStockAlerts };
+export {
+  getMyInventory,
+  updateStock,
+  getAllInventory,
+  getLowStockAlerts,
+  buildAdminInventoryItem,
+};

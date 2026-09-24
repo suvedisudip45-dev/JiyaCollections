@@ -1,0 +1,3522 @@
+# Personalized Story Letter System — Implementation Specification
+
+**Document status:** Implementation-ready architecture  
+**Audience:** Senior backend/frontend engineers, database engineers, QA, DevOps, AI coding agents, technical reviewers  
+**Primary goal:** Add a scalable personalized sequential-letter system without regressing existing platform functionality.
+
+---
+
+## 1. Executive Summary
+
+The platform already receives customer orders and allocates fulfillment to the optimal manufacturer. This feature adds a personalized serialized-story letter to qualifying orders.
+
+The central invariant is:
+
+> **A customer progresses through a story sequence independently of manufacturer, order allocation, or letter template.**
+
+For each qualifying order:
+
+1. Identify the customer's active story assignment.
+2. Atomically reserve exactly the next eligible story letter.
+3. Select a letter template that respects the customer's recent-template history.
+4. Build a render context from customer, order, product, current story letter, and previous delivered letter data.
+5. Render the final personalized letter.
+6. Persist an immutable delivery/render snapshot.
+7. Make the printable artifact available in the manufacturer dashboard.
+8. Only advance the customer's story progress when the configured consumption event occurs.
+9. When the final letter of a story is consumed, atomically assign another eligible story and start it at letter 1.
+
+Manufacturers should not decide which story or letter a customer receives. The system decides this automatically.
+
+---
+
+# 2. Non-Negotiable Business Rules
+
+## BR-01 — Customer sequence is independent of manufacturer
+
+A customer's next letter must not depend on which manufacturer fulfills the order.
+
+Example:
+
+```text
+Customer A
+Order 1 -> Manufacturer X -> Story 7 / Letter 1
+Order 2 -> Manufacturer Y -> Story 7 / Letter 2
+Order 3 -> Manufacturer Z -> Story 7 / Letter 3
+```
+
+## BR-02 — Same story sequence
+
+A customer receives:
+
+```text
+Story 7 / Letter 1
+Story 7 / Letter 2
+Story 7 / Letter 3
+...
+```
+
+until the story is completed.
+
+## BR-03 — Different templates are allowed
+
+The same story letter sequence must remain intact even though the presentation template changes.
+
+Example:
+
+```text
+Story 7 / Letter 10 -> Template 3
+Story 7 / Letter 11 -> Template 7
+Story 7 / Letter 12 -> Template 2
+```
+
+The template does NOT affect story sequencing.
+
+## BR-04 — Do not use the same template consecutively
+
+The default algorithm must exclude the customer's immediately previous template.
+
+Recommended configurable enhancement:
+
+```text
+template_repetition_window = 3
+```
+
+When the window is 3, templates used in the previous three consumed letters are excluded where enough active templates exist.
+
+## BR-05 — Story completion
+
+After the final letter is consumed:
+
+```text
+current story -> COMPLETED
+next eligible story -> ASSIGNED
+next story letter -> 1
+```
+
+The transition must be atomic.
+
+## BR-06 — New customer
+
+A new qualifying customer must automatically receive an eligible story.
+
+Default recommendation:
+
+**balanced assignment** across active stories.
+
+Do not hard-code a fixed number of letters per story.
+
+## BR-07 — Stories may have different lengths
+
+Examples:
+
+```text
+Story A = 100 letters
+Story B = 63 letters
+Story C = 142 letters
+```
+
+Never assume all stories have 100 letters.
+
+## BR-08 — Manufacturer simplicity
+
+Manufacturer dashboard must not expose story selection.
+
+Manufacturer action:
+
+```text
+[ Print Personalized Letter ]
+```
+
+The backend resolves the correct letter.
+
+## BR-09 — Preview must not consume a letter
+
+Previewing a letter cannot advance customer progress or permanently reserve a letter.
+
+## BR-10 — Printing must be idempotent
+
+Repeated clicks/retries must not accidentally allocate multiple story letters for the same order.
+
+## BR-11 — Immutable delivery snapshot
+
+Once a personalized letter is printed/consumed, store the exact rendered content and relevant template/story versions used.
+
+Later template/story edits must not alter historical records.
+
+## BR-12 — Existing platform behavior must remain unchanged
+
+The feature must be additive and isolated.
+
+Existing:
+
+- order creation
+- manufacturer allocation
+- fulfillment
+- payments
+- customer accounts
+- product catalog
+- existing dashboard behavior
+
+must continue working exactly as before unless an explicitly documented integration point requires otherwise.
+
+---
+
+# 3. Recommended High-Level Architecture
+
+```text
+                         ┌──────────────────┐
+                         │     CUSTOMER     │
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                    ┌─────────────────────────┐
+                    │ Customer Story State    │
+                    │ active story + progress │
+                    └────────────┬────────────┘
+                                 │
+                         qualifying order
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Letter Allocation       │
+                    │ Transaction / Lock      │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    ▼                         ▼
+             Current Letter             Previous Letter
+                    │                         │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Template Selection      │
+                    │ weighted + recent       │
+                    │ exclusion               │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Render Context          │
+                    │ customer/order/product  │
+                    │ story/letter/history    │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Template Renderer       │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Final HTML/PDF          │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Immutable Snapshot      │
+                    └────────────┬────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │ Manufacturer Dashboard │
+                    │       [ PRINT ]         │
+                    └─────────────────────────┘
+```
+
+---
+
+# 4. Domain Model
+
+The minimum recommended domain entities are:
+
+```text
+Customer
+Order
+Product
+Manufacturer
+
+Story
+StoryLetter
+StoryVersion / LetterVersion (if required by existing architecture)
+
+CustomerStoryAssignment
+LetterAllocation / LetterDelivery
+
+LetterTemplate
+LetterTemplateVersion
+
+StoryAssignmentPolicy
+StoryConfiguration
+
+Idempotency / allocation request key
+AuditLog
+```
+
+Do not duplicate existing Customer, Order, Product, or Manufacturer tables if they already exist.
+
+Integrate with existing entities using foreign keys/references.
+
+---
+
+# 5. Database Design
+
+## 5.1 `stories`
+
+Purpose: Stores the logical story.
+
+```sql
+CREATE TABLE stories (
+    id                  BIGINT PRIMARY KEY,
+    title               VARCHAR(255) NOT NULL,
+    description         TEXT NULL,
+    status              VARCHAR(20) NOT NULL,
+    assignment_enabled  BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_new_customers BOOLEAN NOT NULL DEFAULT TRUE,
+    allow_after_completion BOOLEAN NOT NULL DEFAULT TRUE,
+    assignment_weight   DECIMAL(10,4) NOT NULL DEFAULT 1,
+    created_by          BIGINT NULL,
+    updated_by          BIGINT NULL,
+    created_at          TIMESTAMP NOT NULL,
+    updated_at          TIMESTAMP NOT NULL
+);
+```
+
+Recommended statuses:
+
+```text
+DRAFT
+ACTIVE
+PAUSED
+ARCHIVED
+```
+
+Rules:
+
+- `DRAFT`: never assigned.
+- `ACTIVE`: eligible according to flags.
+- `PAUSED`: do not assign new customers; existing assignments may continue depending on policy.
+- `ARCHIVED`: never newly assigned.
+
+Do not physically delete a story if it has historical deliveries.
+
+---
+
+## 5.2 `story_letters`
+
+Purpose: Stores each ordered letter/chapter.
+
+```sql
+CREATE TABLE story_letters (
+    id                    BIGINT PRIMARY KEY,
+    story_id              BIGINT NOT NULL,
+    sequence_number       INT NOT NULL,
+    title                 VARCHAR(255) NOT NULL,
+    summary               TEXT NULL,
+    continuity_summary    TEXT NULL,
+    content               TEXT NOT NULL,
+    status                VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    created_at            TIMESTAMP NOT NULL,
+    updated_at            TIMESTAMP NOT NULL,
+
+    FOREIGN KEY (story_id) REFERENCES stories(id),
+
+    UNIQUE (story_id, sequence_number)
+);
+```
+
+`summary`:
+
+- Internal/general summary.
+- Useful for admin and reporting.
+
+`continuity_summary`:
+
+- Specifically written for natural reference from the next letter.
+- Example:
+  > I had just discovered a mysterious locked room inside the abandoned house.
+
+`content`:
+
+- Main story content.
+
+Recommended status:
+
+```text
+DRAFT
+ACTIVE
+ARCHIVED
+```
+
+Do not assume `MAX(sequence_number)` is always the final letter if drafts exist. A published-story validation must explicitly determine the final active sequence.
+
+---
+
+## 5.3 `customer_story_assignments`
+
+Purpose: Tracks which story a customer is currently progressing through.
+
+```sql
+CREATE TABLE customer_story_assignments (
+    id                    BIGINT PRIMARY KEY,
+    customer_id           BIGINT NOT NULL,
+    story_id              BIGINT NOT NULL,
+
+    status                VARCHAR(20) NOT NULL,
+
+    next_sequence_number  INT NOT NULL DEFAULT 1,
+
+    started_at            TIMESTAMP NOT NULL,
+    completed_at          TIMESTAMP NULL,
+
+    created_at            TIMESTAMP NOT NULL,
+    updated_at            TIMESTAMP NOT NULL,
+
+    FOREIGN KEY (customer_id) REFERENCES customers(id),
+    FOREIGN KEY (story_id) REFERENCES stories(id)
+);
+```
+
+Recommended statuses:
+
+```text
+ACTIVE
+COMPLETED
+CANCELLED
+```
+
+Recommended constraint:
+
+```text
+At most one ACTIVE customer_story_assignment per customer
+```
+
+Implement using a partial/filtered unique index if supported, or enforce transactionally.
+
+Example PostgreSQL:
+
+```sql
+CREATE UNIQUE INDEX ux_customer_active_story
+ON customer_story_assignments(customer_id)
+WHERE status = 'ACTIVE';
+```
+
+---
+
+# 6. Story Assignment History
+
+Do not overwrite historical story assignments.
+
+When a customer finishes Story 7 and moves to Story 13:
+
+```text
+Customer Story Assignment #1
+Story 7
+COMPLETED
+
+Customer Story Assignment #2
+Story 13
+ACTIVE
+```
+
+This gives a complete story journey.
+
+---
+
+# 7. `letter_allocations` / `letter_deliveries`
+
+Use one authoritative table for the lifecycle of a letter allocated to an order.
+
+Recommended name:
+
+```text
+letter_deliveries
+```
+
+Schema:
+
+```sql
+CREATE TABLE letter_deliveries (
+    id                      BIGINT PRIMARY KEY,
+
+    customer_id             BIGINT NOT NULL,
+    order_id                BIGINT NOT NULL,
+    manufacturer_id         BIGINT NULL,
+
+    customer_story_assignment_id BIGINT NOT NULL,
+    story_id                BIGINT NOT NULL,
+    story_letter_id         BIGINT NOT NULL,
+
+    template_id             BIGINT NOT NULL,
+    template_version_id     BIGINT NOT NULL,
+
+    status                  VARCHAR(30) NOT NULL,
+
+    reserved_at             TIMESTAMP NULL,
+    printed_at              TIMESTAMP NULL,
+    packed_at               TIMESTAMP NULL,
+    shipped_at              TIMESTAMP NULL,
+    delivered_at            TIMESTAMP NULL,
+    cancelled_at            TIMESTAMP NULL,
+
+    rendered_content        TEXT NULL,
+    rendered_html           TEXT NULL,
+    rendered_document_url   TEXT NULL,
+
+    created_at              TIMESTAMP NOT NULL,
+    updated_at              TIMESTAMP NOT NULL,
+
+    FOREIGN KEY (customer_id) REFERENCES customers(id),
+    FOREIGN KEY (order_id) REFERENCES orders(id),
+    FOREIGN KEY (story_id) REFERENCES stories(id),
+    FOREIGN KEY (story_letter_id) REFERENCES story_letters(id),
+    FOREIGN KEY (template_id) REFERENCES letter_templates(id),
+    FOREIGN KEY (template_version_id) REFERENCES letter_template_versions(id)
+);
+```
+
+Recommended status:
+
+```text
+RESERVED
+PRINTED
+PACKED
+SHIPPED
+DELIVERED
+CANCELLED
+VOIDED
+```
+
+Exact lifecycle can be adapted to the existing fulfillment system.
+
+---
+
+# 8. Critical uniqueness constraints
+
+The database must prevent duplicate allocation.
+
+At minimum:
+
+```sql
+CREATE UNIQUE INDEX ux_letter_order
+ON letter_deliveries(order_id);
+```
+
+if the business rule is one personalized letter per order.
+
+If multiple letter allocations per order are intentionally supported, use a unique business key such as:
+
+```text
+(order_id, letter_type)
+```
+
+Do not rely solely on application code.
+
+---
+
+# 9. `letter_templates`
+
+```sql
+CREATE TABLE letter_templates (
+    id                  BIGINT PRIMARY KEY,
+    name                VARCHAR(255) NOT NULL,
+    description         TEXT NULL,
+    status              VARCHAR(20) NOT NULL,
+    selection_weight    DECIMAL(10,4) NOT NULL DEFAULT 1,
+    repetition_window   INT NULL,
+    created_by          BIGINT NULL,
+    updated_by          BIGINT NULL,
+    created_at          TIMESTAMP NOT NULL,
+    updated_at          TIMESTAMP NOT NULL
+);
+```
+
+Recommended statuses:
+
+```text
+DRAFT
+ACTIVE
+PAUSED
+ARCHIVED
+```
+
+---
+
+# 10. `letter_template_versions`
+
+Never overwrite a template version that has already been used in a printed letter.
+
+```sql
+CREATE TABLE letter_template_versions (
+    id                  BIGINT PRIMARY KEY,
+    template_id         BIGINT NOT NULL,
+    version_number      INT NOT NULL,
+
+    body                TEXT NOT NULL,
+
+    variable_schema     JSON/TEXT NULL,
+
+    created_by          BIGINT NULL,
+    created_at          TIMESTAMP NOT NULL,
+
+    FOREIGN KEY (template_id) REFERENCES letter_templates(id),
+
+    UNIQUE (template_id, version_number)
+);
+```
+
+`body` contains the template markup.
+
+Example:
+
+```text
+Dear {{customer.first_name}},
+
+{{opening}}
+
+{{continuity}}
+
+{{story_content}}
+
+{{closing}}
+
+Until then, enjoy your {{product.name}}.
+
+{{signature}}
+```
+
+---
+
+# 11. Template language
+
+Do not allow arbitrary code execution in templates.
+
+The renderer must use a safe, allowlisted template engine.
+
+Supported features:
+
+### Variables
+
+```text
+{{customer.first_name}}
+{{product.name}}
+{{letter.title}}
+{{letter.content}}
+{{previous_letter.continuity_summary}}
+```
+
+### Conditions
+
+```text
+{{#if previous_letter}}
+...
+{{/if}}
+```
+
+### Optional else
+
+```text
+{{#if previous_letter}}
+...
+{{else}}
+...
+{{/if}}
+```
+
+Do NOT support arbitrary SQL, JavaScript, Python, shell commands, or executable expressions.
+
+---
+
+# 12. Canonical render context
+
+The backend prepares a render context before invoking the template renderer.
+
+Example:
+
+```json
+{
+  "customer": {
+    "id": 10293,
+    "first_name": "Rahul",
+    "last_name": "Sharma",
+    "display_name": "Rahul"
+  },
+
+  "order": {
+    "id": 88432,
+    "number": "ORD-88432"
+  },
+
+  "product": {
+    "id": 812,
+    "name": "Black Oversized T-Shirt",
+    "category": "T-Shirt",
+    "color": "Black"
+  },
+
+  "story": {
+    "id": 7,
+    "title": "The Girl From The Mountain"
+  },
+
+  "letter": {
+    "id": 43,
+    "number": 43,
+    "title": "The Secret Door",
+    "summary": "...",
+    "continuity_summary": "...",
+    "content": "..."
+  },
+
+  "previous_letter": {
+    "id": 42,
+    "number": 42,
+    "title": "The Mountain",
+    "summary": "...",
+    "continuity_summary": "..."
+  },
+
+  "next_letter": {
+    "number": 44,
+    "title": "..."
+  },
+
+  "flags": {
+    "is_first_letter_of_story": false,
+    "is_last_letter_of_story": false,
+    "is_new_story": false
+  }
+}
+```
+
+Do not expose the database directly to the template renderer.
+
+---
+
+# 13. Semantic variables
+
+In addition to direct fields, support computed variables:
+
+```text
+{{opening}}
+{{continuity}}
+{{story_content}}
+{{closing}}
+{{signature}}
+```
+
+These are generated by backend logic and can differ for:
+
+- first letter
+- middle letter
+- last letter
+- new-story transition
+- story completion
+
+Example:
+
+```text
+{{continuity}}
+```
+
+For letter 43:
+
+```text
+Last time, I was telling you about the mysterious locked room I had discovered upstairs.
+```
+
+For letter 1:
+
+```text
+This is where our story begins...
+```
+
+This avoids forcing every template author to duplicate complex conditional logic.
+
+---
+
+# 14. Previous-letter logic
+
+Previous letter must be determined from actual delivery history, not merely:
+
+```text current_sequence - 1
+```
+
+Query the most recent successfully consumed/delivered letter for the same customer/story assignment.
+
+Example:
+
+```sql
+SELECT *
+FROM letter_deliveries
+WHERE customer_id = :customer_id
+  AND customer_story_assignment_id = :assignment_id
+  AND status IN ('PRINTED', 'PACKED', 'SHIPPED', 'DELIVERED')
+ORDER BY printed_at DESC, id DESC
+LIMIT 1;
+```
+
+Adapt the status condition to the business definition of "consumed".
+
+If the previous letter is from a completed story, do not use it as the normal previous-letter continuity reference for the new story.
+
+Use:
+
+```text
+is_new_story = true
+```
+
+and a story-transition opening.
+
+---
+
+# 15. Template selection algorithm
+
+## Required behavior
+
+The same customer must not receive the same template consecutively.
+
+Recommended behavior:
+
+```text
+recent_template_window = 3
+```
+
+Algorithm:
+
+```text
+1. Load active templates.
+2. Load the customer's most recent N consumed letter templates.
+3. Exclude those template IDs.
+4. If no templates remain, relax the exclusion window safely.
+5. Perform weighted random selection.
+6. Return selected template.
+```
+
+Example:
+
+```text
+Active templates:
+1,2,3,4,5,6,7,8
+
+Recent:
+3,7,4
+
+Candidates:
+1,2,5,6,8
+
+Weighted selection:
+=> 6
+```
+
+Next selection excludes:
+
+```text
+7,4,6
+```
+
+---
+
+# 16. Weighted random selection
+
+Use `selection_weight`.
+
+Example:
+
+```text
+Template A = 20
+Template B = 15
+Template C = 15
+Template D = 10
+Template E = 10
+Template F = 10
+Template G = 10
+Template H = 10
+```
+
+Do not use a random algorithm that creates biased results.
+
+Implement standard weighted selection:
+
+```text
+total_weight = sum(weights)
+
+random = secure_random_or_prng(0, total_weight)
+
+iterate templates:
+    random -= template.weight
+    if random <= 0:
+        return template
+```
+
+The exact random implementation can follow the language/framework standard library.
+
+---
+
+# 17. Template selection fallback
+
+If there are fewer active templates than the configured repetition window:
+
+```text
+Active templates = 2
+Window = 3
+```
+
+It is impossible to satisfy the window.
+
+Do not fail letter allocation.
+
+Fallback:
+
+1. Exclude immediate previous template.
+2. If still impossible, select from active templates.
+3. Never fail the order solely because template variety is insufficient.
+4. Emit an observability warning/metric.
+
+---
+
+# 18. Story assignment algorithm
+
+## New customer
+
+When a qualifying customer needs a story:
+
+```text
+1. Find active eligible stories.
+2. Exclude stories not allowed for new customers.
+3. Select according to configured assignment strategy.
+4. Create customer_story_assignment.
+5. Start at sequence 1.
+```
+
+Default strategy:
+
+```text
+BALANCED
+```
+
+---
+
+# 19. Balanced story assignment
+
+Avoid repeatedly selecting the same story.
+
+Maintain assignment counts using database queries or a denormalized counter.
+
+Possible metric:
+
+```text
+active_customer_count
+```
+
+For small/medium scale, compute from indexed assignments.
+
+For high scale, maintain counters asynchronously with safeguards.
+
+Initial implementation recommendation:
+
+```text
+SELECT story_id, COUNT(*)
+FROM customer_story_assignments
+WHERE status = 'ACTIVE'
+GROUP BY story_id;
+```
+
+Then choose among the least-loaded eligible stories using weight as a secondary factor.
+
+Do not run expensive count queries on every request if scale makes this slow. Introduce a maintained statistics table/cache after measurement.
+
+---
+
+# 20. Story selection must be configurable
+
+Create a configuration/policy model:
+
+```text
+story_assignment_policies
+
+id
+name
+strategy
+enabled
+created_at
+updated_at
+```
+
+Strategies may include:
+
+```text
+BALANCED
+WEIGHTED_RANDOM
+ROUND_ROBIN
+MANUAL
+```
+
+Initial implementation:
+
+```text
+BALANCED
+```
+
+Do not implement unused strategies unless needed; design the interface so they can be added without rewriting allocation.
+
+---
+
+# 21. Completing a story
+
+When the final letter is consumed:
+
+```text
+BEGIN TRANSACTION
+
+lock customer story assignment
+
+verify assignment is still ACTIVE
+
+mark current story assignment COMPLETED
+
+select next eligible story
+
+create new ACTIVE assignment with next_sequence_number = 1
+
+COMMIT
+```
+
+The new story assignment must not be created twice if two requests race.
+
+Use row locking and/or unique constraints.
+
+---
+
+# 22. The most important allocation transaction
+
+Letter allocation must be concurrency-safe.
+
+Pseudo-code:
+
+```text
+BEGIN TRANSACTION
+
+1. Lock active customer_story_assignment.
+
+2. Verify customer/order is eligible.
+
+3. Verify this order does not already have a letter_delivery.
+
+4. Read next_sequence_number.
+
+5. Load active story letter for that sequence.
+
+6. If no letter exists:
+       validate story state
+       complete story if appropriate
+       assign next story
+       continue with sequence 1
+
+7. Select template using recent template history.
+
+8. Build render context.
+
+9. Render final content.
+
+10. Create letter_delivery with RESERVED/PRINTED state.
+
+11. Advance next_sequence_number.
+
+12. If current letter is final:
+       complete current assignment
+       create next assignment if business policy requires immediate assignment.
+
+COMMIT
+```
+
+Do not release the lock between steps 1–11.
+
+---
+
+# 23. Important improvement: reservation vs consumption
+
+Recommended lifecycle:
+
+```text
+ORDER CREATED
+      ↓
+LETTER RESERVED
+      ↓
+LETTER PRINTED
+      ↓
+LETTER PACKED
+      ↓
+LETTER SHIPPED
+      ↓
+LETTER DELIVERED
+```
+
+The system must explicitly define when a letter becomes "consumed".
+
+Recommended default:
+
+```text
+CONSUMED = PRINTED
+```
+
+if printing means it physically enters the package and cannot be reused.
+
+Alternative:
+
+```text
+CONSUMED = PACKED
+```
+
+if reprinting before packing should reuse the same letter.
+
+Make this a configuration/business rule.
+
+---
+
+# 24. Reprint behavior
+
+A reprint of the same order must NOT allocate the next story letter.
+
+Example:
+
+```text
+Order #1001
+Letter #43
+Template #4
+```
+
+If manufacturer clicks print again:
+
+```text
+Still Letter #43
+Same allocation
+Same rendered snapshot
+```
+
+unless an admin explicitly voids/replaces it.
+
+This is critical.
+
+---
+
+# 25. Idempotency
+
+The print endpoint must accept an idempotency key.
+
+Example:
+
+```http
+POST /orders/{orderId}/personalized-letter/print
+Idempotency-Key: 8f0c...
+```
+
+Store the key and resulting allocation.
+
+Repeated request:
+
+```text
+same idempotency key
+        ↓
+return existing result
+```
+
+Also enforce database uniqueness by order.
+
+Do not rely on idempotency keys alone.
+
+---
+
+# 26. API Design
+
+Adapt naming to the existing project conventions.
+
+## Admin
+
+### Stories
+
+```http
+GET    /admin/stories
+POST   /admin/stories
+GET    /admin/stories/:id
+PATCH  /admin/stories/:id
+POST   /admin/stories/:id/publish
+POST   /admin/stories/:id/pause
+POST   /admin/stories/:id/archive
+```
+
+### Story letters
+
+```http
+GET    /admin/stories/:id/letters
+POST   /admin/stories/:id/letters
+PATCH  /admin/story-letters/:letterId
+POST   /admin/stories/:id/letters/import
+POST   /admin/stories/:id/letters/reorder
+```
+
+### Templates
+
+```http
+GET    /admin/letter-templates
+POST   /admin/letter-templates
+GET    /admin/letter-templates/:id
+PATCH  /admin/letter-templates/:id
+POST   /admin/letter-templates/:id/publish
+POST   /admin/letter-templates/:id/pause
+POST   /admin/letter-templates/:id/preview
+```
+
+### Customer story history
+
+```http
+GET /admin/customers/:customerId/story-progress
+GET /admin/customers/:customerId/letter-history
+```
+
+### Manual correction
+
+```http
+POST /admin/customers/:customerId/story-progress/adjust
+```
+
+Manual adjustments require a reason and must be audited.
+
+---
+
+# 27. Manufacturer API
+
+Manufacturer should have minimal endpoints.
+
+```http
+GET  /manufacturer/orders/:orderId/personalized-letter
+POST /manufacturer/orders/:orderId/personalized-letter/print
+GET  /manufacturer/orders/:orderId/personalized-letter/document
+```
+
+The GET endpoint may return:
+
+```json
+{
+  "available": true,
+  "status": "READY",
+  "preview_url": "..."
+}
+```
+
+Do not expose internal assignment controls.
+
+Manufacturer must not send:
+
+```text
+story_id
+letter_id
+sequence_number
+template_id
+```
+
+to decide the letter.
+
+Those values are server-controlled.
+
+---
+
+# 28. Customer API
+
+Customers may optionally see their story history, depending on product requirements.
+
+Possible endpoints:
+
+```http
+GET /me/story
+GET /me/story/history
+```
+
+Do not expose unpublished story content.
+
+---
+
+# 29. Admin UI
+
+## Story list
+
+Display:
+
+```text
+Story
+Status
+Number of letters
+Active customers
+Completed customers
+Assignment eligibility
+Last updated
+```
+
+## Story editor
+
+Fields:
+
+```text
+Title
+Description
+Status
+New-customer eligible
+Post-completion eligible
+Assignment weight
+```
+
+## Letter editor
+
+Fields:
+
+```text
+Sequence
+Title
+Summary
+Continuity Summary
+Content
+Status
+```
+
+Support:
+
+```text
+Save Draft
+Preview
+Publish
+Archive
+```
+
+---
+
+# 30. Letter import
+
+Admin should be able to import many letters.
+
+Recommended CSV:
+
+```csv
+sequence_number,title,summary,continuity_summary,content
+1,The Beginning,"...","...","..."
+2,The Road,"...","...","..."
+3,The House,"...","...","..."
+```
+
+Import workflow:
+
+```text
+Upload
+  ↓
+Parse
+  ↓
+Validate
+  ↓
+Show errors
+  ↓
+Preview
+  ↓
+Confirm
+  ↓
+Transactional import
+```
+
+Validation:
+
+- sequence must be positive integer
+- sequence must be unique within story
+- title required
+- content required
+- no duplicate sequences
+- no missing sequence gaps if contiguous sequences are required
+- template variables not applicable to raw story content unless explicitly supported
+- maximum content length
+- encoding validation
+
+Never partially import silently.
+
+---
+
+# 31. Template editor
+
+Admin should see:
+
+```text
+Template Name
+Description
+Selection Weight
+Repetition Window
+Status
+Body
+```
+
+Provide a variable picker:
+
+```text
+Customer
+  first_name
+  last_name
+
+Product
+  name
+  category
+  color
+
+Story
+  title
+  letter.number
+  letter.title
+  letter.content
+  letter.summary
+
+Previous Letter
+  title
+  summary
+  continuity_summary
+
+Computed
+  opening
+  continuity
+  closing
+  signature
+```
+
+Provide:
+
+```text
+Validate Template
+Preview Template
+Save Draft
+Publish
+```
+
+---
+
+# 32. Template validation
+
+Before publishing a template:
+
+1. Parse template syntax.
+2. Reject malformed blocks.
+3. Reject unknown variables.
+4. Reject unsafe expressions.
+5. Verify required variables.
+6. Render using a synthetic context.
+7. Ensure rendering completes successfully.
+8. Ensure output is not empty.
+9. Ensure output length is within configured limits.
+
+Example invalid:
+
+```text
+{{customer.firstname}}
+```
+
+when only:
+
+```text
+{{customer.first_name}}
+```
+
+is allowed.
+
+---
+
+# 33. Letter preview
+
+Admin should be able to select:
+
+```text
+Customer
+Order
+Story
+Letter
+Template
+```
+
+and render a preview.
+
+Preview must be read-only.
+
+It must not:
+
+- reserve letter
+- consume letter
+- change progress
+- change template history
+- create delivery history
+
+---
+
+# 34. Manufacturer print flow
+
+Manufacturer order page:
+
+```text
+Order #88432
+
+Products
+...
+
+Personalized Letter
+
+Status: Ready
+
+[ Preview ]
+[ Print Personalized Letter ]
+```
+
+After print:
+
+```text
+Status: Printed
+Letter: #43
+Template: Mysterious
+
+[ Reprint ]
+```
+
+Reprint uses the existing delivery record.
+
+---
+
+# 35. Customer history
+
+Admin should see:
+
+```text
+Customer: Rahul
+
+Current Story:
+The Girl From The Mountain
+
+Current Letter:
+43
+
+Story Progress:
+42 / 100
+
+Recent Letters:
+
+#40  Template 2  Printed
+#41  Template 7  Printed
+#42  Template 4  Printed
+#43  Template 1  Printed
+```
+
+Clicking a delivery should show the exact historical rendered snapshot.
+
+---
+
+# 36. Audit logging
+
+Every administrative mutation should be auditable.
+
+Audit:
+
+```text
+admin_id
+action
+entity_type
+entity_id
+old_value
+new_value
+reason
+created_at
+```
+
+Important events:
+
+```text
+STORY_CREATED
+STORY_UPDATED
+STORY_PUBLISHED
+STORY_PAUSED
+STORY_ARCHIVED
+
+LETTER_CREATED
+LETTER_UPDATED
+LETTER_PUBLISHED
+
+TEMPLATE_CREATED
+TEMPLATE_UPDATED
+TEMPLATE_PUBLISHED
+
+CUSTOMER_STORY_ASSIGNED
+CUSTOMER_STORY_COMPLETED
+CUSTOMER_STORY_ADJUSTED
+
+LETTER_RESERVED
+LETTER_PRINTED
+LETTER_REPRINTED
+LETTER_CANCELLED
+```
+
+Do not log sensitive data unnecessarily.
+
+---
+
+# 37. Role and permission model
+
+## Admin
+
+Can:
+
+- manage stories
+- manage letters
+- manage templates
+- view customer story progress
+- view letter history
+- configure assignment policies
+- perform manual adjustments
+- preview letters
+- view audit logs
+
+## Manufacturer
+
+Can:
+
+- view eligible orders
+- preview assigned personalized letter
+- print assigned personalized letter
+- reprint the same allocated letter according to permissions
+
+Cannot:
+
+- choose story
+- choose letter
+- change customer sequence
+- choose template
+- modify story content
+- modify template
+- change customer assignment
+
+## Customer/User
+
+Can:
+
+- use existing customer platform
+- optionally view their own story information if product requirements permit
+
+Cannot modify story progress.
+
+---
+
+# 38. Performance architecture
+
+The letter-print API should be fast.
+
+Do not perform unnecessary queries.
+
+Recommended data-loading plan:
+
+### Query 1
+
+Customer + order + product information.
+
+### Query 2
+
+Lock active customer story assignment.
+
+### Query 3
+
+Current story letter.
+
+### Query 4
+
+Recent template history.
+
+### Query 5
+
+Template version.
+
+### Query 6
+
+Previous letter metadata if required.
+
+Where practical, combine reads without weakening transaction correctness.
+
+Do not make external network calls inside the critical database transaction.
+
+---
+
+# 39. Never call slow external services inside the allocation lock
+
+Bad:
+
+```text
+BEGIN TRANSACTION
+  lock customer
+  call external AI API
+  generate PDF using external service
+  save
+COMMIT
+```
+
+This can hold locks for seconds and cause contention.
+
+Preferred:
+
+```text
+Prepare deterministic render data
+        ↓
+Short database transaction
+        ↓
+Persist allocation + snapshot/context
+        ↓
+Generate expensive PDF asynchronously
+        ↓
+Attach artifact
+```
+
+If PDF generation is fast and local, it may be performed synchronously after allocation.
+
+---
+
+# 40. Recommended separation: allocation vs rendering
+
+Separate services/modules:
+
+```text
+StoryAssignmentService
+LetterAllocationService
+TemplateSelectionService
+LetterRenderService
+LetterDocumentService
+```
+
+Responsibilities:
+
+### StoryAssignmentService
+
+- assign initial story
+- complete story
+- assign next story
+
+### LetterAllocationService
+
+- reserve next letter
+- enforce idempotency
+- manage transaction
+- advance progress
+
+### TemplateSelectionService
+
+- load recent templates
+- apply exclusion window
+- weighted selection
+
+### LetterRenderService
+
+- prepare render context
+- validate variables
+- render safe template
+
+### LetterDocumentService
+
+- HTML/PDF generation
+- storage
+- print artifact retrieval
+
+---
+
+# 41. Concurrency requirements
+
+This feature is concurrency-sensitive.
+
+Possible race:
+
+```text
+Request A:
+Customer next letter = 43
+
+Request B:
+Customer next letter = 43
+```
+
+Both must not consume #43 independently.
+
+Use:
+
+```text
+SELECT ... FOR UPDATE
+```
+
+or the database's equivalent row-level lock.
+
+Transaction must lock the active customer story assignment before reading/updating `next_sequence_number`.
+
+Also protect against:
+
+```text
+two active story assignments
+```
+
+with a database uniqueness constraint.
+
+---
+
+# 42. Order eligibility
+
+Do not assume every order gets a letter.
+
+Create a central business function:
+
+```text
+isPersonalizedLetterEligible(order)
+```
+
+Possible rules:
+
+- order status
+- product eligibility
+- customer eligibility
+- country/market
+- promotional campaign
+- opt-in/opt-out
+
+Do not duplicate this logic across manufacturer UI, API, and background jobs.
+
+---
+
+# 43. Product snapshot
+
+If product names can change, the historical letter should not change.
+
+At rendering time, use the product information appropriate to the order.
+
+If the existing order system already stores an order-item snapshot, prefer that over the current product catalog.
+
+Example:
+
+```text
+Order item:
+name_at_purchase = "Black Oversized T-Shirt"
+```
+
+Use:
+
+```text
+order_item.name_at_purchase
+```
+
+rather than current:
+
+```text
+products.name
+```
+
+for historical correctness.
+
+---
+
+# 44. Customer name snapshot
+
+Same principle applies to customer identity.
+
+At render time:
+
+```text
+customer.first_name
+```
+
+is appropriate.
+
+After printing, the rendered snapshot is authoritative.
+
+Historical output must not be regenerated from mutable customer data.
+
+---
+
+# 45. Story editing rules
+
+If a story letter has never been consumed:
+
+```text
+Editable
+```
+
+If a letter has already been delivered:
+
+```text
+Do not mutate historical version.
+Create a new version.
+```
+
+Recommended:
+
+```text
+story_letter_versions
+```
+
+if the business expects frequent edits.
+
+Alternative simpler initial approach:
+
+- Draft edits allowed before publication.
+- Published letters are immutable.
+- Corrections create a new version.
+
+---
+
+# 46. Story versioning
+
+If stories can be changed substantially after customers have started them, add:
+
+```sql
+story_versions
+```
+
+with:
+
+```text
+id
+story_id
+version_number
+status
+created_at
+published_at
+```
+
+and connect letters to a story version.
+
+If the product requirement is that stories are immutable after publication, this can be deferred.
+
+Recommended initial rule:
+
+> Published story letter content is immutable; corrections create versions.
+
+This keeps the first implementation simpler while preserving historical correctness.
+
+---
+
+# 47. Handling deleted/paused stories
+
+Never delete a story that has historical deliveries.
+
+If a story is paused:
+
+```text
+New customer -> not assigned
+Existing customer -> continue or stop according to configuration
+```
+
+If archived:
+
+```text
+Never newly assigned
+```
+
+If an active customer is currently assigned to an archived story:
+
+- preserve historical assignment
+- define whether next letter can continue
+- if continuation is prohibited, transition the customer to another story through a controlled transaction
+
+Never silently lose customer progress.
+
+---
+
+# 48. Story completion edge case
+
+If:
+
+```text
+next_sequence_number = 101
+```
+
+but Story has only 100 active letters:
+
+This is not a normal request error.
+
+It indicates a story completion condition.
+
+Transactionally:
+
+```text
+complete Story A
+assign Story B
+allocate Story B / Letter 1
+```
+
+If no eligible next story exists:
+
+```text
+complete Story A
+no next story
+customer_story status = COMPLETED
+customer has no active story
+```
+
+The order should receive a clearly defined result:
+
+```text
+LETTER_NOT_AVAILABLE
+```
+
+or the system should have a fallback/default story policy.
+
+Do not fabricate a letter.
+
+---
+
+# 49. No eligible story policy
+
+Admin must be able to configure what happens when no next story is available.
+
+Options:
+
+```text
+WAIT
+USE_FALLBACK_STORY
+DISABLE_PERSONALIZED_LETTER
+```
+
+Default recommendation:
+
+```text
+DISABLE_PERSONALIZED_LETTER
+```
+
+with an observable warning rather than assigning an invalid story.
+
+---
+
+# 50. Caching strategy
+
+Potentially cache:
+
+### Safe to cache
+
+- active template list
+- published template versions
+- story metadata
+- story letter content for published stories
+- assignment policy
+
+### Do not blindly cache
+
+- customer's current sequence
+- active customer story assignment
+- letter allocation state
+
+Those require transactional database truth.
+
+Cache invalidation:
+
+```text
+template publish -> invalidate template cache
+story letter publish -> invalidate story cache
+```
+
+---
+
+# 51. Indexing
+
+At minimum:
+
+```sql
+CREATE INDEX ix_story_letters_story_sequence
+ON story_letters(story_id, sequence_number);
+
+CREATE INDEX ix_customer_story_customer_status
+ON customer_story_assignments(customer_id, status);
+
+CREATE INDEX ix_letter_deliveries_customer_story
+ON letter_deliveries(customer_id, customer_story_assignment_id, created_at DESC);
+
+CREATE INDEX ix_letter_deliveries_order
+ON letter_deliveries(order_id);
+
+CREATE INDEX ix_letter_deliveries_template_history
+ON letter_deliveries(customer_id, template_id, created_at DESC);
+
+CREATE INDEX ix_stories_status_assignment
+ON stories(status, assignment_enabled);
+
+CREATE INDEX ix_templates_status
+ON letter_templates(status);
+```
+
+Adapt indexes to the actual database engine.
+
+Do not add indexes blindly. Verify with query plans after implementation.
+
+---
+
+# 52. API response performance targets
+
+Target:
+
+```text
+Preview: < 300 ms typical
+Allocation/print metadata: < 500 ms typical
+Simple admin story list: < 300 ms typical
+```
+
+These are engineering targets, not contractual guarantees.
+
+Measure p50/p95/p99.
+
+Critical allocation transaction should remain short.
+
+---
+
+# 53. Error handling
+
+Use stable machine-readable error codes.
+
+Examples:
+
+```text
+LETTER_NOT_ELIGIBLE
+CUSTOMER_STORY_NOT_FOUND
+NO_ELIGIBLE_STORY
+STORY_LETTER_NOT_FOUND
+TEMPLATE_RENDER_ERROR
+INVALID_TEMPLATE
+LETTER_ALREADY_ALLOCATED
+LETTER_ALREADY_PRINTED
+ORDER_NOT_FOUND
+ORDER_NOT_ELIGIBLE
+PERMISSION_DENIED
+IDEMPOTENCY_CONFLICT
+CONCURRENT_ALLOCATION
+```
+
+Do not expose database errors directly to users.
+
+Log detailed internal errors with correlation/request IDs.
+
+---
+
+# 54. Observability
+
+Track metrics:
+
+```text
+letter_allocation_success_total
+letter_allocation_failure_total
+letter_render_success_total
+letter_render_failure_total
+letter_print_total
+letter_reprint_total
+story_assignment_total
+story_completion_total
+template_selection_total
+template_fallback_total
+no_eligible_story_total
+allocation_conflict_total
+```
+
+Useful dashboards:
+
+```text
+Letters printed today
+Letters failed
+Stories active
+Customers with active stories
+Customers without a story
+Template distribution
+Story distribution
+Allocation latency
+Render latency
+```
+
+Alert on:
+
+- sudden allocation failures
+- duplicate allocation attempts
+- render failure spike
+- no eligible story spike
+- database lock contention
+
+---
+
+# 55. Security
+
+Template rendering must be sandboxed.
+
+Prevent:
+
+- arbitrary code execution
+- SQL injection through templates
+- server-side template injection
+- unsafe HTML
+- malicious file paths
+- unrestricted network access
+
+Sanitize output if HTML is displayed in browser.
+
+If PDFs are generated, only render trusted/sanitized content.
+
+Admin-only operations require authorization checks on the backend, not only UI hiding.
+
+Manufacturer endpoints must verify manufacturer ownership/access to the order.
+
+---
+
+# 56. Data privacy
+
+Only inject necessary customer data into templates.
+
+Default variables:
+
+```text
+first_name
+display_name
+product name
+order information required by the letter
+```
+
+Do not expose sensitive fields to the template context unless explicitly required.
+
+Do not log full rendered letters in application logs.
+
+The stored snapshot should be access-controlled.
+
+---
+
+# 57. Reprint rules
+
+Recommended:
+
+```text
+First print:
+allocate + render + snapshot
+
+Subsequent reprint:
+return existing delivery snapshot
+```
+
+Do not run template selection again.
+
+Do not increment story sequence.
+
+Do not create a new story letter.
+
+Optional:
+
+```text
+reprint_count
+last_reprinted_at
+```
+
+---
+
+# 58. Admin manual story-progress adjustment
+
+Provide an emergency tool:
+
+```text
+Customer
+Current Story
+Current Letter
+New Letter
+Reason
+```
+
+Example:
+
+```text
+Old next letter: 43
+New next letter: 44
+Reason: Letter 43 was accidentally printed twice.
+```
+
+Every adjustment must:
+
+- require admin permission
+- require a reason
+- run transactionally
+- create audit record
+- not delete existing delivery history
+
+---
+
+# 59. Testing Strategy
+
+Testing is part of every implementation task.
+
+No task is considered complete until:
+
+1. automated tests pass
+2. relevant integration tests pass
+3. migration tests pass
+4. API authorization tests pass
+5. regression tests pass
+6. manual acceptance criteria pass where applicable
+
+---
+
+# 60. Mandatory allocation test matrix
+
+Test:
+
+### First order
+
+```text
+Customer new
+-> Story 1 / Letter 1
+```
+
+### Second order
+
+```text
+same customer
+-> Story 1 / Letter 2
+```
+
+### Different manufacturer
+
+```text
+Order 1 -> Manufacturer A
+Order 2 -> Manufacturer B
+
+Sequence remains:
+Letter 1 -> Letter 2
+```
+
+### Story completion
+
+```text
+Story has 3 letters
+
+Order 1 -> Letter 1
+Order 2 -> Letter 2
+Order 3 -> Letter 3
+Order 4 -> Next Story / Letter 1
+```
+
+### Different story length
+
+Test:
+
+```text
+Story A = 2
+Story B = 5
+Story C = 17
+```
+
+### Concurrent requests
+
+Send multiple simultaneous print requests for the same customer/order.
+
+Expected:
+
+```text
+one allocation
+one letter sequence
+one delivery record
+```
+
+### Different orders concurrently
+
+Two simultaneous qualifying orders for the same customer:
+
+Expected:
+
+```text
+Order A -> Letter N
+Order B -> Letter N+1
+```
+
+No duplicates.
+
+---
+
+# 61. Template test matrix
+
+Test:
+
+```text
+8 active templates
+```
+
+Generate at least 100 letters for the same customer.
+
+Verify:
+
+- no consecutive duplicate
+- recent-window rule works
+- weighted selection is approximately distributed
+- fallback works with only 1–2 active templates
+- inactive templates are never selected
+- draft templates are never selected
+
+Do not assert exact random distribution in unit tests. Test ranges/statistical behavior or deterministic seeded selection where appropriate.
+
+---
+
+# 62. Rendering test matrix
+
+Test:
+
+```text
+Letter 1
+Middle letter
+Final letter
+New story first letter
+```
+
+Test:
+
+```text
+customer name
+product name
+previous summary
+missing previous letter
+special characters
+Unicode
+HTML-sensitive characters
+very long content
+empty optional fields
+```
+
+Expected behavior must be defined for each.
+
+---
+
+# 63. Regression testing
+
+Before merging:
+
+```text
+Existing order creation
+Existing manufacturer allocation
+Existing product flow
+Existing checkout
+Existing authentication
+Existing customer dashboard
+Existing manufacturer dashboard
+Existing admin dashboard
+```
+
+must pass.
+
+Add automated regression tests around the integration point.
+
+---
+
+# 64. Migration strategy
+
+Do not introduce the feature by rewriting existing order allocation logic.
+
+Recommended rollout:
+
+### Phase 1
+
+Add database tables and indexes.
+
+No behavior change.
+
+### Phase 2
+
+Back-end domain services behind feature flag.
+
+No manufacturer UI change.
+
+### Phase 3
+
+Admin story/template management.
+
+### Phase 4
+
+Manufacturer preview/print button behind feature flag.
+
+### Phase 5
+
+Enable for internal/test users.
+
+### Phase 6
+
+Gradual production rollout.
+
+### Phase 7
+
+Full rollout.
+
+Feature flag example:
+
+```text
+personalized_letters_enabled = false
+```
+
+Optional per:
+
+```text
+environment
+manufacturer
+customer
+product
+country
+```
+
+---
+
+# 65. Backward compatibility
+
+Existing orders created before the feature is enabled must have a defined behavior.
+
+Recommended:
+
+```text
+existing orders:
+personalized letter = unavailable
+
+new eligible orders:
+personalized letter = enabled
+```
+
+Do not automatically backfill historical orders unless explicitly required.
+
+---
+
+# 66. Task Breakdown
+
+The implementation should be completed incrementally.
+
+Every iteration must end with validation.
+
+---
+
+## TASK 01 — Inspect Existing Architecture
+
+### Objective
+
+Understand the existing project before changing code.
+
+### Work
+
+Identify:
+
+- backend framework
+- database engine
+- ORM/query layer
+- authentication
+- roles
+- Customer model
+- Order model
+- Product model
+- Manufacturer model
+- order allocation service
+- manufacturer dashboard
+- admin dashboard
+- document/PDF generation
+- storage system
+- background jobs
+- caching
+- existing feature flags
+
+### Deliverables
+
+```text
+ARCHITECTURE.md
+```
+
+with existing integration points.
+
+### Validation
+
+- Existing test suite passes.
+- No source files changed except documentation if possible.
+- Identify exact files/modules to integrate with.
+
+---
+
+## TASK 02 — Add Feature Flag
+
+### Objective
+
+Ensure existing functionality is protected.
+
+### Work
+
+Add:
+
+```text
+personalized_letters_enabled
+```
+
+and appropriate environment/config support.
+
+### Validation
+
+- Feature disabled -> existing behavior unchanged.
+- Feature enabled -> no behavior change yet.
+- Automated regression tests pass.
+
+---
+
+## TASK 03 — Database Migration
+
+### Work
+
+Create:
+
+```text
+stories
+story_letters
+customer_story_assignments
+letter_templates
+letter_template_versions
+letter_deliveries
+audit_logs
+```
+
+and any policy/config tables required.
+
+Add indexes and constraints.
+
+### Validation
+
+- Migration succeeds on clean database.
+- Migration succeeds on realistic existing database.
+- Migration rollback works if project supports rollback.
+- Existing tables/data unaffected.
+- Foreign keys valid.
+- Unique constraints tested.
+
+---
+
+## TASK 04 — Story Domain Model
+
+### Work
+
+Implement:
+
+```text
+Story
+StoryLetter
+```
+
+and repositories/services.
+
+Support:
+
+- create
+- update
+- draft
+- publish
+- pause
+- archive
+- list
+- retrieve
+- letter ordering
+
+### Validation
+
+Test all lifecycle states.
+
+Reject:
+
+- duplicate sequence
+- invalid sequence
+- empty content
+- invalid story state transitions
+
+---
+
+## TASK 05 — Admin Story Management API
+
+### Work
+
+Implement story CRUD and letter CRUD/import APIs.
+
+### Validation
+
+Test:
+
+- authentication
+- authorization
+- validation
+- duplicate handling
+- pagination
+- filtering
+- malformed imports
+
+Manufacturer/customer must not access admin endpoints.
+
+---
+
+## TASK 06 — Admin Story UI
+
+### Work
+
+Build:
+
+- story list
+- story editor
+- letter list
+- letter editor
+- import
+- preview
+- publish/pause/archive
+
+### Validation
+
+Manually test complete lifecycle.
+
+Run frontend tests.
+
+Verify existing admin pages still work.
+
+---
+
+## TASK 07 — Template Engine
+
+### Work
+
+Implement safe template rendering.
+
+Support:
+
+```text
+variables
+if/else
+escaping
+```
+
+Create an allowlist of variables.
+
+### Validation
+
+Test:
+
+- valid variables
+- invalid variables
+- malformed syntax
+- conditional rendering
+- HTML escaping
+- Unicode
+- long text
+- malicious template input
+
+No arbitrary code execution.
+
+---
+
+## TASK 08 — Template Management
+
+### Work
+
+Implement:
+
+- template CRUD
+- versioning
+- status
+- selection weight
+- repetition window
+- validation
+- preview
+
+### Validation
+
+Test that historical template versions cannot be mutated.
+
+Test template publish lifecycle.
+
+---
+
+## TASK 09 — Customer Story Assignment Service
+
+### Work
+
+Implement:
+
+```text
+assignInitialStory()
+completeStory()
+assignNextStory()
+getActiveStory()
+```
+
+Implement balanced selection.
+
+### Validation
+
+Test:
+
+- new customer
+- active story
+- no eligible story
+- story completion
+- different story lengths
+- concurrent assignment
+
+---
+
+## TASK 10 — Letter Allocation Service
+
+### Work
+
+Implement the transactional allocation engine.
+
+This is the highest-risk task.
+
+Required:
+
+- row lock
+- idempotency
+- unique order allocation
+- sequence advancement
+- story completion
+- next-story assignment
+- template selection
+- snapshot
+
+### Validation
+
+Run concurrency tests.
+
+Required test:
+
+```text
+100 simultaneous allocation requests
+```
+
+for the same customer/order.
+
+Expected:
+
+```text
+1 letter delivery
+```
+
+Then:
+
+```text
+100 simultaneous requests
+```
+
+for different orders of the same customer.
+
+Expected:
+
+```text
+100 unique sequential letters
+```
+
+with no gaps caused by duplicate allocation.
+
+---
+
+## TASK 11 — Template Selection Service
+
+### Work
+
+Implement:
+
+```text
+selectTemplate(customerId)
+```
+
+Rules:
+
+- active only
+- weighted random
+- recent-template exclusion
+- fallback
+
+### Validation
+
+Generate large sample.
+
+Verify:
+
+- no consecutive duplicate
+- configured window honored where possible
+- weights approximately respected
+- fallback works
+
+---
+
+## TASK 12 — Render Context Builder
+
+### Work
+
+Create:
+
+```text
+buildLetterRenderContext(...)
+```
+
+Load:
+
+- customer
+- order
+- product/order-item snapshot
+- current story
+- current letter
+- previous delivered letter
+- flags
+- computed semantic variables
+
+### Validation
+
+Test first/middle/final/new-story cases.
+
+Verify no unnecessary database queries where measurable.
+
+---
+
+## TASK 13 — Letter Renderer
+
+### Work
+
+Combine:
+
+```text
+selected template
++
+render context
+=
+final letter
+```
+
+### Validation
+
+Compare expected output snapshots.
+
+Test:
+
+- first letter
+- middle letter
+- final letter
+- special characters
+- Unicode
+- missing optional values
+
+---
+
+## TASK 14 — Immutable Delivery Snapshot
+
+### Work
+
+Store:
+
+```text
+story
+story letter
+template
+template version
+rendered content
+rendered document
+order
+customer
+manufacturer
+timestamps
+```
+
+### Validation
+
+Change source story/template/customer/product after printing.
+
+Verify historical snapshot remains unchanged.
+
+---
+
+## TASK 15 — Manufacturer Print API
+
+### Work
+
+Implement:
+
+```text
+preview
+print
+reprint
+```
+
+### Validation
+
+Test:
+
+- authorized manufacturer
+- unauthorized manufacturer
+- wrong order
+- repeated click
+- network retry
+- reprint
+
+Reprint must not advance sequence.
+
+---
+
+## TASK 16 — Manufacturer UI
+
+### Work
+
+Add:
+
+```text
+Personalized Letter
+[Preview]
+[Print]
+[Reprint]
+```
+
+Keep story-selection complexity hidden.
+
+### Validation
+
+Manual end-to-end test from order to print.
+
+Verify all existing manufacturer dashboard functionality.
+
+---
+
+## TASK 17 — Admin Customer Story History
+
+### Work
+
+Build:
+
+```text
+Customer Story Progress
+Letter History
+Rendered Snapshot
+Manual Adjustment
+```
+
+### Validation
+
+Verify complete history.
+
+Verify adjustment audit trail.
+
+---
+
+## TASK 18 — Story Completion Transition
+
+### Work
+
+Ensure:
+
+```text
+final letter consumed
+        ↓
+current assignment completed
+        ↓
+next eligible story assigned
+        ↓
+next letter = 1
+```
+
+### Validation
+
+Test:
+
+- normal transition
+- no eligible story
+- concurrent transition
+- archived story
+- paused story
+- different story length
+
+---
+
+## TASK 19 — Audit Logging
+
+### Work
+
+Add audit events for all administrative mutations and important allocation events.
+
+### Validation
+
+Every mutation produces expected audit record.
+
+No sensitive data leakage.
+
+---
+
+## TASK 20 — Performance Optimization
+
+### Work
+
+Measure:
+
+- allocation latency
+- database query count
+- lock duration
+- render latency
+- PDF generation
+- cache hit rate
+
+Optimize only based on measurements.
+
+### Validation
+
+Run load tests.
+
+Target:
+
+- allocation p95 < 500ms excluding external PDF generation
+- no long database locks
+- no N+1 queries
+
+Adjust targets to actual infrastructure.
+
+---
+
+## TASK 21 — Regression Test Suite
+
+### Work
+
+Create end-to-end scenarios:
+
+```text
+New customer
+→ order
+→ manufacturer allocation
+→ letter allocation
+→ print
+→ second order
+→ different manufacturer
+→ next letter
+→ final story letter
+→ next story
+```
+
+### Validation
+
+Run entire existing application test suite.
+
+No regression allowed.
+
+---
+
+## TASK 22 — Production Rollout
+
+### Work
+
+Deploy behind feature flag.
+
+Rollout:
+
+```text
+internal
+→ test manufacturer
+→ small percentage
+→ broader percentage
+→ all eligible traffic
+```
+
+Monitor:
+
+- allocation errors
+- duplicate allocations
+- template errors
+- story assignment errors
+- latency
+- database locks
+
+---
+
+# 67. Definition of Done
+
+The feature is not complete until all are true:
+
+- [ ] Existing functionality passes regression tests.
+- [ ] New database migrations are production-safe.
+- [ ] Stories can be created/updated/published.
+- [ ] Story letters can be created/imported/updated.
+- [ ] Story lengths can differ.
+- [ ] New customers receive an eligible story automatically.
+- [ ] Customer story progress is persistent.
+- [ ] Manufacturer does not choose the letter.
+- [ ] Customer receives sequential letters.
+- [ ] Manufacturer changes do not affect sequence.
+- [ ] Same customer can receive different templates.
+- [ ] Template cannot repeat consecutively.
+- [ ] Recent-template exclusion works where possible.
+- [ ] Template weights work.
+- [ ] Previous letter summary can be rendered.
+- [ ] First-letter logic works.
+- [ ] New-story transition works.
+- [ ] Final story letter transitions to next story.
+- [ ] Reprints do not consume another letter.
+- [ ] Concurrent requests cannot duplicate a letter.
+- [ ] Historical rendered content is immutable.
+- [ ] Template versions are preserved.
+- [ ] Admin can inspect customer history.
+- [ ] Admin can perform audited manual correction.
+- [ ] Role permissions are enforced server-side.
+- [ ] Audit logs exist.
+- [ ] Metrics and logging exist.
+- [ ] Performance has been measured.
+- [ ] Security tests pass.
+- [ ] Load/concurrency tests pass.
+- [ ] Feature can be disabled without breaking existing orders.
+
+---
+
+# 68. Recommended Implementation Order
+
+Use this order rather than building UI first:
+
+```text
+01 Existing architecture inspection
+02 Feature flag
+03 Database migrations
+04 Story domain
+05 Story APIs
+06 Story admin UI
+07 Template engine
+08 Template management
+09 Story assignment
+10 Transactional letter allocation
+11 Template selection
+12 Render context
+13 Rendering
+14 Immutable snapshots
+15 Manufacturer API
+16 Manufacturer UI
+17 Customer history
+18 Story completion transition
+19 Audit logging
+20 Performance
+21 Full regression
+22 Production rollout
+```
+
+The critical path is:
+
+```text
+Database
+   ↓
+Story domain
+   ↓
+Assignment service
+   ↓
+Allocation transaction
+   ↓
+Template selection
+   ↓
+Render context
+   ↓
+Renderer
+   ↓
+Manufacturer print
+```
+
+---
+
+# 69. AI Coding Agent Rules
+
+If an AI coding agent implements this specification, it MUST follow these rules.
+
+## Rule 1 — Inspect before changing
+
+Do not assume existing model names, routes, database schema, or framework conventions.
+
+First inspect the repository.
+
+## Rule 2 — Reuse existing architecture
+
+Use existing:
+
+- authentication
+- authorization
+- database access
+- migrations
+- API conventions
+- validation
+- error handling
+- logging
+- storage
+- test utilities
+
+Do not introduce duplicate infrastructure.
+
+## Rule 3 — No destructive migration
+
+Never drop or rewrite existing production data without explicit approval.
+
+## Rule 4 — Small iterations
+
+Implement one task at a time.
+
+After each task:
+
+```text
+run unit tests
+run integration tests
+run relevant regression tests
+run type/lint checks
+```
+
+Fix failures before proceeding.
+
+## Rule 5 — Validate after every iteration
+
+Never implement ten tasks and test at the end.
+
+Each iteration must leave the repository in a working state.
+
+## Rule 6 — Concurrency first
+
+Do not implement letter allocation as:
+
+```text
+read current sequence
+increment in application memory
+save
+```
+
+Use a transactional lock/atomic update.
+
+## Rule 7 — Database constraints are mandatory
+
+Important invariants must be protected by database constraints in addition to application logic.
+
+## Rule 8 — No hidden behavior
+
+Every business rule must be represented in:
+
+- code
+- tests
+- documentation
+
+## Rule 9 — No arbitrary template execution
+
+Templates are data, never executable code.
+
+## Rule 10 — Preserve historical output
+
+Never regenerate historical letters using current templates when displaying old delivery records.
+
+---
+
+# 70. Required AI Implementation Report After Each Task
+
+After completing each task, the AI coding agent should report:
+
+```text
+TASK:
+TASK-XX
+
+IMPLEMENTED:
+- ...
+
+FILES CHANGED:
+- ...
+
+DATABASE CHANGES:
+- ...
+
+API CHANGES:
+- ...
+
+TESTS ADDED:
+- ...
+
+VALIDATION:
+- Unit tests: PASS/FAIL
+- Integration tests: PASS/FAIL
+- Regression tests: PASS/FAIL
+- Type checks: PASS/FAIL
+- Lint: PASS/FAIL
+
+RISKS/NOTES:
+- ...
+
+NEXT TASK:
+TASK-XX
+```
+
+Do not claim a task is complete if tests were not actually run.
+
+---
+
+# 71. Final End-to-End Acceptance Scenario
+
+This scenario must pass before production release.
+
+### Setup
+
+Stories:
+
+```text
+Story A = 3 letters
+Story B = 2 letters
+Story C = 4 letters
+```
+
+Templates:
+
+```text
+T1
+T2
+T3
+T4
+```
+
+Template repetition window:
+
+```text
+2
+```
+
+### Customer creation
+
+```text
+Customer Rahul
+```
+
+Expected:
+
+```text
+Customer Story = Story A
+Next Letter = 1
+```
+
+### Order 1
+
+Manufacturer A receives order.
+
+Print:
+
+```text
+Story A / Letter 1
+Template T2
+```
+
+### Order 2
+
+Manufacturer B receives order.
+
+Print:
+
+```text
+Story A / Letter 2
+Template != T2
+```
+
+### Order 3
+
+Manufacturer C receives order.
+
+Print:
+
+```text
+Story A / Letter 3
+Template not used within configured recent window where possible
+```
+
+Story A becomes:
+
+```text
+COMPLETED
+```
+
+### Order 4
+
+Customer orders again.
+
+Expected:
+
+```text
+Story B / Letter 1
+```
+
+### Reprint Order 4
+
+Expected:
+
+```text
+Story B / Letter 1
+same template
+same rendered snapshot
+no sequence advancement
+```
+
+### Concurrent test
+
+Create 50 simultaneous qualifying orders for one customer.
+
+Expected:
+
+```text
+No duplicate story-letter allocation.
+No two orders consume the same sequence.
+No lost updates.
+```
+
+### Manufacturer test
+
+Change manufacturer between every order.
+
+Expected:
+
+```text
+Customer sequence remains continuous.
+```
+
+### Historical test
+
+Edit a template after printing.
+
+Expected:
+
+```text
+Old delivery displays old rendered content.
+New delivery uses new template version.
+```
+
+---
+
+# 72. Final Engineering Principle
+
+The most important separation in this system is:
+
+```text
+STORY PROGRESS
+       ≠
+LETTER TEMPLATE
+       ≠
+ORDER/MANUFACTURER
+       ≠
+RENDERED DOCUMENT
+```
+
+They interact, but they must not be coupled.
+
+The authoritative sequence is:
+
+```text
+Customer
+   ↓
+Customer Story Assignment
+   ↓
+Story Letter Sequence
+```
+
+The presentation is:
+
+```text
+Customer + Order + Product + Story Context
+   ↓
+Template Selection
+   ↓
+Template Rendering
+```
+
+The historical record is:
+
+```text
+Letter Delivery
+   ↓
+Immutable Rendered Snapshot
+```
+
+This architecture ensures that:
+
+- changing manufacturers does not reset the story;
+- changing templates does not change the story sequence;
+- changing story content does not rewrite historical letters;
+- reprinting does not consume another letter;
+- concurrent orders cannot accidentally receive the same letter;
+- stories can have arbitrary lengths;
+- new stories can be added without code changes;
+- new templates can be added without code changes;
+- customers can move automatically from one story to another;
+- administrators retain full visibility and controlled override capability;
+- manufacturers perform only the simple physical fulfillment action;
+- existing platform functionality remains isolated from the new feature.
+
+The allocation transaction and database constraints are the core correctness boundary. UI logic, random selection, caching, and rendering must never be allowed to override that boundary.

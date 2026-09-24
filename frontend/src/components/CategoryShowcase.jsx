@@ -198,42 +198,20 @@ const CategoryShowcase = () => {
                 </p>
               </div>
 
-              {/* Category Filter Tabs */}
-              <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl self-start md:self-auto border border-gray-200">
-                <button
-                  type="button"
-                  onClick={() => handleTabChange(catName, "combined")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    currentTab === "combined"
-                      ? "bg-white text-black shadow-2xs"
-                      : "text-gray-600 hover:text-black"
-                  }`}
+              {/* Category Filter Dropdown */}
+              <label className="flex items-center gap-3 self-start md:self-auto">
+                <span className="eyebrow whitespace-nowrap">Browse by</span>
+                <select
+                  value={currentTab}
+                  onChange={(event) => handleTabChange(catName, event.target.value)}
+                  aria-label={`Browse ${catName} products by`}
+                  className="min-w-40 border border-[#c9c6bc] bg-[#fffefa] px-3 py-2 text-xs font-semibold text-[#45463f] outline-none transition-colors focus:border-[#161714]"
                 >
-                  Curated Mix
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleTabChange(catName, "newest")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    currentTab === "newest"
-                      ? "bg-white text-black shadow-2xs"
-                      : "text-gray-600 hover:text-black"
-                  }`}
-                >
-                  New Arrivals
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleTabChange(catName, "top_rated")}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    currentTab === "top_rated"
-                      ? "bg-white text-black shadow-2xs"
-                      : "text-gray-600 hover:text-black"
-                  }`}
-                >
-                  Top Rated
-                </button>
-              </div>
+                  <option value="combined">Curated Mix</option>
+                  <option value="newest">New Arrivals</option>
+                  <option value="top_rated">Top Rated</option>
+                </select>
+              </label>
             </div>
 
             {/* Products Grid */}

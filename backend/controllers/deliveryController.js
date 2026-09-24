@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { readRecentLogs } from "../utils/logger.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   applyNcmStatus,
   prepareReadyDelivery,
@@ -182,19 +183,24 @@ export const adminReconcileActive = async (_req, res) => {
 };
 
 export const adminListDeliveries = async (req, res) => {
+  const pagination = getPagination(req.query);
   const where = {};
   if (req.query.state) where.state = req.query.state;
   if (req.query.manufacturerId) where.manufacturerId = req.query.manufacturerId;
-  const deliveries = await prisma.deliveryOrder.findMany({
-    where,
-    orderBy: { updatedAt: "desc" },
-    include: {
-      order: { select: { id: true, address: true, amount: true, paymentMethod: true, payment: true, status: true, fulfillmentStatus: true } },
-      events: { orderBy: { occurredAt: "desc" }, take: 5 },
-    },
-    take: 200,
-  });
-  res.json({ success: true, deliveries });
+  const [deliveries, total] = await prisma.$transaction([
+    prisma.deliveryOrder.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      include: {
+        order: { select: { id: true, address: true, amount: true, paymentMethod: true, payment: true, status: true, fulfillmentStatus: true } },
+        events: { orderBy: { occurredAt: "desc" }, take: 5 },
+      },
+      skip: pagination.skip,
+      take: pagination.limit,
+    }),
+    prisma.deliveryOrder.count({ where }),
+  ]);
+  res.json(paginatedResponse("deliveries", deliveries, pagination, total));
 };
 
 export const getRecentSystemLogs = async (_req, res) => {
@@ -252,9 +258,13 @@ export const adminRequestSettlement = async (req, res) => {
 };
 
 export const adminListSettlements = async (req, res) => {
+  const pagination = getPagination(req.query);
   const where = req.query.state ? { settlementState: req.query.state } : {};
-  const settlements = await prisma.deliveryFinancialSettlement.findMany({ where, orderBy: { updatedAt: "desc" }, take: 200 });
-  res.json({ success: true, settlements });
+  const [settlements, total] = await prisma.$transaction([
+    prisma.deliveryFinancialSettlement.findMany({ where, orderBy: { updatedAt: "desc" }, skip: pagination.skip, take: pagination.limit }),
+    prisma.deliveryFinancialSettlement.count({ where }),
+  ]);
+  res.json(paginatedResponse("settlements", settlements, pagination, total));
 };
 
 export { applyNcmStatus };

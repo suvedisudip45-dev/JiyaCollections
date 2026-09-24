@@ -1,8 +1,9 @@
 /* eslint-disable react/prop-types */
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
+import Pagination from "../components/Pagination";
 
 const Reviews = ({ token }) => {
   const [reviews, setReviews] = useState([]);
@@ -10,15 +11,18 @@ const Reviews = ({ token }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [ratingFilter, setRatingFilter] = useState("all");
   const [deletingId, setDeletingId] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   const fetchReviews = async () => {
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/review/admin/list`, {
+      const res = await axios.get(`${backendUrl}/api/review/admin/list?page=${page}&limit=10`, {
         headers: { token },
       });
       if (res.data.success) {
         setReviews(res.data.reviews || []);
+        setPagination(res.data.pagination || null);
       } else {
         toast.error(res.data.message);
       }
@@ -32,7 +36,9 @@ const Reviews = ({ token }) => {
 
   useEffect(() => {
     fetchReviews();
-  }, [token]);
+  }, [token, page]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const handleDeleteReview = async (reviewId) => {
     if (
@@ -299,6 +305,13 @@ const Reviews = ({ token }) => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
     </div>
   );

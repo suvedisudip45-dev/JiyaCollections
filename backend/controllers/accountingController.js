@@ -5,6 +5,7 @@ import {
   postJournalEntry,
   reverseJournalEntryById,
 } from "../services/accountingPostingEngine.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // ==========================================
 // 1. CHART OF ACCOUNTS (COA)
@@ -104,7 +105,8 @@ export const updateAccount = async (req, res) => {
 
 export const getJournalEntries = async (req, res) => {
   try {
-    const { sourceType, status, startDate, endDate, search, limit = 100 } = req.query;
+    const { sourceType, status, startDate, endDate, search } = req.query;
+    const pagination = getPagination(req.query);
 
     const where = {};
     if (sourceType) where.sourceType = sourceType;
@@ -123,20 +125,24 @@ export const getJournalEntries = async (req, res) => {
       ];
     }
 
-    const journalEntries = await prisma.journalEntry.findMany({
-      where,
-      include: {
+    const [journalEntries, total] = await prisma.$transaction([
+      prisma.journalEntry.findMany({
+        where,
+        include: {
         lines: {
           include: {
             account: { select: { accountCode: true, accountName: true, accountType: true } },
           },
         },
-      },
-      orderBy: { transactionDate: "desc" },
-      take: Number(limit),
-    });
+        },
+        orderBy: { transactionDate: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.journalEntry.count({ where }),
+    ]);
 
-    res.json({ success: true, journalEntries });
+    res.json(paginatedResponse("journalEntries", journalEntries, pagination, total));
   } catch (error) {
     console.error("Get Journal Entries Error:", error);
     res.json({ success: false, message: error.message });

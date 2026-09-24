@@ -23,13 +23,37 @@ export const StatusBadge = ({ status, deliveryStatus }) => {
         return {
           bg: "bg-indigo-50 text-indigo-700 border-indigo-200",
           dot: "bg-indigo-500 animate-pulse",
-          label: "In Production / Packing",
+          label: "Stitching & Branding",
+        };
+      case "quality_check":
+        return {
+          bg: "bg-violet-50 text-violet-700 border-violet-200",
+          dot: "bg-violet-500 animate-pulse",
+          label: "Quality Check",
+        };
+      case "letter_ready":
+        return {
+          bg: "bg-amber-50 text-amber-700 border-amber-200",
+          dot: "bg-amber-500 animate-pulse",
+          label: "Customer Letter Ready",
+        };
+      case "checklist_complete":
+        return {
+          bg: "bg-teal-50 text-teal-700 border-teal-200",
+          dot: "bg-teal-500",
+          label: "Checklist Complete",
         };
       case "packed":
         return {
           bg: "bg-purple-50 text-purple-700 border-purple-200",
           dot: "bg-purple-500",
           label: "Packed & Sealed",
+        };
+      case "package_details_complete":
+        return {
+          bg: "bg-orange-50 text-orange-700 border-orange-200",
+          dot: "bg-orange-500 animate-pulse",
+          label: "Package Details Complete",
         };
       case "ncm_created":
       case "pickup_order_created":

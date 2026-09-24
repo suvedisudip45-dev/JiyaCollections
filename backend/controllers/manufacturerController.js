@@ -1,9 +1,12 @@
 import { prisma } from "../config/db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import validator from "validator";
 import { v2 as cloudinary } from "cloudinary";
 import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } from "../services/ncmClient.js";
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
+import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -81,6 +84,10 @@ const loginManufacturer = async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password)
       return res.json({ success: false, message: "Email and password required" });
+
+    if (!validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
 
     const manufacturer = await prisma.manufacturer.findUnique({
       where: { email: email.toLowerCase().trim() },
@@ -186,8 +193,35 @@ const registerManufacturer = async (req, res) => {
       return res.json({ success: false, message: "Business name, email, password, phone, and city are required" });
     }
 
-    const existing = await prisma.manufacturer.findUnique({ where: { email: email.toLowerCase().trim() } });
+    if (!validator.isEmail(String(email).trim())) {
+      return res.json({ success: false, message: "Please enter a valid email address" });
+    }
+
+    const rateToCheck = commissionRate !== undefined ? commissionRate : agreedCommissionRate;
+    if (rateToCheck !== undefined && rateToCheck !== null && rateToCheck !== "") {
+      const numRate = Number(rateToCheck);
+      if (isNaN(numRate) || numRate < 0 || numRate > 100) {
+        return res.json({ success: false, message: "Commission rate must be between 0% and 100%" });
+      }
+    }
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedPickupContactPhone = pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "";
+    if (!isValidMobileNumber(normalizedPhone)) {
+      return res.json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97" });
+    }
+    if (pickupContactPhone && !isValidMobileNumber(normalizedPickupContactPhone)) {
+      return res.json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97" });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const existing = await prisma.manufacturer.findUnique({ where: { email: cleanEmail } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
+
+    const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });
+    if (duplicatePhoneManufacturer) {
+      return res.json({ success: false, message: "Contact number already used" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
 
@@ -212,13 +246,13 @@ const registerManufacturer = async (req, res) => {
         name: mfgName,
         email: email.toLowerCase().trim(),
         password: hashed,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         city: city.trim(),
         ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
         pickupBranchStatus: "UNVERIFIED",
         pickupAddress: pickupAddress || address || null,
         pickupContactName: pickupContactName || "",
-        pickupContactPhone: pickupContactPhone || "",
+        pickupContactPhone: normalizedPickupContactPhone,
         pickupWindow: pickupWindow || "",
         returnInstructions: returnInstructions || null,
         address: address || null,
@@ -278,9 +312,23 @@ const registerManufacturerSelf = async (req, res) => {
       return res.json({ success: false, message: "Business name, email, password, phone, city, and pickup address are required" });
     }
 
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const normalizedPickupContactPhone = pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "";
+    if (!isValidMobileNumber(normalizedPhone)) {
+      return res.json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97" });
+    }
+    if (pickupContactPhone && !isValidMobileNumber(normalizedPickupContactPhone)) {
+      return res.json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97" });
+    }
+
     const normalizedEmail = email.toLowerCase().trim();
     const existing = await prisma.manufacturer.findUnique({ where: { email: normalizedEmail } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
+
+    const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });
+    if (duplicatePhoneManufacturer) {
+      return res.json({ success: false, message: "Contact number already used" });
+    }
 
     const hashed = await bcrypt.hash(password, 10);
     let contractDocUrl = null;
@@ -303,13 +351,13 @@ const registerManufacturerSelf = async (req, res) => {
         name: mfgName,
         email: normalizedEmail,
         password: hashed,
-        phone: phone.trim(),
+        phone: normalizedPhone,
         city: city.trim(),
         ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
         pickupBranchStatus: "UNVERIFIED",
         pickupAddress: pickupAddress || address || null,
         pickupContactName: pickupContactName || "",
-        pickupContactPhone: pickupContactPhone || "",
+        pickupContactPhone: normalizedPickupContactPhone,
         pickupWindow: pickupWindow || "",
         returnInstructions: returnInstructions || null,
         address: address || null,
@@ -340,12 +388,16 @@ const registerManufacturerSelf = async (req, res) => {
 // ─── ADMIN: LIST ALL MANUFACTURERS ───────────────────────────────────────────
 const listManufacturers = async (req, res) => {
   try {
-    const manufacturers = await prisma.manufacturer.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        _count: { select: { assignments: true, inventory: true } },
-      },
-    });
+    const pagination = getPagination(req.query);
+    const [manufacturers, total] = await prisma.$transaction([
+      prisma.manufacturer.findMany({
+        orderBy: { createdAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: { _count: { select: { assignments: true, inventory: true } } },
+      }),
+      prisma.manufacturer.count(),
+    ]);
     const safe = manufacturers.map(({ password, ...m }) => ({
       ...m,
       businessName: m.name,
@@ -363,7 +415,7 @@ const listManufacturers = async (req, res) => {
         ? ((m.defectCount / m.totalOrdersFulfilled) * 100).toFixed(1)
         : "0.0",
     }));
-    res.json({ success: true, manufacturers: safe });
+    res.json(paginatedResponse("manufacturers", safe, pagination, total));
   } catch (error) {
     console.error("listManufacturers error:", error);
     res.json({ success: false, message: error.message });

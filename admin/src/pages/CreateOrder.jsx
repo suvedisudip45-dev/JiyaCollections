@@ -5,6 +5,7 @@ import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -35,8 +36,14 @@ const CreateOrder = ({ token }) => {
     firstName: "",
     lastName: "",
     phone: "",
+    socialCode: "",
     email: "",
+    gender: "PREFER_NOT_TO_SAY",
+    province: "Bagmati Province",
+    district: "Kathmandu",
     city: "Kathmandu",
+    ncmBranch: "Kathmandu",
+    ncmCoveredArea: "",
     landmark: "",
     street: "",
     state: "Bagmati Province",
@@ -44,6 +51,11 @@ const CreateOrder = ({ token }) => {
     country: "Nepal",
     orderNotes: "",
   });
+
+  const [ncmBranches, setNcmBranches] = useState([]);
+  const [coveredAreas, setCoveredAreas] = useState([]);
+  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+  const [loadingCoveredAreas, setLoadingCoveredAreas] = useState(false);
 
   // Selected Order Items: list of { productId, name, image, size, color, quantity, originalUnitPrice, discountPercentage, purchasedUnitPrice, stockAvailable }
   const [selectedItems, setSelectedItems] = useState([]);
@@ -78,6 +90,10 @@ const CreateOrder = ({ token }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdOrderForPrint, setCreatedOrderForPrint] = useState(null);
   const [isPrintingModalActive, setIsPrintingModalActive] = useState(false);
+  const [existingCustomer, setExistingCustomer] = useState(null);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [customerLookupMessage, setCustomerLookupMessage] = useState("");
+  const [customerVerificationState, setCustomerVerificationState] = useState("IDLE");
 
   // Load Shipping Config, Products & Categories
   useEffect(() => {
@@ -152,21 +168,247 @@ const CreateOrder = ({ token }) => {
 
   // Client form changes handler
   const handleClientChange = (e) => {
-    const { name, value } = e.target;
+    const { name } = e.target;
+    const value = name === "phone"
+      ? e.target.value.replace(/\D/g, "").slice(0, 10)
+      : e.target.value;
     setClient((prev) => {
       const updated = { ...prev, [name]: value };
+
+      if (name === "phone") {
+        updated.socialCode = "";
+        setExistingCustomer(null);
+        setCustomerLookupMessage("");
+        setCustomerVerificationState("IDLE");
+      }
+
+      if (name === "province") {
+        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+        updated.province = value;
+        updated.state = value;
+        updated.district = nextDistrict;
+        updated.city = nextDistrict;
+        updated.ncmBranch = nextDistrict;
+        updated.ncmCoveredArea = "";
+        updated.zipcode = "";
+      }
+
+      if (name === "district") {
+        updated.district = value;
+        updated.city = value;
+        updated.ncmBranch = value;
+        updated.ncmCoveredArea = "";
+      }
+
       if (name === "city") {
+        updated.city = value;
+        updated.ncmBranch = value;
         const found = NEPAL_CITIES.find(
           (c) => c.name.toLowerCase() === value.trim().toLowerCase()
         );
         if (found) {
           updated.state = found.province;
+          updated.province = found.province;
           updated.zipcode = found.zipcode;
         }
       }
+
+      if (name === "ncmBranch") {
+        updated.ncmBranch = value;
+        updated.city = value;
+        updated.ncmCoveredArea = "";
+      }
+
+      if (name === "ncmCoveredArea") {
+        updated.ncmCoveredArea = value;
+        updated.street = value;
+      }
+
       return updated;
     });
   };
+
+  const lookupCustomerByPhone = async (phoneValue = client.phone) => {
+    if (!phoneValue.trim()) return;
+    setCustomerLookupLoading(true);
+    setCustomerLookupMessage("");
+    try {
+      const response = await axios.get(`${backendUrl}/api/order/admin-customer`, {
+        params: { phone: phoneValue.trim() },
+        headers: { token },
+      });
+      if (!response.data.success) {
+        setExistingCustomer(null);
+        setCustomerVerificationState("ERROR");
+        setCustomerLookupMessage(response.data.message || "Unable to check this contact number.");
+      } else if (response.data.found) {
+        setExistingCustomer(response.data.customer);
+        setCustomerVerificationState("CODE_REQUIRED");
+        setCustomerLookupMessage("Existing customer found. Enter the social code to verify this order.");
+      } else {
+        setExistingCustomer(null);
+        setCustomerVerificationState("NEW_CUSTOMER");
+        setCustomerLookupMessage("New contact number. Continue entering the customer details.");
+      }
+    } catch (error) {
+      setExistingCustomer(null);
+      setCustomerVerificationState("ERROR");
+      setCustomerLookupMessage(error.response?.data?.message || "Unable to check this contact number.");
+    } finally {
+      setCustomerLookupLoading(false);
+    }
+  };
+
+  const applyCustomerSnapshot = (customer) => {
+    if (!customer) return;
+    const address = customer.address || {};
+    setClient((prev) => ({
+      ...prev,
+      firstName: customer.firstName || prev.firstName,
+      lastName: customer.lastName || prev.lastName,
+      email: customer.email || prev.email,
+      gender: customer.gender || prev.gender,
+      phone: customer.phone || prev.phone,
+      province: address.province || prev.province,
+      district: address.district || prev.district,
+      city: address.city || prev.city,
+      ncmBranch: address.ncmBranch || prev.ncmBranch,
+      ncmCoveredArea: address.ncmCoveredArea || prev.ncmCoveredArea,
+      orderNotes: address.deliveryInstruction || address.orderNotes || prev.orderNotes,
+      state: address.state || prev.state,
+      zipcode: address.zipcode || prev.zipcode,
+      country: address.country || prev.country,
+      street: address.street || prev.street,
+      landmark: address.landmark || prev.landmark,
+    }));
+  };
+
+  const verifyCustomerCode = async (codeValue = client.socialCode) => {
+    if (!existingCustomer || !codeValue.trim()) return;
+    setCustomerLookupLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/order/admin-customer/verify`, {
+        phone: client.phone,
+        code: codeValue.trim(),
+      }, { headers: { token } });
+
+      if (!response.data.success) {
+        setCustomerVerificationState("ERROR");
+        setCustomerLookupMessage(response.data.message || "Unable to verify this social code.");
+        return;
+      }
+
+      setCustomerVerificationState(response.data.verified ? "VERIFIED" : "UNVERIFIED");
+      if (response.data.verified) {
+        setCustomerLookupMessage("Verified customer. Loyalty and gift benefits remain active.");
+      } else {
+        toast.error("Social code did not match this contact number. Loyalty and gift benefits are disabled for this order.");
+        setCustomerLookupMessage("Social code did not match this contact number. Customer data loaded for dispatch only.");
+      }
+      applyCustomerSnapshot(response.data.customer);
+    } catch (error) {
+      setCustomerVerificationState("ERROR");
+      setCustomerLookupMessage(error.response?.data?.message || "Unable to verify this social code.");
+    } finally {
+      setCustomerLookupLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const phoneDigits = client.phone.replace(/\D/g, "");
+    if (!/^9[78]\d{8}$/.test(phoneDigits)) return undefined;
+
+    const lookupTimer = setTimeout(() => {
+      lookupCustomerByPhone(phoneDigits);
+    }, 300);
+
+    return () => clearTimeout(lookupTimer);
+  }, [client.phone]);
+
+  useEffect(() => {
+    if (existingCustomer && client.socialCode.trim().length >= 8) {
+      const verifyTimer = setTimeout(() => verifyCustomerCode(client.socialCode), 300);
+      return () => clearTimeout(verifyTimer);
+    }
+    return undefined;
+  }, [client.socialCode, existingCustomer]);
+
+  useEffect(() => {
+    const fetchNcmBranches = async () => {
+      if (!client.province || !client.district) {
+        setNcmBranches([]);
+        return;
+      }
+
+      setLoadingNcmBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: client.province, district: client.district },
+        });
+
+        if (response.data.success) {
+          const branches = response.data.branches || [];
+          setNcmBranches(branches);
+          setClient((prev) => {
+            const selectedBranch = branches.includes(prev.ncmBranch) ? prev.ncmBranch : branches[0] || "";
+            return {
+              ...prev,
+              ncmBranch: selectedBranch,
+              city: selectedBranch || prev.city,
+              ncmCoveredArea: selectedBranch === prev.ncmBranch ? prev.ncmCoveredArea : "",
+            };
+          });
+        } else {
+          setNcmBranches([]);
+          setCoveredAreas([]);
+        }
+      } catch (error) {
+        setNcmBranches([]);
+        setCoveredAreas([]);
+        console.error("Failed to load NCM branches for admin order:", error);
+      } finally {
+        setLoadingNcmBranches(false);
+      }
+    };
+
+    fetchNcmBranches();
+  }, [backendUrl, client.province, client.district]);
+
+  useEffect(() => {
+    const fetchCoveredAreas = async () => {
+      if (!client.ncmBranch) {
+        setCoveredAreas([]);
+        return;
+      }
+
+      setLoadingCoveredAreas(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: client.ncmBranch,
+            province: client.province,
+            district: client.district,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setCoveredAreas(areas);
+        const normalizeArea = (value) => String(value || "").trim().toLowerCase();
+        const previousArea = normalizeArea(client.ncmCoveredArea || client.street);
+        const matchedArea = areas.find((area) => normalizeArea(area) === previousArea);
+        if (matchedArea || areas.length === 1) {
+          const selectedArea = matchedArea || areas[0];
+          setClient((prev) => ({ ...prev, ncmCoveredArea: selectedArea, street: selectedArea }));
+        }
+      } catch (error) {
+        setCoveredAreas([]);
+        console.error("Failed to load NCM covered locations:", error);
+      } finally {
+        setLoadingCoveredAreas(false);
+      }
+    };
+
+    fetchCoveredAreas();
+  }, [backendUrl, client.ncmBranch, client.province, client.district]);
 
   // Calculate items subtotal
   const itemsSubtotal = useMemo(() => {
@@ -497,7 +739,8 @@ const CreateOrder = ({ token }) => {
       toast.error("Please enter the client's Contact Phone Number.");
       return;
     }
-    if (!client.city.trim()) {
+    const deliveryLocation = (client.city || client.ncmBranch || client.district || "").trim();
+    if (!deliveryLocation) {
       toast.error("Please specify the delivery City.");
       return;
     }
@@ -520,8 +763,16 @@ const CreateOrder = ({ token }) => {
           lastName: client.lastName.trim(),
           phone: client.phone.trim(),
           email: client.email.trim(),
+          gender: client.gender || "PREFER_NOT_TO_SAY",
+          province: client.province || client.state || "Bagmati Province",
+          district: client.district || client.city || "Kathmandu",
+          city: client.city || client.ncmBranch || client.district || "Kathmandu",
+          ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
+          ncmCoveredArea: client.ncmCoveredArea || "",
+          deliveryInstruction: client.orderNotes.trim(),
           landmark: client.landmark.trim(),
           street: client.street.trim(),
+          state: client.state || client.province || "Bagmati Province",
         },
         items: selectedItems,
         discount: activeDiscount,
@@ -558,9 +809,15 @@ const CreateOrder = ({ token }) => {
       socialUsername: "",
       firstName: "",
       lastName: "",
-      phone: "",
+        phone: "",
+        socialCode: "",
       email: "",
+      gender: "PREFER_NOT_TO_SAY",
+      province: "Bagmati Province",
+      district: "Kathmandu",
       city: "Kathmandu",
+      ncmBranch: "Kathmandu",
+      ncmCoveredArea: "",
       landmark: "",
       street: "",
       state: "Bagmati Province",
@@ -577,6 +834,10 @@ const CreateOrder = ({ token }) => {
     setUseCustomShipping(false);
     setCreatedOrderForPrint(null);
     setIsPrintingModalActive(false);
+    setExistingCustomer(null);
+    setCustomerLookupLoading(false);
+    setCustomerLookupMessage("");
+    setCustomerVerificationState("IDLE");
   };
 
   return (
@@ -624,6 +885,65 @@ const CreateOrder = ({ token }) => {
       <form onSubmit={handleSubmitOrder} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* ================= LEFT COLUMN: CLIENT & SOCIAL DETAILS (5 cols) ================= */}
         <div className="lg:col-span-5 space-y-6">
+          {/* Contact Verification Step */}
+          <div className="bg-white rounded-2xl p-5 border border-indigo-200 shadow-xs space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
+                <span className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center text-[10px]">1</span>
+                Contact Verification
+              </h3>
+              <span className="text-[10px] text-gray-500">Required before details</span>
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Contact Number <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">📞</span>
+                <input
+                  type="tel"
+                  name="phone"
+                  required
+                  placeholder="98XXXXXXXX"
+                  inputMode="numeric"
+                  pattern="9[78][0-9]{8}"
+                  maxLength={10}
+                  value={client.phone}
+                  onChange={handleClientChange}
+                  onBlur={() => lookupCustomerByPhone(client.phone)}
+                  className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
+                />
+              </div>
+              {customerLookupLoading && <p className="mt-1 text-[10px] text-gray-500">Checking previous purchases...</p>}
+              {!customerLookupLoading && customerLookupMessage && (
+                <p role="status" className={`mt-1 text-[10px] ${customerVerificationState === "VERIFIED" ? "text-emerald-700" : customerVerificationState === "UNVERIFIED" ? "text-amber-700" : customerVerificationState === "ERROR" ? "text-rose-700" : "text-gray-600"}`}>
+                  {customerLookupMessage}
+                </p>
+              )}
+            </div>
+            {existingCustomer && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Step 2: Customer Code</span>
+                  <span className="text-[10px] text-amber-800">{existingCustomer.name || "Existing customer"}</span>
+                </div>
+                <input
+                  type="text"
+                  name="socialCode"
+                  required
+                  maxLength={8}
+                  autoComplete="off"
+                  placeholder="Ask the customer for their social code"
+                  value={client.socialCode}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-white border border-amber-300 rounded-lg focus:border-amber-500 focus:outline-none uppercase"
+                />
+                {customerVerificationState === "VERIFIED" && <p className="text-[10px] font-semibold text-emerald-700">Verified. Loyalty and gifts are eligible.</p>}
+                {customerVerificationState === "UNVERIFIED" && <p className="text-[10px] font-semibold text-amber-800">Data loaded for dispatch only. Loyalty and gifts are disabled.</p>}
+              </div>
+            )}
+          </div>
+
           {/* Social Channel Selector Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
@@ -673,7 +993,7 @@ const CreateOrder = ({ token }) => {
           {/* Client Identity & Contact Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-              <span>👤</span> Customer Details
+              <span>3</span> Customer Details
             </h3>
 
             <div className="grid grid-cols-2 gap-3">
@@ -694,11 +1014,12 @@ const CreateOrder = ({ token }) => {
 
               <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Last Name
+                  Last Name <span className="text-rose-500">*</span>
                 </label>
                 <input
                   type="text"
                   name="lastName"
+                  required
                   placeholder="Last name"
                   value={client.lastName}
                   onChange={handleClientChange}
@@ -707,26 +1028,24 @@ const CreateOrder = ({ token }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Contact Number <span className="text-rose-500">*</span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">📞</span>
-                  <input
-                    type="tel"
-                    name="phone"
-                    required
-                    placeholder="98XXXXXXXX"
-                    value={client.phone}
-                    onChange={handleClientChange}
-                    className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium"
-                  />
-                </div>
-              </div>
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                Gender
+              </label>
+              <select
+                name="gender"
+                value={client.gender}
+                onChange={handleClientChange}
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="MALE">Male</option>
+                <option value="FEMALE">Female</option>
+                <option value="OTHER">Other</option>
+                <option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+              </select>
+            </div>
 
-              <div>
+            <div>
                 <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
                   Email Address
                 </label>
@@ -741,7 +1060,6 @@ const CreateOrder = ({ token }) => {
                     className="w-full pl-8 pr-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
                   />
                 </div>
-              </div>
             </div>
           </div>
 
@@ -749,30 +1067,98 @@ const CreateOrder = ({ token }) => {
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                <span>📍</span> Delivery Location
+                <span>4</span> Delivery Location
               </h3>
               <span className="text-[10px] text-indigo-600 font-semibold bg-indigo-50 px-2 py-0.5 rounded-full">
                 For 4x6 Dispatch Slip
               </span>
             </div>
 
-            {/* City Selection */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  Province <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  name="province"
+                  value={client.province}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                >
+                  {NEPAL_PROVINCES.map((province) => (
+                    <option key={province} value={province}>{province}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  District <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  name="district"
+                  value={client.district}
+                  onChange={handleClientChange}
+                  className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                >
+                  {(NEPAL_DISTRICTS_BY_PROVINCE[client.province] || []).map((district) => (
+                    <option key={district} value={district}>{district}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             <div>
               <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                Destination City <span className="text-rose-500">*</span>
+                NCM Branch / Delivery Town <span className="text-rose-500">*</span>
               </label>
               <select
-                name="city"
-                value={client.city}
+                name="ncmBranch"
+                value={client.ncmBranch}
                 onChange={handleClientChange}
-                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+                disabled={loadingNcmBranches || ncmBranches.length === 0}
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800 disabled:opacity-50"
               >
-                {NEPAL_CITIES.map((c, i) => (
-                  <option key={i} value={c.name}>
-                    {c.name} ({c.province})
-                  </option>
-                ))}
+                {loadingNcmBranches ? (
+                  <option value="">Loading NCM branches...</option>
+                ) : ncmBranches.length === 0 ? (
+                  <option value="">No branch available in this district</option>
+                ) : (
+                  ncmBranches.map((branch) => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))
+                )}
               </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
+                NCM Covered Location / Pickup Area <span className="text-rose-500">*</span>
+              </label>
+              <select
+                name="ncmCoveredArea"
+                value={client.ncmCoveredArea}
+                onChange={handleClientChange}
+                required
+                disabled={loadingCoveredAreas || coveredAreas.length === 0}
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800 disabled:opacity-50"
+              >
+                {loadingCoveredAreas ? (
+                  <option value="">Loading covered locations...</option>
+                ) : coveredAreas.length === 0 ? (
+                  <option value="">No covered location available for this branch</option>
+                ) : (
+                  <>
+                    <option value="">Select covered location</option>
+                    {coveredAreas.map((area) => (
+                      <option key={area} value={area}>{area}</option>
+                    ))}
+                  </>
+                )}
+              </select>
+              <p className="mt-1 text-[10px] text-gray-500">
+                Select the NCM-covered area that matches the customer&apos;s delivery location.
+              </p>
             </div>
 
             {/* Landmark (CRITICAL for courier delivery) */}
@@ -792,50 +1178,6 @@ const CreateOrder = ({ token }) => {
               <p className="text-[10px] text-amber-700 mt-1">
                 Required for courier dispatch riders to locate destination quickly without failed deliveries.
               </p>
-            </div>
-
-            {/* Street Address / Tol */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                Street Address / Tol / House Details
-              </label>
-              <input
-                type="text"
-                name="street"
-                placeholder="e.g. New Road, Pipalbot Chowk, House #42"
-                value={client.street}
-                onChange={handleClientChange}
-                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none"
-              />
-            </div>
-
-            {/* Province & Zipcode Grid */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Province
-                </label>
-                <input
-                  type="text"
-                  name="state"
-                  value={client.state}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-600 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                  Postal Code
-                </label>
-                <input
-                  type="text"
-                  name="zipcode"
-                  value={client.zipcode}
-                  onChange={handleClientChange}
-                  className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-600 focus:outline-none"
-                />
-              </div>
             </div>
 
             {/* Delivery / Order Notes */}
@@ -862,7 +1204,7 @@ const CreateOrder = ({ token }) => {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <div>
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                  <span>👗</span> Product Selection
+                  <span>5</span> Product Selection
                 </h3>
                 <p className="text-[11px] text-gray-400 mt-0.5">
                   Search instantly or open the visual catalog to pick sizes, colors, and multiple items.
@@ -994,7 +1336,7 @@ const CreateOrder = ({ token }) => {
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-                <span>🛒</span> Order Items ({selectedItems.length})
+                <span>6</span> Order Items ({selectedItems.length})
               </h3>
               {selectedItems.length > 0 && (
                 <button
@@ -1102,7 +1444,7 @@ const CreateOrder = ({ token }) => {
           {/* Pricing, Shipping Rates, Manual Discount & Payment Card */}
           <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
-              <span>💳</span> Shipping, Discount & Order Summary
+              <span>7</span> Shipping, Discount & Order Summary
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">

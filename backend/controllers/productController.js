@@ -1,6 +1,8 @@
 import { v2 as cloudinary } from "cloudinary";
 import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { sanitizeText } from "../middleware/sanitize.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -47,6 +49,8 @@ const addProduct = async (req, res) => {
   try {
     const {
       name,
+      nepaliName,
+      nameNepali,
       description,
       price,
       category,
@@ -54,6 +58,7 @@ const addProduct = async (req, res) => {
       sizes,
       bestseller,
       newInStore,
+      showInNavigation,
       discount,
       costPrice,
       stockQuantity,
@@ -147,27 +152,50 @@ const addProduct = async (req, res) => {
     const categoriesArray = normalizeCategories(category);
     const isNewInStore = newInStore === "true" || newInStore === true;
 
-    // If marked as new in store, ensure all existing products have newInStore = false
-    if (isNewInStore) {
-      await prisma.product.updateMany({
-        data: { newInStore: false },
-      });
+    const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
+    const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
+    const cleanDescription = sanitizeText(description) || "";
+    const cleanSubCategory = sanitizeText(subCategory, { stripAllHtml: true }) || "";
+
+    if (!cleanName) {
+      return res.json({ success: false, message: "Product name is required" });
     }
 
+    const numPrice = Number(price);
+    if (isNaN(numPrice) || numPrice <= 0) {
+      return res.json({ success: false, message: "Price must be a valid positive number" });
+    }
+
+    const numDiscount = discount !== undefined && discount !== null && discount !== "" ? Number(discount) : 0;
+    if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+      return res.json({ success: false, message: "Discount percentage must be between 0% and 100%" });
+    }
+
+    const numCostPrice = costPrice !== undefined && costPrice !== null && costPrice !== "" ? Number(costPrice) : 0;
+    if (isNaN(numCostPrice) || numCostPrice < 0) {
+      return res.json({ success: false, message: "Cost price cannot be negative" });
+    }
+
+    const numLowStockThreshold = lowStockThreshold !== undefined && lowStockThreshold !== null && lowStockThreshold !== ""
+      ? Math.max(0, parseInt(lowStockThreshold, 10))
+      : 5;
+
     const productData = {
-      name,
-      description,
-      price: Number(price),
+      name: cleanName,
+      nepaliName: cleanNepaliName,
+      description: cleanDescription,
+      price: numPrice,
       category: JSON.stringify(categoriesArray),
-      subCategory,
+      subCategory: cleanSubCategory,
       sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes,
       image: allImages,
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
-      discount: discount ? Number(discount) : 0,
-      costPrice: costPrice !== undefined && costPrice !== null && costPrice !== "" ? Number(costPrice) : 0,
-      stockQuantity: qty,
-      lowStockThreshold: lowStockThreshold !== undefined ? parseInt(lowStockThreshold, 10) : 5,
+      showInNavigation: showInNavigation === "true" || showInNavigation === true,
+      discount: numDiscount,
+      costPrice: numCostPrice,
+      stockQuantity: Math.max(0, qty),
+      lowStockThreshold: numLowStockThreshold,
       colors: typeof colors === "string" ? JSON.parse(colors) : colors || [],
       variants: parsedVariants,
       published: published === "false" || published === false ? false : true,
@@ -205,6 +233,8 @@ const updateProduct = async (req, res) => {
     const {
       id,
       name,
+      nepaliName,
+      nameNepali,
       description,
       price,
       category,
@@ -212,6 +242,7 @@ const updateProduct = async (req, res) => {
       sizes,
       bestseller,
       newInStore,
+      showInNavigation,
       discount,
       costPrice,
       stockQuantity,
@@ -333,28 +364,60 @@ const updateProduct = async (req, res) => {
     let isNewInStore = undefined;
     if (newInStore !== undefined) {
       isNewInStore = newInStore === "true" || newInStore === true;
-      if (isNewInStore) {
-        await prisma.product.updateMany({
-          where: { id: { not: id } },
-          data: { newInStore: false },
-        });
+    }
+
+    const isShownInNavigation = showInNavigation !== undefined
+      ? showInNavigation === "true" || showInNavigation === true
+      : undefined;
+
+    const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
+    const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
+    const cleanDescription = description !== undefined ? sanitizeText(description) : undefined;
+    const cleanSubCategory = subCategory ? sanitizeText(subCategory, { stripAllHtml: true }) : undefined;
+
+    let validatedPrice = undefined;
+    if (price !== undefined && price !== "") {
+      const numPrice = Number(price);
+      if (isNaN(numPrice) || numPrice <= 0) {
+        return res.json({ success: false, message: "Price must be a valid positive number" });
       }
+      validatedPrice = numPrice;
+    }
+
+    let validatedDiscount = undefined;
+    if (discount !== undefined && discount !== "") {
+      const numDiscount = Number(discount);
+      if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+        return res.json({ success: false, message: "Discount percentage must be between 0% and 100%" });
+      }
+      validatedDiscount = numDiscount;
+    }
+
+    let validatedCostPrice = undefined;
+    if (costPrice !== undefined && costPrice !== "") {
+      const numCost = Number(costPrice);
+      if (isNaN(numCost) || numCost < 0) {
+        return res.json({ success: false, message: "Cost price cannot be negative" });
+      }
+      validatedCostPrice = numCost;
     }
 
     const updateData = {
-      ...(name && { name }),
-      ...(description && { description }),
-      ...(price !== undefined && { price: Number(price) }),
+      ...(cleanName && { name: cleanName }),
+      ...(cleanNepaliName || existingProduct.nepaliName ? { nepaliName: cleanNepaliName || existingProduct.nepaliName || "" } : {}),
+      ...(cleanDescription !== undefined && { description: cleanDescription }),
+      ...(validatedPrice !== undefined && { price: validatedPrice }),
       ...(categoryStorage !== undefined && { category: categoryStorage }),
-      ...(subCategory && { subCategory }),
+      ...(cleanSubCategory && { subCategory: cleanSubCategory }),
       ...(sizes && { sizes: typeof sizes === "string" ? JSON.parse(sizes) : sizes }),
       image: allImages,
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
-      ...(discount !== undefined && { discount: Number(discount) }),
-      ...(costPrice !== undefined && { costPrice: Number(costPrice) }),
-      stockQuantity: newQty,
-      ...(lowStockThreshold !== undefined && { lowStockThreshold: parseInt(lowStockThreshold, 10) }),
+      ...(isShownInNavigation !== undefined && { showInNavigation: isShownInNavigation }),
+      ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
+      ...(validatedCostPrice !== undefined && { costPrice: validatedCostPrice }),
+      stockQuantity: Math.max(0, newQty),
+      ...(lowStockThreshold !== undefined && { lowStockThreshold: Math.max(0, parseInt(lowStockThreshold, 10)) }),
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
       variants: parsedVariants,
       ...(published !== undefined && { published: published === "true" || published === true }),
@@ -394,22 +457,106 @@ const togglePublish = async (req, res) => {
   }
 };
 
+// function to toggle product bestseller status
+const toggleBestseller = async (req, res) => {
+  try {
+    const { id } = req.body;
+    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    if (!existingProduct) {
+      return res.json({ success: false, message: "Product not found" });
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id },
+      data: { bestseller: !existingProduct.bestseller },
+    });
+
+    const statusText = updatedProduct.bestseller ? "marked as Best Seller" : "removed from Best Sellers";
+    res.json({
+      success: true,
+      message: `${updatedProduct.name} is now ${statusText} for ${updatedProduct.subCategory || "its subcategory"}`,
+      bestseller: updatedProduct.bestseller,
+    });
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+// function to get bestsellers by category & subcategory
+const getSubcategoryBestsellers = async (req, res) => {
+  try {
+    const { category, subcategory } = req.query;
+    const whereCondition = { published: true, bestseller: true };
+    if (category) {
+      whereCondition.category = { contains: category.replace(/"/g, "") };
+    }
+    if (subcategory) {
+      whereCondition.subCategory = { contains: subcategory };
+    }
+
+    const products = await prisma.product.findMany({
+      where: whereCondition,
+      orderBy: { date: "desc" },
+    });
+
+    const formatted = products.map((item) => ({
+      ...item,
+      _id: item.id,
+      date: Number(item.date),
+      image: toImageArray(item.image),
+      categories: normalizeCategories(item.category),
+    }));
+
+    res.json({ success: true, products: formatted });
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 // function for list products
 const listProducts = async (req, res) => {
   try {
     const isAdmin = req.headers.token || req.query.admin === "true";
+    const pagination = getPagination(req.query);
+    const requestedCategoryValue = String(req.query.category || "").trim();
+    const requestedCategory = requestedCategoryValue.toLowerCase();
+    const requestedSubcategory = String(req.query.subcategory || "").trim().toLowerCase();
+    const requestedFeatured = String(req.query.featured || "").trim().toLowerCase();
+    const hasPublicFilters = !isAdmin && (requestedCategory || requestedSubcategory || requestedFeatured);
 
     // Synchronize current stockQuantity & variant stock from ManufacturerInventory
     await syncAllProductsStock();
 
     // Admin sees all products; Public customers see only published products
-    const whereCondition = isAdmin ? {} : { published: true };
+    const whereCondition = { ...(isAdmin ? {} : { published: true }) };
+    if (hasPublicFilters) {
+      if (requestedCategory) {
+        const categoryValue = requestedCategoryValue.replace(/"/g, "");
+        whereCondition.category = { contains: categoryValue };
+      }
+      if (requestedSubcategory) {
+        whereCondition.subCategory = { contains: requestedSubcategory };
+      }
+      if (requestedFeatured === "new") whereCondition.newInStore = true;
+      if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    }
 
-    const [rawProducts, allReviews] = await Promise.all([
-      prisma.product.findMany({
+    const productQuery = isAdmin || hasPublicFilters
+      ? prisma.product.findMany({
         where: whereCondition,
         orderBy: { date: "desc" },
-      }),
+        skip: pagination.skip,
+        take: pagination.limit,
+      })
+      : prisma.product.findMany({
+        where: whereCondition,
+        orderBy: { date: "desc" },
+      });
+    const [rawProducts, total, allReviews] = await Promise.all([
+      productQuery,
+      prisma.product.count({ where: whereCondition }),
       prisma.review.findMany({
         select: { productId: true, rating: true },
       }),
@@ -425,7 +572,7 @@ const listProducts = async (req, res) => {
       reviewStatsMap[r.productId].count += 1;
     }
 
-    const products = rawProducts.map((item) => {
+    let products = rawProducts.map((item) => {
       const cats = normalizeCategories(item.category);
       const rStats = reviewStatsMap[item.id] || { sum: 0, count: 0 };
       const avgRating = rStats.count > 0 ? Number((rStats.sum / rStats.count).toFixed(1)) : 0;
@@ -438,6 +585,7 @@ const listProducts = async (req, res) => {
         categories: cats,
         category: cats.join(", "),
         newInStore: Boolean(item.newInStore),
+        showInNavigation: Boolean(item.showInNavigation),
         costPrice: Number(item.costPrice || 0),
         lowStockThreshold: item.lowStockThreshold || 5,
         rating: avgRating,
@@ -445,7 +593,21 @@ const listProducts = async (req, res) => {
       };
     });
 
-    res.json({ success: true, products });
+    if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
+      products = products.filter((product) => {
+        const matchesCategory = !requestedCategory || product.categories.some(
+          (category) => String(category).trim().toLowerCase() === requestedCategory
+        );
+        const matchesSubcategory = !requestedSubcategory || String(product.subCategory || "").trim().toLowerCase() === requestedSubcategory;
+        const matchesFeatured = requestedFeatured !== "new" || product.newInStore;
+        const matchesBestseller = requestedFeatured !== "bestseller" || product.bestseller;
+        return matchesCategory && matchesSubcategory && matchesFeatured && matchesBestseller;
+      });
+    }
+
+    const filteredTotal = products.length;
+
+    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: filteredTotal || pagination.limit, skip: 0 }, isAdmin ? total : filteredTotal));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -630,4 +792,16 @@ const getStockLogs = async (req, res) => {
   }
 };
 
-export { addProduct, updateProduct, togglePublish, listProducts, removeProduct, singleProduct, adjustStock, getStockLogs };
+export {
+  addProduct,
+  updateProduct,
+  togglePublish,
+  toggleBestseller,
+  getSubcategoryBestsellers,
+  listProducts,
+  removeProduct,
+  singleProduct,
+  adjustStock,
+  getStockLogs,
+};
+

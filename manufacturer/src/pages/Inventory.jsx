@@ -19,10 +19,13 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
+import Pagination from "../components/Pagination";
 
 const Inventory = () => {
   const { token, backendUrl, currency } = useManufacturer();
   const [inventory, setInventory] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
@@ -39,22 +42,25 @@ const Inventory = () => {
     if (!token) return;
     setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/manufacturer-inventory/my`, {
+      const res = await axios.get(`${backendUrl}/api/manufacturer-inventory/my?page=${page}&limit=10`, {
         headers: { token },
       });
       if (res.data.success) {
         setInventory(res.data.inventory || []);
+        setPagination(res.data.pagination || null);
       }
     } catch (err) {
       toast.error("Failed to load inventory");
     } finally {
       setLoading(false);
     }
-  }, [token, backendUrl]);
+  }, [token, backendUrl, page]);
 
   useEffect(() => {
     fetchInventory();
   }, [fetchInventory]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const openEditModal = (item) => {
     setSelectedItem(item);
@@ -399,6 +405,13 @@ const Inventory = () => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
 
       {/* Update Stock & Price Quotation Modal */}

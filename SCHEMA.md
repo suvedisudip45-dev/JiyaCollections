@@ -99,6 +99,12 @@ The database schema forms the relational core of the **Aama Clothings** Enterpri
   - `@@index([status])`
   - `@@index([payment])`
 
+#### Admin Direct-Order Identity Metadata
+- `User.socialCustomerCode` is the customer-provided verification secret used with a normalized phone number for social-order account linking.
+- `User.socialCustomerPhone` supports inactive social profiles and phone matching.
+- `Order.rewardApplied` stores the immutable order-time decision, including `socialCodeVerified`, `loyaltyExcluded`, and `giftEligible`.
+- Orders created after a code mismatch use a unique anonymous `userId` and remain intentionally detached from the matched account. Their dispatch address may be copied from a previous order, but their spend and order count must not be included in customer loyalty calculations.
+
 #### Auxiliary Lookups & Marketing Models
 - **`Category`**: `id` (UUID), `name` (String `@unique`)
 - **`SubCategory`**: `id` (UUID), `name` (String `@unique`)

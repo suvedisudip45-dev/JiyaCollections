@@ -1,10 +1,13 @@
-import React, { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { assets } from "../assets/assets";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
+import { Heart, Menu, Search, ShoppingBag, UserRound, X } from "lucide-react";
+import axios from "axios";
 
 const Navbar = () => {
   const [visible, setVisible] = useState(false);
+  const [activeMobileCategory, setActiveMobileCategory] = useState("");
   const location = useLocation();
   const {
     setShowSearch,
@@ -13,7 +16,34 @@ const Navbar = () => {
     token,
     setToken,
     setCartItems,
+    backendUrl,
   } = useContext(ShopContext);
+
+  const [navigationGroups, setNavigationGroups] = useState([]);
+
+  useEffect(() => {
+    const fetchNavigationOptions = async () => {
+      try {
+        const response = await axios.get(`${backendUrl}/api/category/navigation`);
+        setNavigationGroups(response.data.success ? response.data.navigation || [] : []);
+      } catch (error) {
+        console.error("Unable to load storefront navigation options:", error);
+        setNavigationGroups([]);
+      }
+    };
+
+    fetchNavigationOptions();
+  }, [backendUrl]);
+
+  const categoryLinks = navigationGroups.slice(0, 3);
+
+  useEffect(() => {
+    if (categoryLinks.length && !categoryLinks.some((group) => group.name === activeMobileCategory)) {
+      setActiveMobileCategory(categoryLinks[0].name);
+    }
+  }, [categoryLinks, activeMobileCategory]);
+
+  const activeMobileGroup = categoryLinks.find((group) => group.name === activeMobileCategory) || categoryLinks[0];
 
   const handleSearchClick = () => {
     setShowSearch(true);
@@ -32,167 +62,148 @@ const Navbar = () => {
 
 
   return (
-    <nav className="relative z-40 flex items-center justify-between py-5 font-medium">
-      <Link to={"/"} className="z-10">
-        <img src={assets.logo} className="w-36" alt="Logo" />
+    <>
+      <div className="announcement-bar" aria-label="Store announcements">
+        <div className="announcement-track">
+          {[1, 2].map((copy) => (
+            <span className="announcement-copy" key={copy} aria-hidden={copy === 2}>
+              Free shipping on orders over Rs 3,000 <b>•</b> Made for everyday movement
+            </span>
+          ))}
+        </div>
+      </div>
+      <nav className="relative z-40 border-b border-[var(--line)] bg-[var(--paper)] font-medium">
+        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-4 py-4 sm:px-8 lg:px-12">
+      <Link to={"/"} className="z-10 flex items-center gap-3">
+        <img src={assets.logo} className="w-32 sm:w-36" alt="Logo" />
+        <span className="hidden border-l border-[#c9c6bc] pl-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#77776e] sm:block">
+          Kathmandu / Nepal
+        </span>
       </Link>
 
       {/* Desktop Navigation Links */}
-      <ul className="hidden sm:flex gap-5 text-sm text-gray-700">
-        <NavLink to="/" className="flex flex-col items-center gap-1">
-          <p>HOME</p>
-          <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
-        </NavLink>
-        <NavLink to="/collection" className="flex flex-col items-center gap-1">
-          <p>COLLECTION</p>
-          <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
-        </NavLink>
-        <NavLink to="/about" className="flex flex-col items-center gap-1">
-          <p>ABOUT</p>
-          <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
-        </NavLink>
-        <NavLink to="/contact" className="flex flex-col items-center gap-1">
-          <p>CONTACT</p>
-          <hr className="w-2/4 border-none h-[1.5px] bg-gray-700 hidden" />
-        </NavLink>
+      <ul className="hidden gap-7 text-[11px] font-bold uppercase tracking-[0.12em] text-[var(--muted)] lg:flex">
+        {categoryLinks.map((group) => (
+          <li key={group.name} className="group relative">
+            <NavLink
+              to={`/collection?category=${encodeURIComponent(group.name)}`}
+              className="block py-2 transition-colors hover:text-[var(--ink)] focus:text-[var(--ink)]"
+            >
+              {group.name.toUpperCase()}
+            </NavLink>
+            <div className="invisible absolute left-1/2 top-full z-50 w-64 -translate-x-1/2 border border-[var(--line)] bg-[var(--white)] p-5 opacity-0 shadow-xl transition-all duration-200 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+              <Link to={`/collection?category=${encodeURIComponent(group.name)}`} className="mb-4 block border-b border-[var(--line)] pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--ink)] hover:text-[var(--accent)]">
+                Shop {group.name}
+              </Link>
+              {group.newArrivalCount > 0 && (
+                <Link to={`/collection?category=${encodeURIComponent(group.name)}&featured=new`} className="mb-3 block text-xs font-bold uppercase tracking-[0.08em] text-[var(--accent)] hover:text-[var(--ink)]">
+                  New arrivals
+                </Link>
+              )}
+              <div className="flex flex-col gap-2">
+                {group.subcategories.map((subcategory) => (
+                  <Link key={`${group.name}-${subcategory}`} to={`/collection?category=${encodeURIComponent(group.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="text-xs uppercase tracking-[0.06em] text-[var(--muted)] hover:text-[var(--ink)]">
+                    {subcategory}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          </li>
+        ))}
+        <NavLink to="/collection?featured=new" className="transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
+        <NavLink to="/collection?featured=bestseller" className="transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
+        <NavLink to="/about" className="transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
       </ul>
 
-      <div className="flex items-center gap-6 z-10">
-        <img
-          onClick={handleSearchClick}
-          src={assets.search_icon}
-          className="w-5 cursor-pointer hover:opacity-80 transition-opacity"
-          alt="Search"
-        />
-
-        {/* Profile / Account Dropdown */}
+      <div className="z-10 flex items-center gap-4 sm:gap-5">
+        <button onClick={handleSearchClick} className="icon-button" aria-label="Search products">
+          <Search size={19} strokeWidth={1.8} />
+        </button>
         <div className="group relative">
-          <img
-            onClick={() => (token ? null : navigate("/login"))}
-            src={assets.profile_icon}
-            className="w-5 cursor-pointer hover:opacity-80 transition-opacity"
-            alt="Profile"
-          />
+          <button onClick={() => (token ? null : navigate("/login"))} className="icon-button" aria-label="Account">
+            <UserRound size={19} strokeWidth={1.8} />
+          </button>
           {token && (
             <div className="group-hover:block hidden absolute right-0 pt-4 z-50">
-              <div className="flex flex-col gap-2 w-36 py-3 px-5 bg-white border border-gray-200 shadow-xl text-gray-600 rounded-xl text-sm">
-                <p
-                  onClick={() => navigate("/profile")}
-                  className="cursor-pointer hover:text-black transition-colors"
-                >
-                  My Profile
-                </p>
-                <p
-                  onClick={() => navigate("/orders")}
-                  className="cursor-pointer hover:text-black transition-colors"
-                >
-                  Orders
-                </p>
-                <p
-                  onClick={logout}
-                  className="cursor-pointer text-red-600 hover:text-red-700 font-semibold transition-colors"
-                >
-                  Logout
-                </p>
+              <div className="flex w-40 flex-col gap-3 border border-[var(--line)] bg-[var(--white)] px-5 py-4 text-sm text-[var(--muted)] shadow-xl">
+                <p onClick={() => navigate("/profile")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">My Profile</p>
+                <p onClick={() => navigate("/orders")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Orders</p>
+                <p onClick={logout} className="cursor-pointer font-semibold text-[var(--accent)] transition-colors hover:text-[var(--ink)]">Logout</p>
               </div>
             </div>
           )}
         </div>
-
-        {/* Cart Icon */}
-        <Link to="/cart" className="relative">
-          <img src={assets.cart_icon} className="w-5 min-w-5" alt="Cart" />
-          <p className="absolute right-[-5px] bottom-[-5px] w-4 text-center leading-4 bg-black text-white aspect-square rounded-full text-[8px] font-bold">
-            {getCartCount()}
-          </p>
+        <button onClick={() => navigate("/wishlist")} className="icon-button" aria-label="Wishlist">
+          <Heart size={19} strokeWidth={1.8} />
+        </button>
+        <Link to="/cart" className="icon-button relative" aria-label="Shopping bag">
+          <ShoppingBag size={20} strokeWidth={1.8} />
+          <span className="cart-count">{getCartCount()}</span>
         </Link>
-
-        {/* Mobile Hamburger Menu Icon */}
-        <img
-          onClick={() => setVisible(true)}
-          src={assets.menu_icon}
-          className="w-5 cursor-pointer sm:hidden hover:opacity-80 transition-opacity"
-          alt="Open Menu"
-        />
+        <button onClick={() => setVisible(true)} className="icon-button lg:hidden" aria-label="Open menu">
+          <Menu size={21} strokeWidth={1.8} />
+        </button>
       </div>
-
-      {/* Mobile Drawer Backdrop */}
-      {visible && (
-        <div
-          onClick={() => setVisible(false)}
-          className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 sm:hidden transition-opacity"
-        />
-      )}
-
-      {/* Sidebar menu for small screens */}
-      <div
-        className={`fixed top-0 right-0 bottom-0 z-50 bg-white shadow-2xl transition-all duration-300 ease-in-out flex flex-col ${
-          visible ? "w-[75%] max-w-xs" : "w-0 overflow-hidden pointer-events-none"
-        }`}
-      >
-        <div className="flex flex-col text-gray-700 h-full w-full">
-          {/* Header */}
-          <div
-            onClick={() => setVisible(false)}
-            className="flex items-center justify-between p-4 border-b border-gray-200 cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors"
-          >
-            <span className="font-bold text-sm tracking-wide text-gray-900">MENU</span>
-            <div className="flex items-center gap-1.5 text-xs text-gray-600 font-medium">
-              <span>Close</span>
-              <img className="h-3.5 rotate-180" src={assets.dropdown_icon} alt="" />
-            </div>
-          </div>
-
-          {/* Nav Links */}
-          <div className="flex flex-col py-2">
-            <NavLink
-              onClick={() => setVisible(false)}
-              className={({ isActive }) =>
-                `py-3.5 px-6 border-b border-gray-100 text-sm font-semibold transition-colors ${
-                  isActive ? "text-black bg-gray-50 font-bold" : "text-gray-600 hover:text-black hover:bg-gray-50"
-                }`
-              }
-              to="/"
-            >
-              HOME
-            </NavLink>
-            <NavLink
-              onClick={() => setVisible(false)}
-              className={({ isActive }) =>
-                `py-3.5 px-6 border-b border-gray-100 text-sm font-semibold transition-colors ${
-                  isActive ? "text-black bg-gray-50 font-bold" : "text-gray-600 hover:text-black hover:bg-gray-50"
-                }`
-              }
-              to="/collection"
-            >
-              COLLECTION
-            </NavLink>
-            <NavLink
-              onClick={() => setVisible(false)}
-              className={({ isActive }) =>
-                `py-3.5 px-6 border-b border-gray-100 text-sm font-semibold transition-colors ${
-                  isActive ? "text-black bg-gray-50 font-bold" : "text-gray-600 hover:text-black hover:bg-gray-50"
-                }`
-              }
-              to="/about"
-            >
-              ABOUT
-            </NavLink>
-            <NavLink
-              onClick={() => setVisible(false)}
-              className={({ isActive }) =>
-                `py-3.5 px-6 border-b border-gray-100 text-sm font-semibold transition-colors ${
-                  isActive ? "text-black bg-gray-50 font-bold" : "text-gray-600 hover:text-black hover:bg-gray-50"
-                }`
-              }
-              to="/contact"
-            >
-              CONTACT
-            </NavLink>
-          </div>
         </div>
+
+      </nav>
+
+      {visible && <div onClick={() => setVisible(false)} className="fixed inset-0 z-50 bg-black/45 lg:hidden" />}
+      <div className={`fixed right-0 top-0 z-[60] h-full overflow-y-auto bg-[var(--paper)] shadow-2xl transition-all duration-300 lg:hidden ${visible ? "w-full max-w-[390px]" : "pointer-events-none w-0 overflow-hidden"}`}>
+        <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
+          <button onClick={() => setVisible(false)} className="icon-button" aria-label="Close menu"><X size={27} strokeWidth={1.8} /></button>
+          <button onClick={() => { setVisible(false); navigate(token ? "/profile" : "/login"); }} className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--ink)]">
+            <UserRound size={18} strokeWidth={1.6} /> {token ? "Account" : "Login"}
+          </button>
+          <Link to="/cart" onClick={() => setVisible(false)} className="icon-button" aria-label="Shopping bag"><ShoppingBag size={23} strokeWidth={1.7} /></Link>
+        </div>
+
+        <div className="flex border-b border-[var(--line)] px-4 pt-4">
+          {categoryLinks.map((group) => (
+            <button
+              key={group.name}
+              type="button"
+              onClick={() => setActiveMobileCategory(group.name)}
+              className={`flex-1 border-b-2 px-2 pb-4 text-center text-sm font-bold capitalize transition-colors ${activeMobileCategory === group.name ? "border-[var(--ink)] text-[var(--ink)]" : "border-transparent text-[var(--muted)] hover:text-[var(--ink)]"}`}
+            >
+              {group.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-col">
+          {activeMobileGroup && (
+            <div className="border-b border-[var(--line)]">
+              {activeMobileGroup.newArrivalCount > 0 && (
+                <Link onClick={() => setVisible(false)} to={`/collection?category=${encodeURIComponent(activeMobileGroup.name)}&featured=new`} className="flex items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+                  {activeMobileGroup.name} new arrivals <span className="text-xl">→</span>
+                </Link>
+              )}
+              {activeMobileGroup.subcategories.map((subcategory) => (
+                <Link key={`${activeMobileGroup.name}-${subcategory}`} onClick={() => setVisible(false)} to={`/collection?category=${encodeURIComponent(activeMobileGroup.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="block border-b border-[var(--line)] px-5 py-5 text-sm uppercase tracking-[0.08em] text-[var(--muted)] hover:text-[var(--ink)]">
+                  {subcategory}
+                </Link>
+              ))}
+            </div>
+          )}
+          <Link onClick={() => setVisible(false)} to="/collection?featured=bestseller" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+            Best sellers
+          </Link>
+          <Link onClick={() => setVisible(false)} to="/contact" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+            Contact
+          </Link>
+        </div>
+
+        <Link onClick={() => setVisible(false)} to="/collection" className="group relative block aspect-[4/5] overflow-hidden bg-[var(--stone)]">
+          <img src={assets.hero_img} alt="Explore the collection" className="h-full w-full object-cover transition duration-700 group-hover:scale-105" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
+          <div className="absolute bottom-7 left-6 text-white">
+            <p className="text-2xl font-bold uppercase tracking-[0.08em]">Explore the edit</p>
+            <span className="mt-3 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em]">Shop now <span className="text-lg">→</span></span>
+          </div>
+        </Link>
       </div>
-    </nav>
+    </>
   );
 };
 

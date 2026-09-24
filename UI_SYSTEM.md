@@ -74,6 +74,20 @@ Purpose
 - Image uploads (admin): multi-file selection, preview before upload, progress indicator.
 - Notifications: react-toastify for toasts; consistent placement top-right and dismiss behavior.
 
+### Manufacturer Fulfillment Workflow
+- Manufacturer order detail uses one progress-step workflow: acceptance, stitching and branding, quality check, compulsory customer letter, final checklist, packing, package details, and delivery-partner handoff.
+- Each step exposes one primary `Next` action and a `Previous` action where the state is still editable. Future steps remain unavailable until the backend confirms the current step.
+- The order list opens the workflow and does not provide shortcut status mutation controls.
+- Checklist controls use real checkbox inputs with labels, keyboard support, and clear blocked-state messages. Package fields remain editable until delivery handoff and lock afterward.
+
+### Admin Direct-Order Step Flow
+- Step 1: enter and validate a digits-only contact number.
+- Step 2: show `New customer` when no profile or historical order exists; show blank required fields.
+- Step 3: show `Code required` for a known contact. The admin enters the code provided by the customer; the code is never displayed by lookup.
+- Step 4: show either `Verified customer` or `Existing customer - loyalty excluded`, and populate prior customer data for both states.
+- Step 5: collect or review delivery details, select products, review payment, and confirm creation.
+- Verification status must be communicated with text and accessible status messaging, not color alone. Existing account data is used as an order draft and is not overwritten implicitly.
+
 9. Testing & visual regression
 - Unit tests: none enforced in frontend; recommend jest + react-testing-library for unit and integration tests.
 - E2E: recommend Playwright for critical flows (checkout, login, product lifecycle).

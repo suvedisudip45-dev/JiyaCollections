@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { randomUUID } from "node:crypto";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import {
   postSalesOrderAccounting,
@@ -6,9 +7,80 @@ import {
 } from "../services/accountingPostingEngine.js";
 import { runAllocationEngine } from "./orderAssignmentController.js";
 import { resolveDistrictShippingFee } from "./shippingController.js";
+import { createInactiveSocialCustomerProfile } from "./userController.js";
+import { isValidMobileNumber } from "../utils/socialCustomerProfile.js";
+import {
+  findAdminOrderCustomer,
+  getAdminOrderCustomerForCreation,
+} from "../services/adminOrderCustomerService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // global variables
 const deliveryCharge = 50;
+
+const buildOrderListItem = (order) => {
+  const parsedReward = (() => {
+    if (!order?.rewardApplied) return null;
+    if (typeof order.rewardApplied === "string") {
+      try {
+        return JSON.parse(order.rewardApplied);
+      } catch {
+        return null;
+      }
+    }
+    return order.rewardApplied;
+  })();
+
+  const parsedItems = (() => {
+    if (Array.isArray(order?.items)) return order.items;
+    if (typeof order?.items === "string") {
+      try {
+        return JSON.parse(order.items);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  })();
+
+  const address = (() => {
+    if (!order?.address) return {};
+    if (typeof order.address === "string") {
+      try {
+        return JSON.parse(order.address);
+      } catch {
+        return {};
+      }
+    }
+    return order.address;
+  })();
+
+  return {
+    id: order.id,
+    _id: order.id,
+    userId: order.userId,
+    items: parsedItems,
+    amount: Number(order.amount || 0),
+    deliveryFee: Number(order.deliveryFee || 0),
+    address,
+    status: order.status,
+    paymentMethod: order.paymentMethod,
+    payment: Boolean(order.payment),
+    date: Number(order.date || 0),
+    loyaltyDiscount: Number(order.loyaltyDiscount || 0),
+    rewardApplied: parsedReward,
+    fulfillmentStatus: order.fulfillmentStatus,
+    assignmentId: order.assignmentId,
+    deliveryJobId: order.deliveryJobId,
+    orderType: order.orderType,
+    directOrderType: order.directOrderType,
+    manufacturerId: order.manufacturerId,
+    directNotes: order.directNotes,
+    delivery: order.deliveryOrder || null,
+    deliveryOrder: order.deliveryOrder || null,
+    totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
+  };
+};
 
 // Helper to validate stock before order placement
 const validateOrderStock = (items, dbProducts) => {
@@ -383,9 +455,8 @@ const placeOrder = async (req, res) => {
 // All Orders data for Admin Panel (monitor all orders - read-only context)
 const allOrders = async (req, res) => {
   try {
-    const rawOrders = await prisma.order.findMany({
-      orderBy: { date: "desc" },
-      include: {
+    const pagination = getPagination(req.query);
+    const orderInclude = {
         deliveryOrder: {
           select: {
             id: true,
@@ -399,15 +470,18 @@ const allOrders = async (req, res) => {
             deliveredAt: true,
           },
         },
-      },
-    });
-    const orders = rawOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
-    res.json({ success: true, orders });
+      };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        orderBy: { date: "desc" },
+        include: orderInclude,
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count(),
+    ]);
+    const orders = rawOrders.map((item) => buildOrderListItem(item));
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -420,46 +494,21 @@ const allOrders = async (req, res) => {
  */
 const allAdminOrders = async (req, res) => {
   try {
-    const rawOrders = await prisma.order.findMany({
-      orderBy: { date: "desc" },
-      include: {
-        deliveryOrder: {
-          select: {
-            id: true,
-            ncmOrderId: true,
-            state: true,
-            ncmStatus: true,
-            vendorReference: true,
-            originBranchName: true,
-            destinationBranchName: true,
-            pickedUpAt: true,
-            deliveredAt: true,
-          },
-        },
-      },
-    });
-
-    const adminOrders = rawOrders.filter((order) => {
-      // Check orderType field first
-      if (order.orderType === "ADMIN_DIRECT") return true;
-      // Check rewardApplied JSON flag (older format)
-      try {
-        const reward =
-          typeof order.rewardApplied === "string"
-            ? JSON.parse(order.rewardApplied)
-            : order.rewardApplied;
-        if (reward && reward.adminCreated === true) return true;
-      } catch {}
-      return false;
-    });
-
-    const orders = adminOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
-    res.json({ success: true, orders });
+    const pagination = getPagination(req.query);
+    const where = { orderType: "ADMIN_DIRECT" };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: { date: "desc" },
+        include: { deliveryOrder: { select: { id: true, ncmOrderId: true, state: true, ncmStatus: true, vendorReference: true, originBranchName: true, destinationBranchName: true, pickedUpAt: true, deliveredAt: true } } },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
+    const adminOrders = rawOrders;
+    const orders = adminOrders.map((item) => buildOrderListItem(item));
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -470,10 +519,13 @@ const allAdminOrders = async (req, res) => {
 const userOrders = async (req, res) => {
   try {
     const { userId } = req.body;
-    const rawOrders = await prisma.order.findMany({
-      where: { userId },
-      orderBy: { date: "desc" },
-      include: {
+    const pagination = getPagination(req.query);
+    const where = { userId };
+    const [rawOrders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: { date: "desc" },
+        include: {
         deliveryOrder: {
           select: {
             id: true,
@@ -487,15 +539,14 @@ const userOrders = async (req, res) => {
             deliveredAt: true,
           },
         },
-      },
-    });
-    const orders = rawOrders.map((item) => ({
-      ...item,
-      _id: item.id,
-      date: Number(item.date),
-      delivery: item.deliveryOrder || null,
-    }));
-    res.json({ success: true, orders });
+        },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.order.count({ where }),
+    ]);
+    const orders = rawOrders.map((item) => buildOrderListItem(item));
+    res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -572,6 +623,40 @@ const cashReceived = async (req, res) => {
   }
 };
 
+const lookupAdminOrderCustomer = async (req, res) => {
+  try {
+    const result = await findAdminOrderCustomer(req.query.phone || "");
+    if (result.state === "INVALID_PHONE") {
+      return res.json({ success: false, message: "A valid contact number is required" });
+    }
+    res.json({ success: true, state: result.state, found: result.state !== "NEW_CUSTOMER", customer: result.customer || null });
+  } catch (error) {
+    console.error("Admin customer lookup error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+const verifyAdminOrderCustomer = async (req, res) => {
+  try {
+    const { phone, code } = req.body || {};
+    const result = await getAdminOrderCustomerForCreation(phone || "", code || "");
+    if (result.state === "INVALID_PHONE") {
+      return res.json({ success: false, message: "A valid contact number is required" });
+    }
+    res.json({
+      success: true,
+      state: result.state,
+      verified: result.state === "VERIFIED",
+      loyaltyEligible: result.loyaltyEligible,
+      giftEligible: result.giftEligible,
+      customer: result.customer || null,
+    });
+  } catch (error) {
+    console.error("Admin customer verification error:", error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
 // Admin Create Order for Social Media & Manual Phone Inquiries
 const adminCreateOrder = async (req, res) => {
   try {
@@ -585,10 +670,63 @@ const adminCreateOrder = async (req, res) => {
       status = "Order Placed",
     } = req.body;
 
-    if (!client || !client.firstName || !client.phone) {
+    if (!client || !client.phone) {
       return res.json({
         success: false,
-        message: "Customer first name and contact phone number are required",
+        message: "Customer contact phone number is required",
+      });
+    }
+
+    if (!/^\d{10}$/.test(String(client.phone).trim()) || !isValidMobileNumber(client.phone)) {
+      return res.json({
+        success: false,
+        message: "Contact number must contain exactly 10 digits and start with 97 or 98",
+      });
+    }
+
+    const customerDecision = await getAdminOrderCustomerForCreation(
+      client.phone,
+      client.socialCode || ""
+    );
+    if (customerDecision.state === "CODE_REQUIRED") {
+      return res.json({
+        success: false,
+        message: "This contact number already exists. Enter the social code provided by the customer.",
+      });
+    }
+
+    const customerData = customerDecision.customer;
+    const resolvedClient = customerData
+      ? {
+          ...client,
+          firstName: client.firstName || customerData.firstName,
+          lastName: client.lastName || customerData.lastName,
+          email: client.email || customerData.email,
+          gender: client.gender || customerData.gender,
+          phone: customerData.phone || client.phone,
+          province: client.province || customerData.address.province,
+          district: client.district || customerData.address.district,
+          city: client.city || customerData.address.city,
+          ncmBranch: client.ncmBranch || customerData.address.ncmBranch,
+          state: client.state || customerData.address.state,
+          zipcode: client.zipcode || customerData.address.zipcode,
+          country: client.country || customerData.address.country,
+          street: client.street || customerData.address.street,
+          landmark: client.landmark || customerData.address.landmark,
+        }
+      : client;
+
+    if (!resolvedClient.firstName || !resolvedClient.lastName || !resolvedClient.street || !resolvedClient.landmark) {
+      return res.json({
+        success: false,
+        message: "Complete the required customer and delivery details before creating the order",
+      });
+    }
+
+    if (!String(resolvedClient.ncmBranch || "").trim() || !String(resolvedClient.ncmCoveredArea || "").trim()) {
+      return res.json({
+        success: false,
+        message: "Select the NCM branch and covered delivery location before creating the order",
       });
     }
 
@@ -661,8 +799,8 @@ const adminCreateOrder = async (req, res) => {
     // Dynamic shipping calculation according to shipment rates (ShippingConfig)
     let expectedFee = 50;
     try {
-      const customerDistrict = client.district || client.city || "";
-      const customerProvince = client.state || client.province || "";
+      const customerDistrict = resolvedClient.district || resolvedClient.city || "";
+      const customerProvince = resolvedClient.state || resolvedClient.province || "";
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
@@ -681,36 +819,80 @@ const adminCreateOrder = async (req, res) => {
     const manualDiscount = Math.max(0, Number(discount) || 0);
     const finalAmount = Math.max(0, itemsTotal + resolvedFee - manualDiscount);
 
-    // Associate userId: check if a user with client's email exists
-    let orderUserId = "admin_social_client";
-    if (client.email && client.email.trim()) {
+    // Only a verified existing customer may be linked. Invalid-code orders use a
+    // unique anonymous identity so their loyalty history cannot be shared.
+    let orderUserId = customerDecision.userId || `admin_social_client_${randomUUID()}`;
+
+    const isSocialOrder = /social|instagram|facebook|whatsapp|tiktok|messenger|phone/i.test(
+      String(resolvedClient.source || "Social Media")
+    );
+
+    let socialCustomerProfile = null;
+    if (isSocialOrder && resolvedClient.phone && customerDecision.state === "NEW_CUSTOMER") {
       try {
-        const existingUser = await prisma.user.findUnique({
-          where: { email: client.email.trim() },
+        socialCustomerProfile = await createInactiveSocialCustomerProfile({
+          firstName: resolvedClient.firstName,
+          lastName: resolvedClient.lastName,
+          phone: resolvedClient.phone,
+          email: resolvedClient.email,
+          gender: resolvedClient.gender,
+          province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+          district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+          city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+          ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+          state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+          country: resolvedClient.country || "Nepal",
+          address: {
+            firstName: resolvedClient.firstName,
+            lastName: resolvedClient.lastName,
+            phone: resolvedClient.phone,
+            province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+            district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+            city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+            ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+            state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+            country: resolvedClient.country || "Nepal",
+            street: resolvedClient.street || "",
+            landmark: resolvedClient.landmark || "",
+            zipcode: resolvedClient.zipcode || "44600",
+          },
+          socialUsername: resolvedClient.socialUsername || "",
+          source: resolvedClient.source || "Social Media",
+          loyaltyTier: resolvedClient.loyaltyTier || "",
+          orderId: "",
         });
-        if (existingUser) {
-          orderUserId = existingUser.id;
+
+        if (socialCustomerProfile?.success && socialCustomerProfile.user) {
+          orderUserId = socialCustomerProfile.user.id;
         }
-      } catch (e) {
-        console.error("Error checking user for admin order:", e);
+      } catch (profileErr) {
+        console.error("Error creating inactive social customer profile in admin order:", profileErr);
       }
     }
 
     const addressSnapshot = {
-      firstName: client.firstName.trim(),
-      lastName: (client.lastName || "").trim(),
-      email: (client.email || "").trim(),
-      phone: client.phone.trim(),
-      street: client.street || "",
-      landmark: client.landmark || "",
-      city: client.city || "Kathmandu",
-      district: client.district || client.city || "Kathmandu",
-      state: client.state || "Bagmati Province",
-      zipcode: client.zipcode || "44600",
-      country: client.country || "Nepal",
-      source: client.source || "Social Media",
-      socialUsername: client.socialUsername || "",
-      orderNotes: client.orderNotes || "",
+      firstName: resolvedClient.firstName.trim(),
+      lastName: (resolvedClient.lastName || "").trim(),
+      email: (resolvedClient.email || "").trim(),
+      phone: resolvedClient.phone.trim(),
+      gender: resolvedClient.gender || "PREFER_NOT_TO_SAY",
+      street: resolvedClient.street || "",
+      landmark: resolvedClient.landmark || "",
+      province: resolvedClient.province || resolvedClient.state || "Bagmati Province",
+      district: resolvedClient.district || resolvedClient.city || "Kathmandu",
+      city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
+      ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
+      ncmCoveredArea: resolvedClient.ncmCoveredArea || "",
+      state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
+      zipcode: resolvedClient.zipcode || "44600",
+      country: resolvedClient.country || "Nepal",
+      source: resolvedClient.source || "Social Media",
+      socialUsername: resolvedClient.socialUsername || "",
+      socialCode: resolvedClient.socialCode || "",
+      orderNotes: resolvedClient.orderNotes || "",
+      deliveryInstruction: resolvedClient.deliveryInstruction || resolvedClient.orderNotes || "",
+      loyaltyExcluded: !customerDecision.loyaltyEligible,
+      giftEligible: customerDecision.giftEligible,
     };
 
     const newOrder = await prisma.order.create({
@@ -727,10 +909,14 @@ const adminCreateOrder = async (req, res) => {
         loyaltyDiscount: manualDiscount,
         orderType: "ADMIN_DIRECT", // Mark as admin-created for guard in updateStatus
         rewardApplied: JSON.stringify({
-          source: client.source || "Social Media",
+          source: resolvedClient.source || "Social Media",
           manualDiscount,
           deliveryFee: resolvedFee,
           adminCreated: true,
+          loyaltyExcluded: !customerDecision.loyaltyEligible,
+          giftEligible: customerDecision.giftEligible,
+          socialCodeVerified: customerDecision.state === "VERIFIED",
+          customerVerificationState: customerDecision.state,
         }),
       },
     });
@@ -816,7 +1002,7 @@ const adminCreateOrder = async (req, res) => {
 
       // Record StockLog entry
       try {
-        const channelSource = (client.source || "admin").toLowerCase().replace(/\s+/g, "_");
+        const channelSource = (resolvedClient.source || "admin").toLowerCase().replace(/\s+/g, "_");
         const finalQty = updateData.stockQuantity !== undefined ? updateData.stockQuantity : (currentProd.stockQuantity || 0);
         await prisma.stockLog.create({
           data: {
@@ -829,7 +1015,7 @@ const adminCreateOrder = async (req, res) => {
             newQty: finalQty,
             changeQty: -deduction.totalQty,
             reason: "order_sale",
-            note: `Manual Order (${client.source || "Social Media"})`,
+            note: `Manual Order (${resolvedClient.source || "Social Media"})`,
             source: channelSource || "admin",
           },
         });
@@ -874,5 +1060,8 @@ export {
   userOrders,
   updateStatus,
   cashReceived,
+  lookupAdminOrderCustomer,
+  verifyAdminOrderCustomer,
   adminCreateOrder,
+  buildOrderListItem,
 };

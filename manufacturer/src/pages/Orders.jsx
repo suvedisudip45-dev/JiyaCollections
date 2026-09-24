@@ -4,27 +4,22 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import {
   Package,
-  Clock,
   CheckCircle,
-  Truck,
   Search,
-  Filter,
   ArrowRight,
   AlertCircle,
   RefreshCw,
-  X,
   Printer,
   MapPin,
   Phone,
   Layers,
   ShieldCheck,
-  Check,
   ChevronRight,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import StatusBadge from "../components/StatusBadge";
 import ShippingLabelModal from "../components/ShippingLabelModal";
-import PackagingChecklistModal from "../components/PackagingChecklistModal";
+import Pagination from "../components/Pagination";
 
 const Orders = () => {
   const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
@@ -32,11 +27,9 @@ const Orders = () => {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
-  // Pre-dispatch Checklist Modal State
-  const [checklistModalOpen, setChecklistModalOpen] = useState(false);
-  const [checklistTargetItem, setChecklistTargetItem] = useState(null);
-  const [checklistTargetStatus, setChecklistTargetStatus] = useState("packed");
 
   const manufacturerPickupReadiness = (() => {
     const branch = (manufacturer?.ncmPickupBranch || "").trim();
@@ -72,17 +65,18 @@ const Orders = () => {
     if (!token) return;
     setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/order-assignment/my`, {
+      const res = await axios.get(`${backendUrl}/api/order-assignment/my?page=${page}&limit=10`, {
         headers: { token },
       });
       if (res.data.success) {
         const list = res.data.assignments || [];
         setAssignments(list);
+        setPagination(res.data.pagination || null);
 
         const pending = list.filter((a) => a.status === "assigned").length;
         const accepted = list.filter((a) => a.status === "accepted").length;
-        const preparing = list.filter((a) => a.status === "preparing").length;
-        const packed = list.filter((a) => a.status === "packed").length;
+        const preparing = list.filter((a) => ["preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length;
+        const packed = list.filter((a) => ["packed", "package_details_complete"].includes(a.status)).length;
         const ready = list.filter((a) => a.status === "ready_for_pickup").length;
         const delivered = list.filter((a) => a.status === "delivered").length;
 
@@ -102,7 +96,7 @@ const Orders = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, backendUrl, setStats]);
+  }, [token, backendUrl, setStats, page]);
 
   useEffect(() => {
     fetchOrders();
@@ -110,21 +104,7 @@ const Orders = () => {
     return () => clearInterval(interval);
   }, [fetchOrders]);
 
-  const handleAccept = async (id) => {
-    try {
-      const res = await axios.post(
-        `${backendUrl}/api/order-assignment/accept/${id}`,
-        {},
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Order accepted for hub production!");
-        fetchOrders();
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Error accepting order");
-    }
-  };
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   const handleRejectSubmit = async (e) => {
     e.preventDefault();
@@ -135,6 +115,7 @@ const Orders = () => {
         { reason: rejectReason || "Out of capacity" },
         { headers: { token } }
       );
+
       if (res.data.success) {
         toast.info("Order declined. Auto-reallocating to next nearest hub.");
         setRejectModalOpen(false);
@@ -145,53 +126,6 @@ const Orders = () => {
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to reject order");
     }
-  };
-
-  const handleUpdateStatus = async (id, status, extraData = {}) => {
-    try {
-      // If marking ready for pickup, use dedicated endpoint that notifies delivery fleet
-      if (status === "ready_for_pickup") {
-        const res = await axios.post(
-          `${backendUrl}/api/delivery-job/ready/${id}`,
-          { ...extraData },
-          { headers: { token } }
-        );
-        if (res.data.success) {
-          toast.success("Marked ready! Delivery partner notified for pickup.");
-          fetchOrders();
-          return;
-        }
-      }
-
-      const res = await axios.put(
-        `${backendUrl}/api/order-assignment/status/${id}`,
-        { status, ...extraData },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success(`Fulfillment stage updated to ${status}!`);
-        fetchOrders();
-      } else {
-        toast.error(res.data.message || "Failed to update status");
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Error updating status");
-    }
-  };
-
-  const openPackagingChecklist = (item, targetStatus) => {
-    setChecklistTargetItem(item);
-    setChecklistTargetStatus(targetStatus);
-    setChecklistModalOpen(true);
-  };
-
-  const handleChecklistConfirm = async (checklistData) => {
-    if (!checklistTargetItem) return;
-    const targetId = checklistTargetItem.id;
-    const targetStatus = checklistTargetStatus;
-    setChecklistModalOpen(false);
-    await handleUpdateStatus(targetId, targetStatus, { packagingChecklist: checklistData });
-    setChecklistTargetItem(null);
   };
 
   const toggleSelectOrder = (id) => {
@@ -220,14 +154,12 @@ const Orders = () => {
     if (activeTab === "pending" && item.status !== "assigned") return false;
     if (
       activeTab === "production" &&
-      item.status !== "accepted" &&
-      item.status !== "preparing"
+      !["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(item.status)
     )
       return false;
     if (
       activeTab === "ready" &&
-      item.status !== "packed" &&
-      item.status !== "ready_for_pickup"
+      !["packed", "package_details_complete", "ready_for_pickup"].includes(item.status)
     )
       return false;
     if (
@@ -261,8 +193,8 @@ const Orders = () => {
   const tabCounts = {
     all: assignments.length,
     pending: assignments.filter((a) => a.status === "assigned").length,
-    production: assignments.filter((a) => ["accepted", "preparing"].includes(a.status)).length,
-    ready: assignments.filter((a) => ["packed", "ready_for_pickup"].includes(a.status)).length,
+    production: assignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
+    ready: assignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
     completed: assignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
     rejected: assignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
   };
@@ -594,70 +526,15 @@ const Orders = () => {
                         </div>
                       )}
 
-                      {/* Stage Transitions */}
-                      {item.status === "assigned" && (
-                        <div className="space-y-2">
-                          <button
-                            onClick={() => handleAccept(item.id)}
-                            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
-                          >
-                            <Check className="w-4 h-4" />
-                            <span>Accept for Production</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedAssignmentId(item.id);
-                              setRejectModalOpen(true);
-                            }}
-                            className="w-full py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-xl font-semibold text-xs border border-rose-200 cursor-pointer"
-                          >
-                            Decline / Reallocate
-                          </button>
-                        </div>
-                      )}
-
-                      {item.status === "accepted" && (
-                        <button
-                          onClick={() => handleUpdateStatus(item.id, "preparing")}
-                          className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
+                      {/* The detail page is the only place where fulfillment can advance. */}
+                      {!['ready_for_pickup', 'picked_up', 'in_transit', 'arrived_at_destination', 'out_for_delivery', 'delivered'].includes(item.status) && (
+                        <Link
+                          to={`/orders/${item.id}`}
+                          className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
                         >
-                          <Layers className="w-4 h-4" />
-                          <span>Start Cutting &amp; Stitching</span>
-                        </button>
-                      )}
-
-                      {item.status === "preparing" && (
-                        <button
-                          onClick={() => openPackagingChecklist(item, "packed")}
-                          className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs cursor-pointer transition-colors flex items-center justify-center gap-1.5"
-                        >
-                          <ShieldCheck className="w-4 h-4" />
-                          <span>Quality Check &amp; Package</span>
-                        </button>
-                      )}
-
-                      {item.status === "packed" && (
-                        <div className="space-y-2">
-                          <button
-                            onClick={() => openPackagingChecklist(item, "ready_for_pickup")}
-                            disabled={!pickupReadyForThisOrder}
-                            className={`w-full py-2.5 rounded-xl font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-1.5 ${
-                              pickupReadyForThisOrder
-                                ? "bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
-                                : "bg-slate-200 text-slate-500 cursor-not-allowed"
-                            }`}
-                          >
-                            <Truck className="w-4 h-4" />
-                            <span>{pickupReadyForThisOrder ? "Ready for Courier Pickup" : "Pickup blocked"}</span>
-                          </button>
-                          <button
-                            onClick={() => setPrintOrdersList([order])}
-                            className="w-full py-1.5 bg-white border border-slate-200 text-slate-700 rounded-xl font-semibold text-xs hover:bg-slate-50 cursor-pointer flex items-center justify-center gap-1"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            Print Courier Slip
-                          </button>
-                        </div>
+                          <ArrowRight className="w-4 h-4" />
+                          <span>Open fulfillment workflow</span>
+                        </Link>
                       )}
 
                       {item.status === "ready_for_pickup" && (
@@ -729,6 +606,14 @@ const Orders = () => {
         </div>
       )}
 
+      <Pagination
+        page={pagination?.page || page}
+        totalPages={pagination?.totalPages || 0}
+        total={pagination?.total || 0}
+        onPageChange={handlePageChange}
+        loading={loading}
+      />
+
       {/* Decline / Reallocation Modal */}
       {rejectModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -795,20 +680,6 @@ const Orders = () => {
         />
       )}
 
-      {/* Pre-Dispatch Packaging Checklist Modal */}
-      {checklistModalOpen && checklistTargetItem && (
-        <PackagingChecklistModal
-          isOpen={checklistModalOpen}
-          assignment={checklistTargetItem}
-          targetStatus={checklistTargetStatus}
-          currency={currency}
-          onClose={() => {
-            setChecklistModalOpen(false);
-            setChecklistTargetItem(null);
-          }}
-          onConfirm={handleChecklistConfirm}
-        />
-      )}
     </div>
   );
 };

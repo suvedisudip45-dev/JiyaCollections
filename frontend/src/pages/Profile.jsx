@@ -4,13 +4,6 @@ import { ShopContext } from "../context/ShopContext";
 import Title from "../components/Title";
 import axios from "axios";
 import { toast } from "react-toastify";
-import {
-  isSoundEnabled,
-  setSoundEnabled,
-  playSwitchSound,
-  playCountSound,
-  playAddToCartSound,
-} from "../utils/soundEffects";
 
 // ── Small reusable field component ───────────────────────────────────────────
 const Field = ({ label, value, name, type = "text", readOnly, placeholder, onChange, hint }) => (
@@ -45,6 +38,12 @@ const Field = ({ label, value, name, type = "text", readOnly, placeholder, onCha
     {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
   </div>
 );
+
+const isValidNepalMobileNumber = (value = "") => {
+  const digits = String(value || "").replace(/\D/g, "");
+  const normalized = digits.replace(/^0+/, "").replace(/^977/, "");
+  return /^9[78]\d{8}$/.test(normalized);
+};
 
 // ── Password field with show/hide toggle ─────────────────────────────────────
 const PasswordField = ({ label, name, value, onChange, placeholder }) => {
@@ -126,9 +125,9 @@ const Profile = () => {
     lastName: "",
     email: "",
     phone: "",
+    socialCustomerCode: "",
   });
   const [editData, setEditData] = useState({ ...profile });
-  const [soundEnabled, setSoundEnabledState] = useState(isSoundEnabled());
 
   const [pwData, setPwData] = useState({
     currentPassword: "",
@@ -165,6 +164,7 @@ const Profile = () => {
             lastName: u.lastName || "",
             email: u.email || "",
             phone: u.phone || "",
+            socialCustomerCode: u.socialCustomerCode || "",
           };
           setProfile(data);
           setEditData(data);
@@ -199,7 +199,8 @@ const Profile = () => {
 
   const handleEditChange = (e) => {
     const { name, value } = e.target;
-    setEditData((prev) => ({ ...prev, [name]: value }));
+    const sanitizedValue = name === "phone" ? value.replace(/[^0-9]/g, "") : value;
+    setEditData((prev) => ({ ...prev, [name]: sanitizedValue }));
   };
 
   const handleCancelEdit = () => {
@@ -212,8 +213,8 @@ const Profile = () => {
       toast.error("First and last name are required");
       return;
     }
-    if (editData.phone && editData.phone.trim().length > 0 && editData.phone.trim().length < 7) {
-      toast.error("Please enter a valid phone number");
+    if (editData.phone && editData.phone.trim().length > 0 && !isValidNepalMobileNumber(editData.phone)) {
+      toast.error("Please enter a valid mobile number starting with 98 or 97");
       return;
     }
     try {
@@ -234,6 +235,7 @@ const Profile = () => {
           lastName: u.lastName,
           email: u.email,
           phone: u.phone || "",
+          socialCustomerCode: u.socialCustomerCode || profile.socialCustomerCode || "",
         };
         setProfile(updated);
         setEditData(updated);
@@ -753,6 +755,14 @@ const Profile = () => {
               placeholder="e.g. 9841234567"
               onChange={handleEditChange}
             />
+            <Field
+              label="Social Code"
+              name="socialCustomerCode"
+              value={profile.socialCustomerCode || ""}
+              readOnly
+              placeholder="No social code yet"
+              hint="This is the secret code connected to your social-media purchase profile."
+            />
           </div>
 
           {editMode && (
@@ -848,99 +858,6 @@ const Profile = () => {
               </button>
             </div>
           </form>
-        </div>
-
-        {/* ── Sound & Audio Experience Preferences ───────────────────── */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-black text-white flex items-center justify-center shadow-xs">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"
-                    d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M11 5L6 9H2v6h4l5 4V5z" />
-                </svg>
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-900 text-sm">Interactive Audio & Sound Feedback</h3>
-                <p className="text-[11px] text-gray-500">Tactile acoustic feedback when switching garment varieties, adjusting quantities, and adding items to cart.</p>
-              </div>
-            </div>
-            {/* Master Toggle Switch */}
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={soundEnabled}
-                onChange={(e) => {
-                  const val = e.target.checked;
-                  setSoundEnabledState(val);
-                  setSoundEnabled(val);
-                  if (val) {
-                    playAddToCartSound();
-                    toast.success("Sound effects enabled!");
-                  } else {
-                    toast.info("Sound effects muted.");
-                  }
-                }}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-black"></div>
-            </label>
-          </div>
-
-          <div className="p-6 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-50 rounded-xl p-4 border border-gray-100">
-              <div>
-                <p className="text-xs font-bold text-gray-800">
-                  Current Status:{" "}
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${soundEnabled ? "bg-emerald-100 text-emerald-800" : "bg-gray-200 text-gray-600"}`}>
-                    {soundEnabled ? "Audio Enabled (Active)" : "Muted"}
-                  </span>
-                </p>
-                <p className="text-[11px] text-gray-500 mt-0.5">Test individual studio synthesizers below:</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!soundEnabled) {
-                      setSoundEnabledState(true);
-                      setSoundEnabled(true);
-                    }
-                    playSwitchSound();
-                  }}
-                  className="px-3 py-1.5 bg-white border border-gray-300 hover:border-black rounded-lg text-xs font-semibold text-gray-700 hover:text-black transition-all active:scale-95 shadow-2xs"
-                >
-                  🔊 Variety Pop
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!soundEnabled) {
-                      setSoundEnabledState(true);
-                      setSoundEnabled(true);
-                    }
-                    playCountSound("inc", 3);
-                  }}
-                  className="px-3 py-1.5 bg-white border border-gray-300 hover:border-black rounded-lg text-xs font-semibold text-gray-700 hover:text-black transition-all active:scale-95 shadow-2xs"
-                >
-                  🔢 Stepper Tick
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!soundEnabled) {
-                      setSoundEnabledState(true);
-                      setSoundEnabled(true);
-                    }
-                    playAddToCartSound();
-                  }}
-                  className="px-3 py-1.5 bg-black text-white hover:bg-gray-800 rounded-lg text-xs font-bold transition-all active:scale-95 shadow-xs"
-                >
-                  ✨ Cart Chime
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* ── Quick Links ───────────────────────────────────────────────── */}

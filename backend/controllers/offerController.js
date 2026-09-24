@@ -141,15 +141,26 @@ const createOffer = async (req, res) => {
       return res.json({ success: false, message: "Title, start date, and end date are required." });
     }
 
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+      return res.json({ success: false, message: "End date must be after start date." });
+    }
+
+    const numDiscount = discount !== undefined && discount !== null && discount !== "" ? Number(discount) : 0;
+    if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+      return res.json({ success: false, message: "Discount must be between 0% and 100%" });
+    }
+
     const offer = await prisma.specialOffer.create({
       data: {
         title,
         subtitle: subtitle || "Exclusive festive deals and limited-time discounts",
         badgeText: badgeText || "🎉 FESTIVE OFFER",
         bannerImage: bannerImage || "",
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        discount: discount ? Number(discount) : 0,
+        startDate: start,
+        endDate: end,
+        discount: numDiscount,
         productIds: Array.isArray(productIds) ? productIds : [],
         isActive: isActive !== undefined ? Boolean(isActive) : true,
       },
@@ -182,14 +193,29 @@ const updateOffer = async (req, res) => {
       return res.json({ success: false, message: "Offer ID is required" });
     }
 
+    let validatedDiscount = undefined;
+    if (discount !== undefined && discount !== null && discount !== "") {
+      const numDiscount = Number(discount);
+      if (isNaN(numDiscount) || numDiscount < 0 || numDiscount > 100) {
+        return res.json({ success: false, message: "Discount must be between 0% and 100%" });
+      }
+      validatedDiscount = numDiscount;
+    }
+
+    let parsedStart = startDate ? new Date(startDate) : undefined;
+    let parsedEnd = endDate ? new Date(endDate) : undefined;
+    if (parsedStart && parsedEnd && parsedEnd <= parsedStart) {
+      return res.json({ success: false, message: "End date must be after start date." });
+    }
+
     const updateData = {
       ...(title && { title }),
       ...(subtitle !== undefined && { subtitle }),
       ...(badgeText && { badgeText }),
       ...(bannerImage !== undefined && { bannerImage }),
-      ...(startDate && { startDate: new Date(startDate) }),
-      ...(endDate && { endDate: new Date(endDate) }),
-      ...(discount !== undefined && { discount: Number(discount) }),
+      ...(parsedStart && { startDate: parsedStart }),
+      ...(parsedEnd && { endDate: parsedEnd }),
+      ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
       ...(productIds !== undefined && { productIds: Array.isArray(productIds) ? productIds : [] }),
       ...(isActive !== undefined && { isActive: Boolean(isActive) }),
     };

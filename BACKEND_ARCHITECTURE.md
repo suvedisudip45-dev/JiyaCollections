@@ -122,6 +122,23 @@ The **Aama Clothings** backend is built as a modular enterprise API gateway mana
 
 ## API Route Catalog Summary
 
+### Admin Direct-Order Customer Verification
+
+Admin-created social/direct orders use a server-authoritative identity decision before order creation:
+
+1. Normalize and validate the Nepal mobile number.
+2. Search both customer profiles and historical order address snapshots.
+3. A new number requires the admin to complete the required customer and delivery fields.
+4. An existing number requires the social customer code supplied by the customer.
+5. A matching phone/code pair links the order to the existing account and preserves loyalty eligibility.
+6. A mismatched code may use the previous customer data for dispatch, but creates an unlinked order with loyalty and gift eligibility disabled.
+
+The lookup endpoint never returns the stored social code. The create endpoint re-checks the phone/code pair and records the decision in `Order.rewardApplied`. Fulfillment remains owned by manufacturer and delivery portals; the admin portal creates and monitors the order only.
+
+### Manufacturer Fulfillment State Machine
+
+Manufacturer fulfillment is server-guarded and sequential: `assigned -> accepted -> preparing -> quality_check -> letter_ready -> checklist_complete -> packed -> package_details_complete -> ready_for_pickup`. The compulsory customer letter and all required checklist fields must be complete before packing, and package weight, dimensions, and type must be present before delivery-partner handoff. The order list opens the detail workflow; it does not mutate fulfillment state directly.
+
 ### Storefront & Cart Routes (`/api/product`, `/api/cart`, `/api/order`)
 - `GET /api/product/list`: Public product catalog with published filter.
 - `POST /api/cart/add`, `POST /api/cart/update`: Shopping cart management.

@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&family=Prata&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -9,13 +9,134 @@ a.active hr {
 }
 
 * {
-  font-family: Outfit;
+  font-family: "DM Sans", sans-serif;
+  box-sizing: border-box;
+}
+
+:root {
+  color: #161714;
+  background: #f8f7f4;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --ink: #171717;
+  --paper: #f8f7f4;
+  --white: #ffffff;
+  --stone: #eceae5;
+  --line: #dedbd3;
+  --muted: #6f6d68;
+  --accent: #d85b3f;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 .prata-regular {
-  font-family: "Prata", serif;
+  font-family: "Space Grotesk", sans-serif;
   font-weight: 400;
   font-style: normal;
+}
+
+.fashion-shell {
+  background: var(--paper);
+}
+
+.announcement-bar {
+  background: var(--ink);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  overflow: hidden;
+  padding: 0.6rem 0;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.announcement-track {
+  animation: announcement-marquee 22s linear infinite;
+  display: flex;
+  width: max-content;
+}
+
+.announcement-copy {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  min-width: 100vw;
+  padding: 0 1rem;
+}
+
+.announcement-copy b {
+  color: var(--accent);
+}
+
+@keyframes announcement-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.icon-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  padding: 0.15rem;
+}
+
+.icon-button:hover {
+  color: var(--accent);
+}
+
+.cart-count {
+  align-items: center;
+  background: var(--accent);
+  border-radius: 999px;
+  color: #fff;
+  display: flex;
+  font-size: 0.55rem;
+  height: 1rem;
+  justify-content: center;
+  position: absolute;
+  right: -0.45rem;
+  top: -0.4rem;
+  width: 1rem;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -24,7 +145,7 @@ a.active hr {
 
 @media (max-width: 640px) {
   a.active {
-    background-color: black;
+    background-color: var(--ink);
     color: white;
   }
 }

@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { v2 as cloudinary } from "cloudinary";
 import { calculateUserLoyalty } from "./loyaltyController.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper to safely parse JSON arrays
 const parseJson = (val, fallback = []) => {
@@ -17,6 +18,7 @@ const parseJson = (val, fallback = []) => {
 export const listAllCustomers = async (req, res) => {
   try {
     const { search = "" } = req.query;
+    const pagination = getPagination(req.query);
 
     const [users, orders, letters, levels] = await Promise.all([
       prisma.user.findMany({
@@ -27,6 +29,12 @@ export const listAllCustomers = async (req, res) => {
           name: true,
           email: true,
           phone: true,
+          gender: true,
+          socialCustomerCode: true,
+          socialCustomerPhone: true,
+          loyaltyTier: true,
+          isInactiveProfile: true,
+          inactiveProfileData: true,
           addresses: true,
         },
       }),
@@ -92,13 +100,21 @@ export const listAllCustomers = async (req, res) => {
         ? addresses[0].city
         : (latestOrder ? parseJson(latestOrder.address, {})?.city : "");
 
+      const inactiveProfileData = parseJson(user.inactiveProfileData, {});
+
       return {
         id: user.id,
         firstName: user.firstName || "",
         lastName: user.lastName || "",
         name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Customer",
         email: user.email,
-        phone: user.phone || (addresses[0]?.phone || ""),
+        phone: user.phone || (addresses[0]?.phone || "") || user.socialCustomerPhone || "",
+        gender: user.gender || inactiveProfileData.gender || "PREFER_NOT_TO_SAY",
+        socialCustomerCode: user.socialCustomerCode || "",
+        socialCustomerPhone: user.socialCustomerPhone || user.phone || "",
+        loyaltyTier: user.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+        isInactiveProfile: Boolean(user.isInactiveProfile),
+        inactiveProfileData,
         city: primaryCity || "",
         totalSpend,
         totalOrders,
@@ -109,14 +125,15 @@ export const listAllCustomers = async (req, res) => {
     });
 
     // Apply search filter
-    if (search.trim()) {
-      const query = search.toLowerCase().trim();
+    const searchStr = typeof search === "string" ? search.trim() : "";
+    if (searchStr) {
+      const query = searchStr.toLowerCase();
       customerList = customerList.filter(
         (c) =>
           c.name.toLowerCase().includes(query) ||
           c.email.toLowerCase().includes(query) ||
-          (c.phone && c.phone.toLowerCase().includes(query)) ||
-          (c.city && c.city.toLowerCase().includes(query)) ||
+          (c.phone && c.phone.toLowerCase().includes(query)) ||          (c.socialCustomerCode && c.socialCustomerCode.toLowerCase().includes(query)) ||
+          (c.loyaltyTier && c.loyaltyTier.toLowerCase().includes(query)) ||          (c.city && c.city.toLowerCase().includes(query)) ||
           c.currentLevel.name.toLowerCase().includes(query)
       );
     }
@@ -124,7 +141,9 @@ export const listAllCustomers = async (req, res) => {
     // Sort by total spend descending
     customerList.sort((a, b) => b.totalSpend - a.totalSpend);
 
-    res.json({ success: true, customers: customerList });
+    const total = customerList.length;
+    const pageCustomers = customerList.slice(pagination.skip, pagination.skip + pagination.limit);
+    res.json(paginatedResponse("customers", pageCustomers, pagination, total));
   } catch (error) {
     console.error("Error listing customers:", error);
     res.json({ success: false, message: error.message });
@@ -163,6 +182,8 @@ export const getCustomerDetails = async (req, res) => {
       address: parseJson(o.address, {}),
     }));
 
+    const inactiveProfileData = parseJson(user.inactiveProfileData, {});
+
     res.json({
       success: true,
       customer: {
@@ -172,6 +193,12 @@ export const getCustomerDetails = async (req, res) => {
         name: user.name,
         email: user.email,
         phone: user.phone || "",
+        gender: user.gender || inactiveProfileData.gender || "PREFER_NOT_TO_SAY",
+        socialCustomerCode: user.socialCustomerCode || "",
+        socialCustomerPhone: user.socialCustomerPhone || user.phone || "",
+        loyaltyTier: user.loyaltyTier || inactiveProfileData.loyaltyTier || "",
+        isInactiveProfile: Boolean(user.isInactiveProfile),
+        inactiveProfileData,
         addresses,
       },
       loyalty: loyaltyStatus,

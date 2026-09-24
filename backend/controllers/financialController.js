@@ -9,6 +9,7 @@ import {
   postSupplierPaymentAccounting,
   postDirectExpenseAccounting,
 } from "../services/accountingPostingEngine.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper to get current Year-Month
 const getCurrentYearMonth = () => {
@@ -696,15 +697,20 @@ export const recordCashTransfer = async (req, res) => {
 
 export const getCashTransactions = async (req, res) => {
   try {
-    const transactions = await prisma.cashTransaction.findMany({
+    const pagination = getPagination(req.query);
+    const [transactions, total] = await prisma.$transaction([
+      prisma.cashTransaction.findMany({
       include: {
         fromAccount: { select: { accountName: true, accountType: true } },
         toAccount: { select: { accountName: true, accountType: true } },
       },
       orderBy: { date: "desc" },
-      take: 100,
-    });
-    res.json({ success: true, transactions });
+      skip: pagination.skip,
+      take: pagination.limit,
+      }),
+      prisma.cashTransaction.count(),
+    ]);
+    res.json(paginatedResponse("transactions", transactions, pagination, total));
   } catch (error) {
     console.error("Get Cash Transactions Error:", error);
     res.json({ success: false, message: error.message });
@@ -716,10 +722,12 @@ export const getCashTransactions = async (req, res) => {
 // ==========================================
 export const getFixedAssets = async (req, res) => {
   try {
-    const assets = await prisma.fixedAsset.findMany({
-      orderBy: { purchaseDate: "desc" },
-    });
-    res.json({ success: true, assets });
+    const pagination = getPagination(req.query);
+    const [assets, total] = await prisma.$transaction([
+      prisma.fixedAsset.findMany({ orderBy: { purchaseDate: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.fixedAsset.count(),
+    ]);
+    res.json(paginatedResponse("assets", assets, pagination, total));
   } catch (error) {
     console.error("Get Fixed Assets Error:", error);
     res.json({ success: false, message: error.message });

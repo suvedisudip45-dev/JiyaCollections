@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 
@@ -348,14 +349,13 @@ export const createDirectOrder = async (req, res) => {
 export const getMyDirectOrders = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const pagination = getPagination(req.query);
+    const where = { manufacturerId, orderType: "DIRECT_MANUFACTURER" };
 
-    const orders = await prisma.order.findMany({
-      where: {
-        manufacturerId,
-        orderType: "DIRECT_MANUFACTURER",
-      },
-      orderBy: { date: "desc" },
-    });
+    const [orders, total] = await prisma.$transaction([
+      prisma.order.findMany({ where, orderBy: { date: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.order.count({ where }),
+    ]);
 
     const formatted = orders.map((o) => ({
       ...o,
@@ -364,7 +364,7 @@ export const getMyDirectOrders = async (req, res) => {
       date: Number(o.date),
     }));
 
-    res.json({ success: true, orders: formatted });
+    res.json(paginatedResponse("orders", formatted, pagination, total));
   } catch (error) {
     console.error("getMyDirectOrders error:", error);
     res.json({ success: false, message: error.message });

@@ -1,5 +1,7 @@
 import { prisma } from "../config/db.js";
+import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -402,19 +404,25 @@ const getMyAssignments = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const { status } = req.query;
+    const pagination = getPagination(req.query);
 
     const where = { manufacturerId };
     if (status && status !== "all") where.status = status;
 
-    const assignments = await prisma.orderAssignment.findMany({
-      where,
-      orderBy: { assignedAt: "desc" },
-      include: {
+    const [assignments, total] = await prisma.$transaction([
+      prisma.orderAssignment.findMany({
+        where,
+        orderBy: { assignedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
         manufacturer: {
           select: { id: true, name: true, city: true, phone: true, qualityRating: true },
         },
-      },
-    });
+        },
+      }),
+      prisma.orderAssignment.count({ where }),
+    ]);
 
     const orderIds = assignments.map((a) => a.orderId);
     const [orders, deliveryOrders] = await Promise.all([
@@ -485,7 +493,7 @@ const getMyAssignments = async (req, res) => {
       createdAt: a.assignedAt,
     }));
 
-    res.json({ success: true, assignments: enriched });
+    res.json(paginatedResponse("assignments", enriched, pagination, total));
   } catch (error) {
     console.error("getMyAssignments error:", error);
     res.json({ success: false, message: error.message });
@@ -588,7 +596,7 @@ const updateAssignmentStatus = async (req, res) => {
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
-    const manufacturerStatuses = new Set(["accepted", "preparing", "quality_check", "packed"]);
+    const manufacturerStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
     if (!manufacturerStatuses.has(normalizedStatus)) {
       return res.status(400).json({
         success: false,
@@ -608,18 +616,14 @@ const updateAssignmentStatus = async (req, res) => {
       });
     }
 
-    const existingNotes = (() => {
-      if (!assignment.notes) return {};
-      try {
-        return JSON.parse(assignment.notes);
-      } catch {
-        return {};
-      }
-    })();
+    const existingNotes = parseNotes(assignment.notes);
 
     const updateData = { status: normalizedStatus };
     const payload = {
       ...existingNotes,
+      stitchingBrandingCompleted: req.body.stitchingBrandingCompleted !== undefined
+        ? Boolean(req.body.stitchingBrandingCompleted)
+        : existingNotes.stitchingBrandingCompleted,
       packageWeight: packageWeight !== undefined ? packageWeight : existingNotes.packageWeight,
       packageDimensions: packageDimensions !== undefined ? packageDimensions : existingNotes.packageDimensions,
       packagingNotes: packagingNotes !== undefined ? packagingNotes : existingNotes.packagingNotes,
@@ -630,6 +634,15 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
       packagingChecklist: packagingChecklist !== undefined ? packagingChecklist : existingNotes.packagingChecklist,
     };
+    const transition = validateFulfillmentTransition({
+      currentStatus: assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : assignment.status,
+      nextStatus: normalizedStatus,
+      notes: assignment.notes,
+      packageData: payload,
+    });
+    if (!transition.valid) {
+      return res.status(409).json({ success: false, message: transition.message });
+    }
     if (Object.keys(payload).some((key) => payload[key] !== undefined)) {
       updateData.notes = JSON.stringify(payload);
     }
@@ -637,7 +650,7 @@ const updateAssignmentStatus = async (req, res) => {
     await prisma.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
     await prisma.order.update({
       where: { id: assignment.orderId },
-      data: { fulfillmentStatus: status.toLowerCase() },
+      data: { fulfillmentStatus: normalizedStatus },
     });
 
     res.json({ success: true, message: `Status updated to ${status}` });
@@ -650,15 +663,19 @@ const updateAssignmentStatus = async (req, res) => {
 // ─── ADMIN: GET ALL ASSIGNMENTS ───────────────────────────────────────────────
 const getAllAssignments = async (req, res) => {
   try {
+    const pagination = getPagination(req.query);
     const { status, manufacturerId } = req.query;
     const where = {};
     if (status && status !== "all") where.status = status;
     if (manufacturerId) where.manufacturerId = manufacturerId;
 
-    const assignments = await prisma.orderAssignment.findMany({
-      where,
-      orderBy: { assignedAt: "desc" },
-      include: {
+    const [assignments, total] = await prisma.$transaction([
+      prisma.orderAssignment.findMany({
+        where,
+        orderBy: { assignedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
         manufacturer: {
           select: {
             id: true,
@@ -673,8 +690,10 @@ const getAllAssignments = async (req, res) => {
             pickupWindow: true,
           },
         },
-      },
-    });
+        },
+      }),
+      prisma.orderAssignment.count({ where }),
+    ]);
 
     const orderIds = assignments.map((a) => a.orderId);
     const [orders, deliveryOrders] = await Promise.all([
@@ -745,7 +764,7 @@ const getAllAssignments = async (req, res) => {
       createdAt: a.assignedAt,
     }));
 
-    res.json({ success: true, assignments: enriched });
+    res.json(paginatedResponse("assignments", enriched, pagination, total));
   } catch (error) {
     console.error("getAllAssignments error:", error);
     res.json({ success: false, message: error.message });

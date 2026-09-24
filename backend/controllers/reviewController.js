@@ -1,6 +1,8 @@
 import { prisma } from "../config/db.js";
 import jwt from "jsonwebtoken";
 import { syncManufacturerRatingForProduct } from "../services/manufacturerRatingService.js";
+import { sanitizeText } from "../middleware/sanitize.js";
+import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
 
 // Helper: Safely parse JSON array field from Prisma
 const parseJsonArray = (val) => {
@@ -70,7 +72,10 @@ const addReview = async (req, res) => {
       return res.json({ success: false, message: "Please select a valid rating between 1 and 5 stars" });
     }
 
-    if (!comment || !comment.trim()) {
+    const cleanTitle = sanitizeText(title, { stripAllHtml: true }) || "";
+    const cleanComment = sanitizeText(comment) || "";
+
+    if (!cleanComment) {
       return res.json({ success: false, message: "Please write a review comment" });
     }
 
@@ -106,8 +111,8 @@ const addReview = async (req, res) => {
         where: { id: existingReview.id },
         data: {
           rating: numRating,
-          title: title ? title.trim() : "",
-          comment: comment.trim(),
+          title: cleanTitle,
+          comment: cleanComment,
           userName: userFullName,
           userEmail: user.email,
           date: BigInt(Date.now()),
@@ -130,8 +135,8 @@ const addReview = async (req, res) => {
         userName: userFullName,
         userEmail: user.email,
         rating: numRating,
-        title: title ? title.trim() : "",
-        comment: comment.trim(),
+        title: cleanTitle,
+        comment: cleanComment,
         likes: [],
         dislikes: [],
         verified: true,
@@ -157,6 +162,7 @@ const getProductReviews = async (req, res) => {
     const { productId } = req.params;
     const { sortBy = "likes" } = req.query; // 'likes', 'recent', 'rating_high', 'rating_low'
     const currentUserId = getUserIdFromOptionalToken(req);
+    const pagination = getPagination(req.query);
 
     const rawReviews = await prisma.review.findMany({
       where: { productId },
@@ -219,9 +225,13 @@ const getProductReviews = async (req, res) => {
       return b.date - a.date;
     });
 
+    const pageReviews = formattedReviews.slice(pagination.skip, pagination.skip + pagination.limit);
+
     res.json({
       success: true,
-      reviews: formattedReviews,
+      reviews: pageReviews,
+      data: pageReviews,
+      pagination: getPaginationMeta({ ...pagination, total: totalReviews }),
       stats: {
         totalReviews,
         averageRating,
@@ -405,9 +415,11 @@ const deleteUserReview = async (req, res) => {
 // Admin: Get all reviews across all products with product details
 const adminListReviews = async (req, res) => {
   try {
-    const rawReviews = await prisma.review.findMany({
-      orderBy: { date: "desc" },
-    });
+    const pagination = getPagination(req.query);
+    const [rawReviews, total] = await prisma.$transaction([
+      prisma.review.findMany({ orderBy: { date: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.review.count(),
+    ]);
 
     // Fetch products to attach product info
     const productIds = [...new Set(rawReviews.map((r) => r.productId))];
@@ -460,7 +472,7 @@ const adminListReviews = async (req, res) => {
       };
     });
 
-    res.json({ success: true, reviews });
+    res.json(paginatedResponse("reviews", reviews, pagination, total));
   } catch (error) {
     console.error("Error listing reviews for admin:", error);
     res.json({ success: false, message: error.message });

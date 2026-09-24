@@ -4,11 +4,14 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
+import Pagination from "../components/Pagination";
 
 const Customers = ({ token }) => {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [customerDetails, setCustomerDetails] = useState(null);
@@ -23,14 +26,15 @@ const Customers = ({ token }) => {
   const [activeImageZoom, setActiveImageZoom] = useState(null);
 
   // Fetch all customers
-  const fetchCustomers = async (searchQuery = "") => {
+  const fetchCustomers = async (searchQuery = search, requestedPage = page) => {
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/customer/list?search=${encodeURIComponent(searchQuery)}`, {
+      const res = await axios.get(`${backendUrl}/api/customer/list?search=${encodeURIComponent(searchQuery)}&page=${requestedPage}&limit=10`, {
         headers: { token },
       });
       if (res.data.success) {
         setCustomers(res.data.customers || []);
+        setPagination(res.data.pagination || null);
       } else {
         toast.error(res.data.message || "Failed to load customers");
       }
@@ -50,7 +54,13 @@ const Customers = ({ token }) => {
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    fetchCustomers(search);
+    setPage(1);
+    fetchCustomers(search, 1);
+  };
+
+  const handlePageChange = (nextPage) => {
+    setPage(nextPage);
+    fetchCustomers(search, nextPage);
   };
 
   // Open customer details modal
@@ -253,6 +263,7 @@ const Customers = ({ token }) => {
                 <tr className="bg-gray-50/80 border-b border-gray-200 text-gray-500 font-bold uppercase tracking-wider text-[10px]">
                   <th className="py-3 px-4">Customer</th>
                   <th className="py-3 px-4">Loyalty Level</th>
+                  <th className="py-3 px-4">Social Code</th>
                   <th className="py-3 px-4">Total Spend</th>
                   <th className="py-3 px-4">Orders</th>
                   <th className="py-3 px-4">Letters Sent</th>
@@ -291,6 +302,21 @@ const Customers = ({ token }) => {
                         </span>
                       </td>
 
+                      <td className="py-3 px-4">
+                        {c.socialCustomerCode ? (
+                          <div className="flex flex-col gap-1">
+                            <span className="inline-flex w-fit items-center gap-1 rounded-full bg-violet-100 text-violet-700 font-black px-2 py-1 border border-violet-200">
+                              {c.socialCustomerCode}
+                            </span>
+                            {c.loyaltyTier && (
+                              <span className="text-[10px] text-gray-500">Tier: {c.loyaltyTier}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 text-[11px]">—</span>
+                        )}
+                      </td>
+
                       <td className="py-3 px-4 font-black text-gray-900">
                         {currency}{c.totalSpend.toLocaleString()}
                       </td>
@@ -325,6 +351,13 @@ const Customers = ({ token }) => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
 
       {/* Customer Detail & Letters Modal */}

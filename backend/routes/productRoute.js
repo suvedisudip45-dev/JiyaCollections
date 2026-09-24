@@ -3,6 +3,8 @@ import {
   addProduct,
   updateProduct,
   togglePublish,
+  toggleBestseller,
+  getSubcategoryBestsellers,
   listProducts,
   removeProduct,
   singleProduct,
@@ -29,6 +31,8 @@ productRouter.post(
 );
 
 productRouter.post("/toggle-publish", adminAuth, togglePublish);
+productRouter.post("/toggle-bestseller", adminAuth, toggleBestseller);
+productRouter.get("/subcategory-bestsellers", getSubcategoryBestsellers);
 productRouter.post("/remove", adminAuth, removeProduct);
 productRouter.post("/single", singleProduct);
 productRouter.get("/list", listProducts);

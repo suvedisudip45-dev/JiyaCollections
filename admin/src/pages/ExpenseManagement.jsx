@@ -1,8 +1,8 @@
-import React, { useEffect, useState, useCallback } from "react";
+/* eslint-disable react/prop-types */
+import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
-  DollarSign,
   Plus,
   Search,
   Filter,
@@ -15,15 +15,14 @@ import {
   Edit2,
   RefreshCw,
   X,
-  FileCheck,
   Tag,
   ShieldCheck,
   Megaphone,
-  CreditCard,
   Briefcase,
   Wrench,
 } from "lucide-react";
 import { backendUrl } from "../App";
+import Pagination from "../components/Pagination";
 
 const ExpenseManagement = ({ token }) => {
   const [expenses, setExpenses] = useState([]);
@@ -32,6 +31,8 @@ const ExpenseManagement = ({ token }) => {
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   // Summary Metrics State
   const [summaryMetrics, setSummaryMetrics] = useState({
@@ -77,6 +78,8 @@ const ExpenseManagement = ({ token }) => {
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
       if (searchTerm) params.search = searchTerm;
+      params.page = page;
+      params.limit = 10;
 
       const [res, summaryRes] = await Promise.all([
         axios.get(`${backendUrl}/api/expense/list`, {
@@ -91,6 +94,7 @@ const ExpenseManagement = ({ token }) => {
 
       if (res.data.success) {
         setExpenses(res.data.expenses || []);
+        setPagination(res.data.pagination || null);
       }
       if (summaryRes.data.success) {
         setSummaryMetrics({
@@ -99,16 +103,18 @@ const ExpenseManagement = ({ token }) => {
           byCategory: summaryRes.data.byCategory || {},
         });
       }
-    } catch (err) {
+    } catch {
       toast.error("Failed to load operating expenses.");
     } finally {
       setLoading(false);
     }
-  }, [token, selectedCategory, startDate, endDate, searchTerm]);
+  }, [token, selectedCategory, startDate, endDate, searchTerm, page]);
 
   useEffect(() => {
     fetchExpenses();
   }, [fetchExpenses]);
+
+  const handlePageChange = (nextPage) => setPage(nextPage);
 
   // Auto-compute VAT amount when total amount or isVatBill changes in modal
   useEffect(() => {
@@ -158,12 +164,18 @@ const ExpenseManagement = ({ token }) => {
       return;
     }
 
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Expense amount must be a positive number.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       const payload = {
         title: title.trim(),
         category,
-        amount: parseFloat(amount),
+        amount: parsedAmount,
         isVatBill,
         vatAmount: parseFloat(vatAmount) || 0,
         date,
@@ -490,6 +502,13 @@ const ExpenseManagement = ({ token }) => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 0}
+          total={pagination?.total || 0}
+          onPageChange={handlePageChange}
+          loading={loading}
+        />
       </div>
 
       {/* --- ADD / EDIT EXPENSE MODAL --- */}

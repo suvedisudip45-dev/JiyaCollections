@@ -4,8 +4,8 @@ import {
   allOrders,
   allAdminOrders,
   userOrders,
-  updateStatus,
-  cashReceived,
+  lookupAdminOrderCustomer,
+  verifyAdminOrderCustomer,
   adminCreateOrder,
 } from "../controllers/orderController.js";
 import adminAuth from "../middleware/adminAuth.js";
@@ -18,8 +18,8 @@ const orderRouter = express.Router();
 orderRouter.post("/list", adminAuth, allOrders);
 // /admin-list → only admin-created orders (operational management tab)
 orderRouter.post("/admin-list", adminAuth, allAdminOrders);
-orderRouter.post("/status", adminAuth, updateStatus);
-orderRouter.post("/cash-received", adminAuth, cashReceived);
+orderRouter.get("/admin-customer", adminAuth, lookupAdminOrderCustomer);
+orderRouter.post("/admin-customer/verify", adminAuth, verifyAdminOrderCustomer);
 orderRouter.post("/admin-create", adminAuth, adminCreateOrder);
 
 // Payment Features
