@@ -42,18 +42,22 @@ Updated: 2026-09-25
 
 ## Deferred / Known Boundaries
 
-- Marketing partner route migration is not started.
-- Legacy middleware files remain in use by non-migrated routes and compatibility paths.
-- The mixed `/api/finance/manufacturer-summary` route still uses its inline admin/manufacturer authentication.
-- Admin variants in manufacturer, delivery, inventory, assignment, and marketing-card routers remain on legacy admin middleware until their dedicated cleanup pass.
+- Legacy middleware files are retained only for the existing direct integration-test imports; production routes no longer use them.
+- The mixed `/api/finance/manufacturer-summary` route now uses unified authentication, RBAC, and scoped manufacturer context.
+- Admin variants in manufacturer, delivery, inventory, assignment, and marketing-card routers now use centralized RBAC permissions.
 - Resource ownership checks remain in their existing services/controllers and have not been redesigned.
 
 ## Next Checkpoint
 
-- [ ] Iteration 7: Cleanup and hardening
-  - Review remaining legacy middleware and mixed-role routes.
-  - Audit webhook/public endpoint exposure, resource ownership, and privilege escalation paths.
-  - Remove legacy middleware only after all dependent routes are migrated and regression-tested.
+- [~] Iteration 7: Cleanup and hardening in progress
+  - [x] Revalidated recent route migrations and permission mappings.
+  - [x] Added live account, role, status, and legacy profile-token validation to unified authentication.
+  - [x] Replaced mixed financial summary JWT verification with centralized RBAC and owner-scoped manufacturer context.
+  - [x] Added regression tests for legacy profile resolution, role mismatch rejection, and suspended-account denial.
+  - [x] Preserved external webhooks as public and RBAC-free integrations.
+  - [x] Migrated remaining production route aliases away from legacy middleware.
+  - [ ] Decide whether to update or retire legacy middleware imports in the pre-existing integration test.
+  - [ ] Complete resource ownership and privilege-escalation regression tests.
 
 ## Rules To Preserve
 

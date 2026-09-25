@@ -9,7 +9,6 @@ import {
   recordLoyaltyGift,
   getHubGifts,
 } from "../controllers/loyaltyController.js";
-import adminAuth from "../middleware/adminAuth.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
 const loyaltyRouter = express.Router();
@@ -21,8 +20,8 @@ loyaltyRouter.get("/levels", getAllLevels);
 loyaltyRouter.get("/my-status", authenticate, authorize("customer:loyalty_read"), getUserLoyaltyStatus);
 
 // ── Admin level configuration ────────────────────────────────────────────────
-loyaltyRouter.post("/level", adminAuth, createOrUpdateLevel);
-loyaltyRouter.delete("/level/:id", adminAuth, deleteLevel);
+loyaltyRouter.post("/level", authenticate, authorize("loyalty:level_manage"), createOrUpdateLevel);
+loyaltyRouter.delete("/level/:id", authenticate, authorize("loyalty:level_manage"), deleteLevel);
 
 // ── Manufacturer loyalty endpoints ───────────────────────────────────────────
 // Look up customer loyalty status by phone number

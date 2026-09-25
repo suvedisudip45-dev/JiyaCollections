@@ -1,5 +1,4 @@
 import express from "express";
-import adminAuth from "../middleware/adminAuth.js";
 import { authenticate, authorize, setManufacturerContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import {
@@ -51,19 +50,19 @@ const marketingCardRouter = express.Router();
 marketingCardRouter.get("/locations", adminGetLocations);
 
 // ── Admin routes ─────────────────────────────────────────────
-marketingCardRouter.get("/admin/locations", adminAuth, adminGetLocations);
-marketingCardRouter.get("/admin/partners", adminAuth, adminListPartners);
-marketingCardRouter.post("/admin/partners", adminAuth, adminCreatePartner);
-marketingCardRouter.patch("/admin/partners/:partnerId/approve", adminAuth, adminApprovePartner);
-marketingCardRouter.get("/admin/campaigns", adminAuth, adminListCampaigns);
-marketingCardRouter.post("/admin/campaigns", adminAuth, adminCreateCampaign);
-marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", adminAuth, adminDeactivateCampaign);
-marketingCardRouter.post("/admin/batches", adminAuth, adminGenerateBatch);
-marketingCardRouter.post("/admin/assignments", adminAuth, adminAssignCards);
-marketingCardRouter.get("/admin/cards", adminAuth, adminListCards);
-marketingCardRouter.post("/admin/cards/invalidate", adminAuth, adminInvalidate);
-marketingCardRouter.get("/admin/metrics", adminAuth, adminCardMetrics);
-marketingCardRouter.get("/admin/stats", adminAuth, adminCardStats);
+marketingCardRouter.get("/admin/locations", authenticate, authorize("marketing_card:admin_manage"), adminGetLocations);
+marketingCardRouter.get("/admin/partners", authenticate, authorize("marketing_card:admin_manage"), adminListPartners);
+marketingCardRouter.post("/admin/partners", authenticate, authorize("marketing_card:admin_manage"), adminCreatePartner);
+marketingCardRouter.patch("/admin/partners/:partnerId/approve", authenticate, authorize("marketing_card:admin_manage"), adminApprovePartner);
+marketingCardRouter.get("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminListCampaigns);
+marketingCardRouter.post("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminCreateCampaign);
+marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", authenticate, authorize("marketing_card:admin_manage"), adminDeactivateCampaign);
+marketingCardRouter.post("/admin/batches", authenticate, authorize("marketing_card:admin_manage"), adminGenerateBatch);
+marketingCardRouter.post("/admin/assignments", authenticate, authorize("marketing_card:admin_manage"), adminAssignCards);
+marketingCardRouter.get("/admin/cards", authenticate, authorize("marketing_card:admin_manage"), adminListCards);
+marketingCardRouter.post("/admin/cards/invalidate", authenticate, authorize("marketing_card:admin_manage"), adminInvalidate);
+marketingCardRouter.get("/admin/metrics", authenticate, authorize("marketing_card:admin_manage"), adminCardMetrics);
+marketingCardRouter.get("/admin/stats", authenticate, authorize("marketing_card:admin_manage"), adminCardStats);
 
 // ── Manufacturer routes ──────────────────────────────────────
 marketingCardRouter.get("/manufacturer/cards", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerListCards);

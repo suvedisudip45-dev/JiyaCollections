@@ -1,5 +1,4 @@
 import express from "express";
-import jwt from "jsonwebtoken";
 import {
   getFinancialAnalyticsDashboard,
   getTreasuryAccounts,
@@ -35,29 +34,27 @@ import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const financialRouter = express.Router();
 
-const authorizeManufacturerOrAdmin = (req, res, next) => {
-  const token = req.headers.token || req.headers.authorization?.replace("Bearer ", "");
-  if (!token) {
-    return res.status(401).json({ success: false, message: "Authentication required." });
+const setFinancialManufacturerContext = (req, res, next) => {
+  if (req.auth.role === "ADMIN") {
+    const manufacturerId = req.query?.manufacturerId || req.body?.manufacturerId;
+    if (!manufacturerId) {
+      return res.status(400).json({ success: false, message: "Manufacturer ID is required." });
+    }
+    req.manufacturerId = manufacturerId;
+    return next();
   }
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const role = String(decoded.role || "").toUpperCase();
-    if (role === "ADMIN" || role === "MANUFACTURER") {
-      req.manufacturerId = decoded.manufacturerId || req.query?.manufacturerId || req.body?.manufacturerId;
-      req.adminId = decoded.adminId || decoded.profileId;
-      return next();
-    }
-    return res.status(403).json({ success: false, message: "Access denied." });
-  } catch (error) {
-    return res.status(401).json({ success: false, message: error.message || "Invalid token." });
+  const manufacturerId = req.auth.manufacturerId || req.auth.profileId;
+  if (!manufacturerId) {
+    return res.status(403).json({ success: false, message: "Manufacturer context unavailable." });
   }
+  req.manufacturerId = manufacturerId;
+  next();
 };
 
 // Executive Analytics & Overview
 financialRouter.get("/dashboard", authenticate, authorize("finance:dashboard_read"), getFinancialAnalyticsDashboard);
-financialRouter.get("/manufacturer-summary", authorizeManufacturerOrAdmin, getManufacturerFinancialSummary);
+financialRouter.get("/manufacturer-summary", authenticate, authorize("finance:manufacturer_summary"), setFinancialManufacturerContext, getManufacturerFinancialSummary);
 
 // Treasury & Liquid Cash & Expenses
 financialRouter.get("/treasury-accounts", authenticate, authorize("finance:treasury_read"), getTreasuryAccounts);

@@ -39,12 +39,33 @@ export const authenticate = async (req, res, next) => {
     let accountId = decoded.accountId || decoded.id || decoded.userId || decoded.adminId || decoded.manufacturerId || decoded.partnerId;
     const profileId = decoded.profileId || decoded.id || decoded.userId || decoded.adminId || decoded.manufacturerId || decoded.partnerId;
 
-    if (!decoded.accountId && role === "CUSTOMER" && profileId) {
-      const customerProfile = await prisma.user.findUnique({
-        where: { id: profileId },
-        select: { accountId: true },
+    if (!decoded.accountId && profileId) {
+      const profileLookup = {
+        CUSTOMER: () => prisma.user.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        ADMIN: () => prisma.admin.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        MANUFACTURER: () => prisma.manufacturer.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        MARKETING_PARTNER: () => prisma.marketingPartner.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+      }[role];
+      const profile = profileLookup ? await profileLookup() : null;
+      accountId = profile?.accountId || null;
+    }
+
+    const account = accountId
+      ? await prisma.authAccount.findUnique({ where: { id: accountId }, select: { id: true, role: true, status: true } })
+      : null;
+    if (!account || account.role.toUpperCase() !== role) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication identity.",
+        code: "INVALID_IDENTITY",
       });
-      accountId = customerProfile?.accountId || accountId;
+    }
+    if (account.status !== "ACTIVE") {
+      return res.status(401).json({
+        success: false,
+        message: "Account is not active.",
+        code: "ACCOUNT_INACTIVE",
+      });
     }
 
     req.auth = {
@@ -142,6 +163,7 @@ export const setManufacturerContext = (req, res, next) => {
   if (!req.body) req.body = {};
   req.manufacturerId = manufacturerId;
   req.body.manufacturerId = manufacturerId;
+  delete req.body.manufacturerIdOverride;
   next();
 };
 
@@ -154,5 +176,6 @@ export const setMarketingPartnerContext = (req, res, next) => {
   if (!req.body) req.body = {};
   req.partnerId = partnerId;
   req.body.partnerId = partnerId;
+  delete req.body.partnerIdOverride;
   next();
 };

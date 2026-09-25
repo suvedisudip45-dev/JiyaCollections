@@ -10,16 +10,15 @@ import {
   manualAssign,
 } from "../controllers/orderAssignmentController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
-import { authAdmin } from "../middleware/auth.js";
 
 const orderAssignmentRouter = express.Router();
 
 // Internal / Admin
-orderAssignmentRouter.post("/assign", authAdmin, assignOrder);
-orderAssignmentRouter.get("/all", authAdmin, getAllAssignments);
-orderAssignmentRouter.get("/admin/all", authAdmin, getAllAssignments);
-orderAssignmentRouter.post("/manual-assign", authAdmin, manualAssign);
-orderAssignmentRouter.post("/admin/manual-assign", authAdmin, manualAssign);
+orderAssignmentRouter.post("/assign", authenticate, authorize("assignment:create"), assignOrder);
+orderAssignmentRouter.get("/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
+orderAssignmentRouter.get("/admin/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
+orderAssignmentRouter.post("/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
+orderAssignmentRouter.post("/admin/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
 
 // Manufacturer-authenticated
 orderAssignmentRouter.get("/my", authenticate, authorize("manufacturer:assignments_read"), setManufacturerContext, getMyAssignments);

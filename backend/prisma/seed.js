@@ -44,7 +44,7 @@ const permissionDefinitions = [
 const rolePermissionCodes = {
   ADMIN: permissionDefinitions.map(([code]) => code),
   CUSTOMER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("customer:") && !code.startsWith("customer:admin_")) || code === "marketing_card:customer_manage"),
-  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_")) || code.startsWith("marketing_card:manufacturer")),
+  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_")) || code === "finance:manufacturer_summary" || code.startsWith("marketing_card:manufacturer")),
   MARKETING_PARTNER: permissionDefinitions.map(([code]) => code).filter((code) => code.startsWith("partner:") || code.startsWith("marketing_card:partner")),
 };
 

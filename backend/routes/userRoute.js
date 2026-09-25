@@ -12,7 +12,6 @@ import {
   activateSocialCustomerProfile,
 } from "../controllers/userController.js";
 import { adminChangePassword } from "../controllers/adminController.js";
-import { authAdmin } from "../middleware/auth.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const userRouter = express.Router();
@@ -24,7 +23,7 @@ userRouter.post("/social/activate", activateSocialCustomerProfile);
 userRouter.post("/admin", adminLogin);
 
 // Admin Authenticated Routes
-userRouter.post("/admin/change-password", authAdmin, adminChangePassword);
+userRouter.post("/admin/change-password", authenticate, authorize("admin:change_password"), adminChangePassword);
 
 // Customer Authenticated Routes
 userRouter.get("/profile", authenticate, authorize("customer:profile_read"), getUserProfile);
