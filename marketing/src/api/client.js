@@ -1,5 +1,5 @@
 import axios from "axios";
-import { getAccessToken } from "../auth/tokenStorage";
+import { clearAuthTokens, getAccessToken } from "../auth/tokenStorage";
 
 export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
@@ -28,6 +28,12 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    const requestUrl = error.config?.url || "";
+    const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(requestUrl);
+    if (error.response?.status === 401 && !isAuthRequest) {
+      clearAuthTokens();
+      window.location.assign("/login");
+    }
     return Promise.reject(error);
   }
 );

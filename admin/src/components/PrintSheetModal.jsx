@@ -2,7 +2,8 @@
 import { useEffect, useState, useMemo } from "react";
 import QRCode from "qrcode";
 import { jsPDF } from "jspdf";
-import { AlertCircle, FileCheck, LayoutGrid, Printer, Tag, X, Sparkles } from "lucide-react";
+import * as XLSX from "xlsx";
+import { AlertCircle, FileCheck, FileSpreadsheet, LayoutGrid, Printer, Tag, X, Sparkles } from "lucide-react";
 
 export const PrintSheetModal = ({
   isOpen,
@@ -125,6 +126,49 @@ export const PrintSheetModal = ({
     });
 
     pdf.save(`Aama-Marketing-Cards-${batchCode}-${layout}.pdf`);
+  };
+
+  const handleDownloadExcel = () => {
+    const rows = filteredCards.map((card, index) => {
+      const code = card.cardCode || card.code || "";
+      const token = card.qrToken || code;
+      const qrPayload = qrPayloadType === "URL"
+        ? `${frontendUrl}/marketing-cards?code=${encodeURIComponent(code)}`
+        : qrPayloadType === "TOKEN"
+          ? token
+          : code;
+
+      return {
+        "S.N.": index + 1,
+        "Card Code": code,
+        "QR Payload": qrPayload,
+        "Card ID": card.id || "",
+        "Batch Code": batchCode,
+        "Partner": partnerName,
+        "Campaign": campaignName,
+        "Scope": campaignScope,
+        "Expires At": cardExpiresAt ? new Date(cardExpiresAt).toISOString() : "",
+        "Status": card.physicalStatus || card.status || "",
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet["!cols"] = [
+      { wch: 8 },
+      { wch: 24 },
+      { wch: 62 },
+      { wch: 38 },
+      { wch: 24 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 16 },
+      { wch: 24 },
+      { wch: 16 },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Marketing Cards");
+    XLSX.writeFile(workbook, `Aama-Marketing-Cards-${batchCode}.xlsx`);
   };
 
   return (
@@ -257,6 +301,16 @@ export const PrintSheetModal = ({
             >
               <FileCheck className="h-3.5 w-3.5" />
               PDF File
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadExcel}
+              disabled={!filteredCards.length}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+              title="Download card codes and metadata as an Excel file"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+              Excel File
             </button>
             <button
               type="button"

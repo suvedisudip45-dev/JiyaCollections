@@ -45,6 +45,11 @@ export const installAuthInterceptor = () => {
     async (error) => {
       const originalRequest = error.config;
       const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(originalRequest?.url || "");
+      if (error.response?.status === 403 && !isAuthRequest) {
+        clearAuthTokens();
+        window.location.assign("/");
+        return Promise.reject(error);
+      }
       if (error.response?.status !== 401 || isAuthRequest || originalRequest?._authRetry) {
         return Promise.reject(error);
       }
