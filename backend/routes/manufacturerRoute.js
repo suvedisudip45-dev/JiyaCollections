@@ -18,7 +18,7 @@ import {
   getAvailableNcmBranches,
   syncNcmBranches,
 } from "../controllers/manufacturerController.js";
-import authManufacturer from "../middleware/manufacturerAuth.js";
+import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { authAdmin } from "../middleware/auth.js";
 
 const manufacturerRouter = express.Router();
@@ -31,16 +31,16 @@ manufacturerRouter.post("/admin/branches/sync", authAdmin, syncNcmBranches);
 manufacturerRouter.post("/register", upload.single("contractDoc"), registerManufacturerSelf);
 
 // Manufacturer-authenticated
-manufacturerRouter.get("/profile", authManufacturer, getProfile);
-manufacturerRouter.post("/profile", authManufacturer, getProfile);
-manufacturerRouter.put("/availability", authManufacturer, updateAvailability);
-manufacturerRouter.post("/availability", authManufacturer, updateAvailability);
-manufacturerRouter.get("/stats", authManufacturer, getManufacturerStats);
-manufacturerRouter.post("/pickup-profile", authManufacturer, updatePickupProfile);
-manufacturerRouter.put("/pickup-profile", authManufacturer, updatePickupProfile);
-manufacturerRouter.get("/pickup-profile", authManufacturer, getProfile);
-manufacturerRouter.post("/commission", authManufacturer, updateCommissionAgreement);
-manufacturerRouter.put("/commission", authManufacturer, updateCommissionAgreement);
+manufacturerRouter.get("/profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);
+manufacturerRouter.post("/profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);
+manufacturerRouter.put("/availability", authenticate, authorize("manufacturer:availability_update"), setManufacturerContext, updateAvailability);
+manufacturerRouter.post("/availability", authenticate, authorize("manufacturer:availability_update"), setManufacturerContext, updateAvailability);
+manufacturerRouter.get("/stats", authenticate, authorize("manufacturer:stats_read"), setManufacturerContext, getManufacturerStats);
+manufacturerRouter.post("/pickup-profile", authenticate, authorize("manufacturer:pickup_update"), setManufacturerContext, updatePickupProfile);
+manufacturerRouter.put("/pickup-profile", authenticate, authorize("manufacturer:pickup_update"), setManufacturerContext, updatePickupProfile);
+manufacturerRouter.get("/pickup-profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);
+manufacturerRouter.post("/commission", authenticate, authorize("manufacturer:commission_propose"), setManufacturerContext, updateCommissionAgreement);
+manufacturerRouter.put("/commission", authenticate, authorize("manufacturer:commission_propose"), setManufacturerContext, updateCommissionAgreement);
 manufacturerRouter.put("/admin/commission/:id", authAdmin, updateCommissionAgreement);
 
 // Admin-only (support both direct and /admin/ prefixed paths)

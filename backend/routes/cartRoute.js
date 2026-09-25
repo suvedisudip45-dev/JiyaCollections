@@ -5,14 +5,14 @@ import {
   updateCart,
   syncCart,
 } from "../controllers/cartController.js";
-import authUser from "../middleware/auth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const cartRouter = express.Router();
 
-cartRouter.post("/get", authUser, getUserCart);
-cartRouter.post("/add", authUser, addToCart);
-cartRouter.post("/update", authUser, updateCart);
-cartRouter.post("/sync", authUser, syncCart);
+cartRouter.post("/get", authenticate, authorize("customer:cart_read"), getUserCart);
+cartRouter.post("/add", authenticate, authorize("customer:cart_write"), addToCart);
+cartRouter.post("/update", authenticate, authorize("customer:cart_write"), updateCart);
+cartRouter.post("/sync", authenticate, authorize("customer:cart_write"), syncCart);
 
 export default cartRouter;
 

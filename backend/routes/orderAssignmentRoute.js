@@ -9,7 +9,7 @@ import {
   getAllAssignments,
   manualAssign,
 } from "../controllers/orderAssignmentController.js";
-import authManufacturer from "../middleware/manufacturerAuth.js";
+import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { authAdmin } from "../middleware/auth.js";
 
 const orderAssignmentRouter = express.Router();
@@ -22,16 +22,16 @@ orderAssignmentRouter.post("/manual-assign", authAdmin, manualAssign);
 orderAssignmentRouter.post("/admin/manual-assign", authAdmin, manualAssign);
 
 // Manufacturer-authenticated
-orderAssignmentRouter.get("/my", authManufacturer, getMyAssignments);
-orderAssignmentRouter.post("/my", authManufacturer, getMyAssignments);
-orderAssignmentRouter.get("/detail/:id", authManufacturer, getAssignmentById);
-orderAssignmentRouter.get("/:id", authManufacturer, getAssignmentById);
-orderAssignmentRouter.post("/accept/:id", authManufacturer, acceptOrder);
-orderAssignmentRouter.post("/accept", authManufacturer, acceptOrder);
-orderAssignmentRouter.post("/reject/:id", authManufacturer, rejectOrder);
-orderAssignmentRouter.post("/reject", authManufacturer, rejectOrder);
-orderAssignmentRouter.put("/status/:id", authManufacturer, updateAssignmentStatus);
-orderAssignmentRouter.post("/status/:id", authManufacturer, updateAssignmentStatus);
-orderAssignmentRouter.post("/status", authManufacturer, updateAssignmentStatus);
+orderAssignmentRouter.get("/my", authenticate, authorize("manufacturer:assignments_read"), setManufacturerContext, getMyAssignments);
+orderAssignmentRouter.post("/my", authenticate, authorize("manufacturer:assignments_read"), setManufacturerContext, getMyAssignments);
+orderAssignmentRouter.get("/detail/:id", authenticate, authorize("manufacturer:assignment_detail"), setManufacturerContext, getAssignmentById);
+orderAssignmentRouter.get("/:id", authenticate, authorize("manufacturer:assignment_detail"), setManufacturerContext, getAssignmentById);
+orderAssignmentRouter.post("/accept/:id", authenticate, authorize("manufacturer:assignment_accept"), setManufacturerContext, acceptOrder);
+orderAssignmentRouter.post("/accept", authenticate, authorize("manufacturer:assignment_accept"), setManufacturerContext, acceptOrder);
+orderAssignmentRouter.post("/reject/:id", authenticate, authorize("manufacturer:assignment_reject"), setManufacturerContext, rejectOrder);
+orderAssignmentRouter.post("/reject", authenticate, authorize("manufacturer:assignment_reject"), setManufacturerContext, rejectOrder);
+orderAssignmentRouter.put("/status/:id", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
+orderAssignmentRouter.post("/status/:id", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
+orderAssignmentRouter.post("/status", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
 
 export default orderAssignmentRouter;

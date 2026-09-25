@@ -36,12 +36,21 @@ export const authenticate = async (req, res, next) => {
     }
 
     const role = (decoded.role || "CUSTOMER").toUpperCase();
-    const accountId = decoded.accountId || decoded.id || decoded.userId || decoded.adminId || decoded.manufacturerId || decoded.partnerId;
+    let accountId = decoded.accountId || decoded.id || decoded.userId || decoded.adminId || decoded.manufacturerId || decoded.partnerId;
     const profileId = decoded.profileId || decoded.id || decoded.userId || decoded.adminId || decoded.manufacturerId || decoded.partnerId;
+
+    if (!decoded.accountId && role === "CUSTOMER" && profileId) {
+      const customerProfile = await prisma.user.findUnique({
+        where: { id: profileId },
+        select: { accountId: true },
+      });
+      accountId = customerProfile?.accountId || accountId;
+    }
 
     req.auth = {
       accountId,
       profileId,
+      manufacturerId: decoded.manufacturerId || null,
       role,
       email: decoded.email || "",
       phone: decoded.phone || "",
@@ -122,3 +131,15 @@ export const requireAdmin = [authenticate, requireRole("ADMIN")];
 export const requireCustomer = [authenticate, requireRole("CUSTOMER")];
 export const requireManufacturer = [authenticate, requireRole("MANUFACTURER")];
 export const requireMarketingPartner = [authenticate, requireRole("MARKETING_PARTNER")];
+
+export const setManufacturerContext = (req, res, next) => {
+  if (!req.auth?.accountId) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+
+  const manufacturerId = req.auth.manufacturerId || req.auth.profileId || req.auth.accountId;
+  if (!req.body) req.body = {};
+  req.manufacturerId = manufacturerId;
+  req.body.manufacturerId = manufacturerId;
+  next();
+};

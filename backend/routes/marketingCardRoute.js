@@ -1,7 +1,6 @@
 import express from "express";
 import adminAuth from "../middleware/adminAuth.js";
-import authManufacturer from "../middleware/manufacturerAuth.js";
-import authUser from "../middleware/auth.js";
+import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import marketingPartnerAuth from "../middleware/marketingPartnerAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import {
@@ -68,19 +67,19 @@ marketingCardRouter.get("/admin/metrics", adminAuth, adminCardMetrics);
 marketingCardRouter.get("/admin/stats", adminAuth, adminCardStats);
 
 // ── Manufacturer routes ──────────────────────────────────────
-marketingCardRouter.get("/manufacturer/cards", authManufacturer, manufacturerListCards);
-marketingCardRouter.post("/manufacturer/cards/bulk-status", authManufacturer, manufacturerBulkUpdateCards);
-marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authManufacturer, manufacturerReceiveCard);
-marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authManufacturer, manufacturerAttachCard);
+marketingCardRouter.get("/manufacturer/cards", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerListCards);
+marketingCardRouter.post("/manufacturer/cards/bulk-status", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerBulkUpdateCards);
+marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerReceiveCard);
+marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerAttachCard);
 
 // ── Customer routes ──────────────────────────────────────────
-marketingCardRouter.get("/customer/cards", authUser, customerListCards);
-marketingCardRouter.post("/customer/cards/verify-code", authUser, marketingCardRateLimit("link"), customerVerifyCode);
-marketingCardRouter.post("/customer/cards/verify-qr", authUser, marketingCardRateLimit("scan"), customerVerifyQr);
-marketingCardRouter.post("/customer/cards/:cardId/activate", authUser, marketingCardRateLimit("link"), customerActivateCard);
-marketingCardRouter.post("/customer/cards/link", authUser, marketingCardRateLimit("link"), customerLinkCard);
-marketingCardRouter.post("/customer/cards/scan", authUser, marketingCardRateLimit("scan"), customerScanCard);
-marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authUser, marketingCardRateLimit("redeem"), customerRedeemBenefit);
+marketingCardRouter.get("/customer/cards", authenticate, authorize("marketing_card:customer_manage"), customerListCards);
+marketingCardRouter.post("/customer/cards/verify-code", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("link"), customerVerifyCode);
+marketingCardRouter.post("/customer/cards/verify-qr", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("scan"), customerVerifyQr);
+marketingCardRouter.post("/customer/cards/:cardId/activate", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("link"), customerActivateCard);
+marketingCardRouter.post("/customer/cards/link", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("link"), customerLinkCard);
+marketingCardRouter.post("/customer/cards/scan", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("scan"), customerScanCard);
+marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("redeem"), customerRedeemBenefit);
 
 // ── Marketing Partner routes ─────────────────────────────────
 marketingCardRouter.post("/partner/login", partnerLogin);

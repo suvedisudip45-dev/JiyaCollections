@@ -9,7 +9,6 @@ import {
   adminListReviews,
   adminDeleteReview,
 } from "../controllers/reviewController.js";
-import authUser from "../middleware/auth.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const reviewRouter = express.Router();
@@ -18,11 +17,11 @@ const reviewRouter = express.Router();
 reviewRouter.get("/product/:productId", getProductReviews);
 
 // Customer authenticated routes
-reviewRouter.post("/add", authUser, addReview);
-reviewRouter.post("/status/:productId", authUser, checkUserReviewStatus);
-reviewRouter.post("/like", authUser, toggleLikeReview);
-reviewRouter.post("/dislike", authUser, toggleDislikeReview);
-reviewRouter.post("/delete", authUser, deleteUserReview);
+reviewRouter.post("/add", authenticate, authorize("customer:review_write"), addReview);
+reviewRouter.post("/status/:productId", authenticate, authorize("customer:review_read"), checkUserReviewStatus);
+reviewRouter.post("/like", authenticate, authorize("customer:review_interact"), toggleLikeReview);
+reviewRouter.post("/dislike", authenticate, authorize("customer:review_interact"), toggleDislikeReview);
+reviewRouter.post("/delete", authenticate, authorize("customer:review_delete"), deleteUserReview);
 
 // Admin authenticated routes
 reviewRouter.get("/admin/list", authenticate, authorize("review:admin_list"), adminListReviews);

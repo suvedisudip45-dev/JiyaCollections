@@ -12,8 +12,8 @@ import {
   activateSocialCustomerProfile,
 } from "../controllers/userController.js";
 import { adminChangePassword } from "../controllers/adminController.js";
-import authUser from "../middleware/auth.js";
 import { authAdmin } from "../middleware/auth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const userRouter = express.Router();
 
@@ -27,10 +27,10 @@ userRouter.post("/admin", adminLogin);
 userRouter.post("/admin/change-password", authAdmin, adminChangePassword);
 
 // Customer Authenticated Routes
-userRouter.get("/profile", authUser, getUserProfile);
-userRouter.post("/profile/update", authUser, updateUserProfile);
-userRouter.post("/password/change", authUser, changePassword);
-userRouter.post("/address/save", authUser, saveUserAddress);
-userRouter.post("/address/delete", authUser, deleteUserAddress);
+userRouter.get("/profile", authenticate, authorize("customer:profile_read"), getUserProfile);
+userRouter.post("/profile/update", authenticate, authorize("customer:profile_update"), updateUserProfile);
+userRouter.post("/password/change", authenticate, authorize("customer:password_change"), changePassword);
+userRouter.post("/address/save", authenticate, authorize("customer:address_manage"), saveUserAddress);
+userRouter.post("/address/delete", authenticate, authorize("customer:address_manage"), deleteUserAddress);
 
 export default userRouter;

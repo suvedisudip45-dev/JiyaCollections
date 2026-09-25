@@ -9,7 +9,6 @@ import {
   adminCreateOrder,
 } from "../controllers/orderController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
-import authUser from "../middleware/auth.js";
 
 const orderRouter = express.Router();
 
@@ -23,9 +22,9 @@ orderRouter.post("/admin-customer/verify", authenticate, authorize("order:custom
 orderRouter.post("/admin-create", authenticate, authorize("order:admin_create"), adminCreateOrder);
 
 // Payment Features
-orderRouter.post("/place", authUser, placeOrder);
+orderRouter.post("/place", authenticate, authorize("customer:order_place"), placeOrder);
 
 // User Features
-orderRouter.post("/userorders", authUser, userOrders);
+orderRouter.post("/userorders", authenticate, authorize("customer:order_read"), userOrders);
 
 export default orderRouter;
