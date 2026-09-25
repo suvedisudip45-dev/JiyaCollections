@@ -17,6 +17,9 @@ import CustomerLoyalty from "./pages/CustomerLoyalty";
 import PickupProfile from "./pages/PickupProfile";
 import Finance from "./pages/Finance";
 import MarketingCards from "./pages/MarketingCards";
+import { installAuthInterceptor } from "./api/authInterceptor";
+
+installAuthInterceptor();
 
 const MainLayout = () => {
   const { token, loading } = useManufacturer();

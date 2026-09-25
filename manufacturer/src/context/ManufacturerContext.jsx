@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { clearAuthTokens, getAccessToken, revokeAuthSession, storeAuthTokens } from "../auth/tokenStorage";
 
 const ManufacturerContext = createContext();
 
@@ -8,7 +9,7 @@ export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:
 export const currency = "Rs ";
 
 export const ManufacturerProvider = ({ children }) => {
-  const [token, setToken] = useState(() => localStorage.getItem("manufacturerToken") || "");
+  const [token, setToken] = useState(() => getAccessToken());
   const [manufacturer, setManufacturer] = useState(null);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
@@ -19,10 +20,10 @@ export const ManufacturerProvider = ({ children }) => {
     total: 0,
   });
 
-  const logout = () => {
+  const logout = async () => {
+    await revokeAuthSession(backendUrl);
     setToken("");
     setManufacturer(null);
-    localStorage.removeItem("manufacturerToken");
     toast.info("Logged out successfully");
   };
 
@@ -67,10 +68,10 @@ export const ManufacturerProvider = ({ children }) => {
 
   useEffect(() => {
     if (token) {
-      localStorage.setItem("manufacturerToken", token);
+      storeAuthTokens({ accessToken: token });
       fetchProfile();
     } else {
-      localStorage.removeItem("manufacturerToken");
+      clearAuthTokens();
       setLoading(false);
     }
   }, [token, fetchProfile]);

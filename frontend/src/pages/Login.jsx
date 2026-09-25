@@ -7,6 +7,7 @@ import TermsAndConditionsModal from "../components/TermsAndConditionsModal";
 import CryptoJS from "crypto-js";
 
 import { sanitizeInput } from "../utils/sanitize";
+import { storeAuthTokens } from "../auth/tokenStorage";
 
 // Encrypt a plaintext password with AES-256-CBC using a random IV
 const encryptPassword = (plaintext) => {
@@ -128,8 +129,7 @@ const Login = () => {
         });
 
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Welcome back! Your loyalty profile has been restored.");
         } else {
           toast.error(response.data.message || "Unable to activate your customer account");
@@ -179,8 +179,7 @@ const Login = () => {
           password,
         });
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Account created successfully!");
         } else {
           toast.error(response.data.message);
@@ -188,14 +187,14 @@ const Login = () => {
       } else {
         // AES-encrypt password before sending over the wire
         const { encryptedPassword, iv } = encryptPassword(password);
-        const response = await axios.post(backendUrl + "/api/user/login", {
+        const response = await axios.post(backendUrl + "/api/auth/login", {
           email: email.trim().toLowerCase(),
+          targetPortal: "CUSTOMER",
           encryptedPassword,
           iv,
         });
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Logged in successfully!");
         } else {
           toast.error(response.data.message);

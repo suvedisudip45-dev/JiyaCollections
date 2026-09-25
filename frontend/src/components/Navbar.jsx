@@ -4,6 +4,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
 import { Heart, Menu, Search, ShoppingBag, UserRound, X } from "lucide-react";
 import axios from "axios";
+import { revokeAuthSession } from "../auth/tokenStorage";
 
 const Navbar = () => {
   const [visible, setVisible] = useState(false);
@@ -52,8 +53,8 @@ const Navbar = () => {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
+  const logout = async () => {
+    await revokeAuthSession(backendUrl);
     localStorage.removeItem("cartItems");
     setToken("");
     setCartItems({});

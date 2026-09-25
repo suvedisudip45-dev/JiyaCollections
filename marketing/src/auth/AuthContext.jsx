@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { authApi } from "../api/auth";
 import { getErrorMessage } from "../api/client";
+import { clearAuthTokens, getAccessToken, revokeAuthSession, storeAuthTokens } from "./tokenStorage";
 
 const AuthContext = createContext(null);
 
@@ -11,7 +12,7 @@ export const AuthProvider = ({ children }) => {
   const [partner,         setPartner]         = useState(() => {
     try { return JSON.parse(localStorage.getItem(PARTNER_KEY)) || null; } catch { return null; }
   });
-  const [token,           setToken]           = useState(() => localStorage.getItem(TOKEN_KEY) || null);
+  const [token,           setToken]           = useState(() => getAccessToken() || null);
   const [loading,         setLoading]         = useState(true); // initial session restore
   const [authError,       setAuthError]       = useState(null);
 
@@ -22,14 +23,14 @@ export const AuthProvider = ({ children }) => {
     if (token) {
       localStorage.setItem(TOKEN_KEY, token);
     } else {
-      localStorage.removeItem(TOKEN_KEY);
+      clearAuthTokens();
       localStorage.removeItem(PARTNER_KEY);
     }
   }, [token]);
 
   // ── Restore session on mount ───────────────────────────
   const refreshUser = useCallback(async () => {
-    const storedToken = localStorage.getItem(TOKEN_KEY);
+    const storedToken = getAccessToken();
     if (!storedToken) { setLoading(false); return; }
     try {
       const res = await authApi.getProfile();
@@ -58,7 +59,8 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await authApi.login(email, password);
       if (res.data?.success) {
-        const { token: newToken, partner: newPartner } = res.data;
+        const newToken = storeAuthTokens(res.data);
+        const { partner: newPartner } = res.data;
         localStorage.setItem(TOKEN_KEY, newToken);
         localStorage.setItem(PARTNER_KEY, JSON.stringify(newPartner));
         setToken(newToken);
@@ -77,10 +79,11 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ── Logout ─────────────────────────────────────────────
-  const logout = () => {
+  const logout = async () => {
+    await revokeAuthSession(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000");
     setToken(null);
     setPartner(null);
-    localStorage.removeItem(TOKEN_KEY);
+    clearAuthTokens();
     localStorage.removeItem(PARTNER_KEY);
   };
 

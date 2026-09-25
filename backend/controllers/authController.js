@@ -12,6 +12,28 @@ import {
   verifyOtpChallenge,
 } from "../services/otpService.js";
 
+const REFRESH_COOKIE_NAME = "refresh_token";
+const refreshCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+  path: "/api/auth",
+});
+
+const setRefreshCookie = (res, refreshToken) => {
+  res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions());
+};
+
+const clearRefreshCookie = (res) => {
+  res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+};
+
+const getRefreshCookie = (req) => {
+  const cookieHeader = req.headers.cookie || "";
+  const cookie = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${REFRESH_COOKIE_NAME}=`));
+  return cookie ? decodeURIComponent(cookie.slice(REFRESH_COOKIE_NAME.length + 1)) : "";
+};
+
 /**
  * Unified Login Endpoint
  * POST /api/auth/login
@@ -49,13 +71,13 @@ export const login = async (req, res) => {
       ipAddress,
       userAgent,
     });
+    setRefreshCookie(res, authResult.refreshToken);
 
     return res.json({
       success: true,
       message: "Authentication successful",
       token: authResult.token,
       accessToken: authResult.accessToken,
-      refreshToken: authResult.refreshToken,
       account: authResult.account,
       user: authResult.profile,
       manufacturer: authResult.profile,
@@ -74,7 +96,7 @@ export const login = async (req, res) => {
  * POST /api/auth/refresh
  */
 export const refresh = async (req, res) => {
-  const refreshToken = req.body?.refreshToken || req.body?.token;
+  const refreshToken = getRefreshCookie(req) || req.body?.refreshToken || req.body?.token;
   if (!refreshToken) {
     return res.status(400).json({
       success: false,
@@ -88,13 +110,13 @@ export const refresh = async (req, res) => {
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
     });
+    setRefreshCookie(res, tokenPair.refreshToken);
 
     return res.json({
       success: true,
       message: "Token refreshed successfully.",
       token: tokenPair.accessToken,
       accessToken: tokenPair.accessToken,
-      refreshToken: tokenPair.refreshToken,
     });
   } catch (error) {
     return res.status(401).json({
@@ -184,6 +206,7 @@ export const logout = async (req, res) => {
       userAgent: req.headers["user-agent"] || "",
       status: "SUCCESS",
     });
+    clearRefreshCookie(res);
 
     return res.json({ success: true, message: "Logged out successfully." });
   } catch (error) {

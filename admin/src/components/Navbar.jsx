@@ -2,6 +2,9 @@
 /* eslint-disable no-unused-vars */
 import React from "react";
 import { assets } from "../assets/assets";
+import { revokeAuthSession } from "../auth/tokenStorage";
+
+const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
 const Navbar = ({ setToken }) => {
   const todayFormatted = new Date().toLocaleDateString("en-US", {
@@ -48,7 +51,10 @@ const Navbar = ({ setToken }) => {
           </div>
 
           <button
-            onClick={() => setToken("")}
+            onClick={async () => {
+              await revokeAuthSession(backendUrl);
+              setToken("");
+            }}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-medium text-slate-700 bg-slate-100 hover:bg-rose-50 hover:text-rose-600 border border-slate-200 transition-colors"
           >
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

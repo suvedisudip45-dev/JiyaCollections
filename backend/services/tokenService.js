@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { getJwtConfig } from "../config/jwt.js";
 
+const JWT_ALGORITHM = "HS256";
+
 const normalizeRole = (role) => String(role || "CUSTOMER").toUpperCase();
 
 const normalizePortalAccess = (portalAccess, role) => {
@@ -80,6 +82,7 @@ const signToken = ({
   const finalExpiresIn = expiresIn || (tokenType === "access" ? config.accessTokenExpiresIn : config.refreshTokenExpiresIn);
 
   return jwt.sign(payload, secret, {
+    algorithm: JWT_ALGORITHM,
     expiresIn: finalExpiresIn,
     issuer: config.issuer,
     audience: config.audience,
@@ -145,7 +148,11 @@ export const verifyToken = ({ token, secret, expectedType, issuer, audience, fal
 
   for (const candidateSecret of candidateSecrets) {
     try {
-      decoded = jwt.verify(token, candidateSecret, { issuer, audience });
+      decoded = jwt.verify(token, candidateSecret, {
+        algorithms: [JWT_ALGORITHM],
+        issuer,
+        audience,
+      });
       break;
     } catch (error) {
       if (error && error.name === "TokenExpiredError") {

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import jwt from "jsonwebtoken";
 
 process.env.JWT_ACCESS_SECRET ??= "access-token-secret-for-tests-123456";
 process.env.JWT_REFRESH_SECRET ??= "refresh-token-secret-for-tests-123456";
@@ -66,4 +67,24 @@ test("expired tokens are rejected", async () => {
 
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.throws(() => verifyAccessToken(expiredAccessToken), /expired|jwt|signature/i);
+});
+
+test("tokens signed with an unapproved algorithm are rejected", () => {
+  const token = jwt.sign(
+    {
+      accountId: "acc-algorithm",
+      profileId: "customer-algorithm",
+      role: "CUSTOMER",
+      token_type: "access",
+    },
+    process.env.JWT_ACCESS_SECRET,
+    {
+      algorithm: "HS384",
+      issuer: process.env.JWT_ISSUER,
+      audience: process.env.JWT_AUDIENCE,
+      expiresIn: "5m",
+    }
+  );
+
+  assert.throws(() => verifyAccessToken(token), /algorithm|invalid signature/i);
 });

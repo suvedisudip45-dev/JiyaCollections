@@ -5,6 +5,7 @@ import { Factory, Lock, Mail, ArrowRight, Shield, UserPlus, MapPin, Building, Ph
 import { useManufacturer } from "../context/ManufacturerContext";
 import { NEPAL_PROVINCES } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { storeAuthTokens } from "../auth/tokenStorage";
 
 const isValidNepalMobileNumber = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
@@ -118,14 +119,17 @@ const Login = () => {
 
     setLoading(true);
     try {
-      const response = await axios.post(`${backendUrl}/api/manufacturer/login`, {
+      const response = await axios.post(`${backendUrl}/api/auth/login`, {
         email: email.trim().toLowerCase(),
+        targetPortal: "MANUFACTURER",
         password,
       });
       if (response.data.success) {
-        setToken(response.data.token);
-        setManufacturer(response.data.manufacturer);
-        toast.success(`Welcome back, ${response.data.manufacturer.businessName}!`);
+        const accessToken = storeAuthTokens(response.data);
+        const manufacturer = response.data.manufacturer || response.data.user || {};
+        setToken(accessToken);
+        setManufacturer(manufacturer);
+        toast.success(`Welcome back, ${manufacturer.businessName || manufacturer.name || "manufacturer"}!`);
       } else {
         toast.error(response.data.message || "Invalid credentials");
       }

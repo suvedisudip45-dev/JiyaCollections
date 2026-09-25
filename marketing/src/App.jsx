@@ -19,6 +19,9 @@ import ProfilePage from "./pages/account/ProfilePage";
 import SettingsPage from "./pages/account/SettingsPage";
 import UnauthorizedPage from "./pages/error/UnauthorizedPage";
 import NotFoundPage from "./pages/error/NotFoundPage";
+import { installAuthInterceptor } from "./api/authInterceptor";
+
+installAuthInterceptor();
 
 const App = () => {
   return (

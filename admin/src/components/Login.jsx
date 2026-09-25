@@ -5,6 +5,7 @@ import axios from "axios";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
 import CryptoJS from "crypto-js";
+import { storeAuthTokens } from "../auth/tokenStorage";
 
 // Encrypt a plaintext password with AES-256-CBC using a random IV
 const encryptPassword = (plaintext) => {
@@ -35,13 +36,14 @@ const Login = ({ setToken }) => {
       // AES-encrypt the password before sending
       const { encryptedPassword, iv } = encryptPassword(password);
 
-      const response = await axios.post(backendUrl + "/api/user/admin", {
+      const response = await axios.post(backendUrl + "/api/auth/login", {
         email: email.trim().toLowerCase(),
+        targetPortal: "ADMIN",
         encryptedPassword,
         iv,
       });
       if (response.data.success) {
-        setToken(response.data.token);
+        setToken(storeAuthTokens(response.data));
       } else {
         toast.error(response.data.message);
       }

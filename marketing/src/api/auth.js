@@ -32,7 +32,7 @@ export const authApi = {
     } else {
       body.password = plainPw;
     }
-    return api.post("/api/marketing-cards/partner/login", body);
+    return api.post("/api/auth/login", { ...body, targetPortal: "MARKETING_PARTNER" });
   },
 
   getProfile: () => api.get("/api/marketing-cards/partner/profile"),

@@ -37,6 +37,9 @@ import StoryLetterLibrary from "./pages/StoryLetterLibrary";
 import MarketingCards from "./pages/MarketingCards";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import { installAuthInterceptor } from "./api/authInterceptor";
+
+installAuthInterceptor();
 
 export const backendUrl = import.meta.env.VITE_BACKEND_URL;
 export const currency = "Rs ";

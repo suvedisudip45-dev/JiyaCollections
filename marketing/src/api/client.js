@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getAccessToken } from "../auth/tokenStorage";
 
 export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
@@ -10,12 +11,14 @@ export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:
 const api = axios.create({
   baseURL: backendUrl,
   timeout: 15000,
+  withCredentials: true,
 });
 
 // ── Request interceptor: attach JWT ──────────────────────
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("mp_token");
+  const token = getAccessToken();
   if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
     config.headers.token = token;
   }
   return config;
@@ -25,11 +28,6 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem("mp_token");
-      localStorage.removeItem("mp_partner");
-      window.location.href = "/login";
-    }
     return Promise.reject(error);
   }
 );

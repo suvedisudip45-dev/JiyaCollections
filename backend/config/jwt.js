@@ -2,6 +2,8 @@ const DEFAULT_JWT_ISSUER = "clothes-store-api";
 const DEFAULT_JWT_AUDIENCE = "clothes-store-clients";
 const DEFAULT_ACCESS_TOKEN_EXPIRES_IN = "5m";
 const DEFAULT_REFRESH_TOKEN_EXPIRES_IN = "15m";
+const MIN_JWT_SECRET_LENGTH = 32;
+let cachedJwtConfig = null;
 
 const normalizeString = (value, fallback = "") => {
   const normalized = String(value ?? "").trim();
@@ -12,6 +14,9 @@ const ensureNonEmptySecret = (value, envName) => {
   const secret = normalizeString(value);
   if (!secret) {
     throw new Error(`Missing required environment variable: ${envName}. Set it in backend/.env before starting the server.`);
+  }
+  if (secret.length < MIN_JWT_SECRET_LENGTH) {
+    throw new Error(`${envName} must be at least ${MIN_JWT_SECRET_LENGTH} characters long.`);
   }
   return secret;
 };
@@ -25,6 +30,8 @@ const normalizeJwtDuration = (value, fallback) => {
 };
 
 export const validateJwtConfig = () => {
+  if (cachedJwtConfig) return cachedJwtConfig;
+
   const accessSecret = ensureNonEmptySecret(
     process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET,
     "JWT_ACCESS_SECRET"
@@ -55,7 +62,7 @@ export const validateJwtConfig = () => {
   process.env.JWT_ISSUER = issuer;
   process.env.JWT_AUDIENCE = audience;
 
-  return {
+  cachedJwtConfig = {
     accessSecret,
     refreshSecret,
     accessTokenExpiresIn,
@@ -63,6 +70,8 @@ export const validateJwtConfig = () => {
     issuer,
     audience,
   };
+
+  return cachedJwtConfig;
 };
 
 export const getJwtConfig = () => validateJwtConfig();
