@@ -1,7 +1,6 @@
 import express from "express";
 import adminAuth from "../middleware/adminAuth.js";
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
-import marketingPartnerAuth from "../middleware/marketingPartnerAuth.js";
+import { authenticate, authorize, setManufacturerContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import {
   adminAssignCards,
@@ -84,18 +83,18 @@ marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", a
 // ── Marketing Partner routes ─────────────────────────────────
 marketingCardRouter.post("/partner/login", partnerLogin);
 marketingCardRouter.post("/partner/signup", partnerSignup);
-marketingCardRouter.get("/partner/profile", marketingPartnerAuth, getProfile);
-marketingCardRouter.put("/partner/profile", marketingPartnerAuth, updateProfile);
-marketingCardRouter.post("/partner/change-password", marketingPartnerAuth, changePassword);
-marketingCardRouter.get("/partner/campaigns", marketingPartnerAuth, listCampaigns);
-marketingCardRouter.get("/partner/campaigns/:id", marketingPartnerAuth, getCampaignDetail);
-marketingCardRouter.get("/partner/cards", marketingPartnerAuth, listCards);
-marketingCardRouter.get("/partner/cards/:id", marketingPartnerAuth, getCardDetail);
-marketingCardRouter.get("/partner/metrics", marketingPartnerAuth, getMetrics);
-marketingCardRouter.get("/partner/redemptions", marketingPartnerAuth, listRedemptions);
-marketingCardRouter.post("/partner/qr/validate", marketingPartnerAuth, marketingCardRateLimit("scan"), validateQr);
-marketingCardRouter.post("/partner/redemptions/redeem", marketingPartnerAuth, marketingCardRateLimit("redeem"), redeemBenefit);
-marketingCardRouter.post("/partner/redemptions/reject", marketingPartnerAuth, marketingCardRateLimit("redeem"), rejectCard);
+marketingCardRouter.get("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, getProfile);
+marketingCardRouter.put("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, updateProfile);
+marketingCardRouter.post("/partner/change-password", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, changePassword);
+marketingCardRouter.get("/partner/campaigns", authenticate, authorize("partner:campaign_manage"), setMarketingPartnerContext, listCampaigns);
+marketingCardRouter.get("/partner/campaigns/:id", authenticate, authorize("partner:campaign_manage"), setMarketingPartnerContext, getCampaignDetail);
+marketingCardRouter.get("/partner/cards", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, listCards);
+marketingCardRouter.get("/partner/cards/:id", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, getCardDetail);
+marketingCardRouter.get("/partner/metrics", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, getMetrics);
+marketingCardRouter.get("/partner/redemptions", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, listRedemptions);
+marketingCardRouter.post("/partner/qr/validate", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, marketingCardRateLimit("scan"), validateQr);
+marketingCardRouter.post("/partner/redemptions/redeem", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, marketingCardRateLimit("redeem"), redeemBenefit);
+marketingCardRouter.post("/partner/redemptions/reject", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, marketingCardRateLimit("redeem"), rejectCard);
 
 export default marketingCardRouter;
 

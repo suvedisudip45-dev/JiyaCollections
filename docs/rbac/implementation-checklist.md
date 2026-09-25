@@ -24,6 +24,11 @@ Updated: 2026-09-25
   - Preserved `req.userId` and `req.body.userId` behavior through unified authentication.
   - Added legacy profile-token lookup to recover the related `AuthAccount` before permission resolution.
   - Corrected customer mapping for `marketing_card:customer_manage`.
+- [x] Iteration 6: Marketing partner route authorization
+  - Migrated authenticated partner endpoints to unified authentication and explicit partner permissions.
+  - Preserved `req.partnerId` and `req.body.partnerId` through `setMarketingPartnerContext`.
+  - Preserved rate-limit middleware ordering for QR and redemption endpoints.
+  - Kept partner login and signup public.
 
 ## Validation Completed
 
@@ -45,10 +50,10 @@ Updated: 2026-09-25
 
 ## Next Checkpoint
 
-- [ ] Iteration 6: Marketing partner route authorization
-  - Migrate partner endpoints to unified authentication and explicit partner permissions.
-  - Preserve partner profile context and rate-limit ordering.
-  - Keep partner login/signup public.
+- [ ] Iteration 7: Cleanup and hardening
+  - Review remaining legacy middleware and mixed-role routes.
+  - Audit webhook/public endpoint exposure, resource ownership, and privilege escalation paths.
+  - Remove legacy middleware only after all dependent routes are migrated and regression-tested.
 
 ## Rules To Preserve
 

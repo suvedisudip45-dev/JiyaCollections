@@ -51,6 +51,7 @@ export const authenticate = async (req, res, next) => {
       accountId,
       profileId,
       manufacturerId: decoded.manufacturerId || null,
+      partnerId: decoded.partnerId || null,
       role,
       email: decoded.email || "",
       phone: decoded.phone || "",
@@ -141,5 +142,17 @@ export const setManufacturerContext = (req, res, next) => {
   if (!req.body) req.body = {};
   req.manufacturerId = manufacturerId;
   req.body.manufacturerId = manufacturerId;
+  next();
+};
+
+export const setMarketingPartnerContext = (req, res, next) => {
+  if (!req.auth?.accountId) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+
+  const partnerId = req.auth.partnerId || req.auth.profileId || req.auth.accountId;
+  if (!req.body) req.body = {};
+  req.partnerId = partnerId;
+  req.body.partnerId = partnerId;
   next();
 };
