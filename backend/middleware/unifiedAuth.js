@@ -1,5 +1,5 @@
-import jwt from "jsonwebtoken";
 import { prisma } from "../config/db.js";
+import { verifyAccessToken } from "../services/tokenService.js";
 
 export { authorize } from "./authorize.js";
 
@@ -27,11 +27,45 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyAccessToken(token);
     if (!decoded || typeof decoded !== "object") {
       return res.status(401).json({
         success: false,
         message: "Invalid authentication token.",
+      });
+    }
+
+    if (!decoded.jti || decoded.token_type !== "access") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid access token.",
+        code: "INVALID_ACCESS_TOKEN",
+      });
+    }
+
+    const session = await prisma.authSession.findUnique({
+      where: { jti: decoded.jti },
+      select: {
+        id: true,
+        accountId: true,
+        tokenFamilyId: true,
+        tokenType: true,
+        expiresAt: true,
+        revokedAt: true,
+      },
+    });
+
+    if (
+      !session ||
+      session.tokenType !== "ACCESS" ||
+      session.accountId !== decoded.accountId ||
+      session.revokedAt ||
+      session.expiresAt <= new Date()
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication session is invalid or revoked.",
+        code: "INVALID_SESSION",
       });
     }
 
@@ -51,7 +85,23 @@ export const authenticate = async (req, res, next) => {
     }
 
     const account = accountId
-      ? await prisma.authAccount.findUnique({ where: { id: accountId }, select: { id: true, role: true, status: true } })
+      ? await prisma.authAccount.findUnique({
+          where: { id: accountId },
+          select: {
+            id: true,
+            role: true,
+            status: true,
+            roleMappings: {
+              where: {
+                isActive: true,
+                role: { isActive: true },
+              },
+              select: {
+                role: { select: { code: true } },
+              },
+            },
+          },
+        })
       : null;
     if (!account || account.role.toUpperCase() !== role) {
       return res.status(401).json({
@@ -68,9 +118,20 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
+    const roles = Array.from(new Set([
+      role,
+      ...account.roleMappings.map(({ role: mappedRole }) => String(mappedRole.code).toUpperCase()),
+    ]));
+
     req.auth = {
+      userId: profileId,
       accountId,
       profileId,
+      roles,
+      tokenId: decoded.jti,
+      tokenType: decoded.token_type,
+      sessionId: session.id,
+      tokenFamilyId: session.tokenFamilyId,
       manufacturerId: decoded.manufacturerId || null,
       partnerId: decoded.partnerId || null,
       role,
@@ -122,7 +183,10 @@ export const requireRole = (...allowedRoles) => {
     }
 
     const normalizedAllowed = allowedRoles.map((r) => String(r).toUpperCase());
-    if (!normalizedAllowed.includes(String(req.auth.role).toUpperCase())) {
+    const authenticatedRoles = Array.isArray(req.auth.roles) && req.auth.roles.length > 0
+      ? req.auth.roles.map((r) => String(r).toUpperCase())
+      : [String(req.auth.role).toUpperCase()];
+    if (!normalizedAllowed.some((allowedRole) => authenticatedRoles.includes(allowedRole))) {
       return res.status(403).json({
         success: false,
         message: `Access denied. Requires one of: ${allowedRoles.join(", ")}`,

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAuthorize } from "../middleware/authorize.js";
+import { requireRole } from "../middleware/unifiedAuth.js";
 import { hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
 
 const invoke = (middleware, req) => new Promise((resolve) => {
@@ -60,4 +61,18 @@ test("authorize allows, denies, caches, and fails closed", async () => {
     throw new Error("database unavailable");
   })("product:create"), { auth: { accountId: "account-3" } });
   assert.equal(unavailable.code, 500);
+});
+
+test("requireRole uses the centralized mapped role context", async () => {
+  assert.equal(
+    (await invoke(requireRole("MANUFACTURER"), {
+      auth: { role: "CUSTOMER", roles: ["CUSTOMER", "MANUFACTURER"] },
+    })).code,
+    200
+  );
+
+  const denied = await invoke(requireRole("ADMIN"), {
+    auth: { role: "CUSTOMER", roles: ["CUSTOMER", "MANUFACTURER"] },
+  });
+  assert.equal(denied.code, 403);
 });

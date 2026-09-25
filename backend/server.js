@@ -5,6 +5,7 @@ import { logger } from "./utils/logger.js";
 import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
+import { validateJwtConfig } from "./config/jwt.js";
 import userRouter from "./routes/userRoute.js";
 import productRouter from "./routes/productRoute.js";
 import cartRouter from "./routes/cartRoute.js";
@@ -39,6 +40,7 @@ const app = express();
 const port = process.env.PORT || 4000;
 
 const startServer = async () => {
+  validateJwtConfig();
   await connectDB();
   connectCloudinary();
   ensureStandardChartOfAccounts();

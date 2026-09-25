@@ -1,7 +1,13 @@
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import validator from "validator";
 import { prisma } from "../config/db.js";
+import {
+  createTokenFamilyId,
+  generateAccessToken,
+  generateRefreshToken,
+  getTokenClaims,
+  verifyRefreshToken,
+} from "./tokenService.js";
 import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 
@@ -45,26 +51,292 @@ export const resolvePassword = (body = {}) => {
  * Creates a standardized JWT token
  */
 export const generateAuthToken = (account, profile = {}) => {
-  const payload = {
+  return generateAccessToken({
     accountId: account.id,
     role: account.role,
     email: account.email,
-    phone: account.phone || "",
+    phone: account.phone,
+    profileId: profile.id || account.id,
+    portalAccess: [account.role],
+  });
+};
+
+const createLoginTokenPair = async ({ account, profile, ipAddress, userAgent }) => {
+  const tokenFamilyId = createTokenFamilyId();
+  const tokenInput = {
+    accountId: account.id,
+    role: account.role,
+    email: account.email,
+    phone: account.phone,
+    profileId: profile.id || account.id,
     portalAccess: [account.role],
   };
+  const accessToken = generateAccessToken(tokenInput);
+  const refreshToken = generateRefreshToken({ ...tokenInput, tokenFamilyId });
+  const accessClaims = getTokenClaims(accessToken);
+  const refreshClaims = getTokenClaims(refreshToken);
 
+  await prisma.$transaction(async (tx) => {
+    await tx.authSession.createMany({
+      data: [
+        {
+          accountId: account.id,
+          tokenFamilyId,
+          jti: accessClaims.jti,
+          tokenType: "ACCESS",
+          issuedAt: new Date(accessClaims.iat * 1000),
+          expiresAt: new Date(accessClaims.exp * 1000),
+          createdIp: String(ipAddress || "").slice(0, 64) || null,
+          userAgent: userAgent || null,
+        },
+        {
+          accountId: account.id,
+          tokenFamilyId,
+          jti: refreshClaims.jti,
+          tokenType: "REFRESH",
+          issuedAt: new Date(refreshClaims.iat * 1000),
+          expiresAt: new Date(refreshClaims.exp * 1000),
+          createdIp: String(ipAddress || "").slice(0, 64) || null,
+          userAgent: userAgent || null,
+        },
+      ],
+    });
+  });
+
+  return { accessToken, refreshToken, tokenFamilyId };
+};
+
+const getAccountProfile = (account) => {
   if (account.role === "ADMIN") {
-    payload.adminId = profile.id || account.id;
-  } else if (account.role === "MANUFACTURER") {
-    payload.manufacturerId = profile.id || account.id;
-  } else if (account.role === "MARKETING_PARTNER") {
-    payload.partnerId = profile.id || account.id;
-  } else {
-    payload.id = profile.id || account.id;
-    payload.userId = profile.id || account.id;
+    return account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
+  }
+  if (account.role === "MANUFACTURER") {
+    const profile = account.manufacturerProfile || { id: account.id, email: account.email };
+    profile.businessName = profile.name || "";
+    return profile;
+  }
+  if (account.role === "MARKETING_PARTNER") {
+    return account.marketingPartnerProfile || { id: account.id, email: account.email };
+  }
+  return account.customerProfile || { id: account.id, email: account.email };
+};
+
+export const rotateRefreshToken = async ({ refreshToken, ipAddress = "", userAgent = "" }) => {
+  const decoded = verifyRefreshToken(refreshToken);
+  if (!decoded.jti || !decoded.token_family_id || !decoded.accountId) {
+    throw new Error("Invalid refresh token claims.");
   }
 
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "7d" });
+  const currentSession = await prisma.authSession.findUnique({
+    where: { jti: decoded.jti },
+  });
+  if (
+    !currentSession ||
+    currentSession.tokenType !== "REFRESH" ||
+    currentSession.accountId !== decoded.accountId ||
+    currentSession.tokenFamilyId !== decoded.token_family_id
+  ) {
+    throw new Error("Refresh token is invalid or has already been rotated.");
+  }
+
+  if (currentSession.revokedAt) {
+    await invalidateRefreshFamilyOnReuse({
+      accountId: currentSession.accountId,
+      tokenFamilyId: currentSession.tokenFamilyId,
+      tokenId: currentSession.jti,
+      replacedByTokenId: currentSession.replacedByTokenId,
+      role: decoded.role,
+      ipAddress,
+      userAgent,
+    });
+    throw createRefreshReuseError();
+  }
+
+  if (currentSession.expiresAt <= new Date()) {
+    throw new Error("Refresh token is invalid or has expired.");
+  }
+
+  const account = await prisma.authAccount.findUnique({
+    where: { id: currentSession.accountId },
+    include: {
+      customerProfile: true,
+      adminProfile: true,
+      manufacturerProfile: true,
+      marketingPartnerProfile: true,
+    },
+  });
+  if (!account || account.status !== "ACTIVE") {
+    throw new Error("Account is not active.");
+  }
+  if (String(account.role).toUpperCase() !== String(decoded.role).toUpperCase()) {
+    throw new Error("Refresh token identity is invalid.");
+  }
+
+  const profile = getAccountProfile(account);
+  const tokenInput = {
+    accountId: account.id,
+    role: account.role,
+    email: account.email,
+    phone: account.phone,
+    profileId: profile.id || account.id,
+    portalAccess: [account.role],
+  };
+  const accessToken = generateAccessToken(tokenInput);
+  const nextRefreshToken = generateRefreshToken({
+    ...tokenInput,
+    tokenFamilyId: currentSession.tokenFamilyId,
+  });
+  const accessClaims = getTokenClaims(accessToken);
+  const refreshClaims = getTokenClaims(nextRefreshToken);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const revoked = await tx.authSession.updateMany({
+        where: {
+          jti: currentSession.jti,
+          tokenType: "REFRESH",
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+          replacedByTokenId: refreshClaims.jti,
+          lastUsedAt: new Date(),
+          lastUsedIp: String(ipAddress || "").slice(0, 64) || null,
+          revocationReason: "ROTATED",
+        },
+      });
+
+      if (revoked.count !== 1) {
+        throw createRefreshRotationConflictError();
+      }
+
+      await tx.authSession.createMany({
+        data: [
+          {
+            accountId: account.id,
+            tokenFamilyId: currentSession.tokenFamilyId,
+            jti: accessClaims.jti,
+            tokenType: "ACCESS",
+            issuedAt: new Date(accessClaims.iat * 1000),
+            expiresAt: new Date(accessClaims.exp * 1000),
+            createdIp: String(ipAddress || "").slice(0, 64) || null,
+            userAgent: userAgent || null,
+          },
+          {
+            accountId: account.id,
+            tokenFamilyId: currentSession.tokenFamilyId,
+            jti: refreshClaims.jti,
+            tokenType: "REFRESH",
+            issuedAt: new Date(refreshClaims.iat * 1000),
+            expiresAt: new Date(refreshClaims.exp * 1000),
+            createdIp: String(ipAddress || "").slice(0, 64) || null,
+            userAgent: userAgent || null,
+          },
+        ],
+      });
+    });
+  } catch (error) {
+    if (error.code !== "REFRESH_ROTATION_CONFLICT") {
+      throw error;
+    }
+
+    await invalidateRefreshFamilyOnReuse({
+      accountId: currentSession.accountId,
+      tokenFamilyId: currentSession.tokenFamilyId,
+      tokenId: currentSession.jti,
+      replacedByTokenId: currentSession.replacedByTokenId,
+      role: decoded.role,
+      ipAddress,
+      userAgent,
+    });
+    throw createRefreshReuseError();
+  }
+
+  return {
+    accessToken,
+    refreshToken: nextRefreshToken,
+    tokenFamilyId: currentSession.tokenFamilyId,
+  };
+};
+
+const createRefreshReuseError = () => {
+  const error = new Error("Refresh token reuse detected. The session family has been invalidated.");
+  error.code = "REFRESH_TOKEN_REUSE_DETECTED";
+  return error;
+};
+
+const createRefreshRotationConflictError = () => {
+  const error = new Error("Refresh token rotation conflict.");
+  error.code = "REFRESH_ROTATION_CONFLICT";
+  return error;
+};
+
+const invalidateRefreshFamilyOnReuse = async ({
+  accountId,
+  tokenFamilyId,
+  tokenId,
+  replacedByTokenId,
+  role,
+  ipAddress,
+  userAgent,
+}) => {
+  const revokedAt = new Date();
+  await prisma.authSession.updateMany({
+    where: {
+      accountId,
+      tokenFamilyId,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt,
+      lastUsedAt: revokedAt,
+      lastUsedIp: String(ipAddress || "").slice(0, 64) || null,
+      revocationReason: "REFRESH_TOKEN_REUSE",
+    },
+  });
+
+  await logAuthEvent({
+    accountId,
+    identifier: tokenId,
+    action: "REFRESH_TOKEN_REUSE_DETECTED",
+    role,
+    ipAddress,
+    userAgent,
+    status: "BLOCKED",
+    failureReason: "REVOKED_REFRESH_TOKEN_REUSED",
+    metadata: {
+      tokenFamilyId,
+      replacedByTokenId: replacedByTokenId || null,
+    },
+  });
+};
+
+export const revokeTokenFamily = async ({
+  accountId,
+  tokenFamilyId,
+  reason = "LOGOUT",
+  ipAddress = "",
+}) => {
+  if (!accountId || !tokenFamilyId) {
+    throw new Error("Authenticated session context is required for logout.");
+  }
+
+  const revokedAt = new Date();
+  const result = await prisma.authSession.updateMany({
+    where: {
+      accountId,
+      tokenFamilyId,
+      revokedAt: null,
+    },
+    data: {
+      revokedAt,
+      lastUsedAt: revokedAt,
+      lastUsedIp: String(ipAddress || "").slice(0, 64) || null,
+      revocationReason: reason,
+    },
+  });
+
+  return result.count;
 };
 
 /**
@@ -272,19 +544,9 @@ export const authenticateAccount = async ({
   });
 
   // Extract Profile
-  let profile = {};
-  if (account.role === "ADMIN") {
-    profile = account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
-  } else if (account.role === "MANUFACTURER") {
-    profile = account.manufacturerProfile || { id: account.id, email: account.email };
-    profile.businessName = profile.name || "";
-  } else if (account.role === "MARKETING_PARTNER") {
-    profile = account.marketingPartnerProfile || { id: account.id, email: account.email };
-  } else {
-    profile = account.customerProfile || { id: account.id, email: account.email };
-  }
+  const profile = getAccountProfile(account);
 
-  const token = generateAuthToken(account, profile);
+  const tokenPair = await createLoginTokenPair({ account, profile, ipAddress, userAgent });
 
   await logAuthEvent({
     accountId: account.id,
@@ -306,6 +568,9 @@ export const authenticateAccount = async ({
       status: account.status,
     },
     profile,
-    token,
+    token: tokenPair.accessToken,
+    accessToken: tokenPair.accessToken,
+    refreshToken: tokenPair.refreshToken,
+    tokenFamilyId: tokenPair.tokenFamilyId,
   };
 };

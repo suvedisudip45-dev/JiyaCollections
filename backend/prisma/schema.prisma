@@ -34,6 +34,7 @@ model AuthAccount {
 
   otpChallenges OtpChallenge[]
   auditLogs     AuthAuditLog[]
+  sessions      AuthSession[]
   roleMappings  AuthAccountRoleMapping[]
 
   @@index([email])
@@ -93,6 +94,31 @@ model AuthAccountRoleMapping {
   @@unique([accountId, roleId])
   @@index([accountId, isActive])
   @@index([roleId, isActive])
+}
+
+model AuthSession {
+  id               String    @id @default(uuid())
+  accountId        String
+  tokenFamilyId    String    @db.VarChar(64)
+  jti              String    @unique @db.VarChar(128)
+  tokenType        String    @default("ACCESS") // ACCESS | REFRESH
+  issuedAt         DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  replacedByTokenId String?  @db.VarChar(128)
+  lastUsedAt       DateTime?
+  createdIp        String?   @db.VarChar(64)
+  lastUsedIp       String?   @db.VarChar(64)
+  userAgent        String?   @db.Text
+  revocationReason String?   @db.VarChar(255)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  account AuthAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, tokenType, revokedAt])
+  @@index([tokenFamilyId])
+  @@index([expiresAt])
 }
 
 model OtpChallenge {

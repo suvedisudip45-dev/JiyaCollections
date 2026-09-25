@@ -1,6 +1,7 @@
 import express from "express";
 import {
   login,
+  refresh,
   getMe,
   logout,
   changePassword,
@@ -13,6 +14,7 @@ const authRouter = express.Router();
 
 // Public Authentication Endpoints
 authRouter.post("/login", login);
+authRouter.post("/refresh", refresh);
 authRouter.post("/logout", authenticate, logout);
 
 // OTP Endpoints

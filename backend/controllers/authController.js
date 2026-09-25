@@ -4,6 +4,8 @@ import {
   authenticateAccount,
   logAuthEvent,
   resolvePassword,
+  revokeTokenFamily,
+  rotateRefreshToken,
 } from "../services/authService.js";
 import {
   createOtpChallenge,
@@ -52,6 +54,8 @@ export const login = async (req, res) => {
       success: true,
       message: "Authentication successful",
       token: authResult.token,
+      accessToken: authResult.accessToken,
+      refreshToken: authResult.refreshToken,
       account: authResult.account,
       user: authResult.profile,
       manufacturer: authResult.profile,
@@ -61,6 +65,42 @@ export const login = async (req, res) => {
     return res.status(400).json({
       success: false,
       message: error.message || "Authentication failed.",
+    });
+  }
+};
+
+/**
+ * Rotates a refresh token and returns a new access/refresh pair.
+ * POST /api/auth/refresh
+ */
+export const refresh = async (req, res) => {
+  const refreshToken = req.body?.refreshToken || req.body?.token;
+  if (!refreshToken) {
+    return res.status(400).json({
+      success: false,
+      message: "Refresh token is required.",
+    });
+  }
+
+  try {
+    const tokenPair = await rotateRefreshToken({
+      refreshToken,
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+    });
+
+    return res.json({
+      success: true,
+      message: "Token refreshed successfully.",
+      token: tokenPair.accessToken,
+      accessToken: tokenPair.accessToken,
+      refreshToken: tokenPair.refreshToken,
+    });
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: error.message || "Invalid refresh token.",
+      code: error.code || "INVALID_REFRESH_TOKEN",
     });
   }
 };
@@ -120,20 +160,38 @@ export const getMe = async (req, res) => {
  */
 export const logout = async (req, res) => {
   try {
-    if (req.auth) {
-      await logAuthEvent({
-        accountId: req.auth.accountId,
-        identifier: req.auth.email || req.auth.phone || "",
-        action: "LOGOUT",
-        role: req.auth.role,
-        ipAddress: req.ip || "",
-        userAgent: req.headers["user-agent"] || "",
-        status: "SUCCESS",
+    if (!req.auth?.accountId || !req.auth?.tokenFamilyId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authenticated session is required.",
+        code: "INVALID_SESSION",
       });
     }
+
+    await revokeTokenFamily({
+      accountId: req.auth.accountId,
+      tokenFamilyId: req.auth.tokenFamilyId,
+      reason: "LOGOUT",
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+    });
+
+    await logAuthEvent({
+      accountId: req.auth.accountId,
+      identifier: req.auth.email || req.auth.phone || "",
+      action: "LOGOUT",
+      role: req.auth.role,
+      ipAddress: req.ip || "",
+      userAgent: req.headers["user-agent"] || "",
+      status: "SUCCESS",
+    });
+
     return res.json({ success: true, message: "Logged out successfully." });
   } catch (error) {
-    return res.json({ success: true, message: "Logged out." });
+    return res.status(500).json({
+      success: false,
+      message: "Logout could not be completed.",
+      code: "LOGOUT_FAILED",
+    });
   }
 };
 
