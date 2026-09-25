@@ -50,3 +50,18 @@ export const hasPermission = (permissions, requiredPermission) => {
   if (!required || !(permissions instanceof Set)) return false;
   return permissions.has(ALL_FUNCTION_PERMISSION) || permissions.has(required);
 };
+
+export const assignAccountRole = async (accountId, roleCode, { client = prisma } = {}) => {
+  const role = await client.role.findUnique({
+    where: { code: String(roleCode).trim().toUpperCase() },
+  });
+  if (!role || !role.isActive) {
+    throw new Error(`Active RBAC role is not configured: ${roleCode}`);
+  }
+
+  return client.authAccountRoleMapping.upsert({
+    where: { accountId_roleId: { accountId, roleId: role.id } },
+    update: { isActive: true },
+    create: { accountId, roleId: role.id, isActive: true },
+  });
+};

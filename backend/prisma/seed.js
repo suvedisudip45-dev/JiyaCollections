@@ -44,7 +44,7 @@ const permissionDefinitions = [
 const rolePermissionCodes = {
   ADMIN: permissionDefinitions.map(([code]) => code),
   CUSTOMER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("customer:") && !code.startsWith("customer:admin_")) || code === "marketing_card:customer_manage"),
-  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_")) || code === "finance:manufacturer_summary" || code.startsWith("marketing_card:manufacturer")),
+  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_") && code !== "manufacturer:branches_sync") || code === "finance:manufacturer_summary" || code.startsWith("marketing_card:manufacturer")),
   MARKETING_PARTNER: permissionDefinitions.map(([code]) => code).filter((code) => code.startsWith("partner:") || code.startsWith("marketing_card:partner")),
 };
 
@@ -68,6 +68,14 @@ async function seedRbac() {
   }
 
   for (const [roleCode, permissionCodes] of Object.entries(rolePermissionCodes)) {
+    const permissionIds = permissionCodes.map((permissionCode) => permissions[permissionCode].id);
+    await prisma.rolePermissionMapping.deleteMany({
+      where: {
+        roleId: roles[roleCode].id,
+        permissionId: { notIn: permissionIds },
+      },
+    });
+
     for (const permissionCode of permissionCodes) {
       await prisma.rolePermissionMapping.upsert({
         where: { roleId_permissionId: { roleId: roles[roleCode].id, permissionId: permissions[permissionCode].id } },

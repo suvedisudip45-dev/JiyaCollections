@@ -11,6 +11,7 @@ import {
   normalizeGender,
   normalizePhoneNumber,
 } from "../utils/socialCustomerProfile.js";
+import { assignAccountRole } from "../services/rbacService.js";
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET);
@@ -187,6 +188,7 @@ const registerUser = async (req, res) => {
           isPhoneVerified: false,
         },
       });
+      await assignAccountRole(newAccount.id, "CUSTOMER", { client: tx });
 
       const newUser = await tx.user.create({
         data: {

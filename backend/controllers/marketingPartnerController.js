@@ -13,6 +13,7 @@ import {
   getPartnerRedemptions,
   validatePartnerQr,
 } from "../services/marketingPartnerService.js";
+import { assignAccountRole } from "../services/rbacService.js";
 
 const sendError = (res, error) => {
   const status =
@@ -101,6 +102,7 @@ export const partnerSignup = async (req, res) => {
           isPhoneVerified: false,
         },
       });
+      await assignAccountRole(account.id, "MARKETING_PARTNER", { client: tx });
 
       await tx.marketingPartner.create({
         data: {

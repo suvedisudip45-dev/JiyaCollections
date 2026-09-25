@@ -7,6 +7,8 @@ import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } f
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { serializeRegistrationResponse } from "../dtos/registrationDto.js";
+import { assignAccountRole } from "../services/rbacService.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -234,6 +236,7 @@ const registerManufacturer = async (req, res) => {
           isPhoneVerified: true,
         },
       });
+      await assignAccountRole(newAccount.id, "MANUFACTURER", { client: tx });
 
       const newManufacturer = await tx.manufacturer.create({
         data: {
@@ -354,6 +357,7 @@ const registerManufacturerSelf = async (req, res) => {
           isPhoneVerified: false,
         },
       });
+      await assignAccountRole(newAccount.id, "MANUFACTURER", { client: tx });
 
       const newManufacturer = await tx.manufacturer.create({
         data: {
@@ -473,6 +477,14 @@ const updateQualityRating = async (req, res) => {
 };
 
 // ─── ADMIN: UPDATE CONTRACT STATUS ───────────────────────────────────────────
+export const getAuthAccountStatusForContractStatus = (contractStatus) => ({
+  ACTIVE: "ACTIVE",
+  PENDING: "PENDING_APPROVAL",
+  REJECTED: "REJECTED",
+  SUSPENDED: "SUSPENDED",
+  TERMINATED: "INACTIVE",
+})[String(contractStatus || "").trim().toUpperCase()] || null;
+
 const updateContractStatus = async (req, res) => {
   try {
     const manufacturerId = req.params?.id || req.body?.manufacturerId || req.body?.id;
@@ -511,7 +523,23 @@ const updateContractStatus = async (req, res) => {
       updateData.isActive = false;
     }
 
-    await prisma.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+    await prisma.$transaction(async (tx) => {
+      const manufacturer = await tx.manufacturer.findUnique({
+        where: { id: manufacturerId },
+        select: { accountId: true },
+      });
+      if (!manufacturer) throw new Error("Manufacturer not found");
+
+      await tx.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+
+      const accountStatus = getAuthAccountStatusForContractStatus(contractStatus);
+      if (manufacturer.accountId && accountStatus) {
+        await tx.authAccount.update({
+          where: { id: manufacturer.accountId },
+          data: { status: accountStatus },
+        });
+      }
+    });
     res.json({ success: true, message: "Contract status updated" });
   } catch (error) {
     console.error("updateContractStatus error:", error);
