@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 import { prisma } from "../config/db.js";
 import { authenticate } from "../middleware/unifiedAuth.js";
+import { authenticateAccount } from "../services/authService.js";
 
 const invokeAuthenticate = async (token) => {
   const request = {
@@ -77,6 +79,48 @@ test("inactive accounts are rejected", async () => {
     assert.equal(result.response.code, 401);
     assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
   } finally {
+    await prisma.authAccount.delete({ where: { id: account.id } });
+  }
+});
+
+test("approved marketing partner login succeeds when profile is active even if auth account was left pending", async () => {
+  const unique = crypto.randomUUID().slice(0, 8);
+  const email = `partner-approval-sync-${unique}@example.test`;
+  const account = await prisma.authAccount.create({
+    data: {
+      email,
+      phone: `+9779${unique.slice(0, 8)}`,
+      passwordHash: await bcrypt.hash("StrongPass123!", 10),
+      role: "MARKETING_PARTNER",
+      status: "PENDING_APPROVAL",
+    },
+    select: { id: true, role: true, status: true },
+  });
+
+  const partner = await prisma.marketingPartner.create({
+    data: {
+      accountId: account.id,
+      code: `APP-${unique.toUpperCase()}`,
+      name: "Approval Sync Partner",
+      email,
+      status: "ACTIVE",
+      passwordHash: await bcrypt.hash("StrongPass123!", 10),
+    },
+    select: { id: true, status: true, accountId: true },
+  });
+
+  try {
+    const result = await authenticateAccount({
+      identifier: email,
+      password: "StrongPass123!",
+      targetPortal: "MARKETING_PARTNER",
+    });
+
+    assert.equal(result.token.length > 0, true);
+    assert.equal(result.profile.id, partner.id);
+    assert.equal(result.profile.status, "ACTIVE");
+  } finally {
+    await prisma.marketingPartner.deleteMany({ where: { accountId: account.id } });
     await prisma.authAccount.delete({ where: { id: account.id } });
   }
 });

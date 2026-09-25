@@ -202,13 +202,34 @@ export const listPartners = () => prisma.marketingPartner.findMany({
 export const approvePartner = async ({ partnerId, code }) => {
   const normalizedCode = normalizeCode(code);
   if (!normalizedCode || normalizedCode.startsWith("PENDING")) throw new Error("A permanent partner code is required.");
-  return prisma.marketingPartner.update({
-    where: { id: partnerId },
-    data: { code: normalizedCode, status: "ACTIVE" },
-    select: {
-      id: true, code: true, name: true, description: true, status: true, email: true,
-      contactPhone: true, website: true, address: true, createdAt: true,
-    },
+
+  return prisma.$transaction(async (tx) => {
+    const partner = await tx.marketingPartner.findUnique({
+      where: { id: partnerId },
+      select: { id: true, accountId: true },
+    });
+
+    if (!partner) {
+      const error = new Error("Marketing partner not found.");
+      error.code = "PARTNER_NOT_FOUND";
+      throw error;
+    }
+
+    if (partner.accountId) {
+      await tx.authAccount.update({
+        where: { id: partner.accountId },
+        data: { status: "ACTIVE" },
+      });
+    }
+
+    return tx.marketingPartner.update({
+      where: { id: partnerId },
+      data: { code: normalizedCode, status: "ACTIVE" },
+      select: {
+        id: true, code: true, name: true, description: true, status: true, email: true,
+        contactPhone: true, website: true, address: true, createdAt: true,
+      },
+    });
   });
 };
 

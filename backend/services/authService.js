@@ -205,29 +205,42 @@ export const authenticateAccount = async ({
   }
 
   // Check Account Status
+  const partnerProfileIsApproved =
+    account.role === "MARKETING_PARTNER" &&
+    account.marketingPartnerProfile &&
+    account.marketingPartnerProfile.status === "ACTIVE";
+
   if (account.status !== "ACTIVE") {
-    let message = "Your account is not active. Please contact administrator.";
-    if (account.status === "PENDING_APPROVAL") {
-      message = "Your registration is currently pending admin approval.";
-    } else if (account.status === "SUSPENDED") {
-      message = "Your account has been suspended. Please contact support.";
-    } else if (account.status === "REJECTED") {
-      message = "Your application was rejected. Please contact administrator.";
+    if (partnerProfileIsApproved) {
+      await prisma.authAccount.update({
+        where: { id: account.id },
+        data: { status: "ACTIVE" },
+      });
+      account.status = "ACTIVE";
+    } else {
+      let message = "Your account is not active. Please contact administrator.";
+      if (account.status === "PENDING_APPROVAL") {
+        message = "Your registration is currently pending admin approval.";
+      } else if (account.status === "SUSPENDED") {
+        message = "Your account has been suspended. Please contact support.";
+      } else if (account.status === "REJECTED") {
+        message = "Your application was rejected. Please contact administrator.";
+      }
+
+      await logAuthEvent({
+        accountId: account.id,
+        identifier: normalized.value,
+        action: "LOGIN_REJECTED",
+        role: account.role,
+        portal: targetPortal,
+        ipAddress,
+        userAgent,
+        status: "FAILED",
+        failureReason: `STATUS_${account.status}`,
+      });
+
+      throw new Error(message);
     }
-
-    await logAuthEvent({
-      accountId: account.id,
-      identifier: normalized.value,
-      action: "LOGIN_REJECTED",
-      role: account.role,
-      portal: targetPortal,
-      ipAddress,
-      userAgent,
-      status: "FAILED",
-      failureReason: `STATUS_${account.status}`,
-    });
-
-    throw new Error(message);
   }
 
   // Validate Target Portal Authorization if specified
