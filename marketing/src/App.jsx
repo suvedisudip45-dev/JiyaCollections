@@ -6,6 +6,7 @@ import AppShell from "./components/layout/AppShell";
 
 // Pages
 import LoginPage from "./pages/auth/LoginPage";
+import SignupPage from "./pages/auth/SignupPage";
 import DashboardPage from "./pages/dashboard/DashboardPage";
 import CampaignListPage from "./pages/campaigns/CampaignListPage";
 import CampaignDetailPage from "./pages/campaigns/CampaignDetailPage";
@@ -26,6 +27,7 @@ const App = () => {
         <Routes>
           {/* Public Auth Route */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
 
           {/* Protected Marketing Partner Portal Routes */}
           <Route

@@ -30,6 +30,7 @@ import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
 import marketingCardRouter from "./routes/marketingCardRoute.js";
+import authRouter from "./routes/authRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
@@ -87,6 +88,7 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 //  Api Endpoints
+app.use("/api/auth", authRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/cart", cartRouter);

@@ -44,9 +44,10 @@ const authorizeManufacturerOrAdmin = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const role = decoded.role;
-    if (role === "admin" || role === "manufacturer") {
+    const role = String(decoded.role || "").toUpperCase();
+    if (role === "ADMIN" || role === "MANUFACTURER") {
       req.manufacturerId = decoded.manufacturerId || req.query?.manufacturerId || req.body?.manufacturerId;
+      req.adminId = decoded.adminId || decoded.profileId;
       return next();
     }
     return res.status(403).json({ success: false, message: "Access denied." });

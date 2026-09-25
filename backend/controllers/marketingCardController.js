@@ -1,5 +1,6 @@
 import {
   assignCards,
+  approvePartner,
   attachRandomCardToOrder,
   adminInvalidateCards,
   bulkUpdateManufacturerCards,
@@ -38,8 +39,18 @@ export const adminListPartners = async (_req, res) => {
 
 export const adminCreatePartner = async (req, res) => {
   try {
-    if (!req.body.name?.trim() || !req.body.code?.trim()) return res.status(400).json({ success: false, message: "Partner name and code are required." });
+    if (!req.body.name?.trim() || !req.body.code?.trim() || !req.body.email?.trim() || !req.body.password) {
+      return res.status(400).json({ success: false, message: "Partner name, code, email, and initial password are required." });
+    }
+    if (String(req.body.password).length < 8) return res.status(400).json({ success: false, message: "Initial password must be at least 8 characters." });
     return res.status(201).json({ success: true, partner: await createPartner(req.body) });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminApprovePartner = async (req, res) => {
+  try {
+    if (!req.params.partnerId || !req.body.code?.trim()) return res.status(400).json({ success: false, message: "A permanent partner code is required." });
+    return res.json({ success: true, partner: await approvePartner({ partnerId: req.params.partnerId, code: req.body.code }) });
   } catch (error) { return sendError(res, error); }
 };
 

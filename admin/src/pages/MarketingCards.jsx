@@ -68,7 +68,7 @@ const createDefaultOffer = (overrides = {}) => ({
   ...overrides,
 });
 
-const emptyPartner = { code: "", name: "", description: "" };
+const emptyPartner = { code: "", name: "", description: "", email: "", password: "" };
 
 const createInitialCampaign = () => ({
   marketingPartnerId: "",
@@ -183,6 +183,7 @@ const MarketingCards = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [cardsLoading, setCardsLoading] = useState(false);
   const [working, setWorking] = useState(false);
+  const [approvalCodes, setApprovalCodes] = useState({});
 
   // ── Base data load ────────────────────────────────────────────────────────
   const loadBase = useCallback(async () => {
@@ -293,6 +294,25 @@ const MarketingCards = ({ token }) => {
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || "Operation failed.");
       return null;
+    } finally { setWorking(false); }
+  };
+
+  const handleApprovePartner = async (partnerId) => {
+    const code = approvalCodes[partnerId]?.trim();
+    if (!code) return toast.error("Enter a permanent partner code before approving.");
+    setWorking(true);
+    try {
+      const res = await axios.patch(
+        `${backendUrl}/api/marketing-cards/admin/partners/${partnerId}/approve`,
+        { code },
+        { headers: { token } }
+      );
+      if (!res.data.success) throw new Error(res.data.message);
+      toast.success("Partner approved and code assigned.");
+      setApprovalCodes((prev) => ({ ...prev, [partnerId]: "" }));
+      await loadBase();
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || "Unable to approve partner.");
     } finally { setWorking(false); }
   };
 
@@ -426,6 +446,35 @@ const MarketingCards = ({ token }) => {
               </div>
             )}
           </section>
+
+          {/* Pending partner approvals */}
+          {(partners.filter((p) => p.status === "PENDING").length > 0) && (
+            <section className="rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm overflow-hidden">
+              <div className="border-b border-amber-200 px-5 py-4">
+                <h2 className="text-sm font-black text-amber-950">Pending Partner Approvals</h2>
+                <p className="text-xs text-amber-800 mt-0.5">Verify the business, assign a permanent code, and activate portal access.</p>
+              </div>
+              <div className="divide-y divide-amber-100">
+                {partners.filter((p) => p.status === "PENDING").map((pendingPartner) => (
+                  <div key={pendingPartner.id} className="flex flex-col md:flex-row md:items-center gap-3 px-5 py-4">
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-slate-900">{pendingPartner.name}</p>
+                      <p className="text-xs text-slate-600">{pendingPartner.email || "No email"}</p>
+                    </div>
+                    <div className="flex gap-2 w-full md:w-auto">
+                      <input
+                        value={approvalCodes[pendingPartner.id] || ""}
+                        onChange={(e) => setApprovalCodes((prev) => ({ ...prev, [pendingPartner.id]: e.target.value.toUpperCase() }))}
+                        placeholder="Permanent code"
+                        className="flex-1 md:w-44 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-mono uppercase"
+                      />
+                      <button type="button" disabled={working} onClick={() => handleApprovePartner(pendingPartner.id)} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">Approve</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Campaign breakdown */}
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -749,7 +798,7 @@ const MarketingCards = ({ token }) => {
               {/* 1. Create Partner */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-black text-slate-900">1. Create Partner</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Register brand partner before creating campaigns.</p>
+                <p className="mt-0.5 text-xs text-slate-500">Create an active partner with initial login credentials.</p>
                 <div className="mt-4 space-y-3">
                   <div>
                     <label className="text-[11px] font-bold uppercase text-slate-500">Partner Code (3–6 chars)</label>
@@ -758,6 +807,14 @@ const MarketingCards = ({ token }) => {
                   <div>
                     <label className="text-[11px] font-bold uppercase text-slate-500">Partner Name</label>
                     <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Nike Nepal, RedBull" value={partner.name} onChange={(e) => setPartner({ ...partner, name: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase text-slate-500">Login Email</label>
+                    <input type="email" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="partner@company.com" value={partner.email} onChange={(e) => setPartner({ ...partner, email: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-bold uppercase text-slate-500">Initial Password</label>
+                    <input type="password" minLength="8" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="At least 8 characters" value={partner.password} onChange={(e) => setPartner({ ...partner, password: e.target.value })} />
                   </div>
                   <button disabled={working} onClick={async () => { const r = await submit("/api/marketing-cards/admin/partners", partner, "Partner created."); if (r) setPartner(emptyPartner); }} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-50">Create partner</button>
                 </div>

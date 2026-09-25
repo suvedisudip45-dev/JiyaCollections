@@ -33,56 +33,56 @@ const parseJsonArray = (val) => {
 
 // Route for user login
 const loginUser = async (req, res) => {
+  const ipAddress = req.ip || req.headers["x-forwarded-for"] || "";
+  const userAgent = req.headers["user-agent"] || "";
   try {
-    const { email, encryptedPassword, iv } = req.body;
+    const { email, phone, identifier, encryptedPassword, iv, password } = req.body;
+    const loginIdentifier = identifier || email || phone;
 
-    if (!email || !validator.isEmail(String(email).trim())) {
-      return res.json({ success: false, message: "Please enter a valid email address" });
+    if (!loginIdentifier) {
+      return res.json({ success: false, message: "Email or mobile number is required" });
     }
 
-    if (!encryptedPassword || !iv) {
-      return res.json({ success: false, message: "Encrypted password and IV are required" });
-    }
-
-    // Decrypt the AES-encrypted password sent from the client
-    let password;
-    try {
-      password = decryptAES(encryptedPassword, iv);
-    } catch {
-      return res.json({ success: false, message: "Invalid encrypted credentials" });
-    }
-
-    const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-    if (!user) {
-      return res.json({ success: false, message: "User doesn't exist" });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    if (isMatch) {
-      const token = createToken(user.id);
-      const addresses = parseJsonArray(user.addresses);
-      res.json({
-        success: true,
-        token,
-        user: {
-          id: user.id,
-          firstName: user.firstName || "",
-          lastName: user.lastName || "",
-          name: user.name,
-          email: user.email,
-          phone: user.phone || "",
-          socialCustomerCode: user.socialCustomerCode || "",
-          gender: user.gender || "PREFER_NOT_TO_SAY",
-          addresses,
-        },
-      });
+    let resolvedPassword;
+    if (encryptedPassword && iv) {
+      try {
+        resolvedPassword = decryptAES(encryptedPassword, iv);
+      } catch {
+        return res.json({ success: false, message: "Invalid encrypted credentials" });
+      }
+    } else if (password) {
+      resolvedPassword = String(password);
     } else {
-      res.json({ success: false, message: "Invalid credentials" });
+      return res.json({ success: false, message: "Password is required" });
     }
+
+    const { authenticateAccount } = await import("../services/authService.js");
+    const authResult = await authenticateAccount({
+      identifier: loginIdentifier,
+      password: resolvedPassword,
+      targetPortal: "CUSTOMER",
+      ipAddress,
+      userAgent,
+    });
+
+    const addresses = parseJsonArray(authResult.profile?.addresses);
+    res.json({
+      success: true,
+      token: authResult.token,
+      user: {
+        id: authResult.profile.id,
+        firstName: authResult.profile.firstName || "",
+        lastName: authResult.profile.lastName || "",
+        name: authResult.profile.name || `${authResult.profile.firstName || ""} ${authResult.profile.lastName || ""}`.trim(),
+        email: authResult.profile.email,
+        phone: authResult.profile.phone || "",
+        socialCustomerCode: authResult.profile.socialCustomerCode || "",
+        gender: authResult.profile.gender || "PREFER_NOT_TO_SAY",
+        addresses,
+      },
+    });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    res.json({ success: false, message: error.message || "Invalid credentials" });
   }
 };
 
@@ -175,23 +175,41 @@ const registerUser = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const user = await prisma.user.create({
-      data: {
-        firstName: fName,
-        lastName: lName,
-        phone: normalizedPhone,
-        gender: normalizedGender,
-        name: fName.concat(" ").concat(lName),
-        email: email.trim().toLowerCase(),
-        password: hashedPassword,
-        socialCustomerCode: generateSocialCustomerCode(),
-        socialCustomerPhone: normalizedPhone,
-        cartData: {},
-        addresses: [],
-      },
+    const { account, user } = await prisma.$transaction(async (tx) => {
+      const newAccount = await tx.authAccount.create({
+        data: {
+          email: cleanEmail,
+          phone: normalizedPhone,
+          passwordHash: hashedPassword,
+          role: "CUSTOMER",
+          status: "ACTIVE",
+          isEmailVerified: false,
+          isPhoneVerified: false,
+        },
+      });
+
+      const newUser = await tx.user.create({
+        data: {
+          accountId: newAccount.id,
+          firstName: fName,
+          lastName: lName,
+          phone: normalizedPhone,
+          gender: normalizedGender,
+          name: fName.concat(" ").concat(lName),
+          email: cleanEmail,
+          password: hashedPassword,
+          socialCustomerCode: generateSocialCustomerCode(),
+          socialCustomerPhone: normalizedPhone,
+          cartData: {},
+          addresses: [],
+        },
+      });
+
+      return { account: newAccount, user: newUser };
     });
 
-    const token = createToken(user.id);
+    const { generateAuthToken } = await import("../services/authService.js");
+    const token = generateAuthToken(account, user);
 
     res.json({
       success: true,
@@ -725,48 +743,40 @@ const changePassword = async (req, res) => {
 
 // Route for admin login — credentials stored in DB, password AES-encrypted in transit
 const adminLogin = async (req, res) => {
+  const ipAddress = req.ip || req.headers["x-forwarded-for"] || "";
+  const userAgent = req.headers["user-agent"] || "";
   try {
-    const { email, encryptedPassword, iv } = req.body;
+    const { email, encryptedPassword, iv, password } = req.body;
 
-    if (!email || !validator.isEmail(String(email).trim())) {
+    if (!email) {
       return res.json({ success: false, message: "Please enter a valid email address" });
     }
 
-    if (!encryptedPassword || !iv) {
-      return res.json({ success: false, message: "Email and encrypted password are required" });
+    let resolvedPassword;
+    if (encryptedPassword && iv) {
+      try {
+        resolvedPassword = decryptAES(encryptedPassword, iv);
+      } catch {
+        return res.json({ success: false, message: "Invalid encrypted credentials" });
+      }
+    } else if (password) {
+      resolvedPassword = String(password);
+    } else {
+      return res.json({ success: false, message: "Email and password are required" });
     }
 
-    // Decrypt the AES-encrypted password
-    let password;
-    try {
-      password = decryptAES(encryptedPassword, iv);
-    } catch {
-      return res.json({ success: false, message: "Invalid encrypted credentials" });
-    }
-
-    // Look up admin in DB
-    const admin = await prisma.admin.findUnique({
-      where: { email: email.trim().toLowerCase() },
+    const { authenticateAccount } = await import("../services/authService.js");
+    const authResult = await authenticateAccount({
+      identifier: email,
+      password: resolvedPassword,
+      targetPortal: "ADMIN",
+      ipAddress,
+      userAgent,
     });
-    if (!admin) {
-      return res.json({ success: false, message: "Invalid credentials" });
-    }
 
-    // Compare bcrypt hash
-    const isMatch = await bcrypt.compare(password, admin.password);
-    if (!isMatch) {
-      return res.json({ success: false, message: "Invalid credentials" });
-    }
-
-    // Sign JWT with role:admin so authAdmin middleware can verify it
-    const token = jwt.sign(
-      { adminId: admin.id, role: "admin" },
-      process.env.JWT_SECRET
-    );
-    res.json({ success: true, token });
+    res.json({ success: true, token: authResult.token, account: authResult.account, admin: authResult.profile });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    res.json({ success: false, message: error.message || "Invalid credentials" });
   }
 };
 

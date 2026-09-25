@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { Eye, EyeOff, BadgeCheck, Loader2, AlertCircle } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -137,12 +137,9 @@ const LoginPage = () => {
             </form>
 
             {/* Footer note */}
-            <p className="text-center text-xs text-[var(--mp-muted)] mt-6">
-              🔒 Credentials are encrypted in transit
-            </p>
             <p className="text-center text-xs text-[var(--mp-muted)] mt-1">
-              Don't have an account?{" "}
-              <span className="text-brand-600 font-medium">Contact your Aama Clothings representative</span>
+              Don&apos;t have an account?{" "}
+              <Link to="/signup" className="text-brand-600 font-semibold hover:underline">Sign up</Link>
             </p>
           </div>
         </div>

@@ -9,6 +9,7 @@ import {
   adminCreateCampaign,
   adminDeactivateCampaign,
   adminCreatePartner,
+  adminApprovePartner,
   adminGenerateBatch,
   adminListCards,
   adminCardMetrics,
@@ -31,6 +32,7 @@ import {
 } from "../controllers/marketingCardController.js";
 import {
   partnerLogin,
+  partnerSignup,
   getProfile,
   updateProfile,
   changePassword,
@@ -54,6 +56,7 @@ marketingCardRouter.get("/locations", adminGetLocations);
 marketingCardRouter.get("/admin/locations", adminAuth, adminGetLocations);
 marketingCardRouter.get("/admin/partners", adminAuth, adminListPartners);
 marketingCardRouter.post("/admin/partners", adminAuth, adminCreatePartner);
+marketingCardRouter.patch("/admin/partners/:partnerId/approve", adminAuth, adminApprovePartner);
 marketingCardRouter.get("/admin/campaigns", adminAuth, adminListCampaigns);
 marketingCardRouter.post("/admin/campaigns", adminAuth, adminCreateCampaign);
 marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", adminAuth, adminDeactivateCampaign);
@@ -81,6 +84,7 @@ marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", a
 
 // ── Marketing Partner routes ─────────────────────────────────
 marketingCardRouter.post("/partner/login", partnerLogin);
+marketingCardRouter.post("/partner/signup", partnerSignup);
 marketingCardRouter.get("/partner/profile", marketingPartnerAuth, getProfile);
 marketingCardRouter.put("/partner/profile", marketingPartnerAuth, updateProfile);
 marketingCardRouter.post("/partner/change-password", marketingPartnerAuth, changePassword);

@@ -1,43 +1,75 @@
 import jwt from "jsonwebtoken";
 
+const extractToken = (req) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.substring(7).trim();
+  }
+  return req.headers.token || req.headers.admintoken || req.headers.manufacturertoken || null;
+};
+
 // Middleware for authenticated customers
 const authUser = async (req, res, next) => {
-  const { token } = req.headers;
+  const token = extractToken(req);
   if (!token) {
-    return res.json({ success: false, message: "Not Authorized Login Again" });
+    return res.status(401).json({ success: false, message: "Not Authorized. Login required." });
   }
 
   try {
-    const token_decode = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded || typeof decoded !== "object") {
+      return res.status(401).json({ success: false, message: "Invalid token" });
+    }
+
+    const userId = decoded.profileId || decoded.id || decoded.userId || decoded.accountId;
     if (!req.body) req.body = {};
-    req.body.userId = token_decode.id;
-    req.userId = token_decode.id;
+    req.body.userId = userId;
+    req.userId = userId;
+    req.auth = {
+      accountId: decoded.accountId || userId,
+      profileId: userId,
+      role: (decoded.role || "CUSTOMER").toUpperCase(),
+      email: decoded.email || "",
+    };
     next();
   } catch (error) {
     console.log(error);
-    res.json({ success: false, message: error.message });
+    res.status(401).json({ success: false, message: error.message });
   }
 };
 
 // Middleware for authenticated admins
 const authAdmin = async (req, res, next) => {
-  const { token } = req.headers;
+  const token = extractToken(req);
   if (!token) {
-    return res.json({ success: false, message: "Not Authorized. Admin login required." });
+    return res.status(401).json({ success: false, message: "Not Authorized. Admin login required." });
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (decoded.role !== "admin") {
-      return res.json({ success: false, message: "Access denied. Admin only." });
+    if (!decoded || typeof decoded !== "object") {
+      return res.status(401).json({ success: false, message: "Invalid token" });
     }
+
+    const role = String(decoded.role || "").toUpperCase();
+    if (role !== "ADMIN") {
+      return res.status(403).json({ success: false, message: "Access denied. Admin only." });
+    }
+
+    const adminId = decoded.adminId || decoded.profileId || decoded.accountId || decoded.id;
     if (!req.body) req.body = {};
-    req.body.adminId = decoded.adminId;
-    req.adminId = decoded.adminId;
+    req.body.adminId = adminId;
+    req.adminId = adminId;
+    req.auth = {
+      accountId: decoded.accountId || adminId,
+      profileId: adminId,
+      role: "ADMIN",
+      email: decoded.email || "",
+    };
     next();
   } catch (error) {
     console.log(error);
-    res.json({ success: false, message: error.message });
+    res.status(401).json({ success: false, message: error.message });
   }
 };
 

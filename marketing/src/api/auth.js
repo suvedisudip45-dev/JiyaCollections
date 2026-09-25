@@ -36,4 +36,6 @@ export const authApi = {
   },
 
   getProfile: () => api.get("/api/marketing-cards/partner/profile"),
+
+  signup: (payload) => api.post("/api/marketing-cards/partner/signup", payload),
 };

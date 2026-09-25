@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
+import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { decryptAES } from "../utils/crypto.js";
 import {
@@ -26,11 +27,12 @@ const sendError = (res, error) => {
 
 // POST /partner/login
 export const partnerLogin = async (req, res) => {
+  const ipAddress = req.ip || req.headers["x-forwarded-for"] || "";
+  const userAgent = req.headers["user-agent"] || "";
   try {
     const { email, password, encryptedPassword, iv } = req.body;
     if (!email) return res.status(400).json({ success: false, message: "Email is required." });
 
-    // Resolve password — support both plain and AES-encrypted (same pattern as admin)
     let plainPassword;
     if (encryptedPassword && iv) {
       try {
@@ -44,36 +46,82 @@ export const partnerLogin = async (req, res) => {
       return res.status(400).json({ success: false, message: "Password is required." });
     }
 
-    const partner = await prisma.marketingPartner.findUnique({
-      where: { email: String(email).trim().toLowerCase() },
-      select: { id: true, code: true, name: true, status: true, email: true, passwordHash: true },
+    const { authenticateAccount } = await import("../services/authService.js");
+    const authResult = await authenticateAccount({
+      identifier: email,
+      password: plainPassword,
+      targetPortal: "MARKETING_PARTNER",
+      ipAddress,
+      userAgent,
     });
-
-    if (!partner || !partner.passwordHash) {
-      return res.status(401).json({ success: false, message: "Invalid credentials." });
-    }
-    if (partner.status !== "ACTIVE") {
-      return res.status(403).json({ success: false, message: "Account is inactive. Please contact support." });
-    }
-
-    const isMatch = await bcrypt.compare(plainPassword, partner.passwordHash);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: "Invalid credentials." });
-    }
-
-    const token = jwt.sign(
-      { role: "marketing_partner", partnerId: partner.id },
-      process.env.JWT_SECRET
-    );
 
     return res.json({
       success: true,
-      token,
-      partner: { id: partner.id, code: partner.code, name: partner.name, email: partner.email, status: partner.status },
+      token: authResult.token,
+      partner: {
+        id: authResult.profile.id,
+        code: authResult.profile.code,
+        name: authResult.profile.name,
+        email: authResult.profile.email,
+        status: authResult.profile.status,
+      },
     });
   } catch (error) {
     console.log(error);
-    return res.status(500).json({ success: false, message: "Login failed. Please try again." });
+    const status = error.message?.includes("pending") || error.message?.includes("suspended") ? 403 : 401;
+    return res.status(status).json({ success: false, message: error.message || "Login failed. Please try again." });
+  }
+};
+
+// POST /partner/signup
+export const partnerSignup = async (req, res) => {
+  try {
+    const { name, email, password, contactPhone, website, address } = req.body || {};
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    if (!String(name || "").trim() || !normalizedEmail || !password) {
+      return res.status(400).json({ success: false, message: "Business name, email, and password are required." });
+    }
+    if (String(password).length < 8) return res.status(400).json({ success: false, message: "Password must be at least 8 characters." });
+
+    const existing = await prisma.authAccount.findUnique({ where: { email: normalizedEmail }, select: { id: true } });
+    if (existing) return res.status(409).json({ success: false, message: "An account with this email already exists." });
+
+    const passwordHash = await bcrypt.hash(String(password), 10);
+    const code = `PENDING-${crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+
+    await prisma.$transaction(async (tx) => {
+      const account = await tx.authAccount.create({
+        data: {
+          email: normalizedEmail,
+          phone: contactPhone ? String(contactPhone).trim() : null,
+          passwordHash,
+          role: "MARKETING_PARTNER",
+          status: "PENDING_APPROVAL",
+          isEmailVerified: false,
+          isPhoneVerified: false,
+        },
+      });
+
+      await tx.marketingPartner.create({
+        data: {
+          accountId: account.id,
+          code,
+          name: String(name).trim(),
+          email: normalizedEmail,
+          passwordHash,
+          status: "PENDING",
+          contactPhone: contactPhone ? String(contactPhone).trim() : null,
+          website: website ? String(website).trim() : null,
+          address: address ? String(address).trim() : null,
+        },
+      });
+    });
+
+    return res.status(201).json({ success: true, message: "Signup submitted. An administrator must verify your account and assign your partner code before login." });
+  } catch (error) {
+    if (error.code === "P2002") return res.status(409).json({ success: false, message: "An account with this email already exists." });
+    console.log(error);
+    return res.status(500).json({ success: false, message: error.message || "Signup failed. Please try again." });
   }
 };
 

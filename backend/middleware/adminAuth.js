@@ -1,35 +1,48 @@
 import jwt from "jsonwebtoken";
 
+const extractToken = (req) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.substring(7).trim();
+  }
+  return req.headers.token || req.headers.admintoken || req.headers.manufacturertoken || null;
+};
+
 const adminAuth = async (req, res, next) => {
   try {
-    const { token } = req.headers;
+    const token = extractToken(req);
     if (!token) {
-      return res.json({
+      return res.status(401).json({
         success: false,
         message: "Not Authorized Login Again",
       });
     }
     const token_decode = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Support object token ({ role: 'admin', adminId }) or legacy env string
-    if (typeof token_decode === "object" && token_decode.role === "admin") {
-      if (!req.body) req.body = {};
-      req.body.adminId = token_decode.adminId;
-      req.adminId = token_decode.adminId;
-      return next();
+    if (typeof token_decode === "object") {
+      const role = String(token_decode.role || "").toUpperCase();
+      if (role === "ADMIN") {
+        const adminId = token_decode.adminId || token_decode.profileId || token_decode.accountId || token_decode.id;
+        if (!req.body) req.body = {};
+        req.body.adminId = adminId;
+        req.adminId = adminId;
+        req.auth = {
+          accountId: token_decode.accountId || adminId,
+          profileId: adminId,
+          role: "ADMIN",
+          email: token_decode.email || "",
+        };
+        return next();
+      }
     }
 
-    if (token_decode === process.env.ADMIN_EMAIL + process.env.ADMIN_PASSWORD) {
-      return next();
-    }
-
-    return res.json({
+    return res.status(403).json({
       success: false,
-      message: "Not Authorized Login Again",
+      message: "Access denied. Admin only.",
     });
   } catch (error) {
     console.log(error);
-    res.json({ success: false, message: error.message });
+    res.status(401).json({ success: false, message: error.message });
   }
 };
 
