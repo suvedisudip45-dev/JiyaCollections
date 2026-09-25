@@ -12,7 +12,6 @@ export const storeAuthTokens = (data = {}) => {
 
 export const clearAuthTokens = () => {
   localStorage.removeItem(ACCESS_TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
 };
 
 export const revokeAuthSession = async (backendUrl) => {
