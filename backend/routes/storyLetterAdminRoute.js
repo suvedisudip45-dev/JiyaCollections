@@ -1,5 +1,5 @@
 import express from "express";
-import { authAdmin } from "../middleware/auth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 import {
   listStories,
   getStoryById,
@@ -19,7 +19,7 @@ import {
 
 const storyLetterAdminRouter = express.Router();
 
-storyLetterAdminRouter.get("/stories", authAdmin, async (req, res) => {
+storyLetterAdminRouter.get("/stories", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const stories = await listStories();
     return res.json({ success: true, data: stories });
@@ -28,7 +28,7 @@ storyLetterAdminRouter.get("/stories", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.post("/stories", authAdmin, async (req, res) => {
+storyLetterAdminRouter.post("/stories", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const story = await createStory(req.body || {});
     return res.status(201).json({ success: true, data: story });
@@ -37,7 +37,7 @@ storyLetterAdminRouter.post("/stories", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.patch("/stories/:id", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/stories/:id", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const story = await updateStory(req.params.id, req.body || {});
     return res.json({ success: true, data: story });
@@ -46,7 +46,7 @@ storyLetterAdminRouter.patch("/stories/:id", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.patch("/stories/:id/toggle-archive", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/stories/:id/toggle-archive", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const story = await toggleStoryArchive(req.params.id);
     return res.json({ success: true, data: story });
@@ -55,7 +55,7 @@ storyLetterAdminRouter.patch("/stories/:id/toggle-archive", authAdmin, async (re
   }
 });
 
-storyLetterAdminRouter.get("/stories/:id", authAdmin, async (req, res) => {
+storyLetterAdminRouter.get("/stories/:id", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const story = await getStoryById(req.params.id);
     return res.json({ success: true, data: story });
@@ -64,7 +64,7 @@ storyLetterAdminRouter.get("/stories/:id", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.get("/stories/:id/letters", authAdmin, async (req, res) => {
+storyLetterAdminRouter.get("/stories/:id/letters", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const letters = await listStoryLetters(req.params.id);
     return res.json({ success: true, data: letters });
@@ -73,7 +73,7 @@ storyLetterAdminRouter.get("/stories/:id/letters", authAdmin, async (req, res) =
   }
 });
 
-storyLetterAdminRouter.post("/stories/:id/letters", authAdmin, async (req, res) => {
+storyLetterAdminRouter.post("/stories/:id/letters", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const letter = await createStoryLetter(req.params.id, req.body || {});
     return res.status(201).json({ success: true, data: letter });
@@ -82,7 +82,7 @@ storyLetterAdminRouter.post("/stories/:id/letters", authAdmin, async (req, res) 
   }
 });
 
-storyLetterAdminRouter.patch("/stories/:id/letters/reorder", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/stories/:id/letters/reorder", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const letters = await reorderStoryLetters(req.params.id, req.body?.order || []);
     return res.json({ success: true, data: letters });
@@ -91,7 +91,7 @@ storyLetterAdminRouter.patch("/stories/:id/letters/reorder", authAdmin, async (r
   }
 });
 
-storyLetterAdminRouter.patch("/story-letters/:id", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/story-letters/:id", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const letter = await updateStoryLetter(req.params.id, req.body || {});
     return res.json({ success: true, data: letter });
@@ -100,7 +100,7 @@ storyLetterAdminRouter.patch("/story-letters/:id", authAdmin, async (req, res) =
   }
 });
 
-storyLetterAdminRouter.patch("/story-letters/:id/toggle-archive", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/story-letters/:id/toggle-archive", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const letter = await toggleStoryLetterArchive(req.params.id);
     return res.json({ success: true, data: letter });
@@ -109,7 +109,7 @@ storyLetterAdminRouter.patch("/story-letters/:id/toggle-archive", authAdmin, asy
   }
 });
 
-storyLetterAdminRouter.get("/templates", authAdmin, async (req, res) => {
+storyLetterAdminRouter.get("/templates", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const templates = await listTemplates();
     return res.json({ success: true, data: templates });
@@ -118,7 +118,7 @@ storyLetterAdminRouter.get("/templates", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.post("/templates", authAdmin, async (req, res) => {
+storyLetterAdminRouter.post("/templates", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const template = await createTemplate(req.body || {});
     return res.status(201).json({ success: true, data: template });
@@ -127,7 +127,7 @@ storyLetterAdminRouter.post("/templates", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.patch("/templates/:id", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/templates/:id", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const template = await updateTemplate(req.params.id, req.body || {});
     return res.json({ success: true, data: template });
@@ -136,7 +136,7 @@ storyLetterAdminRouter.patch("/templates/:id", authAdmin, async (req, res) => {
   }
 });
 
-storyLetterAdminRouter.patch("/templates/:id/toggle-archive", authAdmin, async (req, res) => {
+storyLetterAdminRouter.patch("/templates/:id/toggle-archive", authenticate, authorize("storyletter:admin_manage"), async (req, res) => {
   try {
     const template = await toggleTemplateArchive(req.params.id);
     return res.json({ success: true, data: template });

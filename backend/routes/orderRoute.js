@@ -8,19 +8,19 @@ import {
   verifyAdminOrderCustomer,
   adminCreateOrder,
 } from "../controllers/orderController.js";
-import adminAuth from "../middleware/adminAuth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 import authUser from "../middleware/auth.js";
 
 const orderRouter = express.Router();
 
 // Admin Features
 // /list → all orders (read-only, hub monitor view)
-orderRouter.post("/list", adminAuth, allOrders);
+orderRouter.post("/list", authenticate, authorize("order:list_all"), allOrders);
 // /admin-list → only admin-created orders (operational management tab)
-orderRouter.post("/admin-list", adminAuth, allAdminOrders);
-orderRouter.get("/admin-customer", adminAuth, lookupAdminOrderCustomer);
-orderRouter.post("/admin-customer/verify", adminAuth, verifyAdminOrderCustomer);
-orderRouter.post("/admin-create", adminAuth, adminCreateOrder);
+orderRouter.post("/admin-list", authenticate, authorize("order:list_admin"), allAdminOrders);
+orderRouter.get("/admin-customer", authenticate, authorize("order:customer_lookup"), lookupAdminOrderCustomer);
+orderRouter.post("/admin-customer/verify", authenticate, authorize("order:customer_verify"), verifyAdminOrderCustomer);
+orderRouter.post("/admin-create", authenticate, authorize("order:admin_create"), adminCreateOrder);
 
 // Payment Features
 orderRouter.post("/place", authUser, placeOrder);

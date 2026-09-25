@@ -6,7 +6,7 @@ import {
   updateOffer,
   deleteOffer,
 } from "../controllers/offerController.js";
-import adminAuth from "../middleware/adminAuth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const offerRouter = express.Router();
 
@@ -14,9 +14,9 @@ const offerRouter = express.Router();
 offerRouter.get("/active", getActiveOffer);
 
 // Admin routes
-offerRouter.get("/list", adminAuth, listOffers);
-offerRouter.post("/create", adminAuth, createOffer);
-offerRouter.post("/update", adminAuth, updateOffer);
-offerRouter.post("/delete", adminAuth, deleteOffer);
+offerRouter.get("/list", authenticate, authorize("offer:list"), listOffers);
+offerRouter.post("/create", authenticate, authorize("offer:create"), createOffer);
+offerRouter.post("/update", authenticate, authorize("offer:update"), updateOffer);
+offerRouter.post("/delete", authenticate, authorize("offer:delete"), deleteOffer);
 
 export default offerRouter;

@@ -1,6 +1,8 @@
 import jwt from "jsonwebtoken";
 import { prisma } from "../config/db.js";
 
+export { authorize } from "./authorize.js";
+
 /**
  * Extracts token from headers (supporting standard Authorization header, token, adminToken, manufacturerToken)
  */
