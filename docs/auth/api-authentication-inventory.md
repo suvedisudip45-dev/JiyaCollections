@@ -5,24 +5,34 @@
 These are intentionally public or unauthenticated for access or external integration:
 
 - `/api/auth/login`
+- `/api/auth/refresh` (refresh JWT is validated by the endpoint itself)
 - `/api/auth/otp/request`
 - `/api/auth/otp/verify`
-- `/api/user/register` or equivalent registration APIs if present in the current route file
+- `/api/user/register`
+- `/api/user/login` and `/api/user/admin` legacy login compatibility endpoints
+- `/api/user/social/validate`
+- `/api/user/social/activate`
+- `/api/manufacturer/login`
+- `/api/manufacturer/register` self-registration endpoint
+- `/api/manufacturer/branches` branch catalog endpoint
+- `/api/marketing-cards/locations`
+- `/api/marketing-cards/partner/login`
+- `/api/marketing-cards/partner/signup`
+- public catalog/read endpoints such as product, category, subcategory, color, offer, review, shipping, and loyalty-level reads
 - `/webhooks/*`
 - `/api/ncm-webhook`
 
-## Authenticated endpoints
+## Authenticated-only endpoints
 
-These depend on `authenticate` middleware:
+These require a valid access token and session, but do not require a separate business permission:
 
 - `/api/auth/me`
 - `/api/auth/logout`
 - `/api/auth/change-password`
-- all `/api/*` routes that are not explicitly public
 
 ## Permission-protected endpoints
 
-These are behind `authenticate` + `authorize("permission:code")` patterns:
+Sensitive business APIs are behind `authenticate` + `authorize("permission:code")` patterns:
 
 - `/api/order/*`
 - `/api/product/*`
@@ -35,6 +45,12 @@ These are behind `authenticate` + `authorize("permission:code")` patterns:
 - `/api/accounting/*`
 - `/api/marketing-cards/*`
 - `/api/delivery/*` for admin/manufacturer/customer flows
+- `/api/user/profile*`, customer password, and address operations
+- product/category/subcategory/color mutations
+- offer, shipping, expense, COGS, returns, and accounting mutations/reports
+- story-letter administration
+
+The permission code is resolved from active `AuthAccountRoleMapping` and `RolePermissionMapping` records. A missing token/session returns `401`; an authenticated account without the required active permission returns `403`.
 
 ## Webhook exception
 

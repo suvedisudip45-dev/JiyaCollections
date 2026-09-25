@@ -1,4 +1,4 @@
-import { resolveAccountPermissions } from "../services/rbacService.js";
+import { hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
 
 const normalizeRequiredPermissions = (requiredPermission) => {
   const permissions = Array.isArray(requiredPermission) ? requiredPermission : [requiredPermission];
@@ -25,9 +25,7 @@ export const createAuthorize = (permissionResolver = resolveAccountPermissions) 
         const cache = req.rbac?.permissionCache || new Map();
         req.rbac = { ...(req.rbac || {}), permissionCache: cache };
         const permissions = await permissionResolver(req.auth.accountId, { cache });
-        const hasAllRequired = requiredPermissions.every(
-          (permission) => permissions.has("all:function") || permissions.has(permission)
-        );
+        const hasAllRequired = requiredPermissions.every((permission) => hasPermission(permissions, permission));
 
         if (!hasAllRequired) {
           return res.status(403).json({
