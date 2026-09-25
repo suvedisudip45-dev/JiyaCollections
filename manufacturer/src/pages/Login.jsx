@@ -1,11 +1,23 @@
 import React, { useEffect, useState } from "react";
 import axios from "axios";
+import CryptoJS from "crypto-js";
 import { toast } from "react-toastify";
 import { Factory, Lock, Mail, ArrowRight, Shield, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { NEPAL_PROVINCES } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 import { storeAuthTokens } from "../auth/tokenStorage";
+
+const encryptValue = (plaintext) => {
+  const key = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_KEY);
+  const iv = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_IV);
+  const encrypted = CryptoJS.AES.encrypt(plaintext, key, {
+    iv,
+    mode: CryptoJS.mode.CBC,
+    padding: CryptoJS.pad.Pkcs7,
+  });
+  return encrypted.ciphertext.toString(CryptoJS.enc.Base64);
+};
 
 const isValidNepalMobileNumber = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
@@ -121,15 +133,13 @@ const Login = () => {
     try {
       const response = await axios.post(`${backendUrl}/api/auth/login`, {
         email: email.trim().toLowerCase(),
-        targetPortal: "MANUFACTURER",
-        password,
+        targetPortal: encryptValue("MANUFACTURER"),
+        encryptedPassword: encryptValue(password),
       });
       if (response.data.success) {
         const accessToken = storeAuthTokens(response.data);
-        const manufacturer = response.data.manufacturer || response.data.user || {};
         setToken(accessToken);
-        setManufacturer(manufacturer);
-        toast.success(`Welcome back, ${manufacturer.businessName || manufacturer.name || "manufacturer"}!`);
+        toast.success("Welcome back, manufacturer!");
       } else {
         toast.error(response.data.message || "Invalid credentials");
       }

@@ -33,10 +33,10 @@ export const normalizeIdentifier = (rawIdentifier) => {
  * Safe password resolution (decrypts AES-256 payload if present, or accepts plain string)
  */
 export const resolvePassword = (body = {}) => {
-  const { password, encryptedPassword, iv } = body;
-  if (encryptedPassword && iv) {
+  const { password, encryptedPassword } = body;
+  if (encryptedPassword) {
     try {
-      return decryptAES(encryptedPassword, iv);
+      return decryptAES(encryptedPassword);
     } catch {
       throw new Error("Invalid encrypted credentials");
     }
@@ -45,6 +45,20 @@ export const resolvePassword = (body = {}) => {
     return String(password);
   }
   throw new Error("Password is required");
+};
+
+export const resolveTargetPortal = (rawTargetPortal) => {
+  if (!rawTargetPortal) return null;
+  const normalized = String(rawTargetPortal).trim().toUpperCase();
+  const knownPortals = new Set(["CUSTOMER", "ADMIN", "MANUFACTURER", "MARKETING_PARTNER"]);
+  if (knownPortals.has(normalized)) return normalized;
+
+  try {
+    const decrypted = decryptAES(rawTargetPortal).trim().toUpperCase();
+    return knownPortals.has(decrypted) ? decrypted : null;
+  } catch {
+    throw new Error("Invalid target portal");
+  }
 };
 
 /**

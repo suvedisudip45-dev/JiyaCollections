@@ -7,7 +7,7 @@ Purpose
 - Authentication:
   - JWT-based authentication: server signs tokens using JWT_SECRET. Tokens returned on login/register flows.
   - Passwords: stored using bcrypt hashes (bcryptjs/bcrypt). Minimum length enforced at registration (>=8).
-  - Client-side: passwords are AES-encrypted in transit and sent as { encryptedPassword, iv } — server decrypts using AES_SECRET_KEY (decryptAES utility). This is an additional layer on top of TLS but should not replace TLS.
+  - Client-side: login credentials use AES-encrypted values sent as { encryptedPassword, targetPortal } — server decrypts them using AES_SECRET_KEY and AES_IV (decryptAES utility). This is an additional layer on top of TLS but should not replace TLS.
 - Authorization:
   - Role-based: admin JWT contains { role: "admin" } used by authAdmin middleware. User endpoints validated against token userId where needed.
   - Principle of least privilege: admin routes protected by middleware; enforce server-side checks on all operations (e.g., product creation, stock adjustments, financial endpoints).

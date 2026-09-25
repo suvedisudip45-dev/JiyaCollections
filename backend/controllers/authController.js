@@ -4,6 +4,7 @@ import {
   authenticateAccount,
   logAuthEvent,
   resolvePassword,
+  resolveTargetPortal,
   revokeTokenFamily,
   rotateRefreshToken,
 } from "../services/authService.js";
@@ -11,6 +12,7 @@ import {
   createOtpChallenge,
   verifyOtpChallenge,
 } from "../services/otpService.js";
+import { serializeLoginResponse } from "../dtos/authDto.js";
 
 const REFRESH_COOKIE_NAME = "refresh_token";
 const refreshCookieOptions = () => ({
@@ -63,7 +65,7 @@ export const login = async (req, res) => {
       });
     }
 
-    const portalHint = portal || targetPortal || null;
+    const portalHint = resolveTargetPortal(portal || targetPortal);
     const authResult = await authenticateAccount({
       identifier: loginIdentifier,
       password,
@@ -73,16 +75,7 @@ export const login = async (req, res) => {
     });
     setRefreshCookie(res, authResult.refreshToken);
 
-    return res.json({
-      success: true,
-      message: "Authentication successful",
-      token: authResult.token,
-      accessToken: authResult.accessToken,
-      account: authResult.account,
-      user: authResult.profile,
-      manufacturer: authResult.profile,
-      partner: authResult.profile,
-    });
+    return res.json(serializeLoginResponse(authResult));
   } catch (error) {
     return res.status(400).json({
       success: false,

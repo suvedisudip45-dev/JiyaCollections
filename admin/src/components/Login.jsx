@@ -7,20 +7,16 @@ import { toast } from "react-toastify";
 import CryptoJS from "crypto-js";
 import { storeAuthTokens } from "../auth/tokenStorage";
 
-// Encrypt a plaintext password with AES-256-CBC using a random IV
-const encryptPassword = (plaintext) => {
+const encryptValue = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
   const key = CryptoJS.enc.Hex.parse(keyHex);
-  const iv = CryptoJS.lib.WordArray.random(16);
+  const iv = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_IV);
   const encrypted = CryptoJS.AES.encrypt(plaintext, key, {
     iv,
     mode: CryptoJS.mode.CBC,
     padding: CryptoJS.pad.Pkcs7,
   });
-  return {
-    encryptedPassword: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
-    iv: iv.toString(CryptoJS.enc.Hex),
-  };
+  return encrypted.ciphertext.toString(CryptoJS.enc.Base64);
 };
 
 const Login = ({ setToken }) => {
@@ -34,13 +30,12 @@ const Login = ({ setToken }) => {
       setLoading(true);
 
       // AES-encrypt the password before sending
-      const { encryptedPassword, iv } = encryptPassword(password);
+      const encryptedPassword = encryptValue(password);
 
       const response = await axios.post(backendUrl + "/api/auth/login", {
         email: email.trim().toLowerCase(),
-        targetPortal: "ADMIN",
+        targetPortal: encryptValue("ADMIN"),
         encryptedPassword,
-        iv,
       });
       if (response.data.success) {
         setToken(storeAuthTokens(response.data));

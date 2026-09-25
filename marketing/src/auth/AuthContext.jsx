@@ -60,7 +60,8 @@ export const AuthProvider = ({ children }) => {
       const res = await authApi.login(email, password);
       if (res.data?.success) {
         const newToken = storeAuthTokens(res.data);
-        const { partner: newPartner } = res.data;
+        const profileResponse = await authApi.getProfile();
+        const newPartner = profileResponse.data?.partner || res.data.account;
         localStorage.setItem(TOKEN_KEY, newToken);
         localStorage.setItem(PARTNER_KEY, JSON.stringify(newPartner));
         setToken(newToken);

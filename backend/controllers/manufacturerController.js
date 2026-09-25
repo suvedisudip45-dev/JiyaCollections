@@ -222,7 +222,7 @@ const registerManufacturer = async (req, res) => {
       agreedCommissionRate ?? commissionRate ?? proposedCommissionRate ?? 12
     );
 
-    const { account, manufacturer } = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       const newAccount = await tx.authAccount.create({
         data: {
           email: cleanEmail,
@@ -269,9 +269,7 @@ const registerManufacturer = async (req, res) => {
       return { account: newAccount, manufacturer: newManufacturer };
     });
 
-    const { password: _, ...safe } = manufacturer;
-    safe.businessName = safe.name;
-    res.json({ success: true, message: "Manufacturer registered successfully", manufacturer: safe });
+        res.json(serializeRegistrationResponse("Manufacturer registered successfully"));
   } catch (error) {
     console.error("registerManufacturer error:", error);
     res.json({ success: false, message: error.message });
@@ -344,7 +342,7 @@ const registerManufacturerSelf = async (req, res) => {
       agreedCommissionRate ?? commissionRate ?? proposedCommissionRate ?? 12
     );
 
-    const { account, manufacturer } = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       const newAccount = await tx.authAccount.create({
         data: {
           email: normalizedEmail,
@@ -391,9 +389,7 @@ const registerManufacturerSelf = async (req, res) => {
       return { account: newAccount, manufacturer: newManufacturer };
     });
 
-    const { password: _, ...safe } = manufacturer;
-    safe.businessName = safe.name;
-    res.json({ success: true, message: "Manufacturer registration submitted successfully. Admin review is required before your account becomes active.", manufacturer: safe });
+        res.json(serializeRegistrationResponse("Manufacturer registration submitted successfully. Admin review is required before your account becomes active."));
   } catch (error) {
     console.error("registerManufacturerSelf error:", error);
     res.json({ success: false, message: error.message });

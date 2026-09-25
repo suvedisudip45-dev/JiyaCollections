@@ -10,7 +10,7 @@
 ## 2. Authentication Protocol
 
 ### 2.1 Password Flow (AES-256-CBC Supported)
-1. Client sends email/phone and either AES-encrypted password (`encryptedPassword` + `iv`) or raw password over HTTPS.
+1. Client sends email/phone, an AES-encrypted password (`encryptedPassword`), and an AES-encrypted `targetPortal` over HTTPS. The shared AES key and IV come from frontend/backend environment configuration; the login request does not carry an IV.
 2. Server decrypts (if encrypted), normalizes identifier (lowercase email or normalized 10-digit Nepal mobile number).
 3. Server looks up `Account` by identifier.
 4. Server checks account lockout (`accountLockedUntil`). If locked, returns standardized error and logs `ACCOUNT_LOCKED`.

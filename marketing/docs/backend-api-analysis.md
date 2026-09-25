@@ -24,7 +24,7 @@
 - Login endpoint: `POST /api/marketing-cards/partner/login`
 - Supported login fields:
   - `email`
-  - `password` or AES-encrypted credentials (`encryptedPassword` + `iv`)
+  - AES-encrypted credentials (`encryptedPassword`) and encrypted `targetPortal`; the IV is environment-configured and is not sent in the request
 - On success, the API returns:
   - `token`
   - `partner`: `{ id, code, name, email, status }`
