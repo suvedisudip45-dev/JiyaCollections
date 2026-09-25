@@ -91,6 +91,10 @@ export const authenticate = async (req, res, next) => {
             id: true,
             role: true,
             status: true,
+            customerProfile: { select: { id: true } },
+            adminProfile: { select: { id: true } },
+            manufacturerProfile: { select: { id: true } },
+            marketingPartnerProfile: { select: { id: true } },
             roleMappings: {
               where: {
                 isActive: true,
@@ -115,6 +119,20 @@ export const authenticate = async (req, res, next) => {
         success: false,
         message: "Account is not active.",
         code: "ACCOUNT_INACTIVE",
+      });
+    }
+
+    const canonicalProfileId = {
+      CUSTOMER: account.customerProfile?.id,
+      ADMIN: account.adminProfile?.id,
+      MANUFACTURER: account.manufacturerProfile?.id,
+      MARKETING_PARTNER: account.marketingPartnerProfile?.id,
+    }[role] || account.id;
+    if (profileId !== canonicalProfileId && profileId !== account.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authenticated profile ownership.",
+        code: "INVALID_PROFILE_OWNER",
       });
     }
 
@@ -218,9 +236,23 @@ export const requireCustomer = [authenticate, requireRole("CUSTOMER")];
 export const requireManufacturer = [authenticate, requireRole("MANUFACTURER")];
 export const requireMarketingPartner = [authenticate, requireRole("MARKETING_PARTNER")];
 
+const hasPortalRole = (req, allowedRoles) => {
+  const authenticatedRoles = Array.isArray(req.auth?.roles) && req.auth.roles.length > 0
+    ? req.auth.roles
+    : [req.auth?.role];
+  return authenticatedRoles.some((role) => allowedRoles.includes(String(role).toUpperCase()));
+};
+
 export const setManufacturerContext = (req, res, next) => {
   if (!req.auth?.accountId) {
     return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+  if (!hasPortalRole(req, ["MANUFACTURER", "ADMIN"])) {
+    return res.status(403).json({
+      success: false,
+      message: "Manufacturer portal access is required.",
+      code: "PORTAL_FORBIDDEN",
+    });
   }
 
   const manufacturerId = req.auth.manufacturerId || req.auth.profileId || req.auth.accountId;
@@ -234,6 +266,13 @@ export const setManufacturerContext = (req, res, next) => {
 export const setMarketingPartnerContext = (req, res, next) => {
   if (!req.auth?.accountId) {
     return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+  if (!hasPortalRole(req, ["MARKETING_PARTNER", "ADMIN"])) {
+    return res.status(403).json({
+      success: false,
+      message: "Marketing partner portal access is required.",
+      code: "PORTAL_FORBIDDEN",
+    });
   }
 
   const partnerId = req.auth.partnerId || req.auth.profileId || req.auth.accountId;

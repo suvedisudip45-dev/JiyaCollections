@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../config/db.js";
 import { authenticate } from "../middleware/unifiedAuth.js";
 import { authenticateAccount } from "../services/authService.js";
+import { generateAccessToken } from "../services/tokenService.js";
 
 const invokeAuthenticate = async (token) => {
   const request = {
@@ -58,6 +59,25 @@ test("role-mismatched tokens are rejected", async () => {
   assert.equal(result.nextCalled, false);
   assert.equal(result.response.code, 401);
   assert.equal(result.response.body.code, "INVALID_IDENTITY");
+});
+
+test("profile identity must belong to the authenticated account", async () => {
+  const account = await prisma.authAccount.findFirst({
+    where: { role: "ADMIN", status: "ACTIVE" },
+    include: { adminProfile: { select: { id: true } } },
+  });
+  if (!account?.adminProfile) return;
+
+  const token = generateAccessToken({
+    accountId: account.id,
+    profileId: crypto.randomUUID(),
+    role: "ADMIN",
+  });
+  const result = await invokeAuthenticate(token);
+
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 401);
+  assert.equal(result.response.body.code, "INVALID_PROFILE_OWNER");
 });
 
 test("inactive accounts are rejected", async () => {
