@@ -163,6 +163,127 @@ model AuthAuditLog {
   @@index([accountId])
 }
 
+model Notification {
+  id                 String   @id @default(uuid())
+  idempotencyKey     String?  @unique @db.VarChar(191)
+  notificationType   String   @default("GENERAL") @db.VarChar(64)
+  channel             String   @db.VarChar(16)
+  status              String   @default("PENDING") @db.VarChar(32)
+  recipientName       String?  @db.VarChar(160)
+  recipientAddress    String   @db.VarChar(255)
+  subject             String?  @db.VarChar(255)
+  template            String?  @db.VarChar(120)
+  payload             Json?
+  provider            String?  @db.VarChar(64)
+  providerMessageId   String?  @db.VarChar(191)
+  priority            Int      @default(0)
+  attemptCount        Int      @default(0)
+  maxAttempts         Int      @default(5)
+  nextRetryAt         DateTime?
+  lastAttemptAt       DateTime?
+  queuedAt            DateTime?
+  acceptedAt          DateTime?
+  deliveredAt         DateTime?
+  failedAt            DateTime?
+  failureCode         String?  @db.VarChar(120)
+  failureReason       String?  @db.Text
+  claimToken          String?  @db.VarChar(64)
+  claimExpiresAt      DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  attempts NotificationAttempt[]
+  events   NotificationEvent[]
+  outbox   NotificationOutbox[]
+
+  @@index([status, nextRetryAt])
+  @@index([channel, status, createdAt])
+  @@index([provider, providerMessageId])
+  @@index([status, claimExpiresAt])
+}
+
+model NotificationAttempt {
+  id                    String    @id @default(uuid())
+  notificationId        String
+  attemptNumber         Int
+  status                String    @db.VarChar(32)
+  provider              String?   @db.VarChar(64)
+  providerMessageId     String?   @db.VarChar(191)
+  requestStartedAt      DateTime  @default(now())
+  requestFinishedAt     DateTime?
+  httpStatus            Int?
+  providerStatus        String?   @db.VarChar(120)
+  providerErrorCode     String?   @db.VarChar(120)
+  providerErrorMessage  String?   @db.Text
+  failureCategory       String?   @db.VarChar(40)
+  createdAt             DateTime  @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, attemptNumber])
+  @@index([status, createdAt])
+  @@index([provider, providerMessageId])
+}
+
+model NotificationEvent {
+  id                String   @id @default(uuid())
+  notificationId    String
+  eventType         String   @db.VarChar(64)
+  provider          String?  @db.VarChar(64)
+  providerEventId   String?  @db.VarChar(191)
+  providerMessageId String?  @db.VarChar(191)
+  eventTimestamp    DateTime @default(now())
+  payloadHash       String?  @db.VarChar(128)
+  createdAt         DateTime @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerEventId])
+  @@index([notificationId, eventTimestamp])
+  @@index([provider, providerMessageId])
+}
+
+model NotificationOutbox {
+  id              String    @id @default(uuid())
+  notificationId  String
+  eventKey        String    @unique @db.VarChar(191)
+  routingKey      String    @db.VarChar(80)
+  payload         Json
+  attemptCount    Int       @default(0)
+  nextAttemptAt   DateTime  @default(now())
+  leaseToken      String?   @db.VarChar(64)
+  leaseExpiresAt  DateTime?
+  publishedAt     DateTime?
+  lastError       String?   @db.Text
+  createdAt       DateTime  @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([publishedAt, nextAttemptAt, leaseExpiresAt])
+}
+
+model IncomingSms {
+  id                String    @id @default(uuid())
+  provider          String    @default("SPARROW") @db.VarChar(64)
+  providerMessageId String?   @db.VarChar(191)
+  fromNumber        String    @db.VarChar(64)
+  toShortCode       String    @db.VarChar(64)
+  keyword           String?   @db.VarChar(64)
+  text              String    @db.VarChar(1600)
+  payloadHash       String    @db.VarChar(128)
+  receivedAt        DateTime  @default(now())
+  processingStatus  String    @default("RECEIVED") @db.VarChar(32)
+  processedAt       DateTime?
+  replyText         String?   @db.VarChar(160)
+  replyStatus       String?   @db.VarChar(32)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([provider, providerMessageId])
+  @@index([provider, payloadHash, receivedAt])
+  @@index([processingStatus, receivedAt])
+}
+
 model User {
   id                  String       @id @default(uuid())
   accountId           String?      @unique
