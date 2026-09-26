@@ -117,7 +117,12 @@ const createLoginTokenPair = async ({ account, profile, ipAddress, userAgent }) 
     });
   });
 
-  return { accessToken, refreshToken, tokenFamilyId };
+  return {
+    accessToken,
+    refreshToken,
+    tokenFamilyId,
+    refreshTokenExpiresAt: refreshClaims.exp * 1000,
+  };
 };
 
 const getAccountProfile = (account) => {
@@ -270,6 +275,7 @@ export const rotateRefreshToken = async ({ refreshToken, ipAddress = "", userAge
     accessToken,
     refreshToken: nextRefreshToken,
     tokenFamilyId: currentSession.tokenFamilyId,
+    refreshTokenExpiresAt: refreshClaims.exp * 1000,
   };
 };
 
@@ -586,5 +592,6 @@ export const authenticateAccount = async ({
     accessToken: tokenPair.accessToken,
     refreshToken: tokenPair.refreshToken,
     tokenFamilyId: tokenPair.tokenFamilyId,
+    refreshTokenExpiresAt: tokenPair.refreshTokenExpiresAt,
   };
 };

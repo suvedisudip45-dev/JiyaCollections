@@ -14,6 +14,7 @@ import {
   validatePartnerQr,
 } from "../services/marketingPartnerService.js";
 import { assignAccountRole } from "../services/rbacService.js";
+import { setRefreshCookie } from "../utils/refreshCookie.js";
 
 const sendError = (res, error) => {
   const status =
@@ -56,9 +57,12 @@ export const partnerLogin = async (req, res) => {
       userAgent,
     });
 
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
     return res.json({
       success: true,
-      token: authResult.token,
+      token: authResult.accessToken,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
       partner: {
         id: authResult.profile.id,
         code: authResult.profile.code,

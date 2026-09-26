@@ -2,6 +2,7 @@
 import React, { useContext, useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
+import { clearAuthTokens } from "../auth/tokenStorage";
 import Title from "../components/Title";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -111,7 +112,7 @@ const Orders = () => {
           msg.includes("user not found") ||
           msg.includes("invalid token")
         ) {
-          localStorage.removeItem("token");
+          clearAuthTokens();
           setToken("");
           navigate("/login", { replace: true });
           return;
@@ -120,7 +121,9 @@ const Orders = () => {
       }
     } catch (error) {
       console.error("loadOrderData error:", error);
-      toast.error(error.response?.data?.message || "Failed to load orders");
+      if (error.response?.status !== 401) {
+        toast.error(error.response?.data?.message || "Failed to load orders");
+      }
     } finally {
       setLoading(false);
       if (isManualRefresh) setRefreshing(false);

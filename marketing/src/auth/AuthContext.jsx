@@ -18,6 +18,19 @@ export const AuthProvider = ({ children }) => {
 
   const isAuthenticated = Boolean(token && partner);
 
+  useEffect(() => {
+    const updateToken = (event) => {
+      if (event.detail?.accessToken) setToken(event.detail.accessToken);
+    };
+    const clearToken = () => setToken(null);
+    window.addEventListener("auth:tokens-updated", updateToken);
+    window.addEventListener("auth:tokens-cleared", clearToken);
+    return () => {
+      window.removeEventListener("auth:tokens-updated", updateToken);
+      window.removeEventListener("auth:tokens-cleared", clearToken);
+    };
+  }, []);
+
   // ── Persist token ──────────────────────────────────────
   useEffect(() => {
     if (token) {

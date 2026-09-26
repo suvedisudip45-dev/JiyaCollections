@@ -13,28 +13,7 @@ import {
   verifyOtpChallenge,
 } from "../services/otpService.js";
 import { serializeLoginResponse } from "../dtos/authDto.js";
-
-const REFRESH_COOKIE_NAME = "refresh_token";
-const refreshCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax",
-  path: "/api/auth",
-});
-
-const setRefreshCookie = (res, refreshToken) => {
-  res.cookie(REFRESH_COOKIE_NAME, refreshToken, refreshCookieOptions());
-};
-
-const clearRefreshCookie = (res) => {
-  res.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
-};
-
-const getRefreshCookie = (req) => {
-  const cookieHeader = req.headers.cookie || "";
-  const cookie = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${REFRESH_COOKIE_NAME}=`));
-  return cookie ? decodeURIComponent(cookie.slice(REFRESH_COOKIE_NAME.length + 1)) : "";
-};
+import { clearRefreshCookie, getRefreshCookie, setRefreshCookie } from "../utils/refreshCookie.js";
 
 /**
  * Unified Login Endpoint
@@ -73,7 +52,7 @@ export const login = async (req, res) => {
       ipAddress,
       userAgent,
     });
-    setRefreshCookie(res, authResult.refreshToken);
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     return res.json(serializeLoginResponse(authResult));
   } catch (error) {
@@ -103,15 +82,17 @@ export const refresh = async (req, res) => {
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
     });
-    setRefreshCookie(res, tokenPair.refreshToken);
+    setRefreshCookie(res, tokenPair.refreshToken, tokenPair.refreshTokenExpiresAt);
 
     return res.json({
       success: true,
       message: "Token refreshed successfully.",
       token: tokenPair.accessToken,
       accessToken: tokenPair.accessToken,
+      refreshTokenExpiresAt: tokenPair.refreshTokenExpiresAt,
     });
   } catch (error) {
+    clearRefreshCookie(res);
     return res.status(401).json({
       success: false,
       message: error.message || "Invalid refresh token.",

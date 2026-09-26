@@ -1,6 +1,7 @@
 /* eslint-disable no-unused-vars */
 import React, { useContext, useEffect, useState } from "react";
 import { ShopContext } from "../context/ShopContext";
+import { clearAuthTokens } from "../auth/tokenStorage";
 import Title from "../components/Title";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -112,7 +113,7 @@ const PasswordStrength = ({ password }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 const Profile = () => {
-  const { token, backendUrl, navigate, currency = "Rs " } = useContext(ShopContext);
+  const { token, setToken, backendUrl, navigate, currency = "Rs " } = useContext(ShopContext);
 
   const [loading, setLoading] = useState(true);
   const [editMode, setEditMode] = useState(false);
@@ -176,7 +177,7 @@ const Profile = () => {
             msg.includes("user not found") ||
             msg.includes("invalid token")
           ) {
-            localStorage.removeItem("token");
+            clearAuthTokens();
             setToken("");
             toast.error("Session expired. Please login again.");
             navigate("/login", { replace: true });
@@ -188,8 +189,10 @@ const Profile = () => {
           setLoyalty(loyRes.data.loyalty);
         }
       } catch (err) {
-        console.error(err);
-        toast.error("Error loading account data");
+        if (err.response?.status !== 401) {
+          console.error(err);
+          toast.error("Error loading account data");
+        }
       } finally {
         setLoading(false);
       }

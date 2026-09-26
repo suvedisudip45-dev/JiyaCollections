@@ -1,8 +1,9 @@
-export const serializeLoginResponse = ({ token, accessToken, account }) => ({
+export const serializeLoginResponse = ({ token, accessToken, refreshTokenExpiresAt, account }) => ({
   success: true,
   message: "Authentication successful",
   token: accessToken || token,
   accessToken: accessToken || token,
+  refreshTokenExpiresAt,
   account: {
     id: account.id,
     email: account.email,

@@ -28,6 +28,7 @@ test("login response is an explicit allow-list", () => {
   const response = serializeLoginResponse({
     token: "access-token",
     accessToken: "access-token",
+    refreshTokenExpiresAt: 1790000000000,
     account: {
       id: "account-id",
       email: "admin@example.com",
@@ -39,7 +40,7 @@ test("login response is an explicit allow-list", () => {
     profile: { password: "must-not-leak" },
   });
 
-  assert.deepEqual(Object.keys(response).sort(), ["accessToken", "account", "message", "success", "token"]);
+  assert.deepEqual(Object.keys(response).sort(), ["accessToken", "account", "message", "refreshTokenExpiresAt", "success", "token"]);
   assert.deepEqual(Object.keys(response.account).sort(), ["email", "id", "phone", "role", "status"]);
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);

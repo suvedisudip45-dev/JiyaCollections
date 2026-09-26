@@ -24,6 +24,23 @@ const ShopContextProvider = (props) => {
   const [token, setToken] = useState(() => getAccessToken());
   const navigate = useNavigate();
 
+  useEffect(() => {
+    const updateToken = (event) => {
+      if (event.detail?.accessToken) setToken(event.detail.accessToken);
+    };
+    const clearToken = () => {
+      setToken("");
+      setCartItems({});
+      localStorage.removeItem("cartItems");
+    };
+    window.addEventListener("auth:tokens-updated", updateToken);
+    window.addEventListener("auth:tokens-cleared", clearToken);
+    return () => {
+      window.removeEventListener("auth:tokens-updated", updateToken);
+      window.removeEventListener("auth:tokens-cleared", clearToken);
+    };
+  }, []);
+
   // Shipping config from backend
   const [shippingConfig, setShippingConfig] = useState({
     sameDistrictFee: 50,

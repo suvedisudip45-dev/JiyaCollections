@@ -1,5 +1,5 @@
 import axios from "axios";
-import { clearAuthTokens, getAccessToken } from "../auth/tokenStorage";
+import { installAuthInterceptor } from "./authInterceptor";
 
 export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 
@@ -14,29 +14,7 @@ const api = axios.create({
   withCredentials: true,
 });
 
-// ── Request interceptor: attach JWT ──────────────────────
-api.interceptors.request.use((config) => {
-  const token = getAccessToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-    config.headers.token = token;
-  }
-  return config;
-});
-
-// ── Response interceptor: handle 401/403 ─────────────────
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    const requestUrl = error.config?.url || "";
-    const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(requestUrl);
-    if (error.response?.status === 401 && !isAuthRequest) {
-      clearAuthTokens();
-      window.location.assign("/login");
-    }
-    return Promise.reject(error);
-  }
-);
+installAuthInterceptor(api);
 
 /**
  * Extracts a user-friendly error message from an API error.

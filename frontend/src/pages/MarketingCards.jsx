@@ -21,6 +21,11 @@ import { useContext } from "react";
 import DigitalScratchCard from "../components/DigitalScratchCard";
 import SponsorAdModal from "../components/SponsorAdModal";
 
+const notifyRequestError = (error, fallback) => {
+  if (error.response?.status === 401) return;
+  toast.error(error.response?.data?.message || error.message || fallback);
+};
+
 const MarketingCards = () => {
   const { backendUrl, token, navigate } = useContext(ShopContext);
   const [cards, setCards] = useState([]);
@@ -51,7 +56,7 @@ const MarketingCards = () => {
       if (!response.data.success) throw new Error(response.data.message);
       setCards(response.data.cards || []);
     } catch (error) {
-      toast.error(error.response?.data?.message || "Unable to load your marketing cards.");
+      notifyRequestError(error, "Unable to load your marketing cards.");
     } finally {
       setLoading(false);
     }
@@ -88,7 +93,7 @@ const MarketingCards = () => {
       }
       toast.success(response.data.message || "Card code verified! Please scan the QR code.");
     } catch (error) {
-      toast.error(error.response?.data?.message || error.message || "Unable to verify this card code.");
+      notifyRequestError(error, "Unable to verify this card code.");
     } finally {
       setWorking(false);
     }
@@ -115,7 +120,7 @@ const MarketingCards = () => {
         setScannerOpen(false);
         toast.success(response.data.message || "QR code verified!");
       } catch (error) {
-        toast.error(error.response?.data?.message || error.message || "Unable to verify QR token.");
+        notifyRequestError(error, "Unable to verify QR token.");
       } finally {
         setWorking(false);
       }
@@ -149,7 +154,7 @@ const MarketingCards = () => {
       setScannedOfferResult(null);
       await loadCards();
     } catch (error) {
-      toast.error(error.response?.data?.message || error.message || "Unable to activate card.");
+      notifyRequestError(error, "Unable to activate card.");
     } finally {
       setWorking(false);
     }

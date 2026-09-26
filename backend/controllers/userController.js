@@ -12,6 +12,7 @@ import {
   normalizePhoneNumber,
 } from "../utils/socialCustomerProfile.js";
 import { assignAccountRole } from "../services/rbacService.js";
+import { setRefreshCookie } from "../utils/refreshCookie.js";
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET);
@@ -65,11 +66,14 @@ const loginUser = async (req, res) => {
       ipAddress,
       userAgent,
     });
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     const addresses = parseJsonArray(authResult.profile?.addresses);
     res.json({
       success: true,
       token: authResult.token,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
       user: {
         id: authResult.profile.id,
         firstName: authResult.profile.firstName || "",
@@ -210,12 +214,21 @@ const registerUser = async (req, res) => {
       return { account: newAccount, user: newUser };
     });
 
-    const { generateAuthToken } = await import("../services/authService.js");
-    const token = generateAuthToken(account, user);
+    const { authenticateAccount } = await import("../services/authService.js");
+    const authResult = await authenticateAccount({
+      identifier: cleanEmail,
+      password,
+      targetPortal: "CUSTOMER",
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+    });
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     res.json({
       success: true,
-      token,
+      token: authResult.accessToken,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
       user: {
         id: user.id,
         firstName: user.firstName,
@@ -776,7 +789,15 @@ const adminLogin = async (req, res) => {
       userAgent,
     });
 
-    res.json({ success: true, token: authResult.token, account: authResult.account, admin: authResult.profile });
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    res.json({
+      success: true,
+      token: authResult.accessToken,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
+      account: authResult.account,
+      admin: authResult.profile,
+    });
   } catch (error) {
     res.json({ success: false, message: error.message || "Invalid credentials" });
   }

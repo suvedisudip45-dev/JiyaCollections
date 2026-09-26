@@ -9,6 +9,7 @@ import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustom
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { serializeRegistrationResponse } from "../dtos/registrationDto.js";
 import { assignAccountRole } from "../services/rbacService.js";
+import { setRefreshCookie } from "../utils/refreshCookie.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -101,7 +102,14 @@ const loginManufacturer = async (req, res) => {
 
     const safeManufacturer = { ...authResult.profile };
     safeManufacturer.businessName = safeManufacturer.name || "";
-    res.json({ success: true, token: authResult.token, manufacturer: safeManufacturer });
+    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    res.json({
+      success: true,
+      token: authResult.accessToken,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
+      manufacturer: safeManufacturer,
+    });
   } catch (error) {
     console.error("loginManufacturer error:", error);
     res.json({ success: false, message: error.message || "Invalid credentials" });

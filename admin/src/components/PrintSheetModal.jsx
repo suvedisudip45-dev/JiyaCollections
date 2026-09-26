@@ -141,6 +141,7 @@ export const PrintSheetModal = ({
       return {
         "S.N.": index + 1,
         "Card Code": code,
+        "QR Token": token,
         "QR Payload": qrPayload,
         "Card ID": card.id || "",
         "Batch Code": batchCode,
@@ -156,6 +157,7 @@ export const PrintSheetModal = ({
     worksheet["!cols"] = [
       { wch: 8 },
       { wch: 24 },
+      { wch: 68 },
       { wch: 62 },
       { wch: 38 },
       { wch: 24 },

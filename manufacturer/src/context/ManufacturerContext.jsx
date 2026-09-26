@@ -20,6 +20,19 @@ export const ManufacturerProvider = ({ children }) => {
     total: 0,
   });
 
+  useEffect(() => {
+    const updateToken = (event) => {
+      if (event.detail?.accessToken) setToken(event.detail.accessToken);
+    };
+    const clearToken = () => setToken("");
+    window.addEventListener("auth:tokens-updated", updateToken);
+    window.addEventListener("auth:tokens-cleared", clearToken);
+    return () => {
+      window.removeEventListener("auth:tokens-updated", updateToken);
+      window.removeEventListener("auth:tokens-cleared", clearToken);
+    };
+  }, []);
+
   const logout = async () => {
     await revokeAuthSession(backendUrl);
     setToken("");
@@ -39,10 +52,15 @@ export const ManufacturerProvider = ({ children }) => {
       if (response.data.success) {
         setManufacturer(response.data.manufacturer);
       } else {
-        logout();
+        clearAuthTokens();
+        setToken("");
+        setManufacturer(null);
       }
     } catch (err) {
       console.error("Failed to fetch profile:", err);
+      clearAuthTokens();
+      setToken("");
+      setManufacturer(null);
     } finally {
       setLoading(false);
     }
