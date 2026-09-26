@@ -4,6 +4,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
 import { Heart, Menu, Search, ShoppingBag, UserRound, X } from "lucide-react";
 import axios from "axios";
+import { revokeAuthSession } from "../auth/tokenStorage";
 
 const Navbar = () => {
   const [visible, setVisible] = useState(false);
@@ -52,8 +53,8 @@ const Navbar = () => {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
+  const logout = async () => {
+    await revokeAuthSession(backendUrl);
     localStorage.removeItem("cartItems");
     setToken("");
     setCartItems({});
@@ -128,6 +129,7 @@ const Navbar = () => {
               <div className="flex w-40 flex-col gap-3 border border-[var(--line)] bg-[var(--white)] px-5 py-4 text-sm text-[var(--muted)] shadow-xl">
                 <p onClick={() => navigate("/profile")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">My Profile</p>
                 <p onClick={() => navigate("/orders")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Orders</p>
+                <p onClick={() => navigate("/marketing-cards")} className="cursor-pointer transition-colors hover:text-[var(--ink)]">Marketing Cards</p>
                 <p onClick={logout} className="cursor-pointer font-semibold text-[var(--accent)] transition-colors hover:text-[var(--ink)]">Logout</p>
               </div>
             </div>

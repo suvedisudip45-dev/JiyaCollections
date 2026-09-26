@@ -16,6 +16,7 @@ import {
   shippingRateTypeForNcm,
 } from "./ncmClient.js";
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
+import { ensureOrderCardAttached } from "./marketingCardService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -417,6 +418,8 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     error.code = "DELIVERY_ASSIGNMENT_NOT_FOUND";
     throw error;
   }
+
+  await ensureOrderCardAttached({ orderId, manufacturerId });
 
   const existingNotes = parsePackagingMeta(assignment.notes);
   const packagingMeta = {

@@ -23,8 +23,9 @@ const List = ({ token }) => {
   const [editNewInStore, setEditNewInStore] = useState(false);
   const [editPublished, setEditPublished] = useState(true);
   
-  // Varieties in edit modal: [{ size, color, quantity, image, isFeatured, newImageFile, newImagePreview }]
+  // Varieties in edit modal: stock records remain size + color; photos are color-owned.
   const [editVariants, setEditVariants] = useState([]);
+  const [editColorImages, setEditColorImages] = useState({});
   const [newVarSize, setNewVarSize] = useState("S");
   const [newVarColor, setNewVarColor] = useState("");
   const [newVarImageFile, setNewVarImageFile] = useState(null);
@@ -167,7 +168,7 @@ const List = ({ token }) => {
       existingVars = product.variants;
     }
 
-    const formattedVars = existingVars.map((v, idx) => ({
+    const formattedVars = existingVars.map((v) => ({
       size: v.size || "S",
       color: v.color || "Standard",
       quantity: Number(v.quantity) || 0,
@@ -178,6 +179,17 @@ const List = ({ token }) => {
     }));
 
     setEditVariants(formattedVars);
+
+    const existingColorImages = parseArray(product.colorImages);
+    const colorImageMap = {};
+    existingColorImages.forEach((entry) => {
+      if (entry?.color) colorImageMap[entry.color.trim().toLowerCase()] = { ...entry, newImageFile: null, newImagePreview: null };
+    });
+    formattedVars.forEach((variant) => {
+      const key = variant.color.trim().toLowerCase();
+      if (!colorImageMap[key] && variant.image) colorImageMap[key] = { color: variant.color, image: variant.image, newImageFile: null, newImagePreview: null };
+    });
+    setEditColorImages(colorImageMap);
 
     // Determine initial featured index
     const featIdx = formattedVars.findIndex((v) => v.isFeatured);
@@ -213,11 +225,16 @@ const List = ({ token }) => {
       size: newVarSize,
       color: newVarColor,
       quantity: 0,
-      image: null,
       isFeatured: newVarFeatured,
-      newImageFile: newVarImageFile,
-      newImagePreview: newVarImageFile ? URL.createObjectURL(newVarImageFile) : null,
     };
+
+    if (newVarImageFile) {
+      const key = newVarColor.trim().toLowerCase();
+      setEditColorImages((prev) => ({
+        ...prev,
+        [key]: { color: newVarColor.trim(), image: prev[key]?.image || null, newImageFile: newVarImageFile, newImagePreview: URL.createObjectURL(newVarImageFile) },
+      }));
+    }
 
     if (newVarFeatured) {
       setEditFeaturedTarget({ type: "variant", index: newIdx });
@@ -231,18 +248,14 @@ const List = ({ token }) => {
 
   const handleUpdateEditVarietyImage = (idx, file) => {
     if (!file) return;
-    setEditVariants((prev) =>
-      prev.map((v, i) =>
-        i === idx
-          ? {
-              ...v,
-              newImageFile: file,
-              newImagePreview: URL.createObjectURL(file),
-            }
-          : v
-      )
-    );
-    toast.info(`Updated photo for variety ${editVariants[idx].size} / ${editVariants[idx].color}`);
+    const color = editVariants[idx]?.color?.trim();
+    if (!color) return;
+    const key = color.toLowerCase();
+    setEditColorImages((prev) => ({
+      ...prev,
+      [key]: { color, image: prev[key]?.image || null, newImageFile: file, newImagePreview: URL.createObjectURL(file) },
+    }));
+    toast.info(`Updated photo for color ${color}`);
   };
 
   const saveEditHandler = async (e) => {
@@ -280,15 +293,18 @@ const List = ({ token }) => {
       }));
       formData.append("variants", JSON.stringify(variantsMetadata));
 
+      const colorImagesMetadata = Object.values(editColorImages).map((entry, index) => ({
+        color: entry.color,
+        image: entry.image || null,
+        fileIndex: entry.newImageFile ? index : undefined,
+      }));
+      formData.append("colorImages", JSON.stringify(colorImagesMetadata));
+      Object.values(editColorImages).forEach((entry, index) => {
+        if (entry.newImageFile) formData.append(`colorImage_${index}`, entry.newImageFile);
+      });
+
       formData.append("featuredType", editFeaturedTarget.type);
       formData.append("featuredIndex", editFeaturedTarget.index);
-
-      // Append new variety images
-      editVariants.forEach((v, idx) => {
-        if (v.newImageFile) {
-          formData.append(`variantImage_${idx}`, v.newImageFile);
-        }
-      });
 
       if (editImage1) {
         formData.append("image1", editImage1);
@@ -729,12 +745,12 @@ const List = ({ token }) => {
                 />
               </div>
 
-              {/* VARIETIES & VARIETY IMAGES MANAGEMENT IN EDIT MODAL */}
+              {/* VARIETIES & COLOR IMAGES MANAGEMENT IN EDIT MODAL */}
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
                 <div className="flex justify-between items-center">
                   <div>
                     <label className="font-bold text-slate-900 text-xs">Garment Varieties &amp; Photos</label>
-                    <p className="text-[10px] text-slate-500">Configure size/color varieties, upload photos, and select the featured cover image.</p>
+                    <p className="text-[10px] text-slate-500">Configure size/color stock, upload one photo per color, and select the featured cover image.</p>
                   </div>
                 </div>
 
@@ -780,7 +796,7 @@ const List = ({ token }) => {
                     </div>
 
                     <div>
-                      <label className="block text-[10px] text-slate-500 mb-0.5">Variety Photo</label>
+                      <label className="block text-[10px] text-slate-500 mb-0.5">Color Photo</label>
                       <input
                         type="file"
                         accept="image/*"
@@ -815,7 +831,8 @@ const List = ({ token }) => {
                 <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                   {editVariants.map((v, idx) => {
                     const isFeatured = editFeaturedTarget.type === "variant" && editFeaturedTarget.index === idx;
-                    const displayImg = v.newImagePreview || v.image;
+                    const colorImage = editColorImages[v.color.trim().toLowerCase()];
+                    const displayImg = colorImage?.newImagePreview || colorImage?.image || v.image;
 
                     return (
                       <div
@@ -831,7 +848,7 @@ const List = ({ token }) => {
                           <label className="relative w-11 h-11 rounded-lg overflow-hidden bg-slate-100 border border-slate-200 shrink-0 cursor-pointer group">
                             <img
                               src={displayImg || assets.upload_area}
-                              alt={`${v.size} ${v.color}`}
+                              alt={`${v.color} color`}
                               className="w-full h-full object-cover"
                             />
                             <input
@@ -853,7 +870,7 @@ const List = ({ token }) => {
                               </span>
                             </div>
                             <span className="text-[10px] text-slate-400">
-                              {displayImg ? "✓ Photo Set" : "No photo (uses gallery)"}
+                              {displayImg ? "✓ Color photo set" : "No photo (uses gallery)"}
                             </span>
                           </div>
                         </div>

@@ -5,20 +5,19 @@ import {
   getAllInventory,
   getLowStockAlerts,
 } from "../controllers/manufacturerInventoryController.js";
-import authManufacturer from "../middleware/manufacturerAuth.js";
-import { authAdmin } from "../middleware/auth.js";
+import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
 const manufacturerInventoryRouter = express.Router();
 
 // Manufacturer-authenticated
-manufacturerInventoryRouter.get("/my", authManufacturer, getMyInventory);
-manufacturerInventoryRouter.post("/my", authManufacturer, getMyInventory);
-manufacturerInventoryRouter.post("/update", authManufacturer, updateStock);
+manufacturerInventoryRouter.get("/my", authenticate, authorize("manufacturer:inventory_read"), setManufacturerContext, getMyInventory);
+manufacturerInventoryRouter.post("/my", authenticate, authorize("manufacturer:inventory_read"), setManufacturerContext, getMyInventory);
+manufacturerInventoryRouter.post("/update", authenticate, authorize("manufacturer:inventory_update"), setManufacturerContext, updateStock);
 
 // Admin-only (supports both /all and /admin/all)
-manufacturerInventoryRouter.get("/all", authAdmin, getAllInventory);
-manufacturerInventoryRouter.get("/admin/all", authAdmin, getAllInventory);
-manufacturerInventoryRouter.get("/low-stock", authAdmin, getLowStockAlerts);
-manufacturerInventoryRouter.get("/admin/low-stock", authAdmin, getLowStockAlerts);
+manufacturerInventoryRouter.get("/all", authenticate, authorize("inventory:admin_read_all"), getAllInventory);
+manufacturerInventoryRouter.get("/admin/all", authenticate, authorize("inventory:admin_read_all"), getAllInventory);
+manufacturerInventoryRouter.get("/low-stock", authenticate, authorize("inventory:admin_low_stock"), getLowStockAlerts);
+manufacturerInventoryRouter.get("/admin/low-stock", authenticate, authorize("inventory:admin_low_stock"), getLowStockAlerts);
 
 export default manufacturerInventoryRouter;

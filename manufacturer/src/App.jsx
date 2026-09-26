@@ -16,9 +16,13 @@ import DirectOrders from "./pages/DirectOrders";
 import CustomerLoyalty from "./pages/CustomerLoyalty";
 import PickupProfile from "./pages/PickupProfile";
 import Finance from "./pages/Finance";
+import MarketingCards from "./pages/MarketingCards";
+import { installAuthInterceptor } from "./api/authInterceptor";
+
+installAuthInterceptor();
 
 const MainLayout = () => {
-  const { token, loading } = useManufacturer();
+  const { token, loading, manufacturer } = useManufacturer();
 
   if (loading) {
     return (
@@ -30,6 +34,14 @@ const MainLayout = () => {
 
   if (!token) {
     return <Login />;
+  }
+
+  if (!manufacturer) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
+        <div className="w-8 h-8 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
   return (
@@ -49,6 +61,7 @@ const MainLayout = () => {
               <Route path="/performance" element={<Performance />} />
               <Route path="/finance" element={<Finance />} />
               <Route path="/customer-loyalty" element={<CustomerLoyalty />} />
+              <Route path="/marketing-cards" element={<MarketingCards />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

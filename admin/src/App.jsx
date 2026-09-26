@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import axios from "axios";
+import { clearAuthTokens } from "./auth/tokenStorage";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
 import { Routes, Route } from "react-router-dom";
@@ -34,15 +36,21 @@ import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
+import MarketingCards from "./pages/MarketingCards";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
+import { installAuthInterceptor } from "./api/authInterceptor";
 
-export const backendUrl = import.meta.env.VITE_BACKEND_URL;
+installAuthInterceptor();
+
+export const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 export const currency = "Rs ";
 
 const App = () => {
   // Retrieve the token from localStorage only on the initial render
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
+  const [authLoading, setAuthLoading] = useState(() => Boolean(localStorage.getItem("token")));
+  const sessionValidated = useRef(false);
 
   // Store token in localStorage whenever it changes
   useEffect(() => {
@@ -53,10 +61,60 @@ const App = () => {
     }
   }, [token]);
 
+  useEffect(() => {
+    const updateToken = (event) => {
+      if (event.detail?.accessToken) setToken(event.detail.accessToken);
+    };
+    const clearToken = () => setToken("");
+    window.addEventListener("auth:tokens-updated", updateToken);
+    window.addEventListener("auth:tokens-cleared", clearToken);
+    return () => {
+      window.removeEventListener("auth:tokens-updated", updateToken);
+      window.removeEventListener("auth:tokens-cleared", clearToken);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!token) {
+      sessionValidated.current = false;
+      setAuthLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    if (sessionValidated.current) {
+      setAuthLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setAuthLoading(true);
+    axios.get(`${backendUrl}/api/auth/me`).then((response) => {
+      if (!response.data?.success || response.data?.account?.role?.toUpperCase() !== "ADMIN") {
+        throw new Error("An active admin session is required.");
+      }
+      if (active) sessionValidated.current = true;
+    }).catch(() => {
+      sessionValidated.current = false;
+      clearAuthTokens();
+      if (active) setToken("");
+    }).finally(() => {
+      if (active) setAuthLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
   return (
     <div className="admin-shell bg-[#f3f6f4] min-h-screen">
       <ToastContainer />
-      {token === "" ? (
+      {authLoading ? (
+        <div className="min-h-[70vh] flex items-center justify-center text-sm text-slate-500">Checking session...</div>
+      ) : token === "" ? (
         <Login setToken={setToken} />
       ) : (
         <>
@@ -91,6 +149,7 @@ const App = () => {
                   <Route path="/delivery-monitor" element={<DeliveryMonitor token={token} />} />
                   <Route path="/manufacturers" element={<Manufacturers token={token} />} />
                   <Route path="/manufacturer-inventory" element={<ManufacturerInventoryMonitor token={token} />} />
+                  <Route path="/marketing-cards" element={<MarketingCards token={token} />} />
                   <Route path="/customers" element={<Customers token={token} />} />
                   <Route path="/loyalty-levels" element={<LoyaltyLevels token={token} />} />
                   <Route path="/categories" element={<Categories token={token} />} />

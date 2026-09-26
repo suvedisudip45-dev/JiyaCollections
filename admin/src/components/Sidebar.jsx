@@ -114,6 +114,7 @@ const Icon = {
   finance:     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>,
   gl:          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>,
   crm:         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>,
+  marketing:   <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M20 12v7a2 2 0 01-2 2H6a2 2 0 01-2-2V5a2 2 0 012-2h8m2 0h4v4m-9 5h6m-6 4h4M14 3l7 7"/></svg>,
 };
 
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
@@ -161,6 +162,16 @@ const Sidebar = () => {
           <NavItem to="/delivery-monitor"      icon={Icon.shipping}  label="Delivery & COD Monitor" />
           <NavItem to="/manufacturers"         icon={Icon.factory}   label="Manufacturers" />
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
+        </SectionGroup>
+
+        <div className="h-px bg-slate-100 my-1" />
+
+        <SectionGroup
+          label="Marketing Partners"
+          icon={Icon.marketing}
+          routes={["/marketing-cards"]}
+        >
+          <NavItem to="/marketing-cards" icon={Icon.marketing} label="Card Assignment" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />

@@ -29,7 +29,8 @@ const Add = ({ token }) => {
   const [showInNavigation, setShowInNavigation] = useState(false);
 
   // Variety builder state
-  const [variants, setVariants] = useState([]); // [{ size, color, quantity: 0, imageFile: File | null, imagePreview: string | null }]
+  const [variants, setVariants] = useState([]); // [{ size, color, quantity: 0 }]
+  const [colorImageFiles, setColorImageFiles] = useState({}); // { normalizedColor: { color, file, preview } }
   const [variantSize, setVariantSize] = useState("S");
   const [variantColor, setVariantColor] = useState("");
   const [variantImageFile, setVariantImageFile] = useState(null);
@@ -118,7 +119,7 @@ const Add = ({ token }) => {
     }
   };
 
-  // Add variety with optional image
+  // Add a size/color stock variant and optionally set its shared color image.
   const handleAddVariety = () => {
     if (!variantColor) {
       toast.error("Please select or type a color for the variety.");
@@ -134,12 +135,18 @@ const Add = ({ token }) => {
     }
 
     const newIndex = variants.length;
+    const colorKey = variantColor.trim().toLowerCase();
+    if (variantImageFile) {
+      setColorImageFiles((prev) => ({
+        ...prev,
+        [colorKey]: { color: variantColor.trim(), file: variantImageFile, preview: URL.createObjectURL(variantImageFile) },
+      }));
+    }
+
     const newVariant = {
       size: variantSize,
       color: variantColor,
       quantity: 0,
-      imageFile: variantImageFile,
-      imagePreview: variantImageFile ? URL.createObjectURL(variantImageFile) : null,
       isFeatured: isVariantFeatured,
     };
 
@@ -156,18 +163,13 @@ const Add = ({ token }) => {
   // Replace or add image on existing variety
   const handleUpdateVarietyImage = (idx, file) => {
     if (!file) return;
-    setVariants((prev) =>
-      prev.map((v, i) =>
-        i === idx
-          ? {
-            ...v,
-            imageFile: file,
-            imagePreview: URL.createObjectURL(file),
-          }
-          : v
-      )
-    );
-    toast.info(`Updated image for variety ${variants[idx].size} / ${variants[idx].color}`);
+    const color = variants[idx]?.color?.trim();
+    if (!color) return;
+    setColorImageFiles((prev) => ({
+      ...prev,
+      [color.toLowerCase()]: { color, file, preview: URL.createObjectURL(file) },
+    }));
+    toast.info(`Updated image for color ${color}`);
   };
 
   const onSubmitHandler = async (e) => {
@@ -238,6 +240,14 @@ const Add = ({ token }) => {
           isFeatured: featuredTarget.type === "variant" && featuredTarget.index === idx,
         }));
         formData.append("variants", JSON.stringify(variantsMetadata));
+        const colorImagesMetadata = Object.values(colorImageFiles).map((entry, index) => ({
+          color: entry.color,
+          fileIndex: index,
+        }));
+        formData.append("colorImages", JSON.stringify(colorImagesMetadata));
+        Object.values(colorImageFiles).forEach((entry, index) => {
+          formData.append(`colorImage_${index}`, entry.file);
+        });
         formData.append("published", published);
 
         // Featured image info
@@ -249,13 +259,6 @@ const Add = ({ token }) => {
         if (image2) formData.append("image2", image2);
         if (image3) formData.append("image3", image3);
         if (image4) formData.append("image4", image4);
-
-        // Variety Images (dynamic fields: variantImage_0, variantImage_1, ...)
-        variants.forEach((v, idx) => {
-          if (v.imageFile) {
-            formData.append(`variantImage_${idx}`, v.imageFile);
-          }
-        });
 
         const response = await axios.post(backendUrl + "/api/product/add", formData, {
           headers: { token },
@@ -277,6 +280,7 @@ const Add = ({ token }) => {
           setNewInStore(false);
           setShowInNavigation(false);
           setVariants([]);
+          setColorImageFiles({});
           setVariantSize("S");
           setVariantColor(colorsList.length > 0 ? colorsList[0].name : "");
           setVariantImageFile(null);
@@ -302,7 +306,7 @@ const Add = ({ token }) => {
         <div>
           <h1 className="text-xl font-bold text-slate-900">Add New Garment &amp; Varieties</h1>
           <p className="text-xs text-slate-500">
-            Upload variety-specific garment photos, select the primary featured cover image, and define sizing/color configurations.
+            Upload one photo per color, select the primary featured cover image, and define size/color stock configurations.
           </p>
         </div>
 
@@ -531,15 +535,15 @@ const Add = ({ token }) => {
           </div>
         </div>
 
-        {/* --- SECTION 3: PRODUCT VARIETIES & VARIETY-SPECIFIC IMAGES --- */}
+        {/* --- SECTION 3: PRODUCT VARIETIES & COLOR IMAGES --- */}
         <div className="w-full bg-white p-5 rounded-2xl border border-slate-200/90 shadow-xs space-y-4">
           <div>
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
-              <h3 className="text-sm font-bold text-slate-900">Product Varieties &amp; Variety Images</h3>
+              <h3 className="text-sm font-bold text-slate-900">Product Varieties &amp; Color Images</h3>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              Attach dedicated photos to each garment size &amp; color. When customers pick a variety on the storefront, the photo smoothly switches!
+              Upload one photo per color. Sizes still control stock, but never require duplicate photos.
             </p>
           </div>
 
@@ -587,7 +591,7 @@ const Add = ({ token }) => {
 
               <div>
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  Variety Image (Photo for this color/size)
+                  Color Image (one photo shared by every size)
                 </label>
                 <input
                   type="file"
@@ -606,7 +610,7 @@ const Add = ({ token }) => {
                   onChange={(e) => setIsVariantFeatured(e.target.checked)}
                   className="w-4 h-4 accent-amber-500 rounded cursor-pointer"
                 />
-                <span>★ Make this variety&apos;s photo the Primary Featured Image of the product</span>
+                <span>★ Make this color&apos;s photo the Primary Featured Image of the product</span>
               </label>
 
               <button
@@ -636,7 +640,7 @@ const Add = ({ token }) => {
               <div className="p-6 text-center border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
                 <p className="text-xs text-slate-400 font-medium">No specific varieties added yet.</p>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Add size and color varieties above with their photos.
+                  Add size and color stock varieties above. Upload one photo for each color.
                 </p>
               </div>
             ) : (
@@ -652,11 +656,11 @@ const Add = ({ token }) => {
                         }`}
                     >
                       <div className="flex items-center gap-3">
-                        {/* Variety Image Thumbnail */}
+                        {/* Shared color image thumbnail */}
                         <label className="relative w-14 h-14 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0 cursor-pointer group">
                           <img
-                            src={v.imagePreview || assets.upload_area}
-                            alt={`${v.size} ${v.color}`}
+                            src={colorImageFiles[v.color.trim().toLowerCase()]?.preview || assets.upload_area}
+                            alt={`${v.color} color`}
                             className="w-full h-full object-cover"
                           />
                           <input
@@ -678,13 +682,13 @@ const Add = ({ token }) => {
                             </span>
                           </div>
                           <p className="text-[10px] text-slate-400 mt-0.5">
-                            {v.imageFile ? "✓ Variety Photo Attached" : "No Photo (Uses Gallery)"}
+                            {colorImageFiles[v.color.trim().toLowerCase()] ? "✓ Color Photo Attached" : "No Photo (Uses Gallery)"}
                           </p>
                         </div>
                       </div>
 
                       <div className="flex flex-col items-end gap-1.5">
-                        {v.imageFile && (
+                        {colorImageFiles[v.color.trim().toLowerCase()] && (
                           <button
                             type="button"
                             onClick={() => setFeaturedTarget({ type: "variant", index: idx })}

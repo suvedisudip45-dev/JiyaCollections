@@ -7,21 +7,18 @@ import TermsAndConditionsModal from "../components/TermsAndConditionsModal";
 import CryptoJS from "crypto-js";
 
 import { sanitizeInput } from "../utils/sanitize";
+import { storeAuthTokens } from "../auth/tokenStorage";
 
-// Encrypt a plaintext password with AES-256-CBC using a random IV
-const encryptPassword = (plaintext) => {
+const encryptValue = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
   const key = CryptoJS.enc.Hex.parse(keyHex);
-  const iv = CryptoJS.lib.WordArray.random(16); // 128-bit random IV
+  const iv = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_IV);
   const encrypted = CryptoJS.AES.encrypt(plaintext, key, {
     iv,
     mode: CryptoJS.mode.CBC,
     padding: CryptoJS.pad.Pkcs7,
   });
-  return {
-    encryptedPassword: encrypted.ciphertext.toString(CryptoJS.enc.Base64),
-    iv: iv.toString(CryptoJS.enc.Hex),
-  };
+  return encrypted.ciphertext.toString(CryptoJS.enc.Base64);
 };
 
 const isValidEmail = (val = "") => {
@@ -128,8 +125,7 @@ const Login = () => {
         });
 
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Welcome back! Your loyalty profile has been restored.");
         } else {
           toast.error(response.data.message || "Unable to activate your customer account");
@@ -179,23 +175,21 @@ const Login = () => {
           password,
         });
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Account created successfully!");
         } else {
           toast.error(response.data.message);
         }
       } else {
         // AES-encrypt password before sending over the wire
-        const { encryptedPassword, iv } = encryptPassword(password);
-        const response = await axios.post(backendUrl + "/api/user/login", {
+        const encryptedPassword = encryptValue(password);
+        const response = await axios.post(backendUrl + "/api/auth/login", {
           email: email.trim().toLowerCase(),
+          targetPortal: encryptValue("CUSTOMER"),
           encryptedPassword,
-          iv,
         });
         if (response.data.success) {
-          setToken(response.data.token);
-          localStorage.setItem("token", response.data.token);
+          setToken(storeAuthTokens(response.data));
           toast.success("Logged in successfully!");
         } else {
           toast.error(response.data.message);

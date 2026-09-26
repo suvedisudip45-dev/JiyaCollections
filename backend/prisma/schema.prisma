@@ -7,57 +7,217 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id                  String  @id @default(uuid())
-  firstName           String? @default("")
-  lastName            String? @default("")
-  phone               String? @default("")
-  gender              String? @default("PREFER_NOT_TO_SAY") // MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
-  name                String
-  email               String  @unique
-  password            String
-  socialCustomerCode  String? @unique
-  socialCustomerPhone String? @default("")
-  loyaltyTier         String? @default("")
-  isInactiveProfile   Boolean @default(false)
-  inactiveProfileData Json    @default("{}")
-  cartData            Json    @default("{}")
-  addresses           Json    @default("[]")
+model AuthAccount {
+  id           String  @id @default(uuid())
+  email        String  @unique @db.VarChar(255)
+  phone        String? @unique @db.VarChar(32)
+  passwordHash String  @db.VarChar(255)
+  role         String  @default("CUSTOMER") // CUSTOMER | ADMIN | MANUFACTURER | MARKETING_PARTNER
+  status       String  @default("ACTIVE") // ACTIVE | PENDING_APPROVAL | SUSPENDED | REJECTED | INACTIVE
 
-  storyAssignments CustomerStoryAssignment[] @relation("CustomerStoryAssignmentCustomer")
-  letterDeliveries LetterDelivery[] @relation("CustomerLetterDeliveryCustomer")
+  failedLoginAttempts Int       @default(0)
+  accountLockedUntil  DateTime?
+  passwordChangedAt   DateTime?
+  lastLoginAt         DateTime?
+  lastLoginIp         String?   @db.VarChar(64)
+
+  isEmailVerified Boolean @default(false)
+  isPhoneVerified Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customerProfile         User?
+  adminProfile            Admin?
+  manufacturerProfile     Manufacturer?
+  marketingPartnerProfile MarketingPartner?
+
+  otpChallenges OtpChallenge[]
+  auditLogs     AuthAuditLog[]
+  sessions      AuthSession[]
+  roleMappings  AuthAccountRoleMapping[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([role, status])
+}
+
+model Role {
+  id          String                   @id @default(uuid())
+  code        String                   @unique @db.VarChar(64)
+  name        String                   @db.VarChar(120)
+  description String?                  @db.Text
+  isActive    Boolean                  @default(true)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  permissions RolePermissionMapping[]
+  accounts    AuthAccountRoleMapping[]
+
+  @@index([isActive])
+}
+
+model Permission {
+  id          String                  @id @default(uuid())
+  code        String                  @unique @db.VarChar(120)
+  description String?                 @db.Text
+  isActive    Boolean                 @default(true)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  roles       RolePermissionMapping[]
+
+  @@index([isActive])
+}
+
+model RolePermissionMapping {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+model AuthAccountRoleMapping {
+  id        String      @id @default(uuid())
+  accountId String
+  roleId    String
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  account   AuthAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  role      Role        @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, roleId])
+  @@index([accountId, isActive])
+  @@index([roleId, isActive])
+}
+
+model AuthSession {
+  id               String    @id @default(uuid())
+  accountId        String
+  tokenFamilyId    String    @db.VarChar(64)
+  jti              String    @unique @db.VarChar(128)
+  tokenType        String    @default("ACCESS") // ACCESS | REFRESH
+  issuedAt         DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  replacedByTokenId String?  @db.VarChar(128)
+  lastUsedAt       DateTime?
+  createdIp        String?   @db.VarChar(64)
+  lastUsedIp       String?   @db.VarChar(64)
+  userAgent        String?   @db.Text
+  revocationReason String?   @db.VarChar(255)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  account AuthAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, tokenType, revokedAt])
+  @@index([tokenFamilyId])
+  @@index([expiresAt])
+}
+
+model OtpChallenge {
+  id            String    @id @default(uuid())
+  accountId     String?
+  destination   String    @db.VarChar(255)
+  channel       String    @default("SMS") // SMS | EMAIL
+  purpose       String    @default("LOGIN") // LOGIN | SIGNUP | PASSWORD_RESET | CHANGE_PHONE
+  codeHash      String    @db.VarChar(255)
+  expiresAt     DateTime
+  attemptCount  Int       @default(0)
+  maxAttempts   Int       @default(5)
+  lastSentAt    DateTime  @default(now())
+  verifiedAt    DateTime?
+  isInvalidated Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+
+  account AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([destination, purpose, isInvalidated])
+  @@index([expiresAt])
+}
+
+model AuthAuditLog {
+  id            String   @id @default(uuid())
+  accountId     String?
+  identifier    String   @db.VarChar(255)
+  action        String
+  role          String?
+  portal        String?
+  ipAddress     String?  @db.VarChar(64)
+  userAgent     String?  @db.Text
+  status        String
+  failureReason String?  @db.VarChar(255)
+  metadata      Json?    @default("{}")
+  createdAt     DateTime @default(now())
+
+  account AuthAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([identifier, createdAt])
+  @@index([action, createdAt])
+  @@index([accountId])
+}
+
+model User {
+  id                  String       @id @default(uuid())
+  accountId           String?      @unique
+  account             AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  firstName           String?      @default("")
+  lastName            String?      @default("")
+  phone               String?      @default("")
+  gender              String?      @default("PREFER_NOT_TO_SAY") // MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
+  name                String
+  email               String       @unique
+  password            String?      @default("")
+  socialCustomerCode  String?      @unique
+  socialCustomerPhone String?      @default("")
+  loyaltyTier         String?      @default("")
+  isInactiveProfile   Boolean      @default(false)
+  inactiveProfileData Json         @default("{}")
+  cartData            Json         @default("{}")
+  addresses           Json         @default("[]")
+
+  storyAssignments            CustomerStoryAssignment[]    @relation("CustomerStoryAssignmentCustomer")
+  letterDeliveries            LetterDelivery[]             @relation("CustomerLetterDeliveryCustomer")
+  marketingCardLinks          MarketingCardCustomer[]      @relation("MarketingCardCustomerUser")
+  marketingBenefitRedemptions MarketingBenefitRedemption[]
 }
 
 model Story {
-  id                  String                   @id @default(uuid())
-  title               String
-  description         String?                  @db.Text
-  status              String                   @default("ACTIVE") // ACTIVE | PAUSED | ARCHIVED
-  assignmentEnabled   Boolean                  @default(true)
-  allowNewCustomers   Boolean                  @default(true)
-  allowAfterCompletion Boolean                @default(true)
-  assignmentWeight     Float                    @default(1)
-  createdAt           DateTime                 @default(now())
-  updatedAt           DateTime                 @updatedAt
-  letters             StoryLetter[]
-  assignments         CustomerStoryAssignment[]
-  deliveries          LetterDelivery[]
+  id                   String                    @id @default(uuid())
+  title                String
+  description          String?                   @db.Text
+  status               String                    @default("ACTIVE") // ACTIVE | PAUSED | ARCHIVED
+  assignmentEnabled    Boolean                   @default(true)
+  allowNewCustomers    Boolean                   @default(true)
+  allowAfterCompletion Boolean                   @default(true)
+  assignmentWeight     Float                     @default(1)
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  letters              StoryLetter[]
+  assignments          CustomerStoryAssignment[]
+  deliveries           LetterDelivery[]
 
   @@index([status, assignmentEnabled])
 }
 
 model StoryLetter {
-  id                String         @id @default(uuid())
+  id                String           @id @default(uuid())
   storyId           String
   sequenceNumber    Int
   title             String
-  summary           String?        @db.Text
-  continuitySummary  String?        @db.Text
-  content           String         @db.Text
-  status            String         @default("ACTIVE") // ACTIVE | DRAFT | ARCHIVED
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  story             Story          @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  summary           String?          @db.Text
+  continuitySummary String?          @db.Text
+  content           String           @db.Text
+  status            String           @default("ACTIVE") // ACTIVE | DRAFT | ARCHIVED
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  story             Story            @relation(fields: [storyId], references: [id], onDelete: Cascade)
   deliveries        LetterDelivery[]
 
   @@unique([storyId, sequenceNumber])
@@ -65,32 +225,32 @@ model StoryLetter {
 }
 
 model LetterTemplate {
-  id                String                 @id @default(uuid())
-  name              String
-  description       String?                @db.Text
-  status            String                 @default("ACTIVE") // ACTIVE | DRAFT | PAUSED | ARCHIVED
-  targetGender      String                 @default("ANY") // ANY | MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
-  selectionWeight   Float                  @default(1)
-  repetitionWindow  Int?                   @default(3)
-  body              String                 @db.Text
-  createdBy         String?
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @updatedAt
-  versions          LetterTemplateVersion[]
-  deliveries        LetterDelivery[]
+  id               String                  @id @default(uuid())
+  name             String
+  description      String?                 @db.Text
+  status           String                  @default("ACTIVE") // ACTIVE | DRAFT | PAUSED | ARCHIVED
+  targetGender     String                  @default("ANY") // ANY | MALE | FEMALE | OTHER | PREFER_NOT_TO_SAY
+  selectionWeight  Float                   @default(1)
+  repetitionWindow Int?                    @default(3)
+  body             String                  @db.Text
+  createdBy        String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  versions         LetterTemplateVersion[]
+  deliveries       LetterDelivery[]
 
   @@index([status])
   @@index([targetGender, status])
 }
 
 model LetterTemplateVersion {
-  id            String         @id @default(uuid())
+  id            String           @id @default(uuid())
   templateId    String
   versionNumber Int
-  body          String         @db.Text
+  body          String           @db.Text
   createdBy     String?
-  createdAt     DateTime       @default(now())
-  template      LetterTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  createdAt     DateTime         @default(now())
+  template      LetterTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
   deliveries    LetterDelivery[]
 
   @@unique([templateId, versionNumber])
@@ -98,17 +258,17 @@ model LetterTemplateVersion {
 }
 
 model CustomerStoryAssignment {
-  id                 String          @id @default(uuid())
+  id                 String           @id @default(uuid())
   customerId         String
   storyId            String
-  status             String          @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
-  nextSequenceNumber Int             @default(1)
-  startedAt          DateTime        @default(now())
+  status             String           @default("ACTIVE") // ACTIVE | COMPLETED | CANCELLED
+  nextSequenceNumber Int              @default(1)
+  startedAt          DateTime         @default(now())
   completedAt        DateTime?
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
-  customer           User            @relation("CustomerStoryAssignmentCustomer", fields: [customerId], references: [id], onDelete: Cascade)
-  story              Story           @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  customer           User             @relation("CustomerStoryAssignmentCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  story              Story            @relation(fields: [storyId], references: [id], onDelete: Cascade)
   deliveries         LetterDelivery[] @relation("AssignmentLetterDelivery")
 
   @@index([customerId, status])
@@ -116,35 +276,35 @@ model CustomerStoryAssignment {
 }
 
 model LetterDelivery {
-  id                       String                  @id @default(uuid())
-  customerId               String
-  orderId                  String                  @unique
-  manufacturerId           String?
+  id                        String                  @id @default(uuid())
+  customerId                String
+  orderId                   String                  @unique
+  manufacturerId            String?
   customerStoryAssignmentId String
-  storyId                  String
-  storyLetterId            String
-  templateId               String
-  templateVersionId        String
-  idempotencyKey           String?                 @unique
-  status                   String                  @default("RESERVED") // RESERVED | PRINTED | PACKED | SHIPPED | DELIVERED | CANCELLED | VOIDED
-  reservedAt               DateTime?
-  printedAt                DateTime?
-  packedAt                 DateTime?
-  shippedAt                DateTime?
-  deliveredAt              DateTime?
-  cancelledAt              DateTime?
-  renderedContent          String?                 @db.Text
-  renderedHtml             String?                 @db.Text
-  renderedDocumentUrl      String?                 @db.Text
-  createdAt                DateTime                @default(now())
-  updatedAt                DateTime                @updatedAt
-  customer                 User                    @relation("CustomerLetterDeliveryCustomer", fields: [customerId], references: [id], onDelete: Cascade)
-  order                    Order                   @relation("OrderLetterDelivery", fields: [orderId], references: [id], onDelete: Cascade)
-  assignment               CustomerStoryAssignment  @relation("AssignmentLetterDelivery", fields: [customerStoryAssignmentId], references: [id], onDelete: Cascade)
-  story                    Story                   @relation(fields: [storyId], references: [id], onDelete: Cascade)
-  storyLetter              StoryLetter             @relation(fields: [storyLetterId], references: [id], onDelete: Restrict)
-  template                 LetterTemplate          @relation(fields: [templateId], references: [id], onDelete: Restrict)
-  templateVersion          LetterTemplateVersion   @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
+  storyId                   String
+  storyLetterId             String
+  templateId                String
+  templateVersionId         String
+  idempotencyKey            String?                 @unique
+  status                    String                  @default("RESERVED") // RESERVED | PRINTED | PACKED | SHIPPED | DELIVERED | CANCELLED | VOIDED
+  reservedAt                DateTime?
+  printedAt                 DateTime?
+  packedAt                  DateTime?
+  shippedAt                 DateTime?
+  deliveredAt               DateTime?
+  cancelledAt               DateTime?
+  renderedContent           String?                 @db.Text
+  renderedHtml              String?                 @db.Text
+  renderedDocumentUrl       String?                 @db.Text
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+  customer                  User                    @relation("CustomerLetterDeliveryCustomer", fields: [customerId], references: [id], onDelete: Cascade)
+  order                     Order                   @relation("OrderLetterDelivery", fields: [orderId], references: [id], onDelete: Cascade)
+  assignment                CustomerStoryAssignment @relation("AssignmentLetterDelivery", fields: [customerStoryAssignmentId], references: [id], onDelete: Cascade)
+  story                     Story                   @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  storyLetter               StoryLetter             @relation(fields: [storyLetterId], references: [id], onDelete: Restrict)
+  template                  LetterTemplate          @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  templateVersion           LetterTemplateVersion   @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
 
   @@index([customerId, createdAt])
   @@index([storyId, createdAt])
@@ -162,6 +322,7 @@ model Product {
   subCategory       String
   sizes             Json
   colors            Json      @default("[]")
+  colorImages       Json      @default("[]")
   variants          Json      @default("[]")
   bestseller        Boolean   @default(false)
   newInStore        Boolean   @default(false)
@@ -182,29 +343,31 @@ model Product {
 }
 
 model Order {
-  id                String         @id @default(uuid())
-  userId            String
-  items             Json
-  amount            Float
-  deliveryFee       Float          @default(0)
-  address           Json
-  status            String         @default("Order Placed")
-  paymentMethod     String
-  payment           Boolean        @default(false)
-  date              BigInt
-  loyaltyDiscount   Float?         @default(0)
-  rewardApplied     Json?
+  id                    String              @id @default(uuid())
+  userId                String
+  items                 Json
+  amount                Float
+  deliveryFee           Float               @default(0)
+  address               Json
+  status                String              @default("Order Placed")
+  paymentMethod         String
+  payment               Boolean             @default(false)
+  date                  BigInt
+  loyaltyDiscount       Float?              @default(0)
+  rewardApplied         Json?
   // Fulfillment tracking
-  fulfillmentStatus String         @default("PENDING_ASSIGNMENT")
+  fulfillmentStatus     String              @default("PENDING_ASSIGNMENT")
   // PENDING_ASSIGNMENT | ASSIGNED | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | IN_TRANSIT | DELIVERED | FAILED
-  assignmentId      String?
-  deliveryJobId     String?
-  orderType         String         @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
-  directOrderType   String?        @default("") // HUB_VISIT | PHONE_ORDER
-  manufacturerId    String? // Fulfilled directly by manufacturer
-  directNotes       String?        @db.Text
-  deliveryOrder     DeliveryOrder?
-  letterDeliveries  LetterDelivery[] @relation("OrderLetterDelivery")
+  assignmentId          String?
+  deliveryJobId         String?
+  orderType             String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
+  directOrderType       String?             @default("") // HUB_VISIT | PHONE_ORDER
+  manufacturerId        String? // Fulfilled directly by manufacturer
+  directNotes           String?             @db.Text
+  marketingCardRequired Boolean             @default(true)
+  deliveryOrder         DeliveryOrder?
+  letterDeliveries      LetterDelivery[]    @relation("OrderLetterDelivery")
+  marketingCardOrder    MarketingCardOrder?
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -229,13 +392,13 @@ model SubCategory {
   categoryId  String?
   category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
-  @@index([categoryId])
   @@unique([categoryId, name])
+  @@index([categoryId])
 }
 
 model Color {
-  id         String @id @default(uuid())
-  name       String @unique
+  id         String  @id @default(uuid())
+  name       String  @unique
   nepaliName String? @default("")
 }
 
@@ -365,11 +528,14 @@ model MonthlyExpense {
 }
 
 model Admin {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String // bcrypt-hashed
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String       @id @default(uuid())
+  accountId String?      @unique
+  account   AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  email     String       @unique
+  password  String?      @default("") // bcrypt-hashed
+  phone     String?      @default("9846008536")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 }
 
 model FinancialAccount {
@@ -756,71 +922,317 @@ model JournalLine {
 // ============================================================
 
 model Manufacturer {
-  id                   String    @id @default(uuid())
-  name                 String
-  email                String    @unique
-  password             String // bcrypt hashed
-  phone                String
-  city                 String // e.g. "Kathmandu", "Pokhara", "Biratnagar"
-  ncmPickupBranch      String?   @default("") // Assigned NCM pickup branch for this manufacturer; used for ready-for-pickup submissions
-  pickupBranchStatus   String?   @default("UNVERIFIED") // UNVERIFIED | VERIFIED | REJECTED
-  pickupBranchVerifiedAt DateTime?
-  pickupAddress        String?   @db.Text
-  pickupContactName    String?   @default("")
-  pickupContactPhone   String?   @default("")
-  pickupWindow         String?   @default("")
-  returnInstructions   String?   @db.Text
-  address              String?   @db.Text
-  qualityRating        Float     @default(5.0) // Dynamic 1.0–5.0 calculated from customer product reviews
-  ratingCount          Int       @default(0) // Total customer reviews applied
-  isActive             Boolean   @default(true)
-  isAvailable          Boolean   @default(true) // manufacturer can toggle
-  proposedCommissionRate Float?    // Current commission proposal under negotiation
-  agreedCommissionRate   Float?    // Final agreed commission % once both parties accept
-  commissionStatus       String    @default("PENDING") // PENDING | APPROVED | REJECTED
-  commissionLastProposedBy String?  @default("ADMIN") // ADMIN | MANUFACTURER | null
-  commissionFinalizedAt  DateTime?
-  commissionLockUntil    DateTime? // Prevents changes for one month after final approval
-  commissionHistory      Json?     @default("[]") // admin-only audit trail of finalized rates
-  commissionNote         String?   @db.Text
-  adminCommissionFeedback String? @db.Text
+  id                       String                    @id @default(uuid())
+  accountId                String?                   @unique
+  account                  AuthAccount?              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name                     String
+  email                    String                    @unique
+  password                 String?                   @default("") // bcrypt hashed
+  phone                    String
+  city                     String // e.g. "Kathmandu", "Pokhara", "Biratnagar"
+  ncmPickupBranch          String?                   @default("") // Assigned NCM pickup branch for this manufacturer; used for ready-for-pickup submissions
+  pickupBranchStatus       String?                   @default("UNVERIFIED") // UNVERIFIED | VERIFIED | REJECTED
+  pickupBranchVerifiedAt   DateTime?
+  pickupAddress            String?                   @db.Text
+  pickupContactName        String?                   @default("")
+  pickupContactPhone       String?                   @default("")
+  pickupWindow             String?                   @default("")
+  returnInstructions       String?                   @db.Text
+  address                  String?                   @db.Text
+  qualityRating            Float                     @default(5.0) // Dynamic 1.0–5.0 calculated from customer product reviews
+  ratingCount              Int                       @default(0) // Total customer reviews applied
+  isActive                 Boolean                   @default(true)
+  isAvailable              Boolean                   @default(true) // manufacturer can toggle
+  proposedCommissionRate   Float? // Current commission proposal under negotiation
+  agreedCommissionRate     Float? // Final agreed commission % once both parties accept
+  commissionStatus         String                    @default("PENDING") // PENDING | APPROVED | REJECTED
+  commissionLastProposedBy String?                   @default("ADMIN") // ADMIN | MANUFACTURER | null
+  commissionFinalizedAt    DateTime?
+  commissionLockUntil      DateTime? // Prevents changes for one month after final approval
+  commissionHistory        Json?                     @default("[]") // admin-only audit trail of finalized rates
+  commissionNote           String?                   @db.Text
+  adminCommissionFeedback  String?                   @db.Text
   // Contract fields
-  contractStatus       String    @default("ACTIVE") // ACTIVE | SUSPENDED | TERMINATED
-  contractDocUrl       String?   @db.Text // uploaded PDF URL (Cloudinary)
-  contractStartDate    DateTime?
-  contractExpiryDate   DateTime?
-  agreementNotes       String?   @db.Text
+  contractStatus           String                    @default("ACTIVE") // ACTIVE | SUSPENDED | TERMINATED
+  contractDocUrl           String?                   @db.Text // uploaded PDF URL (Cloudinary)
+  contractStartDate        DateTime?
+  contractExpiryDate       DateTime?
+  agreementNotes           String?                   @db.Text
   // Performance counters (updated by system)
-  totalOrdersFulfilled Int       @default(0)
-  onTimeCount          Int       @default(0)
-  defectCount          Int       @default(0)
-  rejectionCount       Int       @default(0)
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-  inventory   ManufacturerInventory[]
-  assignments OrderAssignment[]
+  totalOrdersFulfilled     Int                       @default(0)
+  onTimeCount              Int                       @default(0)
+  defectCount              Int                       @default(0)
+  rejectionCount           Int                       @default(0)
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  inventory                ManufacturerInventory[]
+  assignments              OrderAssignment[]
+  marketingCardAssignments MarketingCardAssignment[]
+  marketingCards           MarketingCard[]           @relation("MarketingCardManufacturer")
+  marketingCardOrders      MarketingCardOrder[]
 
   @@index([city])
   @@index([isActive, isAvailable])
 }
 
+// ============================================================
+// MARKETING CARD DOMAIN
+// ============================================================
+
+model MarketingPartner {
+  id           String                       @id @default(uuid())
+  accountId    String?                      @unique
+  account      AuthAccount?                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  code         String                       @unique @db.VarChar(32)
+  name         String
+  description  String?                      @db.Text
+  status       String                       @default("ACTIVE") // PENDING | ACTIVE | INACTIVE
+  email        String?                      @unique @db.VarChar(255) // Portal login email
+  passwordHash String?                      @db.VarChar(255) // bcrypt hash for portal login
+  contactPhone String?                      @db.VarChar(32)
+  website      String?                      @db.VarChar(255)
+  address      String?                      @db.Text
+  createdAt    DateTime                     @default(now())
+  updatedAt    DateTime                     @updatedAt
+  campaigns    MarketingCampaign[]
+  cards        MarketingCard[]
+  settlements  MarketingPartnerSettlement[]
+
+  @@index([status])
+  @@index([email])
+}
+
+model MarketingCampaign {
+  id                 String                       @id @default(uuid())
+  marketingPartnerId String
+  name               String
+  description        String?                      @db.Text
+  targetScopeType    String                       @default("NATIONWIDE") // NATIONWIDE | PROVINCE | DISTRICT
+  targetProvince     String?                      @db.VarChar(120)
+  targetDistrict     String?                      @db.VarChar(120)
+  benefitConfig      Json                         @default("[]")
+  requestedQuantity  Int                          @default(0)
+  generatedQuantity  Int                          @default(0)
+  status             String                       @default("ACTIVE") // DRAFT | ACTIVE | PAUSED | EXPIRED | CANCELLED
+  startsAt           DateTime?
+  endsAt             DateTime?
+  cardExpiresAt      DateTime? // Cards can be redeemed until this date (must be >= endsAt + 1 day)
+  targetCategories   Json                         @default("[]") // Array of clothing category names/IDs e.g. ["Women Dresses", "Hoodies"]
+  minOrderValue      Float                        @default(0) // Cart total threshold for smart card allocation
+  cpaRate            Float                        @default(0) // Platform commission or CPA fee per verified redemption
+  adMediaType        String?                      @default("NONE") // NONE | IMAGE | VIDEO
+  adMediaUrl         String?                      @db.Text
+  adHeadline         String?                      @db.VarChar(255)
+  adDescription      String?                      @db.Text
+  adExternalLink     String?                      @db.VarChar(255)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  marketingPartner   MarketingPartner             @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
+  batches            MarketingCardBatch[]
+  cards              MarketingCard[]
+  benefits           MarketingBenefit[]
+  settlements        MarketingPartnerSettlement[]
+
+  @@index([marketingPartnerId, status])
+  @@index([targetScopeType, targetProvince, targetDistrict])
+}
+
+model MarketingCardBatch {
+  id         String            @id @default(uuid())
+  campaignId String
+  batchCode  String            @unique @db.VarChar(64)
+  quantity   Int
+  status     String            @default("GENERATED") // GENERATED | ASSIGNED | COMPLETED | CANCELLED
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  campaign   MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  cards      MarketingCard[]
+
+  @@index([campaignId, status])
+}
+
+model MarketingCard {
+  id                     String                       @id @default(uuid())
+  cardCode               String                       @unique @db.VarChar(64)
+  qrTokenHash            String                       @unique @db.Char(64)
+  partnerId              String
+  campaignId             String
+  batchId                String
+  assignedManufacturerId String?
+  hasBenefit             Boolean                      @default(false)
+  benefitId              String?
+  physicalStatus         String                       @default("GENERATED") // GENERATED | ASSIGNED | RECEIVED | AVAILABLE | RESERVED | ATTACHED | CANCELLED
+  assignedAt             DateTime?
+  receivedAt             DateTime?
+  reservedAt             DateTime?
+  attachedAt             DateTime?
+  createdAt              DateTime                     @default(now())
+  updatedAt              DateTime                     @updatedAt
+  partner                MarketingPartner             @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  campaign               MarketingCampaign            @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  batch                  MarketingCardBatch           @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  benefit                MarketingBenefit?            @relation(fields: [benefitId], references: [id], onDelete: SetNull)
+  assignedManufacturer   Manufacturer?                @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
+  assignments            MarketingCardAssignment[]
+  orderLink              MarketingCardOrder?
+  customerLinks          MarketingCardCustomer[]
+  events                 MarketingCardEvent[]
+  benefitRedemptions     MarketingBenefitRedemption[]
+
+  @@index([campaignId, physicalStatus])
+  @@index([assignedManufacturerId, physicalStatus])
+  @@index([batchId, physicalStatus])
+  @@index([benefitId])
+}
+
+model MarketingCardAssignment {
+  id             String                @id @default(uuid())
+  cardId         String
+  manufacturerId String
+  assignedBy     String
+  assignedAt     DateTime              @default(now())
+  status         String                @default("ASSIGNED") // ASSIGNED | RECEIVED | DISPUTED | CANCELLED
+  confirmedAt    DateTime?
+  notes          String?               @db.Text
+  card           MarketingCard         @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  manufacturer   Manufacturer          @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  receipt        MarketingCardReceipt?
+
+  @@index([manufacturerId, status])
+  @@index([cardId, assignedAt])
+}
+
+model MarketingCardReceipt {
+  id           String                  @id @default(uuid())
+  assignmentId String                  @unique
+  confirmedBy  String
+  confirmedAt  DateTime                @default(now())
+  notes        String?                 @db.Text
+  assignment   MarketingCardAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+}
+
+model MarketingCardOrder {
+  id             String        @id @default(uuid())
+  cardId         String        @unique
+  orderId        String        @unique
+  manufacturerId String
+  attachedAt     DateTime      @default(now())
+  card           MarketingCard @relation(fields: [cardId], references: [id], onDelete: Restrict)
+  order          Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  manufacturer   Manufacturer  @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+
+  @@index([manufacturerId, attachedAt])
+}
+
+model MarketingCardCustomer {
+  id                   String        @id @default(uuid())
+  cardId               String
+  customerId           String
+  linkedAt             DateTime      @default(now())
+  activatedAt          DateTime?
+  status               String        @default("LINKED") // LINKED | ACTIVE | CANCELLED
+  inStoreOtp           String?       @db.VarChar(6)
+  otpExpiresAt         DateTime?
+  lastRedeemedLocation String?       @db.VarChar(255)
+  card                 MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  customer             User          @relation("MarketingCardCustomerUser", fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId])
+  @@index([customerId, status])
+}
+
+model MarketingBenefit {
+  id               String                       @id @default(uuid())
+  campaignId       String
+  name             String
+  description      String?                      @db.Text
+  benefitType      String                       @default("CUSTOM")
+  value            Float                        @default(0)
+  percentage       Float                        @default(0) // Percentage of customer cards (e.g. 10 for 10% of customers)
+  quantity         Int                          @default(0) // Fixed number of cards allocated for this benefit
+  assignedQuantity Int                          @default(0) // Number of cards assigned this benefit during generation
+  terms            String?                      @db.Text
+  startsAt         DateTime?
+  expiresAt        DateTime?
+  status           String                       @default("ACTIVE")
+  campaign         MarketingCampaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  cards            MarketingCard[]
+  redemptions      MarketingBenefitRedemption[]
+
+  @@index([campaignId, status])
+}
+
+model MarketingBenefitRedemption {
+  id         String           @id @default(uuid())
+  cardId     String
+  benefitId  String
+  customerId String
+  status     String           @default("REDEEMED") // REDEEMED | CANCELLED
+  redeemedAt DateTime         @default(now())
+  card       MarketingCard    @relation(fields: [cardId], references: [id], onDelete: Restrict)
+  benefit    MarketingBenefit @relation(fields: [benefitId], references: [id], onDelete: Restrict)
+  customer   User             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@unique([cardId, benefitId])
+  @@index([customerId, status])
+  @@index([benefitId, redeemedAt])
+}
+
+model MarketingCardEvent {
+  id          String        @id @default(uuid())
+  cardId      String
+  eventType   String
+  actorId     String?
+  actorRole   String?
+  fromStatus  String?
+  toStatus    String?
+  referenceId String?
+  metadata    Json?
+  createdAt   DateTime      @default(now())
+  card        MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model MarketingPartnerSettlement {
+  id               String             @id @default(uuid())
+  partnerId        String
+  campaignId       String?
+  periodStart      DateTime
+  periodEnd        DateTime
+  totalRedemptions Int                @default(0)
+  cpaRate          Float              @default(0)
+  totalAmount      Float              @default(0)
+  paymentStatus    String             @default("UNPAID") // UNPAID | PAID | WAIVED
+  paidAt           DateTime?
+  referenceNote    String?            @db.Text
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  partner          MarketingPartner   @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  campaign         MarketingCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([partnerId, paymentStatus])
+  @@index([createdAt])
+}
+
 model NcmBranch {
-  id             String   @id @default(uuid())
-  ncmPk          Int      @unique
-  code           String?  @db.VarChar(40)
-  name           String   @unique @db.VarChar(120)
-  branchType     String?  @db.VarChar(80)
-  geocode        String?  @db.VarChar(120)
-  address        String?  @db.Text
-  phone          String?  @db.VarChar(40)
-  phone2         String?  @db.VarChar(80)
-  provinceName   String?  @db.VarChar(120)
-  districtName   String?  @db.VarChar(120)
-  coveredAreas   Json
-  isActive       Boolean  @default(true)
-  lastSyncedAt   DateTime @default(now())
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id           String   @id @default(uuid())
+  ncmPk        Int      @unique
+  code         String?  @db.VarChar(40)
+  name         String   @unique @db.VarChar(120)
+  branchType   String?  @db.VarChar(80)
+  geocode      String?  @db.VarChar(120)
+  address      String?  @db.Text
+  phone        String?  @db.VarChar(40)
+  phone2       String?  @db.VarChar(80)
+  provinceName String?  @db.VarChar(120)
+  districtName String?  @db.VarChar(120)
+  coveredAreas Json
+  isActive     Boolean  @default(true)
+  lastSyncedAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([isActive, districtName])
   @@index([isActive, provinceName])
@@ -1051,4 +1463,19 @@ model OperatingExpense {
   @@index([category])
   @@index([date])
   @@index([isVatBill])
+}
+
+// Nepal Location Mapping (4-character unique code map for provinces and 77 districts)
+model LocationMapping {
+  id        String   @id @default(uuid())
+  code      String   @unique @db.VarChar(4) // e.g., '0KTM', 'PRBT', 'REST', 'RWST', 'BAGM', 'NATW'
+  name      String   @db.VarChar(120)
+  type      String   @db.VarChar(32) // 'NATIONWIDE' | 'PROVINCE' | 'DISTRICT'
+  province  String?  @db.VarChar(120) // Parent province for district
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+  @@index([name])
+  @@index([province])
 }

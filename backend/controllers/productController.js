@@ -1,4 +1,6 @@
 import { v2 as cloudinary } from "cloudinary";
+import crypto from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
@@ -32,6 +34,28 @@ const normalizeCategories = (val) => {
   return [];
 };
 
+const normalizeColorImages = (val) => {
+  if (!val) return [];
+  let parsed = val;
+  if (typeof parsed === "string") {
+    try { parsed = JSON.parse(parsed || "[]"); } catch { parsed = []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set();
+  return parsed
+    .map((entry) => ({
+      color: String(entry?.color || "").trim(),
+      image: entry?.image || null,
+      fileIndex: entry?.fileIndex,
+    }))
+    .filter((entry) => {
+      const key = entry.color.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
 // Helper: extract file by fieldname from req.files (array from upload.any() or fields object)
 const getFileByFieldname = (files, fieldname) => {
   if (!files) return null;
@@ -42,6 +66,17 @@ const getFileByFieldname = (files, fieldname) => {
     return Array.isArray(files[fieldname]) ? files[fieldname][0] : files[fieldname];
   }
   return null;
+};
+
+const createRequestImageUploader = () => {
+  const uploadedByHash = new Map();
+  return async (file) => {
+    const hash = crypto.createHash("sha256").update(await readFile(file.path)).digest("hex");
+    if (uploadedByHash.has(hash)) return uploadedByHash.get(hash);
+    const result = await cloudinary.uploader.upload(file.path, { resource_type: "image" });
+    uploadedByHash.set(hash, result.secure_url);
+    return result.secure_url;
+  };
 };
 
 // function for add product
@@ -64,6 +99,7 @@ const addProduct = async (req, res) => {
       stockQuantity,
       lowStockThreshold,
       colors,
+      colorImages,
       variants,
       published,
       featuredType, // 'variant' | 'gallery'
@@ -72,6 +108,8 @@ const addProduct = async (req, res) => {
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
     if (!Array.isArray(parsedVariants)) parsedVariants = [];
+    let parsedColorImages = normalizeColorImages(colorImages);
+    const uploadImage = createRequestImageUploader();
 
     // 1. Upload gallery images (image1, image2, image3, image4, etc.)
     const galleryFiles = [];
@@ -82,10 +120,7 @@ const addProduct = async (req, res) => {
 
     const galleryUrls = await Promise.all(
       galleryFiles.map(async (file) => {
-        const result = await cloudinary.uploader.upload(file.path, {
-          resource_type: "image",
-        });
-        return result.secure_url;
+        return uploadImage(file);
       })
     );
 
@@ -96,11 +131,15 @@ const addProduct = async (req, res) => {
         getFileByFieldname(req.files, `variant_image_${i}`);
 
       if (vFile) {
-        const result = await cloudinary.uploader.upload(vFile.path, {
-          resource_type: "image",
-        });
-        parsedVariants[i].image = result.secure_url;
+        parsedVariants[i].image = await uploadImage(vFile);
       }
+    }
+
+    for (const colorImage of parsedColorImages) {
+      const fileIndex = Number(colorImage.fileIndex);
+      const file = Number.isInteger(fileIndex) ? getFileByFieldname(req.files, `colorImage_${fileIndex}`) : null;
+      if (!file) continue;
+      colorImage.image = await uploadImage(file);
     }
 
     // 3. Assemble and order the full image gallery, ensuring Featured Image is at index 0
@@ -108,7 +147,10 @@ const addProduct = async (req, res) => {
     const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
 
     if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      featuredUrl = parsedVariants[featIdx]?.image || "";
+      const featuredVariant = parsedVariants[featIdx];
+      featuredUrl = featuredVariant?.image || parsedColorImages.find(
+        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
+      )?.image || "";
       parsedVariants = parsedVariants.map((v, idx) => ({
         ...v,
         isFeatured: idx === featIdx,
@@ -123,6 +165,8 @@ const addProduct = async (req, res) => {
         featuredUrl = featVar.image;
       } else if (galleryUrls.length > 0) {
         featuredUrl = galleryUrls[0];
+      } else if (parsedColorImages[0]?.image) {
+        featuredUrl = parsedColorImages[0].image;
       } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
         featuredUrl = parsedVariants[0].image;
         parsedVariants[0].isFeatured = true;
@@ -143,6 +187,9 @@ const addProduct = async (req, res) => {
       if (v.image && !allImages.includes(v.image)) {
         allImages.push(v.image);
       }
+    });
+    parsedColorImages.forEach((entry) => {
+      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
     });
 
     let qty = stockQuantity !== undefined && stockQuantity !== "" ? parseInt(stockQuantity, 10) : 0;
@@ -197,6 +244,7 @@ const addProduct = async (req, res) => {
       stockQuantity: Math.max(0, qty),
       lowStockThreshold: numLowStockThreshold,
       colors: typeof colors === "string" ? JSON.parse(colors) : colors || [],
+      colorImages: parsedColorImages.map(({ color, image }) => ({ color, image })),
       variants: parsedVariants,
       published: published === "false" || published === false ? false : true,
       date: BigInt(Date.now()),
@@ -248,6 +296,7 @@ const updateProduct = async (req, res) => {
       stockQuantity,
       lowStockThreshold,
       colors,
+      colorImages,
       variants,
       published,
       featuredType,
@@ -262,6 +311,10 @@ const updateProduct = async (req, res) => {
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
     if (!Array.isArray(parsedVariants)) parsedVariants = [];
+    let parsedColorImages = colorImages !== undefined
+      ? normalizeColorImages(colorImages)
+      : normalizeColorImages(existingProduct.colorImages);
+    const uploadImage = createRequestImageUploader();
 
     // Parse existing images array
     let currentImages = existingImages
@@ -279,10 +332,7 @@ const updateProduct = async (req, res) => {
     if (newGalleryFiles.length > 0) {
       newGalleryUrls = await Promise.all(
         newGalleryFiles.map(async (file) => {
-          const result = await cloudinary.uploader.upload(file.path, {
-            resource_type: "image",
-          });
-          return result.secure_url;
+          return uploadImage(file);
         })
       );
     }
@@ -294,11 +344,15 @@ const updateProduct = async (req, res) => {
         getFileByFieldname(req.files, `variant_image_${i}`);
 
       if (vFile) {
-        const result = await cloudinary.uploader.upload(vFile.path, {
-          resource_type: "image",
-        });
-        parsedVariants[i].image = result.secure_url;
+        parsedVariants[i].image = await uploadImage(vFile);
       }
+    }
+
+    for (const colorImage of parsedColorImages) {
+      const fileIndex = Number(colorImage.fileIndex);
+      const file = Number.isInteger(fileIndex) ? getFileByFieldname(req.files, `colorImage_${fileIndex}`) : null;
+      if (!file) continue;
+      colorImage.image = await uploadImage(file);
     }
 
     // 3. Determine Featured Image
@@ -306,7 +360,10 @@ const updateProduct = async (req, res) => {
     let featuredUrl = "";
 
     if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      featuredUrl = parsedVariants[featIdx]?.image || "";
+      const featuredVariant = parsedVariants[featIdx];
+      featuredUrl = featuredVariant?.image || parsedColorImages.find(
+        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
+      )?.image || "";
       parsedVariants = parsedVariants.map((v, idx) => ({
         ...v,
         isFeatured: idx === featIdx,
@@ -325,6 +382,8 @@ const updateProduct = async (req, res) => {
         featuredUrl = newGalleryUrls[0];
       } else if (currentImages.length > 0) {
         featuredUrl = currentImages[0];
+      } else if (parsedColorImages[0]?.image) {
+        featuredUrl = parsedColorImages[0].image;
       } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
         featuredUrl = parsedVariants[0].image;
         parsedVariants[0].isFeatured = true;
@@ -347,6 +406,9 @@ const updateProduct = async (req, res) => {
       if (v.image && !allImages.includes(v.image)) {
         allImages.push(v.image);
       }
+    });
+    parsedColorImages.forEach((entry) => {
+      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
     });
 
     // Determine stock quantity
@@ -419,6 +481,7 @@ const updateProduct = async (req, res) => {
       stockQuantity: Math.max(0, newQty),
       ...(lowStockThreshold !== undefined && { lowStockThreshold: Math.max(0, parseInt(lowStockThreshold, 10)) }),
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
+      ...(colorImages !== undefined && { colorImages: parsedColorImages.map(({ color, image }) => ({ color, image })) }),
       variants: parsedVariants,
       ...(published !== undefined && { published: published === "true" || published === true }),
     };

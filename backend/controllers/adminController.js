@@ -9,8 +9,8 @@ import { decryptAES } from "../utils/crypto.js";
  */
 const adminChangePassword = async (req, res) => {
   try {
+    const { accountId, profileId } = req.auth;
     const {
-      adminId,
       currentEncryptedPassword,
       currentIv,
       newEncryptedPassword,
@@ -40,14 +40,15 @@ const adminChangePassword = async (req, res) => {
       });
     }
 
-    // Find admin record
-    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
-    if (!admin) {
+    const [account, admin] = await Promise.all([
+      prisma.authAccount.findUnique({ where: { id: accountId } }),
+      prisma.admin.findUnique({ where: { id: profileId } }),
+    ]);
+    if (!account || !admin || admin.accountId !== account.id) {
       return res.json({ success: false, message: "Admin not found" });
     }
 
-    // Verify current password
-    const isMatch = await bcrypt.compare(currentPassword, admin.password);
+    const isMatch = await bcrypt.compare(currentPassword, account.passwordHash);
     if (!isMatch) {
       return res.json({
         success: false,
@@ -59,10 +60,19 @@ const adminChangePassword = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    await prisma.admin.update({
-      where: { id: adminId },
-      data: { password: hashedPassword },
-    });
+    await prisma.$transaction([
+      prisma.authAccount.update({
+        where: { id: account.id },
+        data: {
+          passwordHash: hashedPassword,
+          passwordChangedAt: new Date(),
+        },
+      }),
+      prisma.admin.update({
+        where: { id: admin.id },
+        data: { password: hashedPassword },
+      }),
+    ]);
 
     res.json({ success: true, message: "Password changed successfully" });
   } catch (error) {

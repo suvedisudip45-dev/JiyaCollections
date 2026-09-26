@@ -2,6 +2,7 @@ import { createContext, useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import { clearAuthTokens, getAccessToken } from "../auth/tokenStorage";
 
 export const ShopContext = createContext();
 
@@ -20,8 +21,25 @@ const ShopContextProvider = (props) => {
       return [];
     }
   });
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(() => getAccessToken());
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const updateToken = (event) => {
+      if (event.detail?.accessToken) setToken(event.detail.accessToken);
+    };
+    const clearToken = () => {
+      setToken("");
+      setCartItems({});
+      localStorage.removeItem("cartItems");
+    };
+    window.addEventListener("auth:tokens-updated", updateToken);
+    window.addEventListener("auth:tokens-cleared", clearToken);
+    return () => {
+      window.removeEventListener("auth:tokens-updated", updateToken);
+      window.removeEventListener("auth:tokens-cleared", clearToken);
+    };
+  }, []);
 
   // Shipping config from backend
   const [shippingConfig, setShippingConfig] = useState({
@@ -351,7 +369,7 @@ const ShopContextProvider = (props) => {
           msg.includes("invalid token")
         ) {
           // Clear stale or expired token so app reflects logged out state
-          localStorage.removeItem("token");
+          clearAuthTokens();
           setToken("");
         }
       }
@@ -366,7 +384,7 @@ const ShopContextProvider = (props) => {
   }, []);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem("token");
+    const storedToken = getAccessToken();
     if (storedToken) {
       setToken(storedToken);
       getUserCart(storedToken);

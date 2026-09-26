@@ -1,6 +1,6 @@
 /* eslint-disable no-unused-vars */
-import React from "react";
-import { Routes, Route } from "react-router-dom";
+import React, { useContext } from "react";
+import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import Home from "./pages/Home";
 import Collection from "./pages/Collection";
 import About from "./pages/About";
@@ -18,6 +18,16 @@ import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import Verify from "./pages/Verify";
 import Wishlist from "./pages/Wishlist";
+import MarketingCards from "./pages/MarketingCards";
+import { ShopContext } from "./context/ShopContext";
+import { installAuthInterceptor } from "./api/authInterceptor";
+
+installAuthInterceptor();
+
+const CustomerOnly = () => {
+  const { token } = useContext(ShopContext);
+  return token ? <Outlet /> : <Navigate to="/" replace />;
+};
 
 const App = () => {
   return (
@@ -34,9 +44,12 @@ const App = () => {
         <Route path="/product/:productId" element={<Product />} />
         <Route path="/cart" element={<Cart />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/place-order" element={<PlaceOrder />} />
-        <Route path="/orders" element={<Orders />} />
-        <Route path="/profile" element={<Profile />} />
+        <Route element={<CustomerOnly />}>
+          <Route path="place-order" element={<PlaceOrder />} />
+          <Route path="orders" element={<Orders />} />
+          <Route path="profile" element={<Profile />} />
+          <Route path="marketing-cards" element={<MarketingCards />} />
+        </Route>
         <Route path="/verify" element={<Verify />} />
         <Route path="/wishlist" element={<Wishlist />} />
         </Routes>

@@ -1,10 +1,10 @@
 import express from "express";
-import authManufacturer from "../middleware/manufacturerAuth.js";
+import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { getPersonalizedLetterStatus, printPersonalizedLetter } from "../services/personalizedLetterService.js";
 
 const personalizedLetterRouter = express.Router();
 
-personalizedLetterRouter.get("/:orderId", authManufacturer, async (req, res) => {
+personalizedLetterRouter.get("/:orderId", authenticate, authorize("manufacturer:letter_status_read"), setManufacturerContext, async (req, res) => {
   try {
     const status = await getPersonalizedLetterStatus(req.params.orderId, req.manufacturerId);
     return res.json({ success: true, data: status });
@@ -14,7 +14,7 @@ personalizedLetterRouter.get("/:orderId", authManufacturer, async (req, res) => 
   }
 });
 
-personalizedLetterRouter.post("/:orderId/print", authManufacturer, async (req, res) => {
+personalizedLetterRouter.post("/:orderId/print", authenticate, authorize("manufacturer:letter_print"), setManufacturerContext, async (req, res) => {
   try {
     const result = await printPersonalizedLetter(req.params.orderId, req.manufacturerId, req.body?.idempotencyKey || null);
     return res.json(result);

@@ -2,6 +2,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:5173",
   "http://localhost:5174",
   "http://localhost:5175",
+  "http://localhost:5176",
 ];
 
 const normalizeOrigin = (value) => {
@@ -23,13 +24,20 @@ export const getAllowedOrigins = () => {
     ...parseOrigins(process.env.FRONTEND_URL),
     ...parseOrigins(process.env.ADMIN_URL),
     ...parseOrigins(process.env.MANUFACTURER_URL),
+    ...parseOrigins(process.env.MARKETING_URL),
   ];
+
 
   return [...new Set(origins.filter(Boolean))];
 };
 
+const LOCALHOST_ORIGIN_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/i;
+
 export const isOriginAllowed = (origin) => {
   if (!origin) return true;
   const normalizedOrigin = normalizeOrigin(origin);
+  if (LOCALHOST_ORIGIN_REGEX.test(normalizedOrigin)) {
+    return true;
+  }
   return getAllowedOrigins().includes(normalizedOrigin);
 };

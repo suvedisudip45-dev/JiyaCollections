@@ -1,5 +1,5 @@
 import express from "express";
-import authAdmin from "../middleware/adminAuth.js";
+import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 import {
   createExpense,
   getExpenses,
@@ -10,10 +10,10 @@ import {
 
 const expenseRouter = express.Router();
 
-expenseRouter.post("/add", authAdmin, createExpense);
-expenseRouter.get("/list", authAdmin, getExpenses);
-expenseRouter.post("/update", authAdmin, updateExpense);
-expenseRouter.post("/delete", authAdmin, deleteExpense);
-expenseRouter.get("/summary", authAdmin, getExpenseSummary);
+expenseRouter.post("/add", authenticate, authorize("expense:create"), createExpense);
+expenseRouter.get("/list", authenticate, authorize("expense:read"), getExpenses);
+expenseRouter.post("/update", authenticate, authorize("expense:update"), updateExpense);
+expenseRouter.post("/delete", authenticate, authorize("expense:delete"), deleteExpense);
+expenseRouter.get("/summary", authenticate, authorize("expense:summary_read"), getExpenseSummary);
 
 export default expenseRouter;

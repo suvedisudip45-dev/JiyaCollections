@@ -7,6 +7,9 @@ import { getBranches, getNcmBranchName, getNcmBranchRows, getNcmCoveredAreas } f
 import { syncManufacturerRating, syncAllManufacturersRatings } from "../services/manufacturerRatingService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { serializeRegistrationResponse } from "../dtos/registrationDto.js";
+import { assignAccountRole } from "../services/rbacService.js";
+import { setRefreshCookie } from "../utils/refreshCookie.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -80,48 +83,36 @@ const syncNcmBranches = async (req, res) => {
 
 // ─── LOGIN ───────────────────────────────────────────────────────────────────
 const loginManufacturer = async (req, res) => {
+  const ipAddress = req.ip || req.headers["x-forwarded-for"] || "";
+  const userAgent = req.headers["user-agent"] || "";
   try {
-    const { email, password } = req.body;
-    if (!email || !password)
+    const { email, password, identifier } = req.body;
+    const loginIdentifier = identifier || email;
+    if (!loginIdentifier || !password)
       return res.json({ success: false, message: "Email and password required" });
 
-    if (!validator.isEmail(String(email).trim())) {
-      return res.json({ success: false, message: "Please enter a valid email address" });
-    }
-
-    const manufacturer = await prisma.manufacturer.findUnique({
-      where: { email: email.toLowerCase().trim() },
+    const { authenticateAccount } = await import("../services/authService.js");
+    const authResult = await authenticateAccount({
+      identifier: loginIdentifier,
+      password,
+      targetPortal: "MANUFACTURER",
+      ipAddress,
+      userAgent,
     });
-    if (!manufacturer)
-      return res.json({ success: false, message: "Invalid credentials" });
 
-    const normalizedStatus = (manufacturer.contractStatus || "ACTIVE").toUpperCase();
-    if (!manufacturer.isActive || normalizedStatus === "PENDING") {
-      return res.json({ success: false, message: "Your manufacturer application is pending admin approval." });
-    }
-    if (normalizedStatus === "REJECTED") {
-      return res.json({ success: false, message: "Your manufacturer registration was rejected. Contact admin for more details." });
-    }
-    if (normalizedStatus === "SUSPENDED" || normalizedStatus === "TERMINATED") {
-      return res.json({ success: false, message: "This manufacturer account is currently inactive. Contact admin." });
-    }
-
-    const match = await bcrypt.compare(password, manufacturer.password);
-    if (!match)
-      return res.json({ success: false, message: "Invalid credentials" });
-
-    const token = jwt.sign(
-      { manufacturerId: manufacturer.id, role: "manufacturer" },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    const { password: _, ...safeManufacturer } = manufacturer;
-    safeManufacturer.businessName = safeManufacturer.name;
-    res.json({ success: true, token, manufacturer: safeManufacturer });
+    const safeManufacturer = { ...authResult.profile };
+    safeManufacturer.businessName = safeManufacturer.name || "";
+    setRefreshCookie(res, "MANUFACTURER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    res.json({
+      success: true,
+      token: authResult.accessToken,
+      accessToken: authResult.accessToken,
+      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
+      manufacturer: safeManufacturer,
+    });
   } catch (error) {
     console.error("loginManufacturer error:", error);
-    res.json({ success: false, message: error.message });
+    res.json({ success: false, message: error.message || "Invalid credentials" });
   }
 };
 
@@ -241,39 +232,55 @@ const registerManufacturer = async (req, res) => {
       agreedCommissionRate ?? commissionRate ?? proposedCommissionRate ?? 12
     );
 
-    const manufacturer = await prisma.manufacturer.create({
-      data: {
-        name: mfgName,
-        email: email.toLowerCase().trim(),
-        password: hashed,
-        phone: normalizedPhone,
-        city: city.trim(),
-        ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
-        pickupBranchStatus: "UNVERIFIED",
-        pickupAddress: pickupAddress || address || null,
-        pickupContactName: pickupContactName || "",
-        pickupContactPhone: normalizedPickupContactPhone,
-        pickupWindow: pickupWindow || "",
-        returnInstructions: returnInstructions || null,
-        address: address || null,
-        isActive: true,
-        isAvailable: true,
-        contractStatus: "ACTIVE",
-        contractDocUrl,
-        contractStartDate: startVal ? new Date(startVal) : null,
-        contractExpiryDate: endVal ? new Date(endVal) : null,
-        agreementNotes: agreementNotes || null,
-        agreedCommissionRate: null,
-        proposedCommissionRate: normalizedCommission,
-        commissionStatus: String(commissionStatus || "PENDING").trim().toUpperCase() || "PENDING",
-        commissionLastProposedBy: "ADMIN",
-        commissionHistory: [],
-      },
+    await prisma.$transaction(async (tx) => {
+      const newAccount = await tx.authAccount.create({
+        data: {
+          email: cleanEmail,
+          phone: normalizedPhone,
+          passwordHash: hashed,
+          role: "MANUFACTURER",
+          status: "ACTIVE",
+          isEmailVerified: true,
+          isPhoneVerified: true,
+        },
+      });
+      await assignAccountRole(newAccount.id, "MANUFACTURER", { client: tx });
+
+      const newManufacturer = await tx.manufacturer.create({
+        data: {
+          accountId: newAccount.id,
+          name: mfgName,
+          email: cleanEmail,
+          password: hashed,
+          phone: normalizedPhone,
+          city: city.trim(),
+          ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
+          pickupBranchStatus: "UNVERIFIED",
+          pickupAddress: pickupAddress || address || null,
+          pickupContactName: pickupContactName || "",
+          pickupContactPhone: normalizedPickupContactPhone,
+          pickupWindow: pickupWindow || "",
+          returnInstructions: returnInstructions || null,
+          address: address || null,
+          isActive: true,
+          isAvailable: true,
+          contractStatus: "ACTIVE",
+          contractDocUrl,
+          contractStartDate: startVal ? new Date(startVal) : null,
+          contractExpiryDate: endVal ? new Date(endVal) : null,
+          agreementNotes: agreementNotes || null,
+          agreedCommissionRate: null,
+          proposedCommissionRate: normalizedCommission,
+          commissionStatus: String(commissionStatus || "PENDING").trim().toUpperCase() || "PENDING",
+          commissionLastProposedBy: "ADMIN",
+          commissionHistory: [],
+        },
+      });
+
+      return { account: newAccount, manufacturer: newManufacturer };
     });
 
-    const { password: _, ...safe } = manufacturer;
-    safe.businessName = safe.name;
-    res.json({ success: true, message: "Manufacturer registered successfully", manufacturer: safe });
+        res.json(serializeRegistrationResponse("Manufacturer registered successfully"));
   } catch (error) {
     console.error("registerManufacturer error:", error);
     res.json({ success: false, message: error.message });
@@ -322,10 +329,10 @@ const registerManufacturerSelf = async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const existing = await prisma.manufacturer.findUnique({ where: { email: normalizedEmail } });
+    const existing = await prisma.authAccount.findUnique({ where: { email: normalizedEmail } });
     if (existing) return res.json({ success: false, message: "Email already registered" });
 
-    const duplicatePhoneManufacturer = await prisma.manufacturer.findFirst({ where: { phone: normalizedPhone } });
+    const duplicatePhoneManufacturer = await prisma.authAccount.findFirst({ where: { phone: normalizedPhone } });
     if (duplicatePhoneManufacturer) {
       return res.json({ success: false, message: "Contact number already used" });
     }
@@ -346,39 +353,55 @@ const registerManufacturerSelf = async (req, res) => {
       agreedCommissionRate ?? commissionRate ?? proposedCommissionRate ?? 12
     );
 
-    const manufacturer = await prisma.manufacturer.create({
-      data: {
-        name: mfgName,
-        email: normalizedEmail,
-        password: hashed,
-        phone: normalizedPhone,
-        city: city.trim(),
-        ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
-        pickupBranchStatus: "UNVERIFIED",
-        pickupAddress: pickupAddress || address || null,
-        pickupContactName: pickupContactName || "",
-        pickupContactPhone: normalizedPickupContactPhone,
-        pickupWindow: pickupWindow || "",
-        returnInstructions: returnInstructions || null,
-        address: address || null,
-        isActive: false,
-        isAvailable: false,
-        contractStatus: "PENDING",
-        contractDocUrl,
-        contractStartDate: startVal ? new Date(startVal) : null,
-        contractExpiryDate: endVal ? new Date(endVal) : null,
-        agreementNotes: agreementNotes || "Application submitted for admin review.",
-        agreedCommissionRate: null,
-        proposedCommissionRate: normalizedCommission,
-        commissionStatus: String(commissionStatus || "PENDING").trim().toUpperCase() || "PENDING",
-        commissionLastProposedBy: "ADMIN",
-        commissionHistory: [],
-      },
+    await prisma.$transaction(async (tx) => {
+      const newAccount = await tx.authAccount.create({
+        data: {
+          email: normalizedEmail,
+          phone: normalizedPhone,
+          passwordHash: hashed,
+          role: "MANUFACTURER",
+          status: "PENDING_APPROVAL",
+          isEmailVerified: false,
+          isPhoneVerified: false,
+        },
+      });
+      await assignAccountRole(newAccount.id, "MANUFACTURER", { client: tx });
+
+      const newManufacturer = await tx.manufacturer.create({
+        data: {
+          accountId: newAccount.id,
+          name: mfgName,
+          email: normalizedEmail,
+          password: hashed,
+          phone: normalizedPhone,
+          city: city.trim(),
+          ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
+          pickupBranchStatus: "UNVERIFIED",
+          pickupAddress: pickupAddress || address || null,
+          pickupContactName: pickupContactName || "",
+          pickupContactPhone: normalizedPickupContactPhone,
+          pickupWindow: pickupWindow || "",
+          returnInstructions: returnInstructions || null,
+          address: address || null,
+          isActive: false,
+          isAvailable: false,
+          contractStatus: "PENDING",
+          contractDocUrl,
+          contractStartDate: startVal ? new Date(startVal) : null,
+          contractExpiryDate: endVal ? new Date(endVal) : null,
+          agreementNotes: agreementNotes || "Application submitted for admin review.",
+          agreedCommissionRate: null,
+          proposedCommissionRate: normalizedCommission,
+          commissionStatus: String(commissionStatus || "PENDING").trim().toUpperCase() || "PENDING",
+          commissionLastProposedBy: "ADMIN",
+          commissionHistory: [],
+        },
+      });
+
+      return { account: newAccount, manufacturer: newManufacturer };
     });
 
-    const { password: _, ...safe } = manufacturer;
-    safe.businessName = safe.name;
-    res.json({ success: true, message: "Manufacturer registration submitted successfully. Admin review is required before your account becomes active.", manufacturer: safe });
+        res.json(serializeRegistrationResponse("Manufacturer registration submitted successfully. Admin review is required before your account becomes active."));
   } catch (error) {
     console.error("registerManufacturerSelf error:", error);
     res.json({ success: false, message: error.message });
@@ -462,6 +485,14 @@ const updateQualityRating = async (req, res) => {
 };
 
 // ─── ADMIN: UPDATE CONTRACT STATUS ───────────────────────────────────────────
+export const getAuthAccountStatusForContractStatus = (contractStatus) => ({
+  ACTIVE: "ACTIVE",
+  PENDING: "PENDING_APPROVAL",
+  REJECTED: "REJECTED",
+  SUSPENDED: "SUSPENDED",
+  TERMINATED: "INACTIVE",
+})[String(contractStatus || "").trim().toUpperCase()] || null;
+
 const updateContractStatus = async (req, res) => {
   try {
     const manufacturerId = req.params?.id || req.body?.manufacturerId || req.body?.id;
@@ -500,7 +531,23 @@ const updateContractStatus = async (req, res) => {
       updateData.isActive = false;
     }
 
-    await prisma.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+    await prisma.$transaction(async (tx) => {
+      const manufacturer = await tx.manufacturer.findUnique({
+        where: { id: manufacturerId },
+        select: { accountId: true },
+      });
+      if (!manufacturer) throw new Error("Manufacturer not found");
+
+      await tx.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+
+      const accountStatus = getAuthAccountStatusForContractStatus(contractStatus);
+      if (manufacturer.accountId && accountStatus) {
+        await tx.authAccount.update({
+          where: { id: manufacturer.accountId },
+          data: { status: accountStatus },
+        });
+      }
+    });
     res.json({ success: true, message: "Contract status updated" });
   } catch (error) {
     console.error("updateContractStatus error:", error);

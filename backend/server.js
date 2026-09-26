@@ -5,6 +5,7 @@ import { logger } from "./utils/logger.js";
 import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
+import { validateJwtConfig } from "./config/jwt.js";
 import userRouter from "./routes/userRoute.js";
 import productRouter from "./routes/productRoute.js";
 import cartRouter from "./routes/cartRoute.js";
@@ -29,6 +30,8 @@ import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
+import marketingCardRouter from "./routes/marketingCardRoute.js";
+import authRouter from "./routes/authRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
@@ -37,6 +40,7 @@ const app = express();
 const port = process.env.PORT || 4000;
 
 const startServer = async () => {
+  validateJwtConfig();
   await connectDB();
   connectCloudinary();
   ensureStandardChartOfAccounts();
@@ -71,20 +75,22 @@ app.use((req, res, next) => {
 
 const allowedOrigins = getAllowedOrigins();
 
-app.use(cors({
+const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (isOriginAllowed(origin)) return callback(null, true);
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'x-requested-with'],
   credentials: true,
-}));
+};
 
-app.options('*', cors());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 //  Api Endpoints
+app.use("/api/auth", authRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/cart", cartRouter);
@@ -112,6 +118,7 @@ app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);
 app.use("/api/personalized-letter", personalizedLetterRouter);
 app.use("/api/admin/story-letter", storyLetterAdminRouter);
+app.use("/api/marketing-cards", marketingCardRouter);
 app.use("/webhooks", deliveryRouter);
 app.use("/api/ncm-webhook", deliveryRouter);
 

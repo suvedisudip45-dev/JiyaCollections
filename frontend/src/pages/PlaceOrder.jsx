@@ -4,6 +4,7 @@ import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
 import { assets } from "../assets/assets";
 import { ShopContext } from "../context/ShopContext";
+import { clearAuthTokens } from "../auth/tokenStorage";
 import axios from "axios";
 import { toast } from "react-toastify";
 import NepalMapModal from "../components/NepalMapModal";
@@ -28,6 +29,7 @@ const PlaceOrder = () => {
     navigate,
     backendUrl,
     token,
+    setToken,
     cartItems,
     setCartItems,
     getCartAmount,
@@ -124,7 +126,7 @@ const PlaceOrder = () => {
       if (!profRes.data.success) {
         const msg = (profRes.data.message || "").toLowerCase();
         if (msg.includes("not authorized") || msg.includes("jwt") || msg.includes("user not found")) {
-          localStorage.removeItem("token");
+          clearAuthTokens();
           setToken("");
           toast.error("Session expired. Please login again.");
           navigate("/login", { state: { from: "/place-order" } });

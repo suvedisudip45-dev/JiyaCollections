@@ -1,0 +1,117 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ─────────────────────────────────────── */
+:root {
+  --mp-bg:           #f0faf8;
+  --mp-surface:      #ffffff;
+  --mp-surface-2:    #f8fdfc;
+  --mp-ink:          #0e2d28;
+  --mp-ink-2:        #3d6660;
+  --mp-muted:        #8aada8;
+  --mp-line:         #d4e9e6;
+  --mp-brand:        #248d82;
+  --mp-brand-dark:   #1a7268;
+  --mp-brand-light:  #e0f5f2;
+  --mp-accent:       #0d574e;
+  --mp-danger:       #dc2626;
+  --mp-warning:      #d97706;
+  --mp-success:      #16a34a;
+  --mp-info:         #0891b2;
+  --sidebar-w:       240px;
+}
+
+* { font-family: 'Outfit', sans-serif; }
+
+body {
+  background: var(--mp-bg);
+  color: var(--mp-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--mp-line); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--mp-muted); }
+
+/* ── Focus ring ─────────────────────────────────────────── */
+:focus-visible { outline: 2px solid var(--mp-brand); outline-offset: 2px; }
+
+/* ── Input base ─────────────────────────────────────────── */
+input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── Skeleton animation ─────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #e8f4f2 25%, #d0ebe7 50%, #e8f4f2 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 8px;
+}
+
+/* ── Fade-in animation ──────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.3s ease-out forwards; }
+
+/* ── Slide-in sidebar ───────────────────────────────────── */
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+/* ── Badge colors ───────────────────────────────────────── */
+.badge-generated  { background: #e0f2fe; color: #0369a1; }
+.badge-assigned   { background: #fef3c7; color: #92400e; }
+.badge-received   { background: #ede9fe; color: #6d28d9; }
+.badge-available  { background: #d1fae5; color: #065f46; }
+.badge-attached   { background: #fce7f3; color: #9d174d; }
+.badge-cancelled  { background: #fee2e2; color: #991b1b; }
+.badge-active     { background: #d1fae5; color: #065f46; }
+.badge-inactive   { background: #fee2e2; color: #991b1b; }
+.badge-draft      { background: #f3f4f6; color: #374151; }
+.badge-paused     { background: #fef3c7; color: #92400e; }
+.badge-expired    { background: #fee2e2; color: #991b1b; }
+.badge-redeemed   { background: #fef3c7; color: #92400e; }
+.badge-linked     { background: #e0f2fe; color: #0369a1; }
+.badge-nationwide { background: #e0f2fe; color: #0369a1; }
+.badge-province   { background: #ede9fe; color: #6d28d9; }
+.badge-district   { background: #fce7f3; color: #9d174d; }
+
+/* ── Status lifecycle indicators ───────────────────────── */
+.lifecycle-step { transition: all 0.2s ease; }
+.lifecycle-step.done { border-color: var(--mp-brand); }
+.lifecycle-step.current { border-color: var(--mp-brand); background: var(--mp-brand-light); }
+.lifecycle-step.pending { border-color: var(--mp-line); opacity: 0.5; }
+
+/* ── QR Scanner frame ───────────────────────────────────── */
+@keyframes scanPulse {
+  0%, 100% { border-color: var(--mp-brand); box-shadow: 0 0 0 0 rgba(36,141,130,0.4); }
+  50% { border-color: var(--mp-brand-dark); box-shadow: 0 0 0 8px rgba(36,141,130,0); }
+}
+.qr-frame { animation: scanPulse 2s ease-in-out infinite; }
+
+/* ── Card result states ─────────────────────────────────── */
+.result-valid   { border-color: #16a34a; background: #f0fdf4; }
+.result-redeemed { border-color: #d97706; background: #fffbeb; }
+.result-invalid { border-color: #dc2626; background: #fef2f2; }
+
+/* ── Mobile responsive table ────────────────────────────── */
+@media (max-width: 640px) {
+  .responsive-table thead { display: none; }
+  .responsive-table tr   { display: block; border: 1px solid var(--mp-line); border-radius: 12px; margin-bottom: 12px; padding: 12px; }
+  .responsive-table td   { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; border: none; }
+  .responsive-table td::before { content: attr(data-label); font-weight: 600; color: var(--mp-ink-2); margin-right: 8px; }
+}
