@@ -10,6 +10,7 @@ import {
 } from "./tokenService.js";
 import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
+import { normalizeRefreshPortal } from "../utils/refreshCookie.js";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
@@ -140,10 +141,15 @@ const getAccountProfile = (account) => {
   return account.customerProfile || { id: account.id, email: account.email };
 };
 
-export const rotateRefreshToken = async ({ refreshToken, ipAddress = "", userAgent = "" }) => {
+export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress = "", userAgent = "" }) => {
   const decoded = verifyRefreshToken(refreshToken);
   if (!decoded.jti || !decoded.token_family_id || !decoded.accountId) {
     throw new Error("Invalid refresh token claims.");
+  }
+  if (normalizeRefreshPortal(targetPortal) !== normalizeRefreshPortal(decoded.role)) {
+    const error = new Error("Refresh token does not belong to the requested portal.");
+    error.code = "REFRESH_PORTAL_MISMATCH";
+    throw error;
   }
 
   const currentSession = await prisma.authSession.findUnique({
@@ -276,6 +282,7 @@ export const rotateRefreshToken = async ({ refreshToken, ipAddress = "", userAge
     refreshToken: nextRefreshToken,
     tokenFamilyId: currentSession.tokenFamilyId,
     refreshTokenExpiresAt: refreshClaims.exp * 1000,
+    role: account.role,
   };
 };
 

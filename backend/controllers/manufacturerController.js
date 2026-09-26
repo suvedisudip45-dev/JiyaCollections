@@ -102,7 +102,7 @@ const loginManufacturer = async (req, res) => {
 
     const safeManufacturer = { ...authResult.profile };
     safeManufacturer.businessName = safeManufacturer.name || "";
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, "MANUFACTURER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
     res.json({
       success: true,
       token: authResult.accessToken,

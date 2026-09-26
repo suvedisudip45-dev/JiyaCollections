@@ -13,7 +13,12 @@ import {
   verifyOtpChallenge,
 } from "../services/otpService.js";
 import { serializeLoginResponse } from "../dtos/authDto.js";
-import { clearRefreshCookie, getRefreshCookie, setRefreshCookie } from "../utils/refreshCookie.js";
+import {
+  clearRefreshCookie,
+  getRefreshCookie,
+  normalizeRefreshPortal,
+  setRefreshCookie,
+} from "../utils/refreshCookie.js";
 
 /**
  * Unified Login Endpoint
@@ -52,7 +57,7 @@ export const login = async (req, res) => {
       ipAddress,
       userAgent,
     });
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, authResult.account.role, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     return res.json(serializeLoginResponse(authResult));
   } catch (error) {
@@ -68,21 +73,33 @@ export const login = async (req, res) => {
  * POST /api/auth/refresh
  */
 export const refresh = async (req, res) => {
-  const refreshToken = getRefreshCookie(req) || req.body?.refreshToken || req.body?.token;
+  const portal = normalizeRefreshPortal(req.body?.portal || req.headers["x-auth-portal"]);
+  if (!portal) {
+    return res.status(400).json({
+      success: false,
+      message: "A valid portal is required to refresh the session.",
+      code: "REFRESH_PORTAL_REQUIRED",
+    });
+  }
+
+  const refreshToken = getRefreshCookie(req, portal);
   if (!refreshToken) {
+    clearRefreshCookie(res, portal);
     return res.status(400).json({
       success: false,
       message: "Refresh token is required.",
+      code: "REFRESH_TOKEN_REQUIRED",
     });
   }
 
   try {
     const tokenPair = await rotateRefreshToken({
       refreshToken,
+      targetPortal: portal,
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
     });
-    setRefreshCookie(res, tokenPair.refreshToken, tokenPair.refreshTokenExpiresAt);
+    setRefreshCookie(res, tokenPair.role, tokenPair.refreshToken, tokenPair.refreshTokenExpiresAt);
 
     return res.json({
       success: true,
@@ -92,7 +109,7 @@ export const refresh = async (req, res) => {
       refreshTokenExpiresAt: tokenPair.refreshTokenExpiresAt,
     });
   } catch (error) {
-    clearRefreshCookie(res);
+    clearRefreshCookie(res, portal);
     return res.status(401).json({
       success: false,
       message: error.message || "Invalid refresh token.",
@@ -180,7 +197,7 @@ export const logout = async (req, res) => {
       userAgent: req.headers["user-agent"] || "",
       status: "SUCCESS",
     });
-    clearRefreshCookie(res);
+    clearRefreshCookie(res, req.auth.role);
 
     return res.json({ success: true, message: "Logged out successfully." });
   } catch (error) {

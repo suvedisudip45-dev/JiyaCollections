@@ -57,7 +57,7 @@ export const partnerLogin = async (req, res) => {
       userAgent,
     });
 
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, "MARKETING_PARTNER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
     return res.json({
       success: true,
       token: authResult.accessToken,

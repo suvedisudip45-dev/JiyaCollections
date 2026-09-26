@@ -66,7 +66,7 @@ const loginUser = async (req, res) => {
       ipAddress,
       userAgent,
     });
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, "CUSTOMER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     const addresses = parseJsonArray(authResult.profile?.addresses);
     res.json({
@@ -222,7 +222,7 @@ const registerUser = async (req, res) => {
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
     });
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, "CUSTOMER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     res.json({
       success: true,
@@ -789,7 +789,7 @@ const adminLogin = async (req, res) => {
       userAgent,
     });
 
-    setRefreshCookie(res, authResult.refreshToken, authResult.refreshTokenExpiresAt);
+    setRefreshCookie(res, "ADMIN", authResult.refreshToken, authResult.refreshTokenExpiresAt);
     res.json({
       success: true,
       token: authResult.accessToken,

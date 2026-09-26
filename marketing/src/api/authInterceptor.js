@@ -24,17 +24,38 @@ const redirectToLogin = () => {
   window.location.replace(loginPath);
 };
 
-const refreshAccessToken = () => {
+const readHeader = (headers, name) =>
+  headers?.get?.(name) || headers?.[name] || headers?.[name.toLowerCase()] || "";
+
+const getRequestAccessToken = (headers) => {
+  const tokenHeader = readHeader(headers, "token");
+  const authorization = readHeader(headers, "Authorization");
+  return tokenHeader || authorization.replace(/^Bearer\s+/i, "") || getAccessToken();
+};
+
+const refreshAccessToken = (staleAccessToken = getAccessToken()) => {
   if (!refreshPromise) {
-    refreshPromise = axios
-      .post(`${backendUrl}/api/auth/refresh`, {}, { withCredentials: true })
-      .then((refreshResponse) => {
-        const accessToken = storeAuthTokens(refreshResponse.data);
-        if (!accessToken || !refreshResponse.data?.refreshTokenExpiresAt) {
-          throw new Error("Refresh response did not include a complete token pair.");
-        }
-        return accessToken;
-      })
+    const rotate = async () => {
+      const currentAccessToken = getAccessToken();
+      if (currentAccessToken && currentAccessToken !== staleAccessToken) return currentAccessToken;
+
+      const refreshResponse = await axios.post(
+        `${backendUrl}/api/auth/refresh`,
+        { portal: "MARKETING_PARTNER" },
+        { withCredentials: true }
+      );
+      const accessToken = storeAuthTokens(refreshResponse.data);
+      if (!accessToken || !refreshResponse.data?.refreshTokenExpiresAt) {
+        throw new Error("Refresh response did not include a complete token pair.");
+      }
+      return accessToken;
+    };
+
+    const refreshOperation = typeof navigator !== "undefined" && navigator.locks?.request
+      ? navigator.locks.request("clothes-store-auth-refresh-marketing", rotate)
+      : rotate();
+
+    refreshPromise = refreshOperation
       .finally(() => {
         refreshPromise = null;
       });
@@ -97,7 +118,7 @@ export const installAuthInterceptor = (client = axios, redirectPath = "/login") 
 
       originalRequest._authRetry = true;
       try {
-        const accessToken = await refreshAccessToken();
+        const accessToken = await refreshAccessToken(getRequestAccessToken(headers));
         originalRequest.headers = originalRequest.headers || {};
         originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         originalRequest.headers.token = accessToken;
@@ -112,8 +133,12 @@ export const installAuthInterceptor = (client = axios, redirectPath = "/login") 
   window.addEventListener("auth:tokens-updated", scheduleSessionExpiry);
   window.addEventListener("auth:tokens-cleared", () => window.clearTimeout(expiryTimer));
   window.addEventListener("storage", (event) => {
-    if (event.key === ACCESS_TOKEN_KEY && event.oldValue && !event.newValue) {
-      redirectToLogin();
+    if (event.key === ACCESS_TOKEN_KEY) {
+      if (event.newValue) {
+        window.dispatchEvent(new CustomEvent("auth:tokens-updated", { detail: { accessToken: event.newValue } }));
+      } else if (event.oldValue) {
+        redirectToLogin();
+      }
     } else if (event.key === REFRESH_EXPIRY_KEY) {
       scheduleSessionExpiry();
     }

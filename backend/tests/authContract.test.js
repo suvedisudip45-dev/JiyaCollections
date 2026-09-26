@@ -4,6 +4,11 @@ import crypto from "node:crypto";
 import "dotenv/config";
 import { serializeLoginResponse } from "../dtos/authDto.js";
 import { resolvePassword, resolveTargetPortal } from "../services/authService.js";
+import {
+  clearRefreshCookie,
+  getRefreshCookie,
+  setRefreshCookie,
+} from "../utils/refreshCookie.js";
 
 const encrypt = (value) => {
   const key = Buffer.from(process.env.AES_SECRET_KEY, "hex");
@@ -45,4 +50,30 @@ test("login response is an explicit allow-list", () => {
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);
   assert.equal(JSON.stringify(response).includes("iv"), false);
+});
+
+test("refresh cookies are isolated by portal", () => {
+  const issuedCookies = new Map();
+  const clearedCookies = [];
+  const response = {
+    cookie: (name, value) => issuedCookies.set(name, value),
+    clearCookie: (name) => clearedCookies.push(name),
+  };
+
+  setRefreshCookie(response, "CUSTOMER", "customer-refresh", Date.now() + 60_000);
+  setRefreshCookie(response, "ADMIN", "admin-refresh", Date.now() + 60_000);
+
+  const request = {
+    headers: {
+      cookie: "refresh_token_customer=customer-refresh; refresh_token_admin=admin-refresh",
+    },
+  };
+
+  assert.equal(getRefreshCookie(request, "CUSTOMER"), "customer-refresh");
+  assert.equal(getRefreshCookie(request, "ADMIN"), "admin-refresh");
+  assert.equal(getRefreshCookie(request, "MANUFACTURER"), "");
+
+  clearRefreshCookie(response, "ADMIN");
+  assert.deepEqual(clearedCookies, ["refresh_token_admin"]);
+  assert.equal(issuedCookies.get("refresh_token_customer"), "customer-refresh");
 });
