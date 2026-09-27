@@ -19,15 +19,16 @@ import {
   syncNcmBranches,
 } from "../controllers/manufacturerController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
 const manufacturerRouter = express.Router();
 const upload = multer({ dest: "uploads/" });
 
 // Public
-manufacturerRouter.post("/login", loginManufacturer);
+manufacturerRouter.post("/login", loginRateLimitForPortal("MANUFACTURER"), resetLoginRateLimitOnSuccess, loginManufacturer);
 manufacturerRouter.get("/branches", getAvailableNcmBranches);
 manufacturerRouter.post("/admin/branches/sync", authenticate, authorize("manufacturer:branches_sync"), syncNcmBranches);
-manufacturerRouter.post("/register", upload.single("contractDoc"), registerManufacturerSelf);
+manufacturerRouter.post("/register", publicRegistrationRateLimit, upload.single("contractDoc"), registerManufacturerSelf);
 
 // Manufacturer-authenticated
 manufacturerRouter.get("/profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);

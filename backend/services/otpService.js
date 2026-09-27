@@ -2,9 +2,20 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "../config/db.js";
 
-const OTP_EXPIRY_MINUTES = 5;
 const MAX_ATTEMPTS = 5;
 const RESEND_COOLDOWN_SECONDS = 60;
+
+export const loadOtpConfig = (env = process.env) => {
+  const expiryMinutes = Number(env.OTP_EXPIRY_MINUTES || 5);
+  const length = Number(env.OTP_LENGTH || 6);
+  if (!Number.isInteger(expiryMinutes) || expiryMinutes < 1 || expiryMinutes > 60) {
+    throw new Error("OTP_EXPIRY_MINUTES must be an integer from 1 to 60.");
+  }
+  if (!Number.isInteger(length) || length < 4 || length > 10) {
+    throw new Error("OTP_LENGTH must be an integer from 4 to 10.");
+  }
+  return { expiryMinutes, length };
+};
 
 /**
  * Provider abstraction for SMS / Email dispatch
@@ -29,8 +40,13 @@ export const otpProvider = {
 /**
  * Generates a cryptographically secure 6-digit OTP
  */
-export const generateSecureOtp = () => {
-  return crypto.randomInt(100000, 999999).toString();
+export const generateSecureOtp = (length = loadOtpConfig().length) => {
+  if (!Number.isInteger(length) || length < 4 || length > 10) {
+    throw new Error("OTP length must be an integer from 4 to 10.");
+  }
+  const minimum = 10 ** (length - 1);
+  const maximumExclusive = 10 ** length;
+  return crypto.randomInt(minimum, maximumExclusive).toString();
 };
 
 /**
@@ -73,10 +89,11 @@ export const createOtpChallenge = async ({
     data: { isInvalidated: true },
   });
 
-  const otpCode = generateSecureOtp();
+  const { expiryMinutes, length } = loadOtpConfig();
+  const otpCode = generateSecureOtp(length);
   const salt = await bcrypt.genSalt(10);
   const codeHash = await bcrypt.hash(otpCode, salt);
-  const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MINUTES * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + expiryMinutes * 60 * 1000);
 
   const challenge = await prisma.otpChallenge.create({
     data: {
@@ -102,7 +119,7 @@ export const createOtpChallenge = async ({
   return {
     challengeId: challenge.id,
     destination: cleanDestination,
-    expiresInSeconds: OTP_EXPIRY_MINUTES * 60,
+    expiresInSeconds: expiryMinutes * 60,
   };
 };
 

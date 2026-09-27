@@ -1,3 +1,5 @@
+import { promises as fs } from "node:fs";
+import { v2 as cloudinary } from "cloudinary";
 import {
   assignCards,
   approvePartner,
@@ -63,6 +65,26 @@ export const adminCreateCampaign = async (req, res) => {
     if (!req.body.name?.trim() || !req.body.marketingPartnerId) return res.status(400).json({ success: false, message: "Campaign name and marketing partner are required." });
     return res.status(201).json({ success: true, campaign: await createCampaign(req.body) });
   } catch (error) { return sendError(res, error); }
+};
+
+export const adminUploadCampaignMedia = async (req, res) => {
+  if (!req.file) return res.status(400).json({ success: false, message: "Select an image or video to upload." });
+
+  try {
+    const mediaType = req.file.mimetype.startsWith("video/") ? "VIDEO" : "IMAGE";
+    const uploaded = await cloudinary.uploader.upload(req.file.path, {
+      resource_type: mediaType === "VIDEO" ? "video" : "image",
+      folder: "aama_marketing_campaigns",
+    });
+    return res.status(201).json({
+      success: true,
+      media: { mediaType, mediaUrl: uploaded.secure_url },
+    });
+  } catch (error) {
+    return sendError(res, error);
+  } finally {
+    await fs.unlink(req.file.path).catch(() => {});
+  }
 };
 
 export const adminDeactivateCampaign = async (req, res) => {

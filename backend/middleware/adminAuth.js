@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { hasVerifiedAdminMfa } from "../services/tokenService.js";
 
 const extractToken = (req) => {
   const authHeader = req.headers.authorization;
@@ -22,6 +23,13 @@ const adminAuth = async (req, res, next) => {
     if (typeof token_decode === "object") {
       const role = String(token_decode.role || "").toUpperCase();
       if (role === "ADMIN") {
+        if (!hasVerifiedAdminMfa(token_decode)) {
+          return res.status(401).json({
+            success: false,
+            message: "Admin multi-factor verification is required.",
+            code: "ADMIN_MFA_REQUIRED",
+          });
+        }
         const adminId = token_decode.adminId || token_decode.profileId || token_decode.accountId || token_decode.id;
         if (!req.body) req.body = {};
         req.body.adminId = adminId;

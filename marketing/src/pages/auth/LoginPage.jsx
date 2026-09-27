@@ -1,10 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
-import { Eye, EyeOff, BadgeCheck, Loader2, AlertCircle } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Eye, EyeOff, Loader2, AlertCircle, MailCheck, RefreshCw, ShieldCheck, Smartphone } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
+import { authApi } from "../../api/auth";
+
+const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
 const LoginPage = () => {
-  const { login, isAuthenticated } = useAuth();
+  const { login, verifyTwoFactor, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || "/dashboard";
@@ -14,6 +17,24 @@ const LoginPage = () => {
   const [showPwd,  setShowPwd]  = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
+  const [loginStep, setLoginStep] = useState("credentials");
+  const [challenge, setChallenge] = useState(null);
+  const [method, setMethod] = useState("");
+  const [otp, setOtp] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [resendAvailableAt, setResendAvailableAt] = useState("");
+  const [clock, setClock] = useState(0);
+
+  useEffect(() => {
+    const updateClock = () => setClock(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const secondsUntil = (timestamp) => Math.max(0, Math.ceil((Date.parse(timestamp || "") - clock) / 1000) || 0);
+  const expiresIn = secondsUntil(expiresAt);
+  const resendIn = secondsUntil(resendAvailableAt);
 
   // Already authenticated → redirect
   if (isAuthenticated) {
@@ -29,14 +50,58 @@ const LoginPage = () => {
     if (!password)        return setError("Password is required.");
 
     setLoading(true);
-    const result = await login(email, password);
-    setLoading(false);
-
-    if (result.success) {
-      navigate(from, { replace: true });
-    } else {
-      setError(result.message || "Login failed. Please check your credentials.");
+    try {
+      if (loginStep === "credentials") {
+        const result = await login(email, password);
+        if (result.requiresTwoFactor) {
+          setChallenge(result.challenge);
+          setMethod(result.challenge.availableMethods?.[0] || "");
+          setLoginStep("method");
+        } else if (result.success) {
+          navigate(from, { replace: true });
+        } else {
+          setError(result.message || "Login failed. Please check your credentials.");
+        }
+      } else if (loginStep === "method") {
+        const response = await authApi.sendTwoFactorCode(challenge.challengeId, method);
+        setExpiresAt(response.data.expiresAt);
+        setResendAvailableAt(response.data.resendAvailableAt);
+        setOtp("");
+        setLoginStep("otp");
+      } else {
+        const result = await verifyTwoFactor(challenge.challengeId, otp);
+        if (result.success) navigate(from, { replace: true });
+        else setError(result.message || "Invalid or expired verification code.");
+      }
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || requestError.message || "Verification could not be completed.");
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const handleResend = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const response = await authApi.resendTwoFactorCode(challenge.challengeId);
+      setExpiresAt(response.data.expiresAt);
+      setResendAvailableAt(response.data.resendAvailableAt);
+      setOtp("");
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || "A new code could not be sent.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const restartLogin = () => {
+    setChallenge(null);
+    setMethod("");
+    setOtp("");
+    setExpiresAt("");
+    setResendAvailableAt("");
+    setLoginStep("credentials");
   };
 
   return (
@@ -75,7 +140,7 @@ const LoginPage = () => {
             )}
 
             {/* Form */}
-            <form onSubmit={handleSubmit} noValidate className="space-y-4">
+            {loginStep === "credentials" && <form onSubmit={handleSubmit} noValidate className="space-y-4">
               {/* Email */}
               <div>
                 <label htmlFor="email" className="block text-sm font-semibold text-[var(--mp-ink)] mb-1.5">
@@ -134,7 +199,82 @@ const LoginPage = () => {
                   </>
                 ) : "Sign In"}
               </button>
-            </form>
+            </form>}
+
+            {loginStep === "method" && (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="text-center pb-2">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
+                    <ShieldCheck size={26} />
+                  </div>
+                  <h2 className="text-xl font-bold text-[var(--mp-ink)]">Verify your identity</h2>
+                  <p className="mt-1 text-sm text-[var(--mp-muted)]">Choose where to receive your sign-in code.</p>
+                </div>
+                <div className="space-y-2">
+                  {challenge?.availableMethods?.map((availableMethod) => {
+                    const destination = availableMethod === "SMS" ? challenge.maskedPhone : challenge.maskedEmail;
+                    const Icon = availableMethod === "SMS" ? Smartphone : MailCheck;
+                    return (
+                      <label key={availableMethod} className={`flex min-h-16 cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition-colors ${method === availableMethod ? "border-emerald-700 bg-emerald-50/70" : "border-[var(--mp-line)] hover:bg-slate-50"}`}>
+                        <input type="radio" name="verification-method" value={availableMethod} checked={method === availableMethod} onChange={() => setMethod(availableMethod)} className="accent-emerald-700" />
+                        <Icon size={18} className="text-emerald-800" />
+                        <span className="text-sm font-semibold text-[var(--mp-ink)]">{availableMethod === "SMS" ? "Text message" : "Email"}</span>
+                        <span className="ml-auto max-w-[55%] break-all text-right text-xs text-[var(--mp-muted)]">{destination}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <button type="submit" disabled={loading || !method} className="w-full rounded-xl bg-emerald-800 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60">
+                  {loading ? <><Loader2 size={16} className="mr-2 inline animate-spin" />Sending code</> : "Send verification code"}
+                </button>
+                <button type="button" onClick={restartLogin} className="flex w-full items-center justify-center gap-2 py-2 text-sm font-medium text-[var(--mp-muted)] hover:text-[var(--mp-ink)]">
+                  <ArrowLeft size={15} /> Back to sign in
+                </button>
+              </form>
+            )}
+
+            {loginStep === "otp" && (
+              <form onSubmit={handleSubmit} noValidate className="space-y-5">
+                <div className="text-center">
+                  <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
+                    {method === "SMS" ? <Smartphone size={24} /> : <MailCheck size={24} />}
+                  </div>
+                  <h2 className="text-xl font-bold text-[var(--mp-ink)]">Enter your verification code</h2>
+                  <p className="mt-2 text-sm text-[var(--mp-muted)]">Sent to <span className="font-semibold text-[var(--mp-ink)]">{method === "SMS" ? challenge?.maskedPhone : challenge?.maskedEmail}</span></p>
+                </div>
+                <div>
+                  <label htmlFor="marketing-otp" className="sr-only">One-time verification code</label>
+                  <input
+                    id="marketing-otp"
+                    value={otp}
+                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, challenge?.codeLength || 6))}
+                    className="w-full rounded-xl border border-[var(--mp-line)] bg-slate-50 px-4 py-4 text-center font-mono text-2xl tracking-[0.45em] text-[var(--mp-ink)] outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-700/15"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={challenge?.codeLength || 6}
+                    autoFocus
+                    required
+                  />
+                </div>
+                <div className="flex items-center justify-between border-y border-[var(--mp-line)] py-3 text-sm">
+                  <span className="text-[var(--mp-muted)]">{expiresIn ? "Code expires in" : "Code expired"}</span>
+                  <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-[var(--mp-ink)]" : "text-red-700"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
+                </div>
+                <button type="submit" disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-xl bg-emerald-800 px-4 py-3 font-bold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60">
+                  {loading ? <><Loader2 size={16} className="mr-2 inline animate-spin" />Checking code</> : "Verify and sign in"}
+                </button>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-[var(--mp-muted)]">Didn&apos;t receive the code?</span>
+                  <button type="button" onClick={handleResend} disabled={loading || resendIn > 0} className="inline-flex items-center gap-1.5 font-semibold text-emerald-800 hover:text-emerald-700 disabled:text-slate-400">
+                    <RefreshCw size={14} />{resendIn > 0 ? `Resend in ${formatCountdown(resendIn)}` : "Resend code"}
+                  </button>
+                </div>
+                <button type="button" onClick={restartLogin} className="flex w-full items-center justify-center gap-2 py-1 text-sm font-medium text-[var(--mp-muted)] hover:text-[var(--mp-ink)]">
+                  <ArrowLeft size={15} /> Start over
+                </button>
+              </form>
+            )}
 
             {/* Footer note */}
             <p className="text-center text-xs text-[var(--mp-muted)] mt-1">

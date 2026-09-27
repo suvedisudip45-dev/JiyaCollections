@@ -1,9 +1,12 @@
 import express from "express";
+import multer from "multer";
 import { authenticate, authorize, setManufacturerContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
+import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 import {
   adminAssignCards,
   adminCreateCampaign,
+  adminUploadCampaignMedia,
   adminDeactivateCampaign,
   adminCreatePartner,
   adminApprovePartner,
@@ -45,6 +48,26 @@ import {
 } from "../controllers/marketingPartnerController.js";
 
 const marketingCardRouter = express.Router();
+const campaignMediaUpload = multer({
+  dest: "uploads/marketing-card-media/",
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (file.mimetype.startsWith("image/") || file.mimetype.startsWith("video/")) {
+      return callback(null, true);
+    }
+    return callback(new Error("Only image and video files are supported."));
+  },
+});
+const handleCampaignMediaUpload = (req, res, next) => {
+  campaignMediaUpload.single("media")(req, res, (error) => {
+    if (!error) return next();
+    const statusCode = error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    return res.status(statusCode).json({
+      success: false,
+      message: statusCode === 413 ? "Promo media must be 50 MB or smaller." : error.message,
+    });
+  });
+};
 
 // ── Shared / Public routes ──────────────────────────────────
 marketingCardRouter.get("/locations", adminGetLocations);
@@ -55,6 +78,7 @@ marketingCardRouter.get("/admin/partners", authenticate, authorize("marketing_ca
 marketingCardRouter.post("/admin/partners", authenticate, authorize("marketing_card:admin_manage"), adminCreatePartner);
 marketingCardRouter.patch("/admin/partners/:partnerId/approve", authenticate, authorize("marketing_card:admin_manage"), adminApprovePartner);
 marketingCardRouter.get("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminListCampaigns);
+marketingCardRouter.post("/admin/campaign-media", authenticate, authorize("marketing_card:admin_manage"), handleCampaignMediaUpload, adminUploadCampaignMedia);
 marketingCardRouter.post("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminCreateCampaign);
 marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", authenticate, authorize("marketing_card:admin_manage"), adminDeactivateCampaign);
 marketingCardRouter.post("/admin/batches", authenticate, authorize("marketing_card:admin_manage"), adminGenerateBatch);
@@ -80,8 +104,8 @@ marketingCardRouter.post("/customer/cards/scan", authenticate, authorize("market
 marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("redeem"), customerRedeemBenefit);
 
 // ── Marketing Partner routes ─────────────────────────────────
-marketingCardRouter.post("/partner/login", partnerLogin);
-marketingCardRouter.post("/partner/signup", partnerSignup);
+marketingCardRouter.post("/partner/login", loginRateLimitForPortal("MARKETING_PARTNER"), resetLoginRateLimitOnSuccess, partnerLogin);
+marketingCardRouter.post("/partner/signup", publicRegistrationRateLimit, partnerSignup);
 marketingCardRouter.get("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, getProfile);
 marketingCardRouter.put("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, updateProfile);
 marketingCardRouter.post("/partner/change-password", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, changePassword);

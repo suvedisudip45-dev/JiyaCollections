@@ -32,6 +32,7 @@ import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
 import storyLetterAdminRouter from "./routes/storyLetterAdminRoute.js";
 import marketingCardRouter from "./routes/marketingCardRoute.js";
 import authRouter from "./routes/authRoute.js";
+import notificationRouter from "./routes/notificationRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
@@ -91,6 +92,7 @@ app.options('*', cors(corsOptions));
 
 //  Api Endpoints
 app.use("/api/auth", authRouter);
+app.use("/api/notifications", notificationRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/cart", cartRouter);

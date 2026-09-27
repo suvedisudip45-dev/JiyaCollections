@@ -31,21 +31,27 @@ test("resolveAccountPermissions returns only active mapped permissions", async (
   assert.deepEqual([...permissions].sort(), ["all:function", "product:create"]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].where.role.accounts.some.accountId, "account-1");
+  const customerPermissions = await resolveAccountPermissions("account-1", { client, principalRole: "CUSTOMER" });
+  assert.deepEqual([...customerPermissions].sort(), ["all:function", "product:create"]);
+  assert.equal(calls[1].where.role.code.not, "ADMIN");
   assert.equal(hasPermission(permissions, "product:create"), true);
   assert.equal(hasPermission(permissions, "finance:read"), true);
 });
 
 test("authorize allows, denies, caches, and fails closed", async () => {
   let resolverCalls = 0;
-  const resolver = async (accountId, { cache }) => {
+  let resolvedRole;
+  const resolver = async (accountId, { cache, principalRole }) => {
     resolverCalls += 1;
+    resolvedRole = principalRole;
     if (!cache.has(accountId)) cache.set(accountId, new Set(["product:create"]));
     return cache.get(accountId);
   };
   const middleware = createAuthorize(resolver)("product:create");
-  const request = { auth: { accountId: "account-1" } };
+  const request = { auth: { accountId: "account-1", role: "CUSTOMER" } };
 
   assert.equal((await invoke(middleware, request)).code, 200);
+  assert.equal(resolvedRole, "CUSTOMER");
   assert.equal((await invoke(middleware, request)).code, 200);
   assert.equal(resolverCalls, 2);
 

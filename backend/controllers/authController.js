@@ -12,7 +12,13 @@ import {
   createOtpChallenge,
   verifyOtpChallenge,
 } from "../services/otpService.js";
-import { serializeLoginResponse } from "../dtos/authDto.js";
+import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
+import {
+  createPortalTwoFactorChallenge,
+  resendPortalTwoFactorCode,
+  sendPortalTwoFactorCode,
+  verifyPortalTwoFactorCode,
+} from "../services/portalTwoFactorService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
@@ -57,16 +63,98 @@ export const login = async (req, res) => {
       ipAddress,
       userAgent,
     });
+    if (authResult.requiresTwoFactor) {
+      const challenge = await createPortalTwoFactorChallenge({
+        accountId: authResult.account.id,
+        portal: authResult.account.role,
+        ipAddress,
+        userAgent,
+      });
+      return res.json({
+        success: true,
+        message: "Additional verification required.",
+        requiresTwoFactor: true,
+        ...challenge,
+      });
+    }
     setRefreshCookie(res, authResult.account.role, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     return res.json(serializeLoginResponse(authResult));
   } catch (error) {
-    return res.status(400).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message || "Authentication failed.",
     });
   }
 };
+
+const sendTwoFactorResponse = async (req, res, expectedPortal = null) => {
+  try {
+    const result = await sendPortalTwoFactorCode({
+      challengeId: req.body?.challengeId,
+      method: req.body?.method,
+    }, { expectedPortal });
+    return res.status(202).json({
+      success: true,
+      message: "Verification code queued for delivery.",
+      method: result.method,
+      expiresAt: result.expiresAt,
+      resendAvailableAt: result.resendAvailableAt,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Verification request failed.",
+      code: error.code || "PORTAL_2FA_SEND_FAILED",
+    });
+  }
+};
+
+export const sendPortalTwoFactor = (req, res) => sendTwoFactorResponse(req, res);
+export const sendAdminTwoFactor = (req, res) => sendTwoFactorResponse(req, res, "ADMIN");
+
+export const resendPortalTwoFactor = async (req, res) => {
+  try {
+    const result = await resendPortalTwoFactorCode({ challengeId: req.body?.challengeId });
+    return res.status(202).json({
+      success: true,
+      message: "Verification code queued for delivery.",
+      method: result.method,
+      expiresAt: result.expiresAt,
+      resendAvailableAt: result.resendAvailableAt,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.statusCode === 429 ? error.message : "Verification request failed.",
+      code: error.code || "PORTAL_2FA_RESEND_FAILED",
+    });
+  }
+};
+
+const verifyTwoFactorResponse = async (req, res, expectedPortal = null) => {
+  try {
+    const result = await verifyPortalTwoFactorCode({
+      challengeId: req.body?.challengeId,
+      otp: req.body?.otp,
+    }, {
+      expectedPortal,
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+    });
+    setRefreshCookie(res, result.account.role, result.tokenPair.refreshToken, result.tokenPair.refreshTokenExpiresAt);
+    return res.json(serializeLoginResponse({ ...result.tokenPair, account: result.account }));
+  } catch (error) {
+    return res.status(error.statusCode || 401).json({
+      success: false,
+      message: error.statusCode === 503 ? error.message : "Invalid or expired verification code.",
+      code: error.code || "PORTAL_2FA_INVALID",
+    });
+  }
+};
+
+export const verifyPortalTwoFactor = (req, res) => verifyTwoFactorResponse(req, res);
+export const verifyAdminTwoFactor = (req, res) => verifyTwoFactorResponse(req, res, "ADMIN");
 
 /**
  * Rotates a refresh token and returns a new access/refresh pair.
@@ -139,29 +227,7 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ success: false, message: "Account not found." });
     }
 
-    let profile = {};
-    if (account.role === "ADMIN") {
-      profile = account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
-    } else if (account.role === "MANUFACTURER") {
-      profile = account.manufacturerProfile || { id: account.id, email: account.email };
-      profile.businessName = profile.name || "";
-    } else if (account.role === "MARKETING_PARTNER") {
-      profile = account.marketingPartnerProfile || { id: account.id, email: account.email };
-    } else {
-      profile = account.customerProfile || { id: account.id, email: account.email };
-    }
-
-    const { passwordHash: _, ...safeAccount } = account;
-
-    return res.json({
-      success: true,
-      account: safeAccount,
-      profile,
-      role: account.role,
-      user: profile,
-      manufacturer: profile,
-      partner: profile,
-    });
+    return res.json(serializeSessionProfile(account));
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

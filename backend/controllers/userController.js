@@ -13,6 +13,7 @@ import {
 } from "../utils/socialCustomerProfile.js";
 import { assignAccountRole } from "../services/rbacService.js";
 import { setRefreshCookie } from "../utils/refreshCookie.js";
+import { login as unifiedLogin } from "./authController.js";
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET);
@@ -758,49 +759,8 @@ const changePassword = async (req, res) => {
 
 // Route for admin login — credentials stored in DB, password AES-encrypted in transit
 const adminLogin = async (req, res) => {
-  const ipAddress = req.ip || req.headers["x-forwarded-for"] || "";
-  const userAgent = req.headers["user-agent"] || "";
-  try {
-    const { email, encryptedPassword, iv, password } = req.body;
-
-    if (!email) {
-      return res.json({ success: false, message: "Please enter a valid email address" });
-    }
-
-    let resolvedPassword;
-    if (encryptedPassword && iv) {
-      try {
-        resolvedPassword = decryptAES(encryptedPassword, iv);
-      } catch {
-        return res.json({ success: false, message: "Invalid encrypted credentials" });
-      }
-    } else if (password) {
-      resolvedPassword = String(password);
-    } else {
-      return res.json({ success: false, message: "Email and password are required" });
-    }
-
-    const { authenticateAccount } = await import("../services/authService.js");
-    const authResult = await authenticateAccount({
-      identifier: email,
-      password: resolvedPassword,
-      targetPortal: "ADMIN",
-      ipAddress,
-      userAgent,
-    });
-
-    setRefreshCookie(res, "ADMIN", authResult.refreshToken, authResult.refreshTokenExpiresAt);
-    res.json({
-      success: true,
-      token: authResult.accessToken,
-      accessToken: authResult.accessToken,
-      refreshTokenExpiresAt: authResult.refreshTokenExpiresAt,
-      account: authResult.account,
-      admin: authResult.profile,
-    });
-  } catch (error) {
-    res.json({ success: false, message: error.message || "Invalid credentials" });
-  }
+  req.body = { ...(req.body || {}), portal: "ADMIN", targetPortal: "ADMIN" };
+  return unifiedLogin(req, res);
 };
 
 export {

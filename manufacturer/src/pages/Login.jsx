@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import CryptoJS from "crypto-js";
 import { toast } from "react-toastify";
-import { Factory, Lock, Mail, ArrowRight, Shield, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw } from "lucide-react";
+import { ArrowLeft, Factory, Lock, Mail, ArrowRight, Shield, ShieldCheck, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw, MailCheck, RefreshCw, Smartphone } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { NEPAL_PROVINCES } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
@@ -45,17 +45,37 @@ const defaultRegisterForm = {
   contractExpiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
 };
 
+const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+
 const Login = () => {
   const { setToken, setManufacturer, backendUrl } = useManufacturer();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loginStep, setLoginStep] = useState("credentials");
+  const [challenge, setChallenge] = useState(null);
+  const [method, setMethod] = useState("");
+  const [otp, setOtp] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
+  const [resendAvailableAt, setResendAvailableAt] = useState("");
+  const [clock, setClock] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
   const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+
+  useEffect(() => {
+    const updateClock = () => setClock(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const secondsUntil = (timestamp) => Math.max(0, Math.ceil((Date.parse(timestamp || "") - clock) / 1000) || 0);
+  const expiresIn = secondsUntil(expiresAt);
+  const resendIn = secondsUntil(resendAvailableAt);
 
   // Cascading NCM branches based on province and district
   useEffect(() => {
@@ -120,34 +140,88 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    if (loginStep === "credentials" && (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))) {
       toast.error("Please enter a valid email address");
       return;
     }
-    if (!password) {
+    if (loginStep === "credentials" && !password) {
       toast.error("Please enter your password");
       return;
     }
 
     setLoading(true);
     try {
-      const response = await axios.post(`${backendUrl}/api/auth/login`, {
-        email: email.trim().toLowerCase(),
-        targetPortal: encryptValue("MANUFACTURER"),
-        encryptedPassword: encryptValue(password),
-      });
-      if (response.data.success) {
-        const accessToken = storeAuthTokens(response.data);
-        setToken(accessToken);
-        toast.success("Welcome back, manufacturer!");
+      if (loginStep === "credentials") {
+        const response = await axios.post(`${backendUrl}/api/auth/login`, {
+          email: email.trim().toLowerCase(),
+          targetPortal: encryptValue("MANUFACTURER"),
+          encryptedPassword: encryptValue(password),
+        }, { withCredentials: true });
+        if (response.data.requiresTwoFactor) {
+          setChallenge(response.data);
+          setMethod(response.data.availableMethods?.[0] || "");
+          setLoginStep("method");
+        } else if (response.data.success && (response.data.accessToken || response.data.token)) {
+          const accessToken = storeAuthTokens(response.data);
+          setToken(accessToken);
+          toast.success("Welcome back, manufacturer!");
+        } else {
+          toast.error(response.data.message || "Invalid credentials");
+        }
+      } else if (loginStep === "method") {
+        const response = await axios.post(`${backendUrl}/api/auth/2fa/send`, {
+          challengeId: challenge.challengeId,
+          method,
+        }, { withCredentials: true });
+        setExpiresAt(response.data.expiresAt);
+        setResendAvailableAt(response.data.resendAvailableAt);
+        setOtp("");
+        setLoginStep("otp");
       } else {
-        toast.error(response.data.message || "Invalid credentials");
+        const response = await axios.post(`${backendUrl}/api/auth/2fa/verify`, {
+          challengeId: challenge.challengeId,
+          otp,
+        }, { withCredentials: true });
+        if (response.data.success && (response.data.accessToken || response.data.token)) {
+          const accessToken = storeAuthTokens(response.data);
+          setToken(accessToken);
+          setOtp("");
+          toast.success("Welcome back, manufacturer!");
+        } else {
+          toast.error(response.data.message || "Invalid or expired verification code.");
+        }
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || "Login failed. Check connection.");
+      toast.error(err.response?.data?.message || (loginStep === "credentials" ? "Login failed. Check connection." : "Verification could not be completed."));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResend = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/auth/2fa/resend`, {
+        challengeId: challenge.challengeId,
+      }, { withCredentials: true });
+      setExpiresAt(response.data.expiresAt);
+      setResendAvailableAt(response.data.resendAvailableAt);
+      setOtp("");
+      toast.info(response.data.message || "Verification code queued for delivery.");
+    } catch (err) {
+      toast.error(err.response?.data?.message || "A new code could not be sent.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const restartLogin = () => {
+    setChallenge(null);
+    setMethod("");
+    setOtp("");
+    setExpiresAt("");
+    setResendAvailableAt("");
+    setLoginStep("credentials");
   };
 
   const handleRegisterSubmit = async (e) => {
@@ -541,6 +615,86 @@ const Login = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loginStep !== "credentials") {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+        <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="w-full max-w-md relative z-10">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-4">
+              {loginStep === "otp" ? <ShieldCheck className="w-8 h-8" /> : <Factory className="w-8 h-8" />}
+            </div>
+            <h1 className="text-2xl font-black text-white">{loginStep === "otp" ? "Verify your identity" : "Choose a delivery method"}</h1>
+            <p className="text-sm text-slate-400 mt-2">Manufacturer Hub access verification</p>
+          </div>
+          <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
+            {loginStep === "method" ? (
+              <form onSubmit={handleSubmit} className="space-y-3">
+                <p className="text-sm text-slate-300 mb-4">Choose where your one-time code should be sent.</p>
+                {challenge?.availableMethods?.map((availableMethod) => {
+                  const destination = availableMethod === "SMS" ? challenge.maskedPhone : challenge.maskedEmail;
+                  const Icon = availableMethod === "SMS" ? Smartphone : MailCheck;
+                  return (
+                    <label key={availableMethod} className={`flex min-h-16 cursor-pointer items-center gap-3 rounded-xl border px-4 py-3 transition-colors ${method === availableMethod ? "border-emerald-400 bg-emerald-400/10" : "border-slate-700 hover:bg-slate-800"}`}>
+                      <input type="radio" name="verification-method" value={availableMethod} checked={method === availableMethod} onChange={() => setMethod(availableMethod)} className="accent-emerald-400" />
+                      <Icon className="w-5 h-5 shrink-0 text-emerald-300" />
+                      <span className="text-sm font-semibold text-white">{availableMethod === "SMS" ? "Text message" : "Email"}</span>
+                      <span className="ml-auto max-w-[55%] break-all text-right text-xs text-slate-400">{destination}</span>
+                    </label>
+                  );
+                })}
+                <button type="submit" disabled={loading || !method} className="mt-3 w-full rounded-xl bg-emerald-400 px-4 py-3 font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-50">
+                  {loading ? "Sending code..." : "Send verification code"}
+                </button>
+                <button type="button" onClick={restartLogin} className="flex w-full items-center justify-center gap-2 py-2 text-sm text-slate-400 hover:text-white">
+                  <ArrowLeft className="w-4 h-4" /> Back to sign in
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-5">
+                <div className="text-center">
+                  <p className="text-sm text-slate-400">Code sent to <span className="font-semibold text-slate-200">{method === "SMS" ? challenge?.maskedPhone : challenge?.maskedEmail}</span></p>
+                </div>
+                <div>
+                  <label htmlFor="manufacturer-otp" className="sr-only">One-time verification code</label>
+                  <input
+                    id="manufacturer-otp"
+                    value={otp}
+                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, challenge?.codeLength || 6))}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-4 text-center font-mono text-2xl tracking-[0.45em] text-white outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20"
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    maxLength={challenge?.codeLength || 6}
+                    autoFocus
+                    required
+                  />
+                </div>
+                <div className="flex items-center justify-between border-y border-slate-800 py-3 text-sm">
+                  <span className="text-slate-400">{expiresIn ? "Code expires in" : "Code expired"}</span>
+                  <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-emerald-300" : "text-rose-300"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
+                </div>
+                <button type="submit" disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-50">
+                  {loading ? "Checking code..." : "Verify and enter Manufacturer Hub"}
+                </button>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-slate-400">Didn&apos;t receive the code?</span>
+                  <button type="button" onClick={handleResend} disabled={loading || resendIn > 0} className="inline-flex items-center gap-1.5 font-semibold text-emerald-300 hover:text-emerald-200 disabled:text-slate-500">
+                    <RefreshCw className="w-4 h-4" />{resendIn > 0 ? `Resend in ${formatCountdown(resendIn)}` : "Resend code"}
+                  </button>
+                </div>
+                <button type="button" onClick={restartLogin} className="flex w-full items-center justify-center gap-2 py-1 text-sm text-slate-400 hover:text-white">
+                  <ArrowLeft className="w-4 h-4" /> Start over
+                </button>
+              </form>
+            )}
           </div>
         </div>
       </div>

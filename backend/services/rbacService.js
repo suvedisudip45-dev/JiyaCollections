@@ -4,8 +4,9 @@ export const ALL_FUNCTION_PERMISSION = "all:function";
 
 const normalizePermission = (permission) => String(permission || "").trim().toLowerCase();
 
-export const resolveAccountPermissions = async (accountId, { client = prisma, cache } = {}) => {
+export const resolveAccountPermissions = async (accountId, { client = prisma, cache, principalRole } = {}) => {
   if (!accountId) return new Set();
+  const normalizedPrincipalRole = String(principalRole || "").toUpperCase();
 
   if (cache?.has(accountId)) {
     return cache.get(accountId);
@@ -15,6 +16,7 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
     where: {
       role: {
         isActive: true,
+        ...(normalizedPrincipalRole && normalizedPrincipalRole !== "ADMIN" ? { code: { not: "ADMIN" } } : {}),
         accounts: {
           some: {
             accountId,

@@ -42,7 +42,7 @@ const redactSensitiveValue = (value) => {
   return "[REDACTED]";
 };
 
-const sanitizeForLog = (value) => {
+export const sanitizeForLog = (value) => {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map((item) => sanitizeForLog(item));
   if (typeof value !== "object") return value;
@@ -50,7 +50,7 @@ const sanitizeForLog = (value) => {
   const sanitized = {};
   for (const [key, nestedValue] of Object.entries(value)) {
     const lowerKey = String(key).toLowerCase();
-    if (SENSITIVE_KEYS.has(lowerKey) || lowerKey.includes("phone") || lowerKey.includes("address") || lowerKey.includes("token") || lowerKey.includes("secret") || lowerKey.includes("name") || lowerKey.includes("email")) {
+    if (SENSITIVE_KEYS.has(lowerKey) || lowerKey.includes("password") || lowerKey.includes("credential") || lowerKey.includes("phone") || lowerKey.includes("address") || lowerKey.includes("token") || lowerKey.includes("secret") || lowerKey.includes("name") || lowerKey.includes("email")) {
       sanitized[key] = redactSensitiveValue(nestedValue);
       continue;
     }
@@ -89,7 +89,7 @@ const writeLog = (level, message, meta = {}) => {
   const line = `${JSON.stringify(entry)}\n`;
   fs.appendFileSync(logFilePath, line, "utf8");
 
-  const metaText = Object.keys(meta).length ? ` ${safeSerialize(meta)}` : "";
+  const metaText = Object.keys(safeMeta).length ? ` ${safeSerialize(safeMeta)}` : "";
   console.log(`[${level.toUpperCase()}] ${message}${metaText}`);
 };
 
@@ -118,7 +118,7 @@ export const logger = {
   request: (req, res, durationMs) =>
     writeLog("http", "request completed", {
       method: req.method,
-      url: req.originalUrl || req.url,
+      url: req.path || req.url?.split("?")[0] || req.originalUrl?.split("?")[0] || "",
       statusCode: res.statusCode,
       durationMs,
       ip: req.ip || req.headers["x-forwarded-for"] || "unknown",
