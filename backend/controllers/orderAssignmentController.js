@@ -3,6 +3,7 @@ import { validateFulfillmentTransition, parseNotes } from "../services/fulfillme
 import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -507,32 +508,55 @@ const acceptOrder = async (req, res) => {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
 
-    const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
-    if (!assignment || assignment.manufacturerId !== manufacturerId)
-      return res.json({ success: false, message: "Assignment not found" });
+    const acceptedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      const assignment = await tx.orderAssignment.findUnique({ where: { id: assignmentId } });
+      if (!assignment || assignment.manufacturerId !== manufacturerId) {
+        const error = new Error("Assignment not found");
+        error.statusCode = 404;
+        throw error;
+      }
 
-    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
-    if (deliveryExists || !canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
-      return res.status(409).json({
-        success: false,
-        message: "This order is already in production or has moved to delivery handoff and cannot be re-routed.",
+      const deliveryExists = await tx.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
+      if (deliveryExists || !canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
+        const error = new Error("This order is already in production or has moved to delivery handoff and cannot be re-routed.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const order = await tx.order.findUnique({ where: { id: assignment.orderId } });
+      if (!order) {
+        const error = new Error("Assigned order not found");
+        error.statusCode = 404;
+        throw error;
+      }
+      const items = parseJSON(order.items, []);
+      const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
+      const inventoryRows = await tx.manufacturerInventory.findMany({
+        where: { manufacturerId, productId: { in: productIds } },
       });
-    }
+      const acceptedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
 
-    await prisma.orderAssignment.update({
-      where: { id: assignmentId },
-      data: { status: "accepted", acceptedAt: new Date() },
-    });
+      const claimed = await tx.orderAssignment.updateMany({
+        where: { id: assignmentId, manufacturerId, status: assignment.status },
+        data: { status: "accepted", acceptedAt },
+      });
+      if (claimed.count !== 1) {
+        const error = new Error("Assignment changed while it was being accepted. Refresh and try again.");
+        error.statusCode = 409;
+        throw error;
+      }
 
-    await prisma.order.update({
-      where: { id: assignment.orderId },
-      data: { fulfillmentStatus: "accepted", status: "In Production" },
+      await tx.order.update({
+        where: { id: assignment.orderId },
+        data: { items: acceptedItems, fulfillmentStatus: "accepted", status: "In Production" },
+      });
     });
 
     res.json({ success: true, message: "Order accepted for production!" });
   } catch (error) {
     console.error("acceptOrder error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 400).json({ success: false, message: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 };
 

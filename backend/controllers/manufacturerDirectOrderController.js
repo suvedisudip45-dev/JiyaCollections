@@ -2,6 +2,7 @@ import { prisma } from "../config/db.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -34,6 +35,10 @@ export const createDirectOrder = async (req, res) => {
       notes = "",
       applyLoyaltyDiscount = false, // Whether to apply the customer's active loyalty reward
     } = req.body;
+
+    if (!["HUB_VISIT", "PHONE_ORDER"].includes(directOrderType)) {
+      return res.status(400).json({ success: false, message: "directOrderType must be HUB_VISIT or PHONE_ORDER." });
+    }
 
     if (!manufacturerId) {
       return res.json({ success: false, message: "Manufacturer authentication required." });
@@ -132,6 +137,16 @@ export const createDirectOrder = async (req, res) => {
       });
     }
 
+    const acceptedAt = new Date();
+    const acceptedItems = createManufacturerCostSnapshot({
+      items: frozenItems,
+      inventoryRows: mInventories,
+      acceptedAt,
+      directSale: true,
+      commissionStatus: manufacturer.commissionStatus,
+      agreedCommissionRate: manufacturer.agreedCommissionRate,
+    });
+
     // ─── Loyalty Integration ──────────────────────────────────────────────
     let loyaltyRewardApplied = null;
     let loyaltyDiscountAmt = 0;
@@ -210,13 +225,13 @@ export const createDirectOrder = async (req, res) => {
     const order = await prisma.order.create({
       data: {
         userId: loyaltyRewardApplied?.userId || (isWalkIn ? "GUEST_WALK_IN" : "GUEST_PHONE_ORDER"),
-        items: frozenItems,
+        items: acceptedItems,
         amount: netAmount,
         address: addressObject,
         status: orderStatus,
         paymentMethod,
         payment: paymentStatus,
-        date: BigInt(Date.now()),
+        date: BigInt(acceptedAt.getTime()),
         fulfillmentStatus,
         orderType: "DIRECT_MANUFACTURER",
         directOrderType,
@@ -332,7 +347,7 @@ export const createDirectOrder = async (req, res) => {
       order: {
         ...order,
         date: Number(order.date),
-        items: frozenItems,
+        items: acceptedItems,
         address: addressObject,
         assignmentId: assignment.id,
       },
@@ -341,6 +356,9 @@ export const createDirectOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("createDirectOrder error:", error);
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message, ...(error.code ? { code: error.code } : {}) });
+    }
     res.json({ success: false, message: error.message });
   }
 };

@@ -290,11 +290,6 @@ const placeOrder = async (req, res) => {
 
     const createdOrder = await prisma.order.create({ data: orderData });
 
-    // Post to Double-Entry General Ledger (Sales Invoice / AR / Output VAT)
-    postSalesOrderAccounting(createdOrder).catch((glErr) => {
-      console.error("General Ledger sales order posting error:", glErr);
-    });
-
     // Update user cart and saved addresses
     try {
       const userRecord = await prisma.user.findUnique({ where: { id: userId } });
@@ -922,10 +917,7 @@ const adminCreateOrder = async (req, res) => {
     });
 
 
-    // Post to Double-Entry General Ledger (Sales & optional Instant Payment)
-    postSalesOrderAccounting(newOrder).catch((glErr) => {
-      console.error("General Ledger admin sales order posting error:", glErr);
-    });
+
 
     if (newOrder.payment) {
       postCustomerPaymentAccounting(newOrder).catch((glErr) => {

@@ -189,13 +189,13 @@ export const createManualJournalEntry = async (req, res) => {
       referenceNumber: referenceNumber || "",
       description: description || "Manual Journal Entry",
       lines,
-      createdBy: "admin",
+      createdBy: req.auth?.accountId || req.auth?.profileId || "admin",
     });
 
     res.json({
       success: true,
-      message: `Journal entry ${result.journalEntry.journalNumber} created and posted successfully.`,
-      journalEntry: result.journalEntry,
+      message: `Journal entry ${result.journalNumber} created and posted successfully.`,
+      journalEntry: result,
     });
   } catch (error) {
     console.error("Create Manual Journal Entry Error:", error);

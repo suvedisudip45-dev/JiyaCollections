@@ -983,10 +983,11 @@ model Account {
   description     String?       @db.Text
   isSystemAccount Boolean       @default(false)
   isActive        Boolean       @default(true)
-  currentBalance  Float         @default(0)
+  currentBalance  Decimal       @default(0) @db.Decimal(20, 2)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   journalLines    JournalLine[]
+  mappings        AccountingAccountMapping[]
 
   @@index([accountType])
   @@index([parentAccountId])
@@ -1031,8 +1032,10 @@ model JournalEntry {
   status             String        @default("POSTED") // DRAFT, POSTED, REVERSED, VOID
   reversedEntryId    String?
   reversalReason     String?       @db.Text
-  totalDebit         Float         @default(0)
-  totalCredit        Float         @default(0)
+  accountingEventId  String?       @unique
+  accountingEvent    AccountingEvent? @relation(fields: [accountingEventId], references: [id], onDelete: Restrict)
+  totalDebit         Decimal       @default(0) @db.Decimal(20, 2)
+  totalCredit        Decimal       @default(0) @db.Decimal(20, 2)
   createdBy          String?       @default("system")
   postedAt           DateTime      @default(now())
   createdAt          DateTime      @default(now())
@@ -1044,14 +1047,22 @@ model JournalEntry {
   @@index([status])
 }
 
+model JournalSequence {
+  fiscalYear Int      @id
+  nextNumber Int      @default(1)
+  updatedAt  DateTime @updatedAt
+}
+
 model JournalLine {
   id             String       @id @default(uuid())
   journalEntryId String
   journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   accountId      String
   account        Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  debit          Float        @default(0)
-  credit         Float        @default(0)
+  accountingPartyId String?
+  accountingParty AccountingParty? @relation(fields: [accountingPartyId], references: [id], onDelete: Restrict)
+  debit          Decimal      @default(0) @db.Decimal(20, 2)
+  credit         Decimal      @default(0) @db.Decimal(20, 2)
   description    String?      @db.Text
   customerId     String?
   customerName   String?      @default("")
@@ -1066,6 +1077,98 @@ model JournalLine {
   @@index([accountId])
   @@index([customerId])
   @@index([supplierId])
+  @@index([accountingPartyId, createdAt])
+}
+
+model AccountingParty {
+  id             String               @id @default(uuid())
+  partyType      String               @db.VarChar(40) // CUSTOMER | MANUFACTURER | MARKETING_PARTNER | CARRIER | VENDOR | PAYMENT_PROVIDER | OTHER
+  sourceEntityId String               @db.VarChar(191)
+  legalName      String?              @db.VarChar(255)
+  displayName    String               @db.VarChar(255)
+  currency       String               @default("NPR") @db.VarChar(3)
+  status         String               @default("ACTIVE") @db.VarChar(24)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  journalLines   JournalLine[]
+  documents      AccountingDocument[]
+
+  @@unique([partyType, sourceEntityId])
+  @@index([partyType, status])
+  @@index([displayName])
+}
+
+model AccountingAccountMapping {
+  id         String   @id @default(uuid())
+  mappingKey String   @unique @db.VarChar(96)
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([accountId])
+}
+
+model AccountingEvent {
+  id             String        @id @default(uuid())
+  idempotencyKey String        @unique @db.VarChar(191)
+  sourceType     String        @db.VarChar(64)
+  sourceId       String        @db.VarChar(191)
+  sourceVersion  Int           @default(1)
+  eventType      String        @db.VarChar(64)
+  effectiveAt    DateTime
+  status         String        @default("PENDING") @db.VarChar(24) // PENDING | PROCESSING | POSTED | FAILED | BLOCKED
+  payload        Json
+  payloadHash    String        @db.Char(64)
+  attemptCount   Int           @default(0)
+  lastError      String?       @db.Text
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  journalEntry   JournalEntry?
+
+  @@index([status, createdAt])
+  @@index([sourceType, sourceId])
+  @@index([effectiveAt])
+}
+
+model AccountingDocument {
+  id              String                 @id @default(uuid())
+  documentType    String                 @db.VarChar(32) // INVOICE | BILL | CREDIT_NOTE | DEBIT_NOTE
+  documentNumber  String                 @unique @db.VarChar(64)
+  partyId         String
+  party           AccountingParty        @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  side            String                 @db.VarChar(16) // RECEIVABLE | PAYABLE
+  sourceType      String                 @db.VarChar(64)
+  sourceId        String                 @db.VarChar(191)
+  issueDate       DateTime               @default(now())
+  dueDate         DateTime?
+  currency        String                 @default("NPR") @db.VarChar(3)
+  originalAmount  Decimal                @db.Decimal(20, 2)
+  allocatedAmount Decimal                @default(0) @db.Decimal(20, 2)
+  remainingAmount Decimal                @db.Decimal(20, 2)
+  status          String                 @default("OPEN") @db.VarChar(24) // OPEN | PARTIALLY_PAID | PAID | CANCELLED
+  notes           String?                @db.Text
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  allocations     AccountingAllocation[]
+
+  @@index([partyId, side, status])
+  @@index([sourceType, sourceId])
+  @@index([dueDate])
+}
+
+model AccountingAllocation {
+  id             String             @id @default(uuid())
+  documentId     String
+  document       AccountingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  journalEntryId String?
+  amount         Decimal            @db.Decimal(20, 2)
+  allocatedAt    DateTime           @default(now())
+  notes          String?            @db.Text
+
+  @@index([documentId, allocatedAt])
+  @@index([journalEntryId])
 }
 
 // ============================================================
