@@ -1,6 +1,7 @@
 import express from "express";
 import { authenticate, authorize, setManufacturerContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
+import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 import {
   adminAssignCards,
   adminCreateCampaign,
@@ -80,8 +81,8 @@ marketingCardRouter.post("/customer/cards/scan", authenticate, authorize("market
 marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("redeem"), customerRedeemBenefit);
 
 // ── Marketing Partner routes ─────────────────────────────────
-marketingCardRouter.post("/partner/login", partnerLogin);
-marketingCardRouter.post("/partner/signup", partnerSignup);
+marketingCardRouter.post("/partner/login", loginRateLimitForPortal("MARKETING_PARTNER"), resetLoginRateLimitOnSuccess, partnerLogin);
+marketingCardRouter.post("/partner/signup", publicRegistrationRateLimit, partnerSignup);
 marketingCardRouter.get("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, getProfile);
 marketingCardRouter.put("/partner/profile", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, updateProfile);
 marketingCardRouter.post("/partner/change-password", authenticate, authorize("partner:profile_manage"), setMarketingPartnerContext, changePassword);
