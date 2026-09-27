@@ -179,22 +179,24 @@ test("consumer accepts an outbox message before relay marks it queued", async ()
   assert.deepEqual(harness.stateChanges, ["ACK"]);
 });
 
-test("consumer cancels admin OTP notifications for inactive or expired challenges", async () => {
-  for (const challenge of [
-    { status: "CANCELLED", expiresAt: new Date(Date.now() + 60_000) },
-    { status: "PENDING", expiresAt: new Date(Date.now() - 1) },
-  ]) {
-    const harness = createConsumerHarness({ notificationType: "ADMIN_2FA", challenge });
-    let sends = 0;
-    await processNotificationMessage({
-      ...harness,
-      providers: { sms: { send: async () => { sends += 1; } } },
-      retryConfig: enabledConfig.retry,
-    });
-    assert.equal(sends, 0);
-    assert.equal(harness.state.notification.status, "CANCELLED");
-    assert.equal(harness.state.events[0].eventType, "CANCELLED");
-    assert.deepEqual(harness.stateChanges, ["ACK"]);
+test("consumer cancels portal OTP notifications for inactive or expired challenges", async () => {
+  for (const notificationType of ["ADMIN_2FA", "PORTAL_2FA"]) {
+    for (const challenge of [
+      { status: "CANCELLED", expiresAt: new Date(Date.now() + 60_000) },
+      { status: "PENDING", expiresAt: new Date(Date.now() - 1) },
+    ]) {
+      const harness = createConsumerHarness({ notificationType, challenge });
+      let sends = 0;
+      await processNotificationMessage({
+        ...harness,
+        providers: { sms: { send: async () => { sends += 1; } } },
+        retryConfig: enabledConfig.retry,
+      });
+      assert.equal(sends, 0);
+      assert.equal(harness.state.notification.status, "CANCELLED");
+      assert.equal(harness.state.events[0].eventType, "CANCELLED");
+      assert.deepEqual(harness.stateChanges, ["ACK"]);
+    }
   }
 });
 

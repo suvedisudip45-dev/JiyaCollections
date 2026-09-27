@@ -11,6 +11,7 @@ import {
 import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { normalizeRefreshPortal } from "../utils/refreshCookie.js";
+import { hasMfaEvidence, requiresMfa } from "../security/mfaPolicy.js";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
@@ -163,12 +164,10 @@ export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress
     error.code = "REFRESH_PORTAL_MISMATCH";
     throw error;
   }
-  if (
-    String(decoded.role).toUpperCase() === "ADMIN" &&
-    (decoded.mfa_verified !== true || !Array.isArray(decoded.amr) || !decoded.amr.includes("otp"))
-  ) {
-    const error = new Error("Admin multi-factor verification is required.");
-    error.code = "ADMIN_MFA_REQUIRED";
+  const refreshRole = String(decoded.role).toUpperCase();
+  if (requiresMfa(refreshRole) && !hasMfaEvidence(decoded)) {
+    const error = new Error("Multi-factor verification is required.");
+    error.code = `${refreshRole}_MFA_REQUIRED`;
     throw error;
   }
 
@@ -603,13 +602,13 @@ export const authenticateAccount = async ({
     status: account.status,
   };
 
-  if (String(account.role).toUpperCase() === "ADMIN") {
+  if (requiresMfa(account.role)) {
     await logAuthEvent({
       accountId: account.id,
       identifier: normalized.value,
-      action: "ADMIN_PASSWORD_VERIFIED",
+      action: `${account.role}_PASSWORD_VERIFIED`,
       role: account.role,
-      portal: "ADMIN",
+      portal: account.role,
       ipAddress,
       userAgent,
       status: "SUCCESS",

@@ -71,6 +71,9 @@ export const AuthProvider = ({ children }) => {
     setAuthError(null);
     try {
       const res = await authApi.login(email, password);
+      if (res.data?.requiresTwoFactor) {
+        return { success: false, requiresTwoFactor: true, challenge: res.data };
+      }
       if (res.data?.success) {
         const newToken = storeAuthTokens(res.data);
         const profileResponse = await authApi.getProfile();
@@ -92,6 +95,25 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  const verifyTwoFactor = async (challengeId, otp) => {
+    try {
+      const response = await authApi.verifyTwoFactorCode(challengeId, otp);
+      if (!response.data?.success || !(response.data.accessToken || response.data.token)) {
+        return { success: false, message: response.data?.message || "Verification failed." };
+      }
+      const newToken = storeAuthTokens(response.data);
+      const profileResponse = await authApi.getProfile();
+      const newPartner = profileResponse.data?.partner || response.data.account;
+      localStorage.setItem(TOKEN_KEY, newToken);
+      localStorage.setItem(PARTNER_KEY, JSON.stringify(newPartner));
+      setToken(newToken);
+      setPartner(newPartner);
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: getErrorMessage(error, "Verification failed. Please try again.") };
+    }
+  };
+
   // ── Logout ─────────────────────────────────────────────
   const logout = async () => {
     await revokeAuthSession(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000");
@@ -108,6 +130,7 @@ export const AuthProvider = ({ children }) => {
     isAuthenticated,
     authError,
     login,
+    verifyTwoFactor,
     logout,
     refreshUser,
   };

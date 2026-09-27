@@ -14,10 +14,11 @@ import {
 } from "../services/otpService.js";
 import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
 import {
-  createAdminTwoFactorChallenge,
-  sendAdminTwoFactorCode,
-  verifyAdminTwoFactorCode,
-} from "../services/adminTwoFactorService.js";
+  createPortalTwoFactorChallenge,
+  resendPortalTwoFactorCode,
+  sendPortalTwoFactorCode,
+  verifyPortalTwoFactorCode,
+} from "../services/portalTwoFactorService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
@@ -63,8 +64,9 @@ export const login = async (req, res) => {
       userAgent,
     });
     if (authResult.requiresTwoFactor) {
-      const challenge = await createAdminTwoFactorChallenge({
+      const challenge = await createPortalTwoFactorChallenge({
         accountId: authResult.account.id,
+        portal: authResult.account.role,
         ipAddress,
         userAgent,
       });
@@ -86,45 +88,73 @@ export const login = async (req, res) => {
   }
 };
 
-export const sendAdminTwoFactor = async (req, res) => {
+const sendTwoFactorResponse = async (req, res, expectedPortal = null) => {
   try {
-    const result = await sendAdminTwoFactorCode({
+    const result = await sendPortalTwoFactorCode({
       challengeId: req.body?.challengeId,
       method: req.body?.method,
-    });
+    }, { expectedPortal });
     return res.status(202).json({
       success: true,
       message: "Verification code queued for delivery.",
       method: result.method,
+      expiresAt: result.expiresAt,
+      resendAvailableAt: result.resendAvailableAt,
     });
   } catch (error) {
     return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message || "Verification request failed.",
-      code: error.code || "ADMIN_2FA_SEND_FAILED",
+      code: error.code || "PORTAL_2FA_SEND_FAILED",
     });
   }
 };
 
-export const verifyAdminTwoFactor = async (req, res) => {
+export const sendPortalTwoFactor = (req, res) => sendTwoFactorResponse(req, res);
+export const sendAdminTwoFactor = (req, res) => sendTwoFactorResponse(req, res, "ADMIN");
+
+export const resendPortalTwoFactor = async (req, res) => {
   try {
-    const result = await verifyAdminTwoFactorCode({
+    const result = await resendPortalTwoFactorCode({ challengeId: req.body?.challengeId });
+    return res.status(202).json({
+      success: true,
+      message: "Verification code queued for delivery.",
+      method: result.method,
+      expiresAt: result.expiresAt,
+      resendAvailableAt: result.resendAvailableAt,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.statusCode === 429 ? error.message : "Verification request failed.",
+      code: error.code || "PORTAL_2FA_RESEND_FAILED",
+    });
+  }
+};
+
+const verifyTwoFactorResponse = async (req, res, expectedPortal = null) => {
+  try {
+    const result = await verifyPortalTwoFactorCode({
       challengeId: req.body?.challengeId,
       otp: req.body?.otp,
     }, {
+      expectedPortal,
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
     });
-    setRefreshCookie(res, "ADMIN", result.tokenPair.refreshToken, result.tokenPair.refreshTokenExpiresAt);
+    setRefreshCookie(res, result.account.role, result.tokenPair.refreshToken, result.tokenPair.refreshTokenExpiresAt);
     return res.json(serializeLoginResponse({ ...result.tokenPair, account: result.account }));
   } catch (error) {
     return res.status(error.statusCode || 401).json({
       success: false,
       message: error.statusCode === 503 ? error.message : "Invalid or expired verification code.",
-      code: error.code || "ADMIN_2FA_INVALID",
+      code: error.code || "PORTAL_2FA_INVALID",
     });
   }
 };
+
+export const verifyPortalTwoFactor = (req, res) => verifyTwoFactorResponse(req, res);
+export const verifyAdminTwoFactor = (req, res) => verifyTwoFactorResponse(req, res, "ADMIN");
 
 /**
  * Rotates a refresh token and returns a new access/refresh pair.

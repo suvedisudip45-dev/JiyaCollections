@@ -30,7 +30,10 @@ async function runTests() {
       password: process.env.PARTNER_SEED_PASSWORD || "Partner@1234",
       targetPortal: "MARKETING_PARTNER",
     });
-    console.log(`✅ Marketing Partner authenticated successfully. Role: ${partnerResult.account.role}`);
+    console.log(`✅ Marketing Partner password accepted; MFA required. Role: ${partnerResult.account.role}`);
+    if (!partnerResult.requiresTwoFactor || partnerResult.token) {
+      throw new Error("Security failure: password-only Marketing Partner authentication issued a privileged token.");
+    }
 
     // Test 3: Customer Registration & Login Flow
     console.log("\n3️⃣ Testing Customer Registration and Login Flow...");

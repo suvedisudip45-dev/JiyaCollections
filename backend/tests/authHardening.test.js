@@ -127,7 +127,7 @@ test("inactive accounts are rejected", async () => {
   assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
 });
 
-test("approved marketing partner login succeeds when profile is active even if auth account was left pending", async () => {
+test("approved marketing partner login requires MFA when profile is active even if auth account was left pending", async () => {
   const unique = crypto.randomUUID().slice(0, 8);
   const email = `partner-approval-sync-${unique}@example.test`;
   const account = await prisma.authAccount.create({
@@ -160,7 +160,8 @@ test("approved marketing partner login succeeds when profile is active even if a
       targetPortal: "MARKETING_PARTNER",
     });
 
-    assert.equal(result.token.length > 0, true);
+    assert.equal(result.requiresTwoFactor, true);
+    assert.equal(result.token, undefined);
     assert.equal(result.profile.id, partner.id);
     assert.equal(result.profile.status, "ACTIVE");
   } finally {

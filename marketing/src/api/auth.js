@@ -22,6 +22,10 @@ export const authApi = {
     });
   },
 
+  sendTwoFactorCode: (challengeId, method) => api.post("/api/auth/2fa/send", { challengeId, method }),
+  resendTwoFactorCode: (challengeId) => api.post("/api/auth/2fa/resend", { challengeId }),
+  verifyTwoFactorCode: (challengeId, otp) => api.post("/api/auth/2fa/verify", { challengeId, otp }),
+
   getProfile: () => api.get("/api/marketing-cards/partner/profile"),
 
   signup: (payload) => api.post("/api/marketing-cards/partner/signup", payload),

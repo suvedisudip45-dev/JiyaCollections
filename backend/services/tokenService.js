@@ -1,17 +1,14 @@
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import { getJwtConfig } from "../config/jwt.js";
+import { hasMfaEvidence } from "../security/mfaPolicy.js";
 
 const JWT_ALGORITHM = "HS256";
 
 const normalizeRole = (role) => String(role || "CUSTOMER").toUpperCase();
 
-export const hasVerifiedAdminMfa = (claims) => Boolean(
-  claims?.mfa_verified === true &&
-  Array.isArray(claims.amr) &&
-  claims.amr.includes("pwd") &&
-  claims.amr.includes("otp"),
-);
+export const hasVerifiedAdminMfa = hasMfaEvidence;
+export const hasVerifiedMfa = hasMfaEvidence;
 
 const normalizePortalAccess = (portalAccess, role) => {
   if (Array.isArray(portalAccess) && portalAccess.length > 0) {

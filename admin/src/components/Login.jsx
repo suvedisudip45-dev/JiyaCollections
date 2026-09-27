@@ -1,11 +1,13 @@
 /* eslint-disable react/prop-types */
 /* eslint-disable no-unused-vars */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { backendUrl } from "../App";
 import { toast } from "react-toastify";
 import CryptoJS from "crypto-js";
 import { storeAuthTokens } from "../auth/tokenStorage";
+
+const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
 const encryptValue = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
@@ -27,6 +29,20 @@ const Login = ({ setToken }) => {
   const [method, setMethod] = useState("");
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
+  const [expiresAt, setExpiresAt] = useState("");
+  const [resendAvailableAt, setResendAvailableAt] = useState("");
+  const [clock, setClock] = useState(0);
+
+  useEffect(() => {
+    const updateClock = () => setClock(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const secondsUntil = (timestamp) => Math.max(0, Math.ceil((Date.parse(timestamp || "") - clock) / 1000) || 0);
+  const expiresIn = secondsUntil(expiresAt);
+  const resendIn = secondsUntil(resendAvailableAt);
 
   const onSubmitHandler = async (e) => {
     e.preventDefault();
@@ -58,6 +74,8 @@ const Login = ({ setToken }) => {
         });
         if (!response.data?.success) throw new Error(response.data?.message || "Could not queue verification code.");
         toast.info(response.data.message || "Verification code queued for delivery.");
+        setExpiresAt(response.data.expiresAt);
+        setResendAvailableAt(response.data.resendAvailableAt);
         setStep("otp");
         return;
       }
@@ -77,10 +95,29 @@ const Login = ({ setToken }) => {
     }
   };
 
+  const resendCode = async () => {
+    setLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/auth/2fa/resend`, {
+        challengeId: challenge.challengeId,
+      });
+      setExpiresAt(response.data.expiresAt);
+      setResendAvailableAt(response.data.resendAvailableAt);
+      setOtp("");
+      toast.info(response.data.message || "Verification code queued for delivery.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || "A new code could not be sent.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const restartLogin = () => {
     setChallenge(null);
     setMethod("");
     setOtp("");
+    setExpiresAt("");
+    setResendAvailableAt("");
     setStep("credentials");
   };
 
@@ -158,21 +195,33 @@ const Login = ({ setToken }) => {
           <form onSubmit={onSubmitHandler} className="space-y-4">
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Enter verification code</h2>
-              <p className="mt-1 text-sm text-slate-500">Enter the code sent using your selected method.</p>
+              <p className="mt-1 text-sm text-slate-500">Sent to {method === "SMS" ? challenge?.maskedPhone : challenge?.maskedEmail}</p>
             </div>
             <input
               value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, 8))}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, "").slice(0, challenge?.codeLength || 6))}
               className="w-full rounded-lg border border-gray-300 px-3 py-3 text-center text-xl tracking-[0.3em] outline-none focus:border-slate-600 focus:ring-1 focus:ring-slate-600"
               type="text"
               inputMode="numeric"
               autoComplete="one-time-code"
+              maxLength={challenge?.codeLength || 6}
+              autoFocus
               aria-label="Verification code"
               required
             />
-            <button disabled={loading || otp.length < 6} className="w-full rounded-lg bg-slate-900 px-4 py-2.5 font-medium text-white disabled:opacity-50" type="submit">
+            <div className="flex items-center justify-between border-y border-slate-100 py-3 text-sm">
+              <span className="text-slate-500">{expiresIn ? "Code expires in" : "Code expired"}</span>
+              <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-slate-900" : "text-red-700"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
+            </div>
+            <button disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-lg bg-slate-900 px-4 py-2.5 font-medium text-white disabled:opacity-50" type="submit">
               {loading ? "Verifying..." : "Verify and sign in"}
             </button>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="text-slate-500">Didn&apos;t receive the code?</span>
+              <button type="button" onClick={resendCode} disabled={loading || resendIn > 0} className="font-semibold text-slate-800 hover:text-slate-600 disabled:text-slate-400">
+                {resendIn > 0 ? `Resend in ${formatCountdown(resendIn)}` : "Resend code"}
+              </button>
+            </div>
             <button className="w-full py-2 text-sm text-slate-500 hover:text-slate-900" type="button" onClick={restartLogin}>Start again</button>
           </form>
         )}

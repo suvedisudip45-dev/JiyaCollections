@@ -102,7 +102,7 @@ export const installAuthInterceptor = (client = axios, redirectPath = "/login") 
     (response) => response,
     async (error) => {
       const originalRequest = error.config;
-      const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(originalRequest?.url || "");
+      const isAuthRequest = /\/api\/auth\/(login|refresh|2fa\/)/.test(originalRequest?.url || "");
       const headers = originalRequest?.headers;
       const hasAccessToken = Boolean(
         headers?.get?.("token") ||

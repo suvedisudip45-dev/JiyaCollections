@@ -7,6 +7,9 @@ import {
   changePassword,
   requestOtp,
   verifyOtp,
+  sendPortalTwoFactor,
+  resendPortalTwoFactor,
+  verifyPortalTwoFactor,
   sendAdminTwoFactor,
   verifyAdminTwoFactor,
 } from "../controllers/authController.js";
@@ -17,6 +20,9 @@ const authRouter = express.Router();
 // Public Authentication Endpoints
 authRouter.post("/login", login);
 authRouter.post("/refresh", refresh);
+authRouter.post("/2fa/send", sendPortalTwoFactor);
+authRouter.post("/2fa/resend", resendPortalTwoFactor);
+authRouter.post("/2fa/verify", verifyPortalTwoFactor);
 authRouter.post("/admin/2fa/send", sendAdminTwoFactor);
 authRouter.post("/admin/2fa/verify", verifyAdminTwoFactor);
 authRouter.post("/logout", authenticate, logout);

@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
-import { hasVerifiedAdminMfa, verifyAccessToken } from "../services/tokenService.js";
+import { hasVerifiedMfa, verifyAccessToken } from "../services/tokenService.js";
+import { requiresMfa } from "../security/mfaPolicy.js";
 
 export { authorize } from "./authorize.js";
 
@@ -114,11 +115,11 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
         code: "INVALID_IDENTITY",
       });
     }
-    if (role === "ADMIN" && !hasVerifiedAdminMfa(decoded)) {
+    if (requiresMfa(role) && !hasVerifiedMfa(decoded)) {
       return res.status(401).json({
         success: false,
-        message: "Admin multi-factor verification is required.",
-        code: "ADMIN_MFA_REQUIRED",
+        message: "Multi-factor verification is required.",
+        code: `${role}_MFA_REQUIRED`,
       });
     }
     if (account.status !== "ACTIVE") {
@@ -155,7 +156,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
       roles,
       tokenId: decoded.jti,
       tokenType: decoded.token_type,
-      mfaVerified: hasVerifiedAdminMfa(decoded),
+      mfaVerified: hasVerifiedMfa(decoded),
       sessionId: session.id,
       tokenFamilyId: session.tokenFamilyId,
       manufacturerId: decoded.manufacturerId || null,
