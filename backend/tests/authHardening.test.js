@@ -4,18 +4,32 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { prisma } from "../config/db.js";
-import { authenticate } from "../middleware/unifiedAuth.js";
+import { createAuthenticate } from "../middleware/unifiedAuth.js";
 import { authenticateAccount } from "../services/authService.js";
 import { generateAccessToken } from "../services/tokenService.js";
 
-const invokeAuthenticate = async (token) => {
+const invokeAuthenticate = async (token, account) => {
+  const claims = jwt.decode(token);
+  const client = {
+    authSession: {
+      findUnique: async () => ({
+        id: "test-session",
+        accountId: claims.accountId,
+        tokenFamilyId: "test-family",
+        tokenType: "ACCESS",
+        expiresAt: new Date(Date.now() + 60_000),
+        revokedAt: null,
+      }),
+    },
+    authAccount: { findUnique: async () => account },
+  };
   const request = {
     headers: { authorization: `Bearer ${token}` },
     body: {},
   };
   let response;
   let nextCalled = false;
-  const result = await authenticate(
+  const result = await createAuthenticate(client)(
     request,
     {
       status: (code) => ({
@@ -31,30 +45,38 @@ const invokeAuthenticate = async (token) => {
   return { request, response, nextCalled, result };
 };
 
-test("legacy admin profile token resolves to its AuthAccount", async () => {
-  const admin = await prisma.admin.findFirst({
-    where: { accountId: { not: null } },
-    select: { id: true, accountId: true },
-  });
-  if (!admin) return;
+test("ADMIN access token without MFA is rejected after session validation", async () => {
+  const account = {
+    id: "admin-account",
+    role: "ADMIN",
+    status: "ACTIVE",
+    customerProfile: null,
+    adminProfile: { id: "admin-profile" },
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "admin-profile", role: "ADMIN" });
+  const result = await invokeAuthenticate(token, account);
 
-  const token = jwt.sign({ adminId: admin.id, role: "ADMIN" }, process.env.JWT_SECRET);
-  const result = await invokeAuthenticate(token);
-
-  assert.equal(result.nextCalled, true);
-  assert.equal(result.request.auth.accountId, admin.accountId);
-  assert.equal(result.request.auth.role, "ADMIN");
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 401);
+  assert.equal(result.response.body.code, "ADMIN_MFA_REQUIRED");
 });
 
 test("role-mismatched tokens are rejected", async () => {
-  const account = await prisma.authAccount.findFirst({
-    where: { role: "ADMIN", status: "ACTIVE" },
-    select: { id: true },
-  });
-  if (!account) return;
-
-  const token = jwt.sign({ accountId: account.id, role: "CUSTOMER" }, process.env.JWT_SECRET);
-  const result = await invokeAuthenticate(token);
+  const account = {
+    id: "admin-account",
+    role: "ADMIN",
+    status: "ACTIVE",
+    customerProfile: null,
+    adminProfile: { id: "admin-profile" },
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "customer-profile", role: "CUSTOMER" });
+  const result = await invokeAuthenticate(token, account);
 
   assert.equal(result.nextCalled, false);
   assert.equal(result.response.code, 401);
@@ -62,18 +84,25 @@ test("role-mismatched tokens are rejected", async () => {
 });
 
 test("profile identity must belong to the authenticated account", async () => {
-  const account = await prisma.authAccount.findFirst({
-    where: { role: "ADMIN", status: "ACTIVE" },
-    include: { adminProfile: { select: { id: true } } },
-  });
-  if (!account?.adminProfile) return;
+  const account = {
+    id: "admin-account",
+    role: "ADMIN",
+    status: "ACTIVE",
+    customerProfile: null,
+    adminProfile: { id: "admin-profile" },
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
 
   const token = generateAccessToken({
     accountId: account.id,
     profileId: crypto.randomUUID(),
     role: "ADMIN",
+    mfaVerified: true,
+    authMethods: ["pwd", "otp"],
   });
-  const result = await invokeAuthenticate(token);
+  const result = await invokeAuthenticate(token, account);
 
   assert.equal(result.nextCalled, false);
   assert.equal(result.response.code, 401);
@@ -81,26 +110,21 @@ test("profile identity must belong to the authenticated account", async () => {
 });
 
 test("inactive accounts are rejected", async () => {
-  const email = `rbac-hardening-${crypto.randomUUID()}@example.test`;
-  const account = await prisma.authAccount.create({
-    data: {
-      email,
-      passwordHash: "test-only-hash",
-      role: "CUSTOMER",
-      status: "SUSPENDED",
-    },
-    select: { id: true },
-  });
-
-  try {
-    const token = jwt.sign({ accountId: account.id, role: "CUSTOMER" }, process.env.JWT_SECRET);
-    const result = await invokeAuthenticate(token);
-    assert.equal(result.nextCalled, false);
-    assert.equal(result.response.code, 401);
-    assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
-  } finally {
-    await prisma.authAccount.delete({ where: { id: account.id } });
-  }
+  const account = {
+    id: "inactive-account",
+    role: "CUSTOMER",
+    status: "SUSPENDED",
+    customerProfile: { id: "inactive-profile" },
+    adminProfile: null,
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "inactive-profile", role: "CUSTOMER" });
+  const result = await invokeAuthenticate(token, account);
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 401);
+  assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
 });
 
 test("approved marketing partner login succeeds when profile is active even if auth account was left pending", async () => {
@@ -143,4 +167,8 @@ test("approved marketing partner login succeeds when profile is active even if a
     await prisma.marketingPartner.deleteMany({ where: { accountId: account.id } });
     await prisma.authAccount.delete({ where: { id: account.id } });
   }
+});
+
+test.after(async () => {
+  await prisma.$disconnect();
 });

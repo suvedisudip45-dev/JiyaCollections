@@ -9,6 +9,7 @@
     "test:accounting": "node tests/accountingEngine.test.js",
     "test:delivery": "node --test tests/deliveryAutomation.test.js",
     "test:notifications": "node --test tests/notification*.test.js",
+    "rabbitmq:check": "node scripts/checkNotificationBroker.js",
     "worker:notifications": "node notificationWorker.js",
     "start": "node server.js",
     "dev": "nodemon server.js",

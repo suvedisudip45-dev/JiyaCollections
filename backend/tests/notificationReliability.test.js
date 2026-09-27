@@ -102,12 +102,13 @@ test("retry scheduler atomically queues a due retry and creates a fresh outbox e
   assert.equal(events[0].eventType, "RETRY_QUEUED");
 });
 
-const createConsumerHarness = () => {
+const createConsumerHarness = ({ notificationType = "GENERAL", challenge = null, status = "QUEUED" } = {}) => {
   const state = {
     notification: {
       id: "notification-3",
       channel: "SMS",
-      status: "QUEUED",
+      notificationType,
+      status,
       recipientAddress: "9800000000",
       payload: { text: "Test" },
       attemptCount: 0,
@@ -120,12 +121,18 @@ const createConsumerHarness = () => {
   const client = {
     notification: {
       updateMany: async ({ where, data }) => {
-        if (where.status && state.notification.status !== where.status) return { count: 0 };
+        if (where.status) {
+          const statuses = typeof where.status === "object" ? where.status.in : [where.status];
+          if (!statuses.includes(state.notification.status)) return { count: 0 };
+        }
         if (where.claimToken && state.notification.claimToken !== where.claimToken) return { count: 0 };
         Object.assign(state.notification, data);
         return { count: 1 };
       },
       findUnique: async () => state.notification,
+    },
+    adminTwoFactorChallenge: {
+      findUnique: async () => challenge,
     },
     notificationAttempt: {
       create: async ({ data }) => { state.attempts.push(data); return data; },
@@ -157,6 +164,38 @@ test("consumer records provider acceptance and acknowledges without claiming del
   assert.equal(harness.state.attempts[0].status, "ACCEPTED");
   assert.equal(harness.state.events[0].eventType, "PROVIDER_ACCEPTED");
   assert.deepEqual(harness.stateChanges, ["ACK"]);
+});
+
+test("consumer accepts an outbox message before relay marks it queued", async () => {
+  const harness = createConsumerHarness({ status: "PENDING" });
+  let sends = 0;
+  await processNotificationMessage({
+    ...harness,
+    providers: { sms: { send: async () => { sends += 1; return { provider: "SPARROW" }; } } },
+    retryConfig: enabledConfig.retry,
+  });
+  assert.equal(sends, 1);
+  assert.equal(harness.state.notification.status, "ACCEPTED");
+  assert.deepEqual(harness.stateChanges, ["ACK"]);
+});
+
+test("consumer cancels admin OTP notifications for inactive or expired challenges", async () => {
+  for (const challenge of [
+    { status: "CANCELLED", expiresAt: new Date(Date.now() + 60_000) },
+    { status: "PENDING", expiresAt: new Date(Date.now() - 1) },
+  ]) {
+    const harness = createConsumerHarness({ notificationType: "ADMIN_2FA", challenge });
+    let sends = 0;
+    await processNotificationMessage({
+      ...harness,
+      providers: { sms: { send: async () => { sends += 1; } } },
+      retryConfig: enabledConfig.retry,
+    });
+    assert.equal(sends, 0);
+    assert.equal(harness.state.notification.status, "CANCELLED");
+    assert.equal(harness.state.events[0].eventType, "CANCELLED");
+    assert.deepEqual(harness.stateChanges, ["ACK"]);
+  }
 });
 
 test("ambiguous provider timeout is not retried automatically", async () => {

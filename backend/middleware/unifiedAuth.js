@@ -1,5 +1,5 @@
 import { prisma } from "../config/db.js";
-import { verifyAccessToken } from "../services/tokenService.js";
+import { hasVerifiedAdminMfa, verifyAccessToken } from "../services/tokenService.js";
 
 export { authorize } from "./authorize.js";
 
@@ -17,7 +17,7 @@ export const extractToken = (req) => {
 /**
  * Unified Authentication Middleware
  */
-export const authenticate = async (req, res, next) => {
+export const createAuthenticate = (client = prisma) => async (req, res, next) => {
   try {
     const token = extractToken(req);
     if (!token) {
@@ -43,7 +43,7 @@ export const authenticate = async (req, res, next) => {
       });
     }
 
-    const session = await prisma.authSession.findUnique({
+    const session = await client.authSession.findUnique({
       where: { jti: decoded.jti },
       select: {
         id: true,
@@ -75,17 +75,17 @@ export const authenticate = async (req, res, next) => {
 
     if (!decoded.accountId && profileId) {
       const profileLookup = {
-        CUSTOMER: () => prisma.user.findUnique({ where: { id: profileId }, select: { accountId: true } }),
-        ADMIN: () => prisma.admin.findUnique({ where: { id: profileId }, select: { accountId: true } }),
-        MANUFACTURER: () => prisma.manufacturer.findUnique({ where: { id: profileId }, select: { accountId: true } }),
-        MARKETING_PARTNER: () => prisma.marketingPartner.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        CUSTOMER: () => client.user.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        ADMIN: () => client.admin.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        MANUFACTURER: () => client.manufacturer.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        MARKETING_PARTNER: () => client.marketingPartner.findUnique({ where: { id: profileId }, select: { accountId: true } }),
       }[role];
       const profile = profileLookup ? await profileLookup() : null;
       accountId = profile?.accountId || null;
     }
 
     const account = accountId
-      ? await prisma.authAccount.findUnique({
+      ? await client.authAccount.findUnique({
           where: { id: accountId },
           select: {
             id: true,
@@ -112,6 +112,13 @@ export const authenticate = async (req, res, next) => {
         success: false,
         message: "Invalid authentication identity.",
         code: "INVALID_IDENTITY",
+      });
+    }
+    if (role === "ADMIN" && !hasVerifiedAdminMfa(decoded)) {
+      return res.status(401).json({
+        success: false,
+        message: "Admin multi-factor verification is required.",
+        code: "ADMIN_MFA_REQUIRED",
       });
     }
     if (account.status !== "ACTIVE") {
@@ -148,6 +155,7 @@ export const authenticate = async (req, res, next) => {
       roles,
       tokenId: decoded.jti,
       tokenType: decoded.token_type,
+      mfaVerified: hasVerifiedAdminMfa(decoded),
       sessionId: session.id,
       tokenFamilyId: session.tokenFamilyId,
       manufacturerId: decoded.manufacturerId || null,
@@ -190,6 +198,8 @@ export const authenticate = async (req, res, next) => {
     });
   }
 };
+
+export const authenticate = createAuthenticate();
 
 /**
  * Middleware requiring specific roles

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import "dotenv/config";
-import { serializeLoginResponse } from "../dtos/authDto.js";
+import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
 import { resolvePassword, resolveTargetPortal } from "../services/authService.js";
 import {
   clearRefreshCookie,
@@ -50,6 +50,38 @@ test("login response is an explicit allow-list", () => {
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);
   assert.equal(JSON.stringify(response).includes("iv"), false);
+});
+
+test("session profile serialization excludes password hashes and unrelated portals", () => {
+  const adminResponse = serializeSessionProfile({
+    id: "account-1",
+    email: "admin@example.com",
+    phone: "9800000000",
+    role: "ADMIN",
+    status: "ACTIVE",
+    passwordHash: "account-hash",
+    adminProfile: { id: "admin-1", email: "admin@example.com", phone: "9800000000", password: "legacy-hash" },
+    customerProfile: { id: "customer-1", password: "unrelated-hash" },
+    manufacturerProfile: { id: "manufacturer-1", password: "unrelated-hash" },
+    marketingPartnerProfile: { id: "partner-1", passwordHash: "unrelated-hash" },
+  });
+  const serialized = JSON.stringify(adminResponse);
+  assert.equal(serialized.includes("hash"), false);
+  assert.equal(Object.hasOwn(adminResponse, "user"), false);
+  assert.equal(Object.hasOwn(adminResponse, "manufacturer"), false);
+  assert.equal(Object.hasOwn(adminResponse, "partner"), false);
+
+  const customerResponse = serializeSessionProfile({
+    id: "account-2",
+    email: "customer@example.com",
+    role: "CUSTOMER",
+    status: "ACTIVE",
+    customerProfile: { id: "customer-2", name: "Customer", password: "legacy-hash" },
+    adminProfile: { id: "admin-2", password: "unrelated-hash" },
+  });
+  assert.equal(customerResponse.user.name, "Customer");
+  assert.equal(Object.hasOwn(customerResponse, "manufacturer"), false);
+  assert.equal(JSON.stringify(customerResponse).includes("hash"), false);
 });
 
 test("refresh cookies are isolated by portal", () => {

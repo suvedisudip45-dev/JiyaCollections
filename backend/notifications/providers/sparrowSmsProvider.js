@@ -1,4 +1,5 @@
 import { NotificationProviderError } from "../providerError.js";
+import { logger } from "../../utils/logger.js";
 
 const SPARROW_ERRORS = {
   1000: { category: "PERMANENT", message: "Sparrow rejected a request with missing fields." },
@@ -22,6 +23,26 @@ const normalizeErrorCode = (value) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) ? parsed : null;
 };
+
+const maskPhone = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.length <= 4 ? "***" : `${raw.slice(0, 2)}***${raw.slice(-2)}`;
+};
+
+const buildSmsLogContext = ({ endpoint, to, sender, token }) => ({
+  provider: "SPARROW",
+  endpoint: String(endpoint),
+  sender: sender ? String(sender) : null,
+  recipient: maskPhone(to),
+  token: token ? "***" : null,
+});
+
+const summarizeProviderBody = (body) => ({
+  responseCode: body?.response_code ?? null,
+  response: typeof body?.response === "string" ? body.response.slice(0, 120) : null,
+  requestedIp: typeof body?.requested_ip === "string" ? body.requested_ip : null,
+});
 
 const readProviderBody = async (response) => {
   const text = await response.text();
@@ -68,7 +89,7 @@ export const classifySparrowError = (providerCode, httpStatus = null) => {
   return { code: "SPARROW_UNKNOWN", category: "UNKNOWN", retryable: false, message: "Sparrow returned an unrecognized response." };
 };
 
-export const createSparrowSmsProvider = ({ config, fetchImpl = globalThis.fetch }) => {
+export const createSparrowSmsProvider = ({ config, fetchImpl = globalThis.fetch, loggerImpl = logger }) => {
   const send = async ({ to, text }) => {
     if (!config.enabled) {
       throw new NotificationProviderError("SMS sending is disabled.", { code: "SMS_DISABLED", category: "CONFIGURATION" });
@@ -87,6 +108,15 @@ export const createSparrowSmsProvider = ({ config, fetchImpl = globalThis.fetch 
     form.set("to", String(to).trim());
     form.set("text", String(text));
 
+    const requestContext = buildSmsLogContext({
+      endpoint: String(endpoint),
+      to: String(to).trim(),
+      sender: config.sender,
+      token: config.token,
+    });
+
+    loggerImpl.info("Sparrow SMS request started", requestContext);
+
     let response;
     try {
       response = await fetchImpl(endpoint, {
@@ -96,6 +126,12 @@ export const createSparrowSmsProvider = ({ config, fetchImpl = globalThis.fetch 
       });
     } catch (error) {
       const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+      loggerImpl.error("Sparrow SMS request failed", {
+        ...requestContext,
+        errorName: error?.name || "UNKNOWN",
+        errorMessage: error?.message || "Unknown network error",
+        timedOut,
+      });
       throw new NotificationProviderError(timedOut ? "Sparrow request timed out; provider acceptance is unknown." : "Sparrow could not be reached.", {
         code: timedOut ? "SPARROW_TIMEOUT" : "SPARROW_NETWORK_ERROR",
         category: timedOut ? "TIMEOUT" : "TRANSIENT",
@@ -104,9 +140,23 @@ export const createSparrowSmsProvider = ({ config, fetchImpl = globalThis.fetch 
     }
 
     const body = await readProviderBody(response);
+    loggerImpl.info("Sparrow SMS provider responded", {
+      ...requestContext,
+      httpStatus: response.status,
+      providerCode: body?.response_code ?? null,
+      providerResponse: summarizeProviderBody(body),
+    });
+
     const providerCode = body?.response_code;
     if (!response.ok || Number(providerCode) !== 200) {
       const failure = classifySparrowError(providerCode, response.status);
+      loggerImpl.error("Sparrow SMS provider rejected the request", {
+        ...requestContext,
+        httpStatus: response.status,
+        providerCode: providerCode ?? null,
+        failure,
+        providerResponse: summarizeProviderBody(body),
+      });
       throw new NotificationProviderError(failure.message, {
         code: failure.code,
         category: failure.category,

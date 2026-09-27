@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
+import { logger } from "../utils/logger.js";
 import { QUEUE_NAMES } from "./constants.js";
 import { NotificationProviderError } from "./providerError.js";
 import { nextRetryAt } from "./retry.js";
+import { decryptNotificationText } from "../utils/secureNotificationPayload.js";
 
 const queueForChannel = { SMS: QUEUE_NAMES.SMS, EMAIL: QUEUE_NAMES.EMAIL };
 const deadRouteForChannel = { SMS: QUEUE_NAMES.SMS_DEAD_ROUTE, EMAIL: QUEUE_NAMES.EMAIL_DEAD_ROUTE };
@@ -79,7 +81,17 @@ export const processNotificationMessage = async ({ message, channel, providers, 
   let body;
   try {
     body = JSON.parse(message.content.toString("utf8"));
-  } catch {
+    logger.info("RabbitMQ notification message received", {
+      queue: queueForChannel[channel.name] || channel.queueName || "unknown",
+      routingKey: message.fields?.routingKey || null,
+      messageId: message.properties?.messageId || null,
+      payloadPreview: JSON.stringify(body).slice(0, 250),
+    });
+  } catch (error) {
+    logger.error("RabbitMQ notification message invalid JSON", {
+      messageId: message?.properties?.messageId || null,
+      errorMessage: error?.message || "Invalid JSON in queue message",
+    });
     channel.nack(message, false, false);
     return;
   }
@@ -94,7 +106,7 @@ export const processNotificationMessage = async ({ message, channel, providers, 
   const claim = await client.notification.updateMany({
     where: {
       id: body.notificationId,
-      status: "QUEUED",
+      status: { in: ["PENDING", "QUEUED"] },
       OR: [{ claimExpiresAt: null }, { claimExpiresAt: { lt: now } }],
     },
     data: { status: "PROCESSING", claimToken, claimExpiresAt: new Date(now.getTime() + 900000) },
@@ -108,6 +120,38 @@ export const processNotificationMessage = async ({ message, channel, providers, 
   if (!notification) {
     channel.ack(message);
     return;
+  }
+
+  if (notification.notificationType === "ADMIN_2FA") {
+    const challenge = await client.adminTwoFactorChallenge.findUnique({
+      where: { notificationId: notification.id },
+      select: { status: true, expiresAt: true },
+    });
+    if (!challenge || challenge.status !== "PENDING" || challenge.expiresAt <= now) {
+      await client.$transaction(async (tx) => {
+        const cancelled = await tx.notification.updateMany({
+          where: { id: notification.id, status: "PROCESSING", claimToken },
+          data: {
+            status: "CANCELLED",
+            failureCode: "ADMIN_2FA_CHALLENGE_INACTIVE",
+            failureReason: "Admin verification challenge is no longer valid.",
+            claimToken: null,
+            claimExpiresAt: null,
+          },
+        });
+        if (cancelled.count === 1) {
+          await tx.notificationEvent.create({
+            data: {
+              notificationId: notification.id,
+              eventType: "CANCELLED",
+              eventTimestamp: now,
+            },
+          });
+        }
+      });
+      channel.ack(message);
+      return;
+    }
   }
 
   const attemptNumber = notification.attemptCount + 1;
@@ -136,12 +180,15 @@ export const processNotificationMessage = async ({ message, channel, providers, 
   const provider = notification.channel === "SMS" ? providers.sms : providers.email;
   let result;
   try {
+    const text = notification.payload?.secureContent
+      ? decryptNotificationText(notification.payload.secureContent)
+      : notification.payload?.text;
     result = notification.channel === "SMS"
-      ? await provider.send({ to: notification.recipientAddress, text: notification.payload?.text })
+      ? await provider.send({ to: notification.recipientAddress, text })
       : await provider.send({
           to: notification.recipientAddress,
           subject: notification.subject,
-          text: notification.payload?.text,
+          text,
           html: notification.payload?.html,
         });
   } catch (error) {

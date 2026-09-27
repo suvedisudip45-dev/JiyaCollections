@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { authenticateAccount, logAuthEvent } from "../services/authService.js";
 import { createOtpChallenge, verifyOtpChallenge } from "../services/otpService.js";
+import { generateAccessToken } from "../services/tokenService.js";
 import bcrypt from "bcryptjs";
 
 async function runTests() {
@@ -14,7 +15,10 @@ async function runTests() {
       password: process.env.ADMIN_SEED_PASSWORD || "Admin@1234",
       targetPortal: "ADMIN",
     });
-    console.log(`✅ Admin authenticated successfully. Role: ${adminResult.account.role}, Phone: ${adminResult.account.phone}`);
+    console.log(`✅ Admin password accepted; MFA required. Role: ${adminResult.account.role}, Phone: ${adminResult.account.phone}`);
+    if (!adminResult.requiresTwoFactor || adminResult.token) {
+      throw new Error("Security failure: password-only admin authentication issued a privileged token.");
+    }
     if (adminResult.account.phone !== "9846008536") {
       throw new Error(`Expected admin phone 9846008536, got ${adminResult.account.phone}`);
     }
@@ -122,10 +126,22 @@ async function runTests() {
     console.log("\n8️⃣ Testing authAdmin & adminAuth middleware execution...");
     const { authAdmin } = await import("../middleware/auth.js");
     const { default: adminAuth } = await import("../middleware/adminAuth.js");
+    const adminMfaToken = generateAccessToken({
+      accountId: adminResult.account.id,
+      profileId: adminResult.profile.id,
+      role: "ADMIN",
+      mfaVerified: true,
+      authMethods: ["pwd", "otp"],
+    });
+    const passwordOnlyAdminToken = generateAccessToken({
+      accountId: adminResult.account.id,
+      profileId: adminResult.profile.id,
+      role: "ADMIN",
+    });
 
     let authAdminPassed = false;
     const reqMock1 = {
-      headers: { token: adminResult.token },
+      headers: { token: adminMfaToken },
       body: {},
     };
     const resMock1 = {
@@ -143,7 +159,7 @@ async function runTests() {
 
     let adminAuthPassed = false;
     const reqMock2 = {
-      headers: { token: adminResult.token },
+      headers: { token: adminMfaToken },
       body: {},
     };
     await adminAuth(reqMock2, resMock1, () => {
@@ -153,6 +169,20 @@ async function runTests() {
       throw new Error("adminAuth failed to authorize admin token");
     }
     console.log("✅ adminAuth passed for admin token");
+
+    let passwordOnlyRejected = false;
+    const passwordOnlyResponse = {
+      status: (code) => ({ json: (body) => {
+        passwordOnlyRejected = code === 401 && body.code === "ADMIN_MFA_REQUIRED";
+      } }),
+    };
+    await authAdmin({ headers: { token: passwordOnlyAdminToken }, body: {} }, passwordOnlyResponse, () => {
+      passwordOnlyRejected = false;
+    });
+    if (!passwordOnlyRejected) {
+      throw new Error("Security failure: legacy admin guard accepted a password-only token.");
+    }
+    console.log("✅ password-only admin token was rejected");
 
     console.log("\n🎉 ALL UNIFIED AUTHENTICATION TESTS PASSED PERFECTLY!\n");
   } catch (error) {

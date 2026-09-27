@@ -6,6 +6,13 @@ const JWT_ALGORITHM = "HS256";
 
 const normalizeRole = (role) => String(role || "CUSTOMER").toUpperCase();
 
+export const hasVerifiedAdminMfa = (claims) => Boolean(
+  claims?.mfa_verified === true &&
+  Array.isArray(claims.amr) &&
+  claims.amr.includes("pwd") &&
+  claims.amr.includes("otp"),
+);
+
 const normalizePortalAccess = (portalAccess, role) => {
   if (Array.isArray(portalAccess) && portalAccess.length > 0) {
     return portalAccess.map((entry) => String(entry).trim()).filter(Boolean);
@@ -22,6 +29,8 @@ const buildJwtIdentity = ({
   portalAccess,
   tokenType,
   tokenFamilyId,
+  mfaVerified,
+  authMethods,
 }) => {
   const normalizedRole = normalizeRole(role);
   const payload = {
@@ -51,6 +60,10 @@ const buildJwtIdentity = ({
   if (tokenType === "refresh" && tokenFamilyId) {
     payload.token_family_id = tokenFamilyId;
   }
+  if (mfaVerified === true) {
+    payload.mfa_verified = true;
+    payload.amr = [...new Set(authMethods.map((method) => String(method).toLowerCase()))];
+  }
 
   return payload;
 };
@@ -64,6 +77,8 @@ const signToken = ({
   portalAccess,
   tokenType,
   tokenFamilyId,
+  mfaVerified,
+  authMethods,
   expiresIn,
   secret,
 }) => {
@@ -77,6 +92,8 @@ const signToken = ({
     portalAccess,
     tokenType,
     tokenFamilyId,
+    mfaVerified,
+    authMethods,
   });
 
   const finalExpiresIn = expiresIn || (tokenType === "access" ? config.accessTokenExpiresIn : config.refreshTokenExpiresIn);
@@ -96,6 +113,8 @@ export const generateAccessToken = ({
   phone,
   profileId,
   portalAccess,
+  mfaVerified,
+  authMethods,
   expiresIn,
 }) => {
   const config = getJwtConfig();
@@ -106,6 +125,8 @@ export const generateAccessToken = ({
     phone,
     profileId,
     portalAccess,
+    mfaVerified,
+    authMethods,
     tokenType: "access",
     secret: config.accessSecret,
     expiresIn,
@@ -120,6 +141,8 @@ export const generateRefreshToken = ({
   profileId,
   portalAccess,
   tokenFamilyId,
+  mfaVerified,
+  authMethods,
   expiresIn,
 }) => {
   const config = getJwtConfig();
@@ -130,6 +153,8 @@ export const generateRefreshToken = ({
     phone,
     profileId,
     portalAccess,
+    mfaVerified,
+    authMethods,
     tokenType: "refresh",
     tokenFamilyId,
     secret: config.refreshSecret,

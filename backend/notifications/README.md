@@ -6,6 +6,8 @@ The notification subsystem is isolated from existing order, authentication, and 
 
 The API remains independent of RabbitMQ. Run the worker separately with `npm run worker:notifications`; the worker loads the standard backend `.env` and then `backend/.env.notifications`. Local secret files are ignored by Git. In production, inject configuration directly into a dedicated worker service through its secret manager. Never put real credentials in `.env.example` or frontend configuration.
 
+From the `backend` directory, run `npm run rabbitmq:check` to test broker connectivity and queue setup without publishing or consuming messages. `connected: true` confirms the broker and queues are reachable; each queue should also have a nonzero consumer count while the notification worker is running. Start the worker in a separate terminal with `npm run worker:notifications`.
+
 The worker requires `NOTIFICATIONS_ENABLED=true` plus RabbitMQ connection values. TLS is required for production RabbitMQ. Enable SMS and email separately. Sparrow sending requires an HTTPS endpoint because credentials are sent to the provider. The current supplied endpoint uses HTTP, so SMS remains disabled until a secure endpoint is confirmed. SMTP sending requires a verified `SMTP_FROM` sender identity.
 
 ## Migration and deployment

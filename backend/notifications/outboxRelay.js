@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
+import { logger } from "../utils/logger.js";
 import { publishConfirmed } from "./queue/connection.js";
 
 const LEASE_MS = 30000;
@@ -30,6 +31,15 @@ export const publishPendingOutbox = async ({ client = prisma, channel, limit = 2
     });
     if (claim.count !== 1) continue;
 
+    logger.info("RabbitMQ outbox publish attempt", {
+      outboxId: row.id,
+      notificationId: row.notificationId,
+      routingKey: row.routingKey,
+      eventKey: row.eventKey,
+      attemptCount: row.attemptCount + 1,
+      payloadPreview: row.payload ? JSON.stringify(row.payload).slice(0, 250) : null,
+    });
+
     try {
       await publishConfirmed(channel, row.routingKey, row.payload, { messageId: row.eventKey });
       const marked = await client.$transaction(async (tx) => {
@@ -44,10 +54,27 @@ export const publishPendingOutbox = async ({ client = prisma, channel, limit = 2
         });
         return true;
       });
-      if (marked) published += 1;
-    } catch {
+      if (marked) {
+        published += 1;
+        logger.info("RabbitMQ outbox publish confirmed", {
+          outboxId: row.id,
+          notificationId: row.notificationId,
+          routingKey: row.routingKey,
+          eventKey: row.eventKey,
+        });
+      }
+    } catch (error) {
       const attemptCount = row.attemptCount + 1;
       const delayMs = Math.min(300000, 1000 * (2 ** Math.min(attemptCount, 8)));
+      logger.error("RabbitMQ outbox publish failed", {
+        outboxId: row.id,
+        notificationId: row.notificationId,
+        routingKey: row.routingKey,
+        attemptCount,
+        errorName: error?.name || "BROKER_PUBLISH_ERROR",
+        errorMessage: error?.message || "Unknown broker publish error",
+        nextRetryDelayMs: delayMs,
+      });
       await client.notificationOutbox.updateMany({
         where: { id: row.id, leaseToken, publishedAt: null },
         data: {

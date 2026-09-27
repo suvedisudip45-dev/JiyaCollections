@@ -76,7 +76,15 @@ export const generateAuthToken = (account, profile = {}) => {
   });
 };
 
-const createLoginTokenPair = async ({ account, profile, ipAddress, userAgent }) => {
+export const createLoginTokenPair = async ({
+  account,
+  profile,
+  ipAddress,
+  userAgent,
+  mfaVerified = false,
+  authMethods = [],
+  tx = null,
+}) => {
   const tokenFamilyId = createTokenFamilyId();
   const tokenInput = {
     accountId: account.id,
@@ -85,14 +93,16 @@ const createLoginTokenPair = async ({ account, profile, ipAddress, userAgent }) 
     phone: account.phone,
     profileId: profile.id || account.id,
     portalAccess: [account.role],
+    mfaVerified,
+    authMethods,
   };
   const accessToken = generateAccessToken(tokenInput);
   const refreshToken = generateRefreshToken({ ...tokenInput, tokenFamilyId });
   const accessClaims = getTokenClaims(accessToken);
   const refreshClaims = getTokenClaims(refreshToken);
 
-  await prisma.$transaction(async (tx) => {
-    await tx.authSession.createMany({
+  const createSessions = async (sessionClient) => {
+    await sessionClient.authSession.createMany({
       data: [
         {
           accountId: account.id,
@@ -116,7 +126,9 @@ const createLoginTokenPair = async ({ account, profile, ipAddress, userAgent }) 
         },
       ],
     });
-  });
+  };
+  if (tx) await createSessions(tx);
+  else await prisma.$transaction(createSessions);
 
   return {
     accessToken,
@@ -149,6 +161,14 @@ export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress
   if (normalizeRefreshPortal(targetPortal) !== normalizeRefreshPortal(decoded.role)) {
     const error = new Error("Refresh token does not belong to the requested portal.");
     error.code = "REFRESH_PORTAL_MISMATCH";
+    throw error;
+  }
+  if (
+    String(decoded.role).toUpperCase() === "ADMIN" &&
+    (decoded.mfa_verified !== true || !Array.isArray(decoded.amr) || !decoded.amr.includes("otp"))
+  ) {
+    const error = new Error("Admin multi-factor verification is required.");
+    error.code = "ADMIN_MFA_REQUIRED";
     throw error;
   }
 
@@ -205,6 +225,8 @@ export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress
     phone: account.phone,
     profileId: profile.id || account.id,
     portalAccess: [account.role],
+    mfaVerified: decoded.mfa_verified === true,
+    authMethods: Array.isArray(decoded.amr) ? decoded.amr : [],
   };
   const accessToken = generateAccessToken(tokenInput);
   const nextRefreshToken = generateRefreshToken({
@@ -380,9 +402,9 @@ export const logAuthEvent = async ({
   status = "SUCCESS",
   failureReason = null,
   metadata = {},
-}) => {
+}, { client = prisma } = {}) => {
   try {
-    await prisma.authAuditLog.create({
+    await client.authAuditLog.create({
       data: {
         accountId,
         identifier: String(identifier || "").slice(0, 255),
@@ -573,6 +595,28 @@ export const authenticateAccount = async ({
   // Extract Profile
   const profile = getAccountProfile(account);
 
+  const safeAccount = {
+    id: account.id,
+    email: account.email,
+    phone: account.phone,
+    role: account.role,
+    status: account.status,
+  };
+
+  if (String(account.role).toUpperCase() === "ADMIN") {
+    await logAuthEvent({
+      accountId: account.id,
+      identifier: normalized.value,
+      action: "ADMIN_PASSWORD_VERIFIED",
+      role: account.role,
+      portal: "ADMIN",
+      ipAddress,
+      userAgent,
+      status: "SUCCESS",
+    });
+    return { account: safeAccount, profile, requiresTwoFactor: true };
+  }
+
   const tokenPair = await createLoginTokenPair({ account, profile, ipAddress, userAgent });
 
   await logAuthEvent({
@@ -587,13 +631,7 @@ export const authenticateAccount = async ({
   });
 
   return {
-    account: {
-      id: account.id,
-      email: account.email,
-      phone: account.phone,
-      role: account.role,
-      status: account.status,
-    },
+    account: safeAccount,
     profile,
     token: tokenPair.accessToken,
     accessToken: tokenPair.accessToken,

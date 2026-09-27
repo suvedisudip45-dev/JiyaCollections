@@ -24,7 +24,10 @@ export const createAuthorize = (permissionResolver = resolveAccountPermissions) 
       try {
         const cache = req.rbac?.permissionCache || new Map();
         req.rbac = { ...(req.rbac || {}), permissionCache: cache };
-        const permissions = await permissionResolver(req.auth.accountId, { cache });
+        const permissions = await permissionResolver(req.auth.accountId, {
+          cache,
+          principalRole: req.auth.role,
+        });
         const hasAllRequired = requiredPermissions.every((permission) => hasPermission(permissions, permission));
 
         if (!hasAllRequired) {

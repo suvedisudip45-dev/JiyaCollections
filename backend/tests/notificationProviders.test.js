@@ -32,6 +32,24 @@ test("Sparrow adapter sends multipart fields and records provider acceptance", a
   assert.equal(result.provider, "SPARROW");
 });
 
+test("Sparrow logs never include SMS text or OTP digits", async () => {
+  const logEntries = [];
+  const otp = "Your admin verification code is 123456.";
+  const provider = createSparrowSmsProvider({
+    config: smsConfig,
+    loggerImpl: {
+      info: (message, metadata) => logEntries.push({ message, metadata }),
+      error: (message, metadata) => logEntries.push({ message, metadata }),
+    },
+    fetchImpl: async () => new Response(JSON.stringify({ response_code: 200, response: "queued" }), { status: 200 }),
+  });
+
+  await provider.send({ to: "9800000000", text: otp });
+
+  assert.equal(JSON.stringify(logEntries).includes(otp), false);
+  assert.equal(JSON.stringify(logEntries).includes("123456"), false);
+});
+
 test("Sparrow adapter refuses HTTP before making a provider request", async () => {
   let called = false;
   const provider = createSparrowSmsProvider({

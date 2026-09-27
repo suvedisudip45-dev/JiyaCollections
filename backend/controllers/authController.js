@@ -12,7 +12,12 @@ import {
   createOtpChallenge,
   verifyOtpChallenge,
 } from "../services/otpService.js";
-import { serializeLoginResponse } from "../dtos/authDto.js";
+import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
+import {
+  createAdminTwoFactorChallenge,
+  sendAdminTwoFactorCode,
+  verifyAdminTwoFactorCode,
+} from "../services/adminTwoFactorService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
@@ -57,13 +62,66 @@ export const login = async (req, res) => {
       ipAddress,
       userAgent,
     });
+    if (authResult.requiresTwoFactor) {
+      const challenge = await createAdminTwoFactorChallenge({
+        accountId: authResult.account.id,
+        ipAddress,
+        userAgent,
+      });
+      return res.json({
+        success: true,
+        message: "Additional verification required.",
+        requiresTwoFactor: true,
+        ...challenge,
+      });
+    }
     setRefreshCookie(res, authResult.account.role, authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
     return res.json(serializeLoginResponse(authResult));
   } catch (error) {
-    return res.status(400).json({
+    return res.status(error.statusCode || 400).json({
       success: false,
       message: error.message || "Authentication failed.",
+    });
+  }
+};
+
+export const sendAdminTwoFactor = async (req, res) => {
+  try {
+    const result = await sendAdminTwoFactorCode({
+      challengeId: req.body?.challengeId,
+      method: req.body?.method,
+    });
+    return res.status(202).json({
+      success: true,
+      message: "Verification code queued for delivery.",
+      method: result.method,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Verification request failed.",
+      code: error.code || "ADMIN_2FA_SEND_FAILED",
+    });
+  }
+};
+
+export const verifyAdminTwoFactor = async (req, res) => {
+  try {
+    const result = await verifyAdminTwoFactorCode({
+      challengeId: req.body?.challengeId,
+      otp: req.body?.otp,
+    }, {
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+    });
+    setRefreshCookie(res, "ADMIN", result.tokenPair.refreshToken, result.tokenPair.refreshTokenExpiresAt);
+    return res.json(serializeLoginResponse({ ...result.tokenPair, account: result.account }));
+  } catch (error) {
+    return res.status(error.statusCode || 401).json({
+      success: false,
+      message: error.statusCode === 503 ? error.message : "Invalid or expired verification code.",
+      code: error.code || "ADMIN_2FA_INVALID",
     });
   }
 };
@@ -139,29 +197,7 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ success: false, message: "Account not found." });
     }
 
-    let profile = {};
-    if (account.role === "ADMIN") {
-      profile = account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
-    } else if (account.role === "MANUFACTURER") {
-      profile = account.manufacturerProfile || { id: account.id, email: account.email };
-      profile.businessName = profile.name || "";
-    } else if (account.role === "MARKETING_PARTNER") {
-      profile = account.marketingPartnerProfile || { id: account.id, email: account.email };
-    } else {
-      profile = account.customerProfile || { id: account.id, email: account.email };
-    }
-
-    const { passwordHash: _, ...safeAccount } = account;
-
-    return res.json({
-      success: true,
-      account: safeAccount,
-      profile,
-      role: account.role,
-      user: profile,
-      manufacturer: profile,
-      partner: profile,
-    });
+    return res.json(serializeSessionProfile(account));
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

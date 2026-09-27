@@ -7,6 +7,8 @@ import {
   changePassword,
   requestOtp,
   verifyOtp,
+  sendAdminTwoFactor,
+  verifyAdminTwoFactor,
 } from "../controllers/authController.js";
 import { authenticate } from "../middleware/unifiedAuth.js";
 
@@ -15,6 +17,8 @@ const authRouter = express.Router();
 // Public Authentication Endpoints
 authRouter.post("/login", login);
 authRouter.post("/refresh", refresh);
+authRouter.post("/admin/2fa/send", sendAdminTwoFactor);
+authRouter.post("/admin/2fa/verify", verifyAdminTwoFactor);
 authRouter.post("/logout", authenticate, logout);
 
 // OTP Endpoints
