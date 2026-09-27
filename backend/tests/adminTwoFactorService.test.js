@@ -21,6 +21,8 @@ const environment = {
   OTP_LENGTH: "6",
   OTP_EXPIRY_MINUTES: "5",
   OTP_MAX_ATTEMPTS: "5",
+  OTP_MAX_CHALLENGES_PER_WINDOW: "5",
+  AUTH_LOGIN_IP_BUCKET_SIZE: "30",
   OTP_MAX_RESENDS: "3",
   OTP_RESEND_COOLDOWN_SECONDS: "30",
 };
@@ -169,6 +171,40 @@ test("Marketing Partner and Manufacturer challenges issue only portal-bound MFA 
     assert.equal(claims.mfa_verified, true);
     assert.deepEqual(claims.amr, ["pwd", "otp"]);
   }
+});
+
+test("OTP challenge limits are per account and allow up to the configured IP limit", async () => {
+  const otherAccountHarness = createHarness("ADMIN");
+  let ipChallenges = 5;
+  otherAccountHarness.client.adminTwoFactorChallenge.count = async ({ where }) =>
+    Object.hasOwn(where, "accountId") ? 0 : ipChallenges;
+
+  const created = await createPortalTwoFactorChallenge({
+    accountId: otherAccountHarness.state.account.id,
+    portal: "ADMIN",
+    ipAddress: "203.0.113.10",
+  }, { client: otherAccountHarness.client, notificationConfig, env: environment });
+  assert.ok(created.challengeId);
+
+  const sameAccountHarness = createHarness("ADMIN");
+  sameAccountHarness.client.adminTwoFactorChallenge.count = async () => 5;
+  await assert.rejects(() => createPortalTwoFactorChallenge({
+    accountId: sameAccountHarness.state.account.id,
+    portal: "ADMIN",
+    ipAddress: "203.0.113.10",
+  }, { client: sameAccountHarness.client, notificationConfig, env: environment }),
+  (error) => error.code === "ADMIN_2FA_RATE_LIMITED");
+
+  ipChallenges = 30;
+  const ipLimitedHarness = createHarness("ADMIN");
+  ipLimitedHarness.client.adminTwoFactorChallenge.count = async ({ where }) =>
+    Object.hasOwn(where, "accountId") ? 0 : ipChallenges;
+  await assert.rejects(() => createPortalTwoFactorChallenge({
+    accountId: ipLimitedHarness.state.account.id,
+    portal: "ADMIN",
+    ipAddress: "203.0.113.10",
+  }, { client: ipLimitedHarness.client, notificationConfig, env: environment }),
+  (error) => error.code === "ADMIN_2FA_RATE_LIMITED");
 });
 
 test("MFA policy excludes Customer and rejects cross-portal challenge binding", async () => {

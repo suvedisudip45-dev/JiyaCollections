@@ -32,6 +32,7 @@ const loadAdminTwoFactorConfig = (env = process.env) => {
     expiryMinutes: readBoundedInteger(env, "OTP_EXPIRY_MINUTES", 5, 1, 15),
     maxAttempts: readBoundedInteger(env, "OTP_MAX_ATTEMPTS", 5, 1, 10),
     maxChallengesPerWindow: readBoundedInteger(env, "OTP_MAX_CHALLENGES_PER_WINDOW", 5, 1, 20),
+    maxChallengesPerIpWindow: readBoundedInteger(env, "AUTH_LOGIN_IP_BUCKET_SIZE", 30, 1, 100_000),
     challengeWindowMinutes: readBoundedInteger(env, "OTP_CHALLENGE_WINDOW_MINUTES", 10, 1, 60),
     maxResends: readBoundedInteger(env, "OTP_MAX_RESENDS", 3, 1, 10),
     resendCooldownSeconds: readBoundedInteger(env, "OTP_RESEND_COOLDOWN_SECONDS", 30, 5, 300),
@@ -151,12 +152,19 @@ export const createPortalTwoFactorChallenge = async ({
   }
 
   const windowStart = new Date(now.getTime() - config.challengeWindowMinutes * 60 * 1000);
-  const rateScopes = [{ accountId }];
-  if (ipAddress) rateScopes.push({ requestIp: String(ipAddress).slice(0, 64) });
-  const recentChallenges = await client.adminTwoFactorChallenge.count({
-    where: { createdAt: { gte: windowStart }, OR: rateScopes },
+  const recentAccountChallenges = await client.adminTwoFactorChallenge.count({
+    where: { accountId, createdAt: { gte: windowStart } },
   });
-  if (recentChallenges >= config.maxChallengesPerWindow) {
+  const normalizedIpAddress = String(ipAddress || "").slice(0, 64);
+  const recentIpChallenges = normalizedIpAddress
+    ? await client.adminTwoFactorChallenge.count({
+      where: { requestIp: normalizedIpAddress, createdAt: { gte: windowStart } },
+    })
+    : 0;
+  if (
+    recentAccountChallenges >= config.maxChallengesPerWindow ||
+    recentIpChallenges >= config.maxChallengesPerIpWindow
+  ) {
     throw failure("Too many verification requests. Please try again later.", 429, "ADMIN_2FA_RATE_LIMITED");
   }
 

@@ -183,6 +183,7 @@ const MarketingCards = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [cardsLoading, setCardsLoading] = useState(false);
   const [working, setWorking] = useState(false);
+  const [adMediaUploading, setAdMediaUploading] = useState(false);
   const [approvalCodes, setApprovalCodes] = useState({});
 
   // ── Base data load ────────────────────────────────────────────────────────
@@ -1090,30 +1091,61 @@ const MarketingCards = ({ token }) => {
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-12">
-                      <div className="sm:col-span-4">
-                        <label className="text-[11px] font-bold uppercase text-slate-500">Ad Format</label>
-                        <select
-                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold"
-                          value={campaign.adMediaType}
-                          onChange={(e) => setCampaign({ ...campaign, adMediaType: e.target.value })}
-                        >
-                          <option value="NONE">None (Direct QR Scan)</option>
-                          <option value="IMAGE">Image Banner (Photo / Poster)</option>
-                          <option value="VIDEO">Video Teaser (MP4 / Short Ad)</option>
-                        </select>
+                      <div className="sm:col-span-12">
+                        <label className="text-[11px] font-bold uppercase text-slate-500">Promo image or video</label>
+                        <input
+                          type="file"
+                          accept="image/*,video/*"
+                          disabled={adMediaUploading}
+                          onChange={async (event) => {
+                            const file = event.currentTarget.files?.[0];
+                            event.currentTarget.value = "";
+                            if (!file) return;
+                            const formData = new FormData();
+                            formData.append("media", file);
+                            setAdMediaUploading(true);
+                            try {
+                              const response = await axios.post(
+                                `${backendUrl}/api/marketing-cards/admin/campaign-media`,
+                                formData,
+                                { headers: { token } },
+                              );
+                              if (!response.data.success) throw new Error(response.data.message);
+                              setCampaign((current) => ({
+                                ...current,
+                                adMediaType: response.data.media.mediaType,
+                                adMediaUrl: response.data.media.mediaUrl,
+                              }));
+                              toast.success("Promo media uploaded.");
+                            } catch (error) {
+                              toast.error(error.response?.data?.message || error.message || "Promo media upload failed.");
+                            } finally {
+                              setAdMediaUploading(false);
+                            }
+                          }}
+                          className="mt-1 block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-bold"
+                        />
+                        <p className="mt-1 text-[10px] text-slate-500">Images and videos up to 50 MB. {adMediaUploading ? "Uploading..." : campaign.adMediaType !== "NONE" ? `Uploaded ${campaign.adMediaType.toLowerCase()}.` : "Optional."}</p>
+                        {campaign.adMediaUrl && (
+                          <div className="mt-3 flex items-start gap-3">
+                            {campaign.adMediaType === "VIDEO" ? (
+                              <video src={campaign.adMediaUrl} controls muted className="max-h-36 max-w-full rounded border border-slate-200" />
+                            ) : (
+                              <img src={campaign.adMediaUrl} alt="Promo media preview" className="max-h-36 max-w-full rounded border border-slate-200 object-contain" />
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setCampaign((current) => ({ ...current, adMediaType: "NONE", adMediaUrl: "" }))}
+                              className="text-xs font-bold text-red-700 hover:underline"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {campaign.adMediaType !== "NONE" && (
                         <>
-                          <div className="sm:col-span-8">
-                            <label className="text-[11px] font-bold uppercase text-slate-500">Media URL (Photo / Video Direct Link)</label>
-                            <input
-                              className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono"
-                              placeholder="https://res.cloudinary.com/.../promo.mp4 or banner.jpg"
-                              value={campaign.adMediaUrl}
-                              onChange={(e) => setCampaign({ ...campaign, adMediaUrl: e.target.value })}
-                            />
-                          </div>
                           <div className="sm:col-span-6">
                             <label className="text-[11px] font-bold uppercase text-slate-500">Ad Headline</label>
                             <input
@@ -1148,13 +1180,14 @@ const MarketingCards = ({ token }) => {
                   </div>
 
                   {/* Submit campaign */}
-                  <button disabled={working}
+                  <button disabled={working || adMediaUploading}
                     onClick={async () => {
                       if (!campaign.marketingPartnerId) return toast.error("Please select a partner.");
                       if (!campaign.name.trim()) return toast.error("Please enter a campaign name.");
                       if (campaign.targetScopeType === "PROVINCE" && !campaign.targetProvince) return toast.error("Please select a target province.");
                       if (campaign.targetScopeType === "DISTRICT" && !campaign.targetDistrict) return toast.error("Please select a target district.");
                       if (campaign.offers.length === 0 || campaign.offers.some((o) => !o.name.trim())) return toast.error("Please name all offers.");
+                      if (campaign.adMediaType !== "NONE" && !campaign.adMediaUrl) return toast.error("Please upload the selected promo media.");
                       if (totalPct > 100) return toast.error("Total percentage cannot exceed 100%.");
                       // Date validation
                       if (campaign.endsAt && campaign.cardExpiresAt) {
