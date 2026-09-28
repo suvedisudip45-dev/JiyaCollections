@@ -31,6 +31,8 @@ import ChartOfAccounts from "./pages/ChartOfAccounts";
 import JournalEntries from "./pages/JournalEntries";
 import GeneralLedger from "./pages/GeneralLedger";
 import TrialBalance from "./pages/TrialBalance";
+import FiscalPeriods from "./pages/FiscalPeriods";
+import AccountingHealth from "./pages/AccountingHealth";
 import Manufacturers from "./pages/Manufacturers";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
@@ -137,6 +139,8 @@ const App = () => {
                   <Route path="/journal-entries" element={<JournalEntries token={token} />} />
                   <Route path="/general-ledger" element={<GeneralLedger token={token} />} />
                   <Route path="/trial-balance" element={<TrialBalance token={token} />} />
+                  <Route path="/fiscal-periods" element={<FiscalPeriods token={token} />} />
+                  <Route path="/accounting-health" element={<AccountingHealth token={token} />} />
                   <Route path="/add" element={<Add token={token} />} />
                   <Route path="/list" element={<List token={token} />} />
                   <Route path="/inventory" element={<Inventory token={token} />} />
