@@ -165,7 +165,7 @@ const Finance = () => {
                 <Wallet className="w-4 h-4 text-red-500" />
               </div>
               <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">Manufacturing / supply cost due</p>
+              <p className="mt-1 text-[11px] text-slate-500">Direct-sale margin owed to admin</p>
             </div>
 
             <div className="bg-white border border-emerald-200 rounded-2xl p-4">
@@ -174,7 +174,7 @@ const Finance = () => {
                 <FileText className="w-4 h-4 text-emerald-500" />
               </div>
               <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.receivable || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">Completed deliveries credited to hub</p>
+              <p className="mt-1 text-[11px] text-slate-500">Platform COGS; direct-sale COGS plus commission</p>
             </div>
 
             <div className="bg-white border border-blue-200 rounded-2xl p-4">
@@ -281,8 +281,8 @@ const Finance = () => {
                     <th className="px-4 py-3 font-semibold">Order</th>
                     <th className="px-4 py-3 font-semibold">Status</th>
                     <th className="px-4 py-3 font-semibold">Qty</th>
-                    <th className="px-4 py-3 font-semibold">Sales</th>
-                    <th className="px-4 py-3 font-semibold">Payable</th>
+                    <th className="px-4 py-3 font-semibold">Direct sales</th>
+                    <th className="px-4 py-3 font-semibold">Payable to admin</th>
                     <th className="px-4 py-3 font-semibold">Receivable</th>
                   </tr>
                 </thead>
@@ -309,7 +309,7 @@ const Finance = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-slate-700">{order.quantity}</td>
-                        <td className="px-4 py-3 text-slate-700">{money(order.amount)}</td>
+                        <td className="px-4 py-3 text-slate-700">{order.amount != null ? money(order.amount) : "—"}</td>
                         <td className="px-4 py-3 text-red-700 font-semibold">{money(order.payable)}</td>
                         <td className="px-4 py-3 text-emerald-700 font-semibold">{money(order.receivable)}</td>
                       </tr>

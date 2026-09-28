@@ -9,7 +9,8 @@ const formatDate = (d) => { if (!d) return "—"; return new Date(d).toLocaleDat
 const isOverdue = (dueDate) => { if (!dueDate) return false; return new Date(dueDate) < new Date(); };
 
 const PAYABLE_CATS = [
-  { value: "SUPPLIER_INVOICE", label: "Supplier Invoice" },
+  { value: "SUPPLIER_INVOICE", label: "Supplier Invoice / Manufacturer COGS" },
+  { value: "MANUFACTURER_COGS", label: "Manufacturer COGS Obligation" },
   { value: "OPERATING_EXPENSE", label: "Operating Expense" },
   { value: "SALARY_PAYABLE", label: "Salary / Wages Payable" },
   { value: "SALARIES", label: "Salaries (Staff)" },
@@ -22,7 +23,9 @@ const PAYABLE_CATS = [
   { value: "OTHER", label: "Other Liability" },
 ];
 const RECEIVABLE_CATS = [
-  { value: "CUSTOMER_RECEIVABLE", label: "Customer Due / Pending COD" },
+  { value: "CUSTOMER_RECEIVABLE", label: "Customer Due / Direct Sale Margin" },
+  { value: "CARRIER_COD_RECEIVABLE", label: "Courier COD Remittance (Nepal Can Move)" },
+  { value: "DIRECT_SALES_COMMISSION", label: "Manufacturer Direct Sale Margin" },
   { value: "SUPPLIER_DEBIT_REFUND", label: "Supplier Credit / Refund" },
   { value: "TAX_REFUND_CREDIT", label: "Tax Refund / Credit Note" },
   { value: "LOAN_RECEIVABLE", label: "Loan Given Out" },
@@ -30,18 +33,20 @@ const RECEIVABLE_CATS = [
   { value: "OTHER", label: "Other Receivable" },
 ];
 const LABEL_MAP = {
-  SUPPLIER_INVOICE:"Supplier Invoice",OPERATING_EXPENSE:"Operating Expense",SALARY_PAYABLE:"Salary Payable",
+  SUPPLIER_INVOICE:"Supplier / Manufacturer COGS",MANUFACTURER_COGS:"Manufacturer COGS",
+  OPERATING_EXPENSE:"Operating Expense",SALARY_PAYABLE:"Salary Payable",
   SALARIES:"Salaries",ASSET_PURCHASE:"Asset Purchase",PARTNER_DISTRIBUTION:"Partner Payout",
   TAX_DUE:"Tax Due",LOAN_NOTE:"Loan Note",RENT:"Rent Payable",UTILITIES:"Utilities",OTHER:"Other",
-  CUSTOMER_RECEIVABLE:"Customer Due",SUPPLIER_DEBIT_REFUND:"Supplier Credit",
+  CUSTOMER_RECEIVABLE:"Customer Due",CARRIER_COD_RECEIVABLE:"NCM Courier COD",
+  DIRECT_SALES_COMMISSION:"Direct Sale Margin",SUPPLIER_DEBIT_REFUND:"Supplier Credit",
   TAX_REFUND_CREDIT:"Tax Credit",LOAN_RECEIVABLE:"Loan Given",ADVANCE_PAYMENT:"Advance Given",
 };
 const ICON_MAP = {
-  SALARY_PAYABLE:"👷",SALARIES:"👷",SUPPLIER_INVOICE:"📦",OPERATING_EXPENSE:"⚙️",
-  ASSET_PURCHASE:"🏢",PARTNER_DISTRIBUTION:"🤝",TAX_DUE:"🏛️",LOAN_NOTE:"🏦",
-  RENT:"🏠",UTILITIES:"⚡",OTHER:"📋",
-  CUSTOMER_RECEIVABLE:"🛍️",SUPPLIER_DEBIT_REFUND:"↩️",TAX_REFUND_CREDIT:"💰",
-  LOAN_RECEIVABLE:"💳",ADVANCE_PAYMENT:"👤",
+  SALARY_PAYABLE:"👷",SALARIES:"👷",SUPPLIER_INVOICE:"🏭",MANUFACTURER_COGS:"🏭",
+  OPERATING_EXPENSE:"⚙️",ASSET_PURCHASE:"🏢",PARTNER_DISTRIBUTION:"🤝",
+  TAX_DUE:"🏛️",LOAN_NOTE:"🏦",RENT:"🏠",UTILITIES:"⚡",OTHER:"📋",
+  CUSTOMER_RECEIVABLE:"🛍️",CARRIER_COD_RECEIVABLE:"🚚",DIRECT_SALES_COMMISSION:"🏭",
+  SUPPLIER_DEBIT_REFUND:"↩️",TAX_REFUND_CREDIT:"💰",LOAN_RECEIVABLE:"💳",ADVANCE_PAYMENT:"👤",
 };
 
 const StatusBadge = ({ status }) => {
@@ -116,6 +121,8 @@ const PayablesReceivables = ({ token }) => {
   const [data, setData]     = useState(null);
   const [mfgSummary, setMfgSummary] = useState(null);
   const [range, setRange]   = useState("month");
+  const [selectedMfgId, setSelectedMfgId] = useState("ALL");
+  const [mfgSubTab, setMfgSubTab] = useState("manufacturers"); // "manufacturers" | "orders"
   const [loading, setLoading] = useState(true);
   const [tab, setTab]       = useState("payables");
   const [search, setSearch] = useState("");
@@ -124,6 +131,7 @@ const PayablesReceivables = ({ token }) => {
   const [showAddR, setShowAddR]   = useState(false);
   const [showSettle, setShowSettle]   = useState(null);
   const [showCollect, setShowCollect] = useState(null);
+  const [showPayMfg, setShowPayMfg]   = useState(false);
 
   const emptyP = { title:"",payeeName:"",category:"OPERATING_EXPENSE",totalAmount:"",dueDate:"",invoiceNumber:"",priority:"MEDIUM",notes:"" };
   const emptyR = { title:"",payerName:"",category:"CUSTOMER_RECEIVABLE",totalAmount:"",dueDate:"",invoiceNumber:"",notes:"" };
@@ -131,6 +139,7 @@ const PayablesReceivables = ({ token }) => {
   const [rForm, setRForm] = useState(emptyR);
   const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false });
   const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false });
+  const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false });
 
   const fetchData = useCallback(async () => {
     try {
@@ -141,15 +150,16 @@ const PayablesReceivables = ({ token }) => {
     finally { setLoading(false); }
   },[token]);
 
-  const fetchMfg = useCallback(async (r) => {
+  const fetchMfg = useCallback(async (r, mfgId = selectedMfgId) => {
     try {
-      const res = await axios.get(`${backendUrl}/api/finance/manufacturer-summary`,{headers:{token},params:{range:r}});
+      const params = { range: r };
+      if (mfgId && mfgId !== "ALL") params.manufacturerId = mfgId;
+      const res = await axios.get(`${backendUrl}/api/finance/manufacturer-summary`,{headers:{token},params});
       if (res.data.success) setMfgSummary(res.data.data);
     } catch {}
-  },[token]);
+  },[token, selectedMfgId]);
 
-  useEffect(()=>{ if(token){fetchData();fetchMfg(range);} },[token]);
-  useEffect(()=>{ if(token) fetchMfg(range); },[range,token]);
+  useEffect(()=>{ if(token){fetchData();fetchMfg(range, selectedMfgId);} },[token, range, selectedMfgId]);
 
   const createPayable = async (e) => {
     e.preventDefault();
@@ -178,7 +188,7 @@ const PayablesReceivables = ({ token }) => {
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient balance in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     try {
       const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{payableId:showSettle.id,amount:amt,fromAccountId:sForm.fromAccountId,notes:sForm.notes},{headers:{token}});
-      if (res.data.success){toast.success(res.data.message);setShowSettle(null);setSForm({amount:"",fromAccountId:"",notes:"",partial:false});fetchData();}
+      if (res.data.success){toast.success(res.data.message);setShowSettle(null);setSForm({amount:"",fromAccountId:"",notes:"",partial:false});fetchData();fetchMfg(range,selectedMfgId);}
       else toast.error(res.data.message);
     } catch(e){toast.error(e.response?.data?.message||e.message);}
   };
@@ -189,9 +199,35 @@ const PayablesReceivables = ({ token }) => {
     if (amt>showCollect.remainingBalance) return toast.warn("Exceeds remaining balance");
     try {
       const res = await axios.post(`${backendUrl}/api/finance/collect-receivable`,{receivableId:showCollect.id,amount:amt,toAccountId:cForm.toAccountId,notes:cForm.notes},{headers:{token}});
-      if (res.data.success){toast.success(res.data.message);setShowCollect(null);setCForm({amount:"",toAccountId:"",notes:"",partial:false});fetchData();}
+      if (res.data.success){toast.success(res.data.message);setShowCollect(null);setCForm({amount:"",toAccountId:"",notes:"",partial:false});fetchData();fetchMfg(range,selectedMfgId);}
       else toast.error(res.data.message);
     } catch(err){toast.error(err.response?.data?.message||err.message);}
+  };
+  const payManufacturerSubmit = async (e) => {
+    e.preventDefault();
+    const amt=Number(mfgPayForm.amount);
+    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt) return toast.warn("Manufacturer, amount, and payment account are required");
+    const acc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
+    if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
+    try {
+      const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
+        manufacturerId: mfgPayForm.manufacturerId,
+        amount: amt,
+        fromAccountId: mfgPayForm.fromAccountId,
+        notes: mfgPayForm.notes,
+      },{headers:{token}});
+      if (res.data.success){
+        toast.success(res.data.message);
+        setShowPayMfg(false);
+        setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false});
+        fetchData();
+        fetchMfg(range, selectedMfgId);
+      } else {
+        toast.error(res.data.message);
+      }
+    } catch(err){
+      toast.error(err.response?.data?.message||err.message);
+    }
   };
 
   if (loading) return (
@@ -206,6 +242,7 @@ const PayablesReceivables = ({ token }) => {
   const allP      = data?.payables  || [];
   const allR      = data?.receivables || [];
   const mfgData   = mfgSummary?.summary || {};
+  const mfgList   = mfgSummary?.manufacturers || [];
   const mfgOrders = mfgSummary?.orders  || [];
 
   const filt = (arr,nk) => arr.filter(x=>{
@@ -222,6 +259,11 @@ const PayablesReceivables = ({ token }) => {
   const allOpenR=allR.filter(r=>r.status!=="SETTLED"&&r.status!=="CANCELLED");
   const selAcc=accounts.find(a=>a.id===sForm.fromAccountId);
   const insuff=selAcc&&Number(sForm.amount)>0&&selAcc.currentBalance<Number(sForm.amount);
+  const selMfgAcc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
+  const mfgInsuff=selMfgAcc&&Number(mfgPayForm.amount)>0&&selMfgAcc.currentBalance<Number(mfgPayForm.amount);
+
+  const activeMfgObj = mfgList.find(m => m.id === mfgPayForm.manufacturerId) || mfgList[0] || {};
+  const activeMfgMaxPayable = activeMfgObj.remainingPayable !== undefined ? activeMfgObj.remainingPayable : (activeMfgObj.payable || 0);
 
   return (
     <div className="space-y-6">
@@ -229,14 +271,28 @@ const PayablesReceivables = ({ token }) => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Accounts Payable &amp; Receivable</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Track salary, supplier bills, and all liabilities or assets owed to / by you.</p>
+          <p className="text-xs text-slate-500 mt-0.5">Track salary, manufacturer obligations (COGS/Direct Sales), supplier bills, and liquid cash.</p>
         </div>
-        <div className="flex gap-2">
-          <button onClick={()=>setShowAddP(true)} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 flex items-center gap-1.5 shadow-sm">
+        <div className="flex flex-wrap gap-2">
+          <button onClick={()=>{
+            const defaultMfg = mfgList.find(m => m.payable > 0) || mfgList[0];
+            setShowPayMfg(true);
+            setMfgPayForm({
+              manufacturerId: defaultMfg?.id || "",
+              amount: String(defaultMfg?.remainingPayable || defaultMfg?.payable || ""),
+              fromAccountId: accounts[0]?.id || "",
+              notes: "",
+              partial: false,
+            });
+          }} className="px-3 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 flex items-center gap-1.5 shadow-sm cursor-pointer">
+            <span>💳</span>
+            Pay Manufacturer
+          </button>
+          <button onClick={()=>setShowAddP(true)} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 flex items-center gap-1.5 shadow-sm cursor-pointer">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
             Record Payable
           </button>
-          <button onClick={()=>setShowAddR(true)} className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 flex items-center gap-1.5 shadow-sm">
+          <button onClick={()=>setShowAddR(true)} className="px-3 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 flex items-center gap-1.5 shadow-sm cursor-pointer">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
             Record Receivable
           </button>
@@ -244,10 +300,30 @@ const PayablesReceivables = ({ token }) => {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white border border-red-200 rounded-xl p-4"><p className="text-[10px] font-semibold text-red-500 uppercase tracking-wider">Payables Due</p><p className="text-lg font-black text-red-700 mt-1">{fmt(metrics.totalPayablesOutstanding)}</p><p className="text-[10px] text-slate-400 mt-0.5">{allOpenP.length} unpaid items</p></div>
-        <div className="bg-white border border-emerald-200 rounded-xl p-4"><p className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Receivables Due</p><p className="text-lg font-black text-emerald-700 mt-1">{fmt(metrics.totalReceivablesOutstanding)}</p><p className="text-[10px] text-slate-400 mt-0.5">{allOpenR.length} pending items</p></div>
-        <div className="bg-white border border-blue-200 rounded-xl p-4"><p className="text-[10px] font-semibold text-blue-500 uppercase tracking-wider">Liquid Cash</p><p className="text-lg font-black text-blue-700 mt-1">{fmt(metrics.totalLiquidCash)}</p><p className="text-[10px] text-slate-400 mt-0.5">{accounts.length} account{accounts.length!==1?"s":""}</p></div>
-        <div className={`bg-white border rounded-xl p-4 ${metrics.canCoverAllPayablesNow?"border-emerald-200":"border-red-200"}`}><p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Net Pressure</p><p className={`text-lg font-black mt-1 ${(metrics.netPayablePressure||0)>0?"text-red-700":"text-emerald-700"}`}>{(metrics.netPayablePressure||0)>0?`-${fmt(metrics.netPayablePressure)}`:fmt(Math.abs(metrics.netPayablePressure||0))}</p><p className="text-[10px] mt-0.5">{metrics.canCoverAllPayablesNow?<span className="text-emerald-600 font-medium">✅ Can settle all</span>:<span className="text-red-600 font-medium">⚠️ Shortfall</span>}</p></div>
+        <div className="bg-white border border-red-200 rounded-xl p-4">
+          <p className="text-[10px] font-semibold text-red-500 uppercase tracking-wider">Payables Due</p>
+          <p className="text-lg font-black text-red-700 mt-1">{fmt(metrics.totalPayablesOutstanding)}</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">{allOpenP.length} unpaid bill(s)</p>
+        </div>
+        <div className="bg-white border border-emerald-200 rounded-xl p-4">
+          <p className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wider">Receivables Due</p>
+          <p className="text-lg font-black text-emerald-700 mt-1">{fmt(metrics.totalReceivablesOutstanding)}</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">{allOpenR.length} pending item(s)</p>
+        </div>
+        <div className="bg-white border border-blue-200 rounded-xl p-4">
+          <p className="text-[10px] font-semibold text-blue-500 uppercase tracking-wider">Liquid Cash</p>
+          <p className="text-lg font-black text-blue-700 mt-1">{fmt(metrics.totalLiquidCash)}</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">{accounts.length} account{accounts.length!==1?"s":""}</p>
+        </div>
+        <div className={`bg-white border rounded-xl p-4 ${metrics.canCoverAllPayablesNow?"border-emerald-200":"border-red-200"}`}>
+          <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Net Pressure</p>
+          <p className={`text-lg font-black mt-1 ${(metrics.netPayablePressure||0)>0?"text-red-700":"text-emerald-700"}`}>
+            {(metrics.netPayablePressure||0)>0?`-${fmt(metrics.netPayablePressure)}`:fmt(Math.abs(metrics.netPayablePressure||0))}
+          </p>
+          <p className="text-[10px] mt-0.5">
+            {metrics.canCoverAllPayablesNow?<span className="text-emerald-600 font-medium">✅ Can settle all</span>:<span className="text-red-600 font-medium">⚠️ Shortfall</span>}
+          </p>
+        </div>
       </div>
 
       {accounts.length>0&&(
@@ -263,38 +339,317 @@ const PayablesReceivables = ({ token }) => {
         </div>
       )}
 
-      <div className="bg-white rounded-2xl border border-slate-200 p-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div><p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Manufacturer Summary</p><h2 className="text-base font-bold text-slate-900">Payables &amp; receivables by manufacturer</h2></div>
-          <div className="flex flex-wrap gap-2">
-            {[{v:"day",l:"Today"},{v:"week",l:"7 Days"},{v:"month",l:"Month"},{v:"quarter",l:"3 Months"},{v:"year",l:"Year"}].map(o=>(
-              <button key={o.v} onClick={()=>setRange(o.v)} className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${range===o.v?"bg-slate-900 text-white":"bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{o.l}</button>
-            ))}
+      {/* ========================================================================= */}
+      {/* 2. MANUFACTURER OBLIGATIONS & DIRECT SALES LEDGER */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10px] font-bold uppercase tracking-wider">
+              <span>🏭</span> Manufacturer Ledger Hub
+            </div>
+            <h2 className="text-base font-black text-slate-900 mt-1">Manufacturer Payables &amp; Direct Sales</h2>
+            <p className="text-xs text-slate-500">
+              Direct phone and hub-visit sales only. Manufacturer receivables match admin payables (COGS + commission); direct sale value is due to the platform.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={selectedMfgId}
+              onChange={(e) => setSelectedMfgId(e.target.value)}
+              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 outline-none focus:border-slate-900"
+            >
+              <option value="ALL">All Manufacturers ({mfgList.length})</option>
+              {mfgList.map((m) => (
+                <option key={m.id} value={m.id}>{m.name} ({m.city || "Hub"})</option>
+              ))}
+            </select>
+
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+              {[{v:"day",l:"Today"},{v:"week",l:"7 Days"},{v:"month",l:"Month"},{v:"quarter",l:"3 Months"},{v:"year",l:"Year"}].map(o=>(
+                <button
+                  key={o.v}
+                  onClick={()=>setRange(o.v)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
+                    range===o.v ? "bg-white text-slate-900 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="mt-4 grid grid-cols-2 xl:grid-cols-4 gap-3">
-          <div className="bg-red-50 border border-red-200 rounded-xl p-3"><p className="text-[10px] uppercase tracking-wider text-red-600">Payable</p><p className="mt-1 text-xl font-black text-red-700">{fmt(mfgData.payable||0)}</p></div>
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3"><p className="text-[10px] uppercase tracking-wider text-emerald-600">Receivable</p><p className="mt-1 text-xl font-black text-emerald-700">{fmt(mfgData.receivable||0)}</p></div>
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3"><p className="text-[10px] uppercase tracking-wider text-blue-600">Net Receivable</p><p className="mt-1 text-xl font-black text-blue-700">{fmt(mfgData.netReceivable||0)}</p></div>
-          <div className="bg-slate-100 border border-slate-200 rounded-xl p-3"><p className="text-[10px] uppercase tracking-wider text-slate-600">Sold/Delivered/Returned</p><p className="mt-1 text-lg font-black text-slate-800">{mfgData.itemsSold||0}/{mfgData.itemsDelivered||0}/{mfgData.itemsReturned||0}</p></div>
+
+        {/* 4 KPI Cards */}
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="bg-red-50/70 border border-red-200 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-red-600">Payable to Manufacturers</p>
+              <span className="text-xs">📦</span>
+            </div>
+            <p className="mt-2 text-2xl font-black text-red-700">{fmt(mfgData.payable||0)}</p>
+              <p className="mt-1 text-[10px] text-red-600">Platform COGS; direct-sale COGS + commission</p>
+          </div>
+
+          <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">Direct-Sale Margin Receivable</p>
+              <span className="text-xs">💰</span>
+            </div>
+            <p className="mt-2 text-2xl font-black text-emerald-700">{fmt(mfgData.receivable||0)}</p>
+              <p className="mt-1 text-[10px] text-emerald-600">Sales less manufacturer COGS and commission</p>
+          </div>
+
+          <div className={`rounded-2xl p-4 border ${(mfgData.netPayable||0) > 0 ? "bg-amber-50/70 border-amber-200" : "bg-blue-50/70 border-blue-200"}`}>
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Net Settlement Position</p>
+              <span className="text-xs">⚖️</span>
+            </div>
+            <p className={`mt-2 text-2xl font-black ${(mfgData.netPayable||0) > 0 ? "text-amber-800" : "text-blue-800"}`}>
+              {fmt((mfgData.netPayable||0) > 0 ? mfgData.netPayable : (mfgData.netReceivable||0))}
+            </p>
+            <p className="mt-1 text-[10px] font-semibold text-slate-600">
+              {(mfgData.netPayable||0) > 0 ? "⚠️ Net liability owed to manufacturers" : "✅ Net asset owed by manufacturers"}
+            </p>
+          </div>
+
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Order Activity &amp; Units</p>
+              <span className="text-xs">📊</span>
+            </div>
+            <p className="mt-2 text-2xl font-black text-slate-900">
+              {mfgData.itemsSold||0} <span className="text-xs font-normal text-slate-500">sold ({mfgData.itemsDelivered||0} delivered)</span>
+            </p>
+            <p className="mt-1 text-[10px] text-slate-500">
+              Direct Sales: {fmt(mfgData.totalSales||0)} • Comm: {fmt(mfgData.totalCommission||0)}
+            </p>
+          </div>
         </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-600"><tr>{["Order","Status","Qty","Sales","Payable","Receivable"].map(h=><th key={h} className="px-3 py-2 font-semibold">{h}</th>)}</tr></thead>
-            <tbody>
-              {mfgOrders.length===0?<tr><td colSpan="6" className="px-3 py-6 text-center text-slate-400">No manufacturer order activity in this period.</td></tr>:mfgOrders.map(o=>(
-                <tr key={o.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium text-slate-700">{o.id.slice(0,8)}</td>
-                  <td className="px-3 py-2"><span className={`inline-flex px-2 py-1 rounded-full text-[10px] font-bold ${String(o.status||"").toLowerCase().includes("deliver")?"bg-emerald-100 text-emerald-700":String(o.status||"").toLowerCase().includes("return")?"bg-amber-100 text-amber-700":"bg-slate-100 text-slate-700"}`}>{o.status||"Pending"}</span></td>
-                  <td className="px-3 py-2 text-slate-700">{o.quantity}</td>
-                  <td className="px-3 py-2 text-slate-700">{fmt(o.amount)}</td>
-                  <td className="px-3 py-2 text-red-700 font-semibold">{fmt(o.payable)}</td>
-                  <td className="px-3 py-2 text-emerald-700 font-semibold">{fmt(o.receivable)}</td>
+
+        {/* Multi-Tab Switcher between Manufacturers Ledger vs Orders Breakdown */}
+        <div className="flex items-center justify-between border-b border-slate-100 pt-2 pb-1">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setMfgSubTab("manufacturers")}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                mfgSubTab === "manufacturers" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              🏢 All Manufacturers ({mfgList.length})
+            </button>
+            <button
+              onClick={() => setMfgSubTab("orders")}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                mfgSubTab === "orders" ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              📦 Order Channel Ledger ({mfgOrders.length})
+            </button>
+          </div>
+        </div>
+
+        {/* TAB 1: ALL MANUFACTURERS DIRECTORY */}
+        {mfgSubTab === "manufacturers" && (
+          <div className="overflow-x-auto rounded-xl border border-slate-100">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold tracking-wider">
+                <tr>
+                  <th className="px-3 py-2.5">Manufacturer</th>
+                  <th className="px-3 py-2.5">Location / Phone</th>
+                  <th className="px-3 py-2.5">Commission</th>
+                  <th className="px-3 py-2.5 text-center">Orders</th>
+                  <th className="px-3 py-2.5">Direct Sales</th>
+                  <th className="px-3 py-2.5">Total COGS</th>
+                  <th className="px-3 py-2.5">Payable (COGS + Commission)</th>
+                  <th className="px-3 py-2.5">Receivable (Direct Margin)</th>
+                  <th className="px-3 py-2.5">Net Position</th>
+                  <th className="px-3 py-2.5 text-right">Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {mfgList.length === 0 ? (
+                  <tr>
+                    <td colSpan="10" className="px-3 py-8 text-center text-slate-400">
+                      No manufacturers registered in the database.
+                    </td>
+                  </tr>
+                ) : (
+                  mfgList.map((m) => {
+                    const isNetPayable = m.netPayable > 0;
+                    return (
+                      <tr key={m.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="px-3 py-2.5 font-bold text-slate-900">
+                          {m.name}
+                          {m.email && <div className="text-[10px] text-slate-400 font-normal">{m.email}</div>}
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-600">
+                          <div>{m.city || "Nepal"}</div>
+                          <div className="text-[10px] text-slate-400">{m.phone || "—"}</div>
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold text-slate-700">
+                          {m.agreedCommissionRate || 12}%
+                        </td>
+                        <td className="px-3 py-2.5 text-center font-bold text-slate-800">
+                          {m.totalOrders}
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-800 font-medium">
+                          {fmt(m.totalSales)}
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-800 font-medium">
+                          {fmt(m.totalCogs)}
+                        </td>
+                        <td className="px-3 py-2.5 font-bold text-red-600 bg-red-50/40">
+                          {fmt(m.payable)}
+                        </td>
+                        <td className="px-3 py-2.5 font-bold text-emerald-600 bg-emerald-50/40">
+                          {fmt(m.receivable)}
+                        </td>
+                        <td className="px-3 py-2.5 font-black">
+                          {isNetPayable ? (
+                            <span className="text-red-700 bg-red-100 px-2 py-0.5 rounded-full text-[10px]">
+                              Owe {fmt(m.netPayable)}
+                            </span>
+                          ) : m.netReceivable > 0 ? (
+                            <span className="text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full text-[10px]">
+                              Due {fmt(m.netReceivable)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full text-[10px]">
+                              Settled
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {(m.payable > 0 || m.remainingPayable > 0) && (
+                              <button
+                                onClick={() => {
+                                  setShowPayMfg(true);
+                                  setMfgPayForm({
+                                    manufacturerId: m.id,
+                                    amount: String(m.remainingPayable !== undefined ? m.remainingPayable : m.payable),
+                                    fromAccountId: accounts[0]?.id || "",
+                                    notes: `COGS and commission settlement for ${m.name}`,
+                                    partial: false,
+                                  });
+                                }}
+                                className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[10px] font-bold cursor-pointer transition shadow-xs"
+                              >
+                                💳 Pay Manufacturer
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setSelectedMfgId(m.id);
+                                setMfgSubTab("orders");
+                              }}
+                              className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-[10px] font-bold cursor-pointer transition"
+                            >
+                              View Orders
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* TAB 2: ORDER CHANNEL BREAKDOWN LEDGER */}
+        {mfgSubTab === "orders" && (
+          <div className="space-y-2">
+            {selectedMfgId !== "ALL" && (
+              <div className="flex items-center justify-between bg-sky-50 border border-sky-100 px-3 py-2 rounded-xl text-xs text-sky-800">
+                <span>Showing filtered orders for <b>{mfgList.find(m => m.id === selectedMfgId)?.name || selectedMfgId}</b></span>
+                <button
+                  onClick={() => setSelectedMfgId("ALL")}
+                  className="font-bold underline hover:text-sky-950 cursor-pointer"
+                >
+                  Show All Manufacturers
+                </button>
+              </div>
+            )}
+            <div className="overflow-x-auto rounded-xl border border-slate-100">
+              <table className="min-w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold tracking-wider">
+                  <tr>
+                    <th className="px-3 py-2.5">Order</th>
+                    <th className="px-3 py-2.5">Manufacturer</th>
+                    <th className="px-3 py-2.5">Channel Type</th>
+                    <th className="px-3 py-2.5">Status</th>
+                    <th className="px-3 py-2.5 text-center">Qty</th>
+                    <th className="px-3 py-2.5">Direct Sale Value</th>
+                    <th className="px-3 py-2.5">Approved COGS</th>
+                    <th className="px-3 py-2.5">Payable to Manufacturer</th>
+                    <th className="px-3 py-2.5">Receivable from Manufacturer</th>
+                    <th className="px-3 py-2.5">Commission</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {mfgOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan="10" className="px-3 py-8 text-center text-slate-400">
+                        No order activity found in this period for the selected manufacturer(s).
+                      </td>
+                    </tr>
+                  ) : (
+                    mfgOrders.map((o) => (
+                      <tr key={o.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="px-3 py-2 font-mono font-bold text-slate-800">
+                          #{String(o.id).slice(-8).toUpperCase()}
+                          {o.date && <div className="text-[10px] text-slate-400 font-normal">{formatDate(o.date)}</div>}
+                        </td>
+                        <td className="px-3 py-2 font-semibold text-slate-800">
+                          {o.manufacturerName || "—"}
+                        </td>
+                        <td className="px-3 py-2">
+                          {o.isDirect ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              🏭 Direct Sale
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-50 text-sky-700 border border-sky-200">
+                              🛒 Platform Order
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            String(o.status||"").toLowerCase().includes("deliver")
+                              ? "bg-emerald-100 text-emerald-700"
+                              : String(o.status||"").toLowerCase().includes("return")
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-slate-100 text-slate-700"
+                          }`}>
+                            {o.status || "Pending"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-center font-bold text-slate-800">{o.quantity}</td>
+                        <td className="px-3 py-2 font-semibold text-slate-900">{o.amount != null ? fmt(o.amount) : "—"}</td>
+                        <td className="px-3 py-2 text-slate-700">{fmt(o.cogs)}</td>
+                        <td className="px-3 py-2 text-red-700 font-bold bg-red-50/30">
+                          {o.payable > 0 ? fmt(o.payable) : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-emerald-700 font-bold bg-emerald-50/30">
+                          {o.receivable > 0 ? fmt(o.receivable) : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">
+                          {o.commission > 0 ? fmt(o.commission) : "—"}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col sm:flex-row gap-2">
@@ -303,6 +658,7 @@ const PayablesReceivables = ({ token }) => {
           <option value="ALL">All Categories</option>
           {[...PAYABLE_CATS,...RECEIVABLE_CATS.filter(c=>!PAYABLE_CATS.find(p=>p.value===c.value))].map(c=><option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
+
         <button onClick={fetchData} className="px-3 py-2 border border-slate-300 text-slate-700 text-xs font-medium rounded-lg hover:bg-slate-50 flex items-center gap-1.5"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Refresh</button>
       </div>
 
@@ -562,6 +918,155 @@ const PayablesReceivables = ({ token }) => {
               <AccountSelector accounts={accounts} value={cForm.toAccountId} onChange={id=>setCForm({...cForm,toAccountId:id})} label="Deposit Into Account *" helpText="Select where to receive the collected amount" forPayment={false}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Collection Notes</label><input value={cForm.notes} onChange={e=>setCForm({...cForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Cash received, eSewa transfer ref #"/></div>
               <div className="flex gap-2 pt-1"><button type="button" onClick={()=>setShowCollect(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50">Cancel</button><button type="submit" className="flex-1 py-2.5 bg-emerald-700 text-white text-sm font-bold rounded-xl hover:bg-emerald-600">Confirm Collection</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showPayMfg&&(
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Pay to Manufacturer</h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">Disburse approved production COGS from liquid accounts</p>
+              </div>
+              <button onClick={()=>setShowPayMfg(false)} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
+            </div>
+
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 mb-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-red-900">🏭 {activeMfgObj.name || "Select Manufacturer"}</span>
+                <span className="text-[10px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full uppercase">
+                  {activeMfgObj.city || "Hub"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-red-200 text-xs">
+                <div>
+                  <span className="text-[10px] text-red-600 block">Total Approved COGS</span>
+                  <span className="font-bold text-slate-800">{fmt(activeMfgObj.payable || 0)}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-red-600 block">Remaining Payable</span>
+                  <span className="font-black text-red-700 text-sm">{fmt(activeMfgMaxPayable)}</span>
+                </div>
+              </div>
+              {activeMfgObj.paidAmount > 0 && (
+                <p className="text-[10px] text-emerald-700 font-medium mt-1">
+                  ✓ Already paid: {fmt(activeMfgObj.paidAmount)}
+                </p>
+              )}
+            </div>
+
+            <form onSubmit={payManufacturerSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Select Manufacturer *</label>
+                <select
+                  value={mfgPayForm.manufacturerId}
+                  onChange={(e) => {
+                    const mId = e.target.value;
+                    const selectedMfg = mfgList.find(m => m.id === mId) || {};
+                    const maxPay = selectedMfg.remainingPayable !== undefined ? selectedMfg.remainingPayable : (selectedMfg.payable || 0);
+                    setMfgPayForm({
+                      ...mfgPayForm,
+                      manufacturerId: mId,
+                      amount: String(maxPay),
+                    });
+                  }}
+                  className="w-full px-3 py-2.5 text-xs font-semibold border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
+                >
+                  {mfgList.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.city || "Hub"}) — Due: {fmt(m.remainingPayable !== undefined ? m.remainingPayable : m.payable)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">Payment Type</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setMfgPayForm({ ...mfgPayForm, partial: false, amount: String(activeMfgMaxPayable) })}
+                    className={`py-2 rounded-xl text-xs font-semibold border transition-all ${
+                      !mfgPayForm.partial ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    💳 Full Settlement
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMfgPayForm({ ...mfgPayForm, partial: true, amount: "" })}
+                    className={`py-2 rounded-xl text-xs font-semibold border transition-all ${
+                      mfgPayForm.partial ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"
+                    }`}
+                  >
+                    📝 Partial Payment
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Disbursement Amount (Rs) *</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={activeMfgMaxPayable > 0 ? activeMfgMaxPayable : undefined}
+                  value={mfgPayForm.amount}
+                  onChange={(e) => setMfgPayForm({ ...mfgPayForm, amount: e.target.value })}
+                  readOnly={!mfgPayForm.partial}
+                  className={`w-full px-3 py-2.5 text-sm border rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold ${
+                    mfgPayForm.partial ? "border-slate-300" : "border-slate-200 bg-slate-50"
+                  }`}
+                  placeholder="0"
+                />
+                {mfgPayForm.partial && (
+                  <p className="text-[10px] text-slate-400 mt-0.5">Maximum outstanding: {fmt(activeMfgMaxPayable)}</p>
+                )}
+              </div>
+
+              <AccountSelector
+                accounts={accounts}
+                value={mfgPayForm.fromAccountId}
+                onChange={(id) => setMfgPayForm({ ...mfgPayForm, fromAccountId: id })}
+                label="Pay From Treasury Account *"
+                helpText="Liquid cash or bank account to debit funds from"
+                forPayment={true}
+              />
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Payout Notes</label>
+                <input
+                  value={mfgPayForm.notes}
+                  onChange={(e) => setMfgPayForm({ ...mfgPayForm, notes: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
+                  placeholder="e.g. Bank Transfer, Cheque, Batch COGS Payout"
+                />
+              </div>
+
+              {mfgInsuff && (
+                <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
+                  ⚠️ Insufficient balance in <b>{selMfgAcc?.accountName}</b>. Available: {fmt(selMfgAcc?.currentBalance)}, required: {fmt(mfgPayForm.amount)}.
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowPayMfg(false)}
+                  className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={mfgInsuff || !mfgPayForm.amount || Number(mfgPayForm.amount) <= 0}
+                  className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-300 text-white text-sm font-bold rounded-xl hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  Confirm Payout
+                </button>
+              </div>
             </form>
           </div>
         </div>

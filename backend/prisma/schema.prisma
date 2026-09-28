@@ -1699,24 +1699,65 @@ model DeliveryFinancialSettlement {
 
 // Operating, Marketing & Overhead Expenses Model
 model OperatingExpense {
-  id            String   @id @default(uuid())
-  title         String
-  category      String // MARKETING | RENT | ELECTRICITY | SALARIES | UTILITIES | MISCELLANEOUS | MAINTENANCE
-  amount        Float // Total expense amount
-  isVatBill     Boolean  @default(false)
-  vatAmount     Float    @default(0) // Input VAT embedded if 13% VAT bill provided
-  date          DateTime @default(now())
-  paymentMethod String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
-  vendorName    String? // Vendor / landlord / service provider
-  invoiceNumber String? // Bill reference
-  notes         String?  @db.Text
-  createdBy     String   @default("ADMIN")
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                 String   @id @default(uuid())
+  title              String
+  category           String // MARKETING | RENT | ELECTRICITY | SALARIES | UTILITIES | MISCELLANEOUS | MAINTENANCE | PRINTING | CUSTOM
+  amount             Float // Total expense amount
+  isVatBill          Boolean  @default(false)
+  vatAmount          Float    @default(0) // Input VAT embedded if 13% VAT bill provided
+  date               DateTime @default(now())
+  paymentMethod      String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
+  paymentStatus      String   @default("PAID") // PAID | PAYABLE
+  financialAccountId String?
+  payableId          String?
+  vendorName         String? // Vendor / landlord / service provider / employee
+  invoiceNumber      String? // Bill reference
+  notes              String?  @db.Text
+  createdBy          String   @default("ADMIN")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([category])
   @@index([date])
   @@index([isVatBill])
+  @@index([paymentStatus])
+  @@index([financialAccountId])
+  @@index([payableId])
+}
+
+// Direct & Miscellaneous Incomes Model
+model DirectIncome {
+  id                 String   @id @default(uuid())
+  title              String
+  category           String // DIRECT_SALES | SCRAP_SALES | CUSTOM_WORK | PRINTING_SERVICE | COMMISSION | OTHER
+  amount             Float
+  date               DateTime @default(now())
+  toAccountId        String
+  payerName          String?
+  invoiceNumber      String?
+  notes              String?  @db.Text
+  createdBy          String   @default("ADMIN")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([category])
+  @@index([date])
+  @@index([toAccountId])
+}
+
+// Dynamic Custom Income & Expense Categories
+model FinancialCategory {
+  id          String   @id @default(uuid())
+  type        String // EXPENSE | INCOME
+  name        String
+  code        String   @unique
+  description String?  @db.Text
+  color       String?  @default("#6366f1")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type, isActive])
 }
 
 // Nepal Location Mapping (4-character unique code map for provinces and 77 districts)

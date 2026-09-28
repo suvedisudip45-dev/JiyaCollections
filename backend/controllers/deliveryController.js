@@ -7,13 +7,15 @@ import {
   prepareReadyDelivery,
   reconcileActiveDeliveries,
   reconcileDelivery,
-    requestCodSettlement,
+  requestCodSettlement,
   requestDeliveryReturn,
   storeAndApplyWebhook,
   storeOrderCommentWebhook,
   submitDeliveryToNcm,
   webhookIdentifiers,
 } from "../services/deliveryService.js";
+import { postNcmRemittanceAccounting } from "../services/accountingPostingEngine.js";
+
 
 const webhookSecret = process.env.NCM_WEBHOOK_SECRET || "";
 
@@ -267,4 +269,112 @@ export const adminListSettlements = async (req, res) => {
   res.json(paginatedResponse("settlements", settlements, pagination, total));
 };
 
+export const adminConfirmSettlement = async (req, res) => {
+  const { settlementIds, settlementId, financialAccountId, reference, notes } = req.body || {};
+  const ids = settlementIds || (settlementId ? [settlementId] : []);
+  if (!ids.length) {
+    return res.status(400).json({ success: false, message: "Please select at least one settlement to confirm." });
+  }
+  if (!financialAccountId) {
+    return res.status(400).json({ success: false, message: "Please select a valid Bank or Cash account to deposit the COD remittance." });
+  }
+
+  try {
+    const account = await prisma.financialAccount.findUnique({ where: { id: financialAccountId } });
+    if (!account) {
+      return res.status(404).json({ success: false, message: "Selected financial account not found." });
+    }
+
+    const settlements = await prisma.deliveryFinancialSettlement.findMany({
+      where: { id: { in: ids } },
+    });
+
+    if (!settlements.length) {
+      return res.status(404).json({ success: false, message: "No matching settlements found." });
+    }
+
+    const alreadySettled = settlements.filter((s) => s.settlementState === "SETTLED");
+    if (alreadySettled.length === settlements.length) {
+      return res.status(400).json({ success: false, message: "Selected settlements are already settled." });
+    }
+
+    const toProcess = settlements.filter((s) => s.settlementState !== "SETTLED");
+
+    let totalCod = 0;
+    let totalFee = 0;
+
+    toProcess.forEach((s) => {
+      const cod = Number(s.codCollected || s.codExpected || 0);
+      const fee = Number(s.deliveryFeeActual || s.deliveryFeeExpected || 0);
+      totalCod += cod;
+      totalFee += fee;
+    });
+
+    const netDeposit = Math.max(0, totalCod - totalFee);
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Update Financial Account Balance
+      const updatedAccount = await tx.financialAccount.update({
+        where: { id: financialAccountId },
+        data: {
+          balance: { increment: netDeposit },
+        },
+      });
+
+      // 2. Create Cash Flow Inflow Record
+      const cashTx = await tx.cashTransaction.create({
+        data: {
+          accountId: financialAccountId,
+          amount: netDeposit,
+          type: "INFLOW",
+          category: "COD_REMITTANCE",
+          source: "NCM_DELIVERY",
+          reference: reference || `NCM-REMIT-${toProcess[0]?.id?.slice(-6) || "BATCH"}`,
+          description: `NCM COD remittance deposit for ${toProcess.length} order(s). Total COD: Rs ${totalCod}, Courier Fees: Rs ${totalFee}. ${notes || ""}`.trim(),
+          balanceAfter: updatedAccount.balance,
+          createdById: req.userId || "ADMIN",
+        },
+      });
+
+      // 3. Update Delivery Settlements
+      await tx.deliveryFinancialSettlement.updateMany({
+        where: { id: { in: toProcess.map((s) => s.id) } },
+        data: {
+          settlementState: "SETTLED",
+          settledAt: new Date(),
+          codCollected: totalCod / toProcess.length, // distributed or exact
+        },
+      });
+
+      // 4. Double-Entry Accounting Journal Posting
+      const isCash = ["CASH", "CASH_IN_HAND"].includes(String(account.accountType).toUpperCase());
+      await postNcmRemittanceAccounting({
+        settlementId: toProcess[0]?.id || "BATCH",
+        codCollected: totalCod,
+        deliveryFeeActual: totalFee,
+        isCash,
+        destinationAccountName: account.accountName,
+        createdBy: "ADMIN",
+      }, { client: tx }).catch((err) => {
+        console.error("NCM remittance GL posting notice:", err.message);
+      });
+
+      return { updatedAccount, cashTx };
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully deposited Rs ${netDeposit.toLocaleString()} net COD remittance into ${account.accountName}`,
+      netDeposit,
+      totalCod,
+      totalFee,
+      settledCount: toProcess.length,
+      account: result.updatedAccount,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message || "Failed to confirm COD settlement." });
+  }
+};
+
 export { applyNcmStatus };
+

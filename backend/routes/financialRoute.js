@@ -25,6 +25,7 @@ import {
   createReceivable,
   settlePayable,
   collectReceivable,
+  payManufacturer,
   getVATAndTaxReport,
   recordOperatingExpense,
   getFinancialStatements,
@@ -37,10 +38,7 @@ const financialRouter = express.Router();
 const setFinancialManufacturerContext = (req, res, next) => {
   if (req.auth.role === "ADMIN") {
     const manufacturerId = req.query?.manufacturerId || req.body?.manufacturerId;
-    if (!manufacturerId) {
-      return res.status(400).json({ success: false, message: "Manufacturer ID is required." });
-    }
-    req.manufacturerId = manufacturerId;
+    req.manufacturerId = manufacturerId || null;
     return next();
   }
 
@@ -90,6 +88,7 @@ financialRouter.post("/create-payable", authenticate, authorize("finance:payable
 financialRouter.post("/create-receivable", authenticate, authorize("finance:receivable_create"), createReceivable);
 financialRouter.post("/settle-payable", authenticate, authorize("finance:payable_settle"), settlePayable);
 financialRouter.post("/collect-receivable", authenticate, authorize("finance:receivable_collect"), collectReceivable);
+financialRouter.post("/pay-manufacturer", authenticate, authorize("finance:payable_settle"), payManufacturer);
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);

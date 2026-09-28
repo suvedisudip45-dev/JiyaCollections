@@ -1648,3 +1648,63 @@ export const postSupplierPaymentAccountingFromPayable = async (payable, opts = {
     amount: opts.amount,
   });
 };
+
+/**
+ * postNcmRemittanceAccounting - double-entry posting when NCM delivers COD funds to Bank/Cash
+ * DR 1120 Bank (or 1110 Cash) for Net Liquid Received
+ * DR 6430 Delivery & Courier Charges Expense for NCM Carrier Service Fee
+ * CR 1170 NCM COD Receivable for Total COD Collected
+ */
+export const postNcmRemittanceAccounting = async ({
+  settlementId,
+  codCollected,
+  deliveryFeeActual = 0,
+  isCash = false,
+  destinationAccountName = "Bank Account",
+  createdBy = "admin",
+}, { client = prisma } = {}) => {
+  const codDecimal = new Prisma.Decimal(codCollected || 0);
+  const feeDecimal = new Prisma.Decimal(deliveryFeeActual || 0);
+  const netDecimal = codDecimal.minus(feeDecimal);
+
+  if (codDecimal.lte(0)) {
+    throw new Error("COD collected amount must be greater than zero for remittance posting.");
+  }
+
+  const lines = [
+    {
+      mappingKey: isCash ? "CASH_ON_HAND" : "BANK",
+      debit: netDecimal,
+      credit: 0,
+      description: `Net COD remittance received into ${destinationAccountName}`,
+    },
+  ];
+
+  if (feeDecimal.greaterThan(0)) {
+    lines.push({
+      mappingKey: "DELIVERY_EXPENSE",
+      debit: feeDecimal,
+      credit: 0,
+      description: `NCM carrier delivery fee deducted from COD remittance`,
+    });
+  }
+
+  lines.push({
+    mappingKey: "NCM_COD_RECEIVABLE",
+    debit: 0,
+    credit: codDecimal,
+    description: `NCM COD collection settled`,
+  });
+
+  return await postJournalEntry({
+    transactionDate: new Date(),
+    sourceType: "PAYMENT",
+    sourceId: `NCM-REMIT-${settlementId}`,
+    idempotencyKey: `NCM_REMITTANCE:${settlementId}`,
+    referenceNumber: `NCM-REMIT-${String(settlementId).slice(-6)}`,
+    description: `NCM COD Remittance settlement of Rs ${codDecimal.toString()}`,
+    lines,
+    createdBy,
+  }, { client });
+};
+

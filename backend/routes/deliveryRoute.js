@@ -1,9 +1,10 @@
 import express from "express";
 import {
+  adminConfirmSettlement,
   adminListDeliveries,
   adminListSettlements,
-    adminSettlementSummary,
-    adminRequestSettlement,
+  adminSettlementSummary,
+  adminRequestSettlement,
   adminReconcileActive,
   adminReconcileDelivery,
   getCustomerDelivery,
@@ -38,9 +39,11 @@ deliveryRouter.get("/admin", authenticate, authorize("delivery:admin_list"), adm
 deliveryRouter.get("/admin/settlements", authenticate, authorize("delivery:settlements_read"), adminListSettlements);
 deliveryRouter.get("/admin/settlements/summary", authenticate, authorize("delivery:settlement_summary"), adminSettlementSummary);
 deliveryRouter.post("/admin/settlements/request", authenticate, authorize("delivery:settlement_request"), adminRequestSettlement);
+deliveryRouter.post("/admin/settlements/confirm", authenticate, authorize("delivery:settlement_request"), adminConfirmSettlement);
 deliveryRouter.get("/admin/logs", authenticate, authorize("delivery:logs_read"), getRecentSystemLogs);
 deliveryRouter.get("/admin/:id", authenticate, authorize("delivery:admin_detail"), getDelivery);
 deliveryRouter.post("/admin/:id/reconcile", authenticate, authorize("delivery:reconcile"), adminReconcileDelivery);
 deliveryRouter.post("/admin/reconcile-active", authenticate, authorize("delivery:reconcile"), adminReconcileActive);
+
 
 export default deliveryRouter;
