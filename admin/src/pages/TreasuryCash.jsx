@@ -7,6 +7,8 @@ import { backendUrl, currency } from "../App";
 const TreasuryCash = ({ token }) => {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPagination, setTransactionPagination] = useState({ page: 1, total: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -40,16 +42,23 @@ const TreasuryCash = ({ token }) => {
     description: "",
   });
 
-  const fetchData = async () => {
+  const fetchData = async (page = 1) => {
     try {
       setLoading(true);
       const [accRes, txRes] = await Promise.all([
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/finance/cash-transactions`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/finance/cash-transactions`, {
+          headers: { token },
+          params: { page, limit: 12 },
+        }),
       ]);
 
       if (accRes.data.success) setAccounts(accRes.data.accounts || []);
-      if (txRes.data.success) setTransactions(txRes.data.transactions || []);
+      if (txRes.data.success) {
+        setTransactions(txRes.data.transactions || []);
+        setTransactionPagination(txRes.data.pagination || { page, total: 0, totalPages: 0 });
+        setTransactionPage(page);
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to load treasury data");
@@ -288,7 +297,7 @@ const TreasuryCash = ({ token }) => {
             <h2 className="text-base font-bold text-slate-900">Treasury Transaction Log</h2>
             <p className="text-xs text-slate-400">Chronological history of inflows, outflows, and transfers</p>
           </div>
-          <span className="text-xs text-slate-400 font-semibold">{transactions.length} Records</span>
+          <span className="text-xs text-slate-400 font-semibold">{transactionPagination.total} Records</span>
         </div>
 
         <div className="overflow-x-auto mt-4">
@@ -355,6 +364,27 @@ const TreasuryCash = ({ token }) => {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex items-center justify-between mt-4 text-xs text-slate-500">
+          <span>Page {transactionPage} of {Math.max(transactionPagination.totalPages, 1)}</span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => fetchData(transactionPage - 1)}
+              disabled={transactionPage <= 1}
+              className="px-3 py-1.5 border border-slate-200 rounded disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => fetchData(transactionPage + 1)}
+              disabled={!transactionPagination.hasNextPage}
+              className="px-3 py-1.5 border border-slate-200 rounded disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
 

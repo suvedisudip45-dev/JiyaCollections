@@ -140,6 +140,9 @@ const PayablesReceivables = ({ token }) => {
   const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false });
   const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false });
   const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false });
+  const [showRevert, setShowRevert] = useState(null); // { type, recordId, title, amount }
+  const [revertReason, setRevertReason] = useState("");
+  const [revertLoading, setRevertLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
@@ -161,6 +164,10 @@ const PayablesReceivables = ({ token }) => {
 
   useEffect(()=>{ if(token){fetchData();fetchMfg(range, selectedMfgId);} },[token, range, selectedMfgId]);
 
+  const [sLoading, setSLoading] = useState(false);
+  const [cLoading, setCLoading] = useState(false);
+  const [mfgLoading, setMfgLoading] = useState(false);
+
   const createPayable = async (e) => {
     e.preventDefault();
     if (!pForm.title||!pForm.payeeName||!pForm.totalAmount) return toast.warn("Title, Payee and Amount required");
@@ -181,40 +188,87 @@ const PayablesReceivables = ({ token }) => {
   };
   const settlePayable = async (e) => {
     e.preventDefault();
+    if (sLoading) return;
     const amt=Number(sForm.amount);
     if (!sForm.fromAccountId||!amt) return toast.warn("Amount and account required");
     if (amt>showSettle.remainingBalance) return toast.warn("Exceeds remaining balance");
     const acc=accounts.find(a=>a.id===sForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient balance in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
+    
+    setSLoading(true);
+    const idempotencyKey = `PAY-${showSettle.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{payableId:showSettle.id,amount:amt,fromAccountId:sForm.fromAccountId,notes:sForm.notes},{headers:{token}});
-      if (res.data.success){toast.success(res.data.message);setShowSettle(null);setSForm({amount:"",fromAccountId:"",notes:"",partial:false});fetchData();fetchMfg(range,selectedMfgId);}
-      else toast.error(res.data.message);
-    } catch(e){toast.error(e.response?.data?.message||e.message);}
+      const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{
+        payableId: showSettle.id,
+        amount: amt,
+        fromAccountId: sForm.fromAccountId,
+        notes: sForm.notes,
+        idempotencyKey,
+      },{headers:{token}});
+      if (res.data.success){
+        toast.success(res.data.message);
+        setShowSettle(null);
+        setSForm({amount:"",fromAccountId:"",notes:"",partial:false});
+        fetchData();
+        fetchMfg(range,selectedMfgId);
+      } else {
+        toast.error(res.data.message);
+      }
+    } catch(e){
+      toast.error(e.response?.data?.message||e.message);
+    } finally {
+      setSLoading(false);
+    }
   };
   const collectReceivable = async (e) => {
     e.preventDefault();
+    if (cLoading) return;
     const amt=Number(cForm.amount);
     if (!cForm.toAccountId||!amt) return toast.warn("Amount and account required");
     if (amt>showCollect.remainingBalance) return toast.warn("Exceeds remaining balance");
+    
+    setCLoading(true);
+    const idempotencyKey = `COLL-${showCollect.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/collect-receivable`,{receivableId:showCollect.id,amount:amt,toAccountId:cForm.toAccountId,notes:cForm.notes},{headers:{token}});
-      if (res.data.success){toast.success(res.data.message);setShowCollect(null);setCForm({amount:"",toAccountId:"",notes:"",partial:false});fetchData();fetchMfg(range,selectedMfgId);}
-      else toast.error(res.data.message);
-    } catch(err){toast.error(err.response?.data?.message||err.message);}
+      const res = await axios.post(`${backendUrl}/api/finance/collect-receivable`,{
+        receivableId: showCollect.id,
+        amount: amt,
+        toAccountId: cForm.toAccountId,
+        notes: cForm.notes,
+        idempotencyKey,
+      },{headers:{token}});
+      if (res.data.success){
+        toast.success(res.data.message);
+        setShowCollect(null);
+        setCForm({amount:"",toAccountId:"",notes:"",partial:false});
+        fetchData();
+        fetchMfg(range,selectedMfgId);
+      } else {
+        toast.error(res.data.message);
+      }
+    } catch(err){
+      toast.error(err.response?.data?.message||err.message);
+    } finally {
+      setCLoading(false);
+    }
   };
   const payManufacturerSubmit = async (e) => {
     e.preventDefault();
+    if (mfgLoading) return;
     const amt=Number(mfgPayForm.amount);
     if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt) return toast.warn("Manufacturer, amount, and payment account are required");
     const acc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
+    
+    setMfgLoading(true);
+    const idempotencyKey = `MFGPAY-${mfgPayForm.manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
       const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
         manufacturerId: mfgPayForm.manufacturerId,
         amount: amt,
         fromAccountId: mfgPayForm.fromAccountId,
         notes: mfgPayForm.notes,
+        idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
         toast.success(res.data.message);
@@ -227,6 +281,34 @@ const PayablesReceivables = ({ token }) => {
       }
     } catch(err){
       toast.error(err.response?.data?.message||err.message);
+    } finally {
+      setMfgLoading(false);
+    }
+  };
+
+  const revertSettlement = async () => {
+    if (!showRevert) return;
+    if (!revertReason.trim()) return toast.warn("Please provide a reason for reverting this settlement.");
+    setRevertLoading(true);
+    try {
+      const res = await axios.post(`${backendUrl}/api/finance/revert-settlement`, {
+        type: showRevert.type,
+        recordId: showRevert.recordId,
+        revertReason: revertReason.trim(),
+      }, { headers: { token } });
+      if (res.data.success) {
+        toast.success(res.data.message);
+        setShowRevert(null);
+        setRevertReason("");
+        fetchData();
+        fetchMfg(range, selectedMfgId);
+      } else {
+        toast.error(res.data.message || "Revert failed");
+      }
+    } catch(err) {
+      toast.error(err.response?.data?.message || err.message || "Failed to revert settlement");
+    } finally {
+      setRevertLoading(false);
     }
   };
 
@@ -241,6 +323,8 @@ const PayablesReceivables = ({ token }) => {
   const accounts  = data?.accounts  || [];
   const allP      = data?.payables  || [];
   const allR      = data?.receivables || [];
+  const recentTransactions = data?.recentTransactions || [];
+  const settlementReversions = data?.settlementReversions || [];
   const mfgData   = mfgSummary?.summary || {};
   const mfgList   = mfgSummary?.manufacturers || [];
   const mfgOrders = mfgSummary?.orders  || [];
@@ -263,7 +347,10 @@ const PayablesReceivables = ({ token }) => {
   const mfgInsuff=selMfgAcc&&Number(mfgPayForm.amount)>0&&selMfgAcc.currentBalance<Number(mfgPayForm.amount);
 
   const activeMfgObj = mfgList.find(m => m.id === mfgPayForm.manufacturerId) || mfgList[0] || {};
-  const activeMfgMaxPayable = activeMfgObj.remainingPayable !== undefined ? activeMfgObj.remainingPayable : (activeMfgObj.payable || 0);
+  const activeMfgCogs = activeMfgObj.remainingPayable !== undefined ? activeMfgObj.remainingPayable : (activeMfgObj.payable || 0);
+  const activeMfgDirectReceivable = Number(activeMfgObj.receivable || 0);
+  const activeMfgNetPayable = Math.max(0, activeMfgCogs - activeMfgDirectReceivable);
+  const activeMfgOffset = Math.min(activeMfgCogs, activeMfgDirectReceivable);
 
   return (
     <div className="space-y-6">
@@ -275,18 +362,21 @@ const PayablesReceivables = ({ token }) => {
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={()=>{
-            const defaultMfg = mfgList.find(m => m.payable > 0) || mfgList[0];
+            const defaultMfg = mfgList.find(m => (m.remainingPayable || m.payable || 0) > 0) || mfgList[0];
+            const defCogs = defaultMfg?.remainingPayable !== undefined ? defaultMfg?.remainingPayable : (defaultMfg?.payable || 0);
+            const defDirect = Number(defaultMfg?.receivable || 0);
+            const defNet = Math.max(0, defCogs - defDirect);
             setShowPayMfg(true);
             setMfgPayForm({
               manufacturerId: defaultMfg?.id || "",
-              amount: String(defaultMfg?.remainingPayable || defaultMfg?.payable || ""),
+              amount: String(defNet > 0 ? defNet : defCogs),
               fromAccountId: accounts[0]?.id || "",
               notes: "",
               partial: false,
             });
           }} className="px-3 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 flex items-center gap-1.5 shadow-sm cursor-pointer">
             <span>💳</span>
-            Pay Manufacturer
+            Pay Manufacturer (Net)
           </button>
           <button onClick={()=>setShowAddP(true)} className="px-3 py-2 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700 flex items-center gap-1.5 shadow-sm cursor-pointer">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
@@ -663,9 +753,15 @@ const PayablesReceivables = ({ token }) => {
       </div>
 
       <div className="border-b border-slate-200">
-        <div className="flex">
+        <div className="flex flex-wrap">
           <button onClick={()=>setTab("payables")} className={`px-5 py-2.5 text-xs font-semibold border-b-2 transition-all ${tab==="payables"?"border-red-600 text-red-700 bg-red-50/50":"border-transparent text-slate-500 hover:text-slate-700"}`}>Payables (You Owe){allOpenP.length>0&&<span className="ml-1.5 bg-red-100 text-red-700 px-1.5 py-0.5 rounded-full text-[10px]">{allOpenP.length}</span>}</button>
           <button onClick={()=>setTab("receivables")} className={`px-5 py-2.5 text-xs font-semibold border-b-2 transition-all ${tab==="receivables"?"border-emerald-600 text-emerald-700 bg-emerald-50/50":"border-transparent text-slate-500 hover:text-slate-700"}`}>Receivables (Owed to You){allOpenR.length>0&&<span className="ml-1.5 bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full text-[10px]">{allOpenR.length}</span>}</button>
+          <button onClick={()=>setTab("transactions")} className={`px-5 py-2.5 text-xs font-semibold border-b-2 transition-all ${tab==="transactions"?"border-slate-900 text-slate-900 bg-slate-100/70":"border-transparent text-slate-500 hover:text-slate-700"}`}>
+            💳 Settlement Audit ({recentTransactions.length})
+          </button>
+          <button onClick={()=>setTab("reversions")} className={`px-5 py-2.5 text-xs font-semibold border-b-2 transition-all ${tab==="reversions"?"border-amber-600 text-amber-700 bg-amber-50/50":"border-transparent text-slate-500 hover:text-slate-700"}`}>
+            ↩ Reversions {settlementReversions.length>0&&<span className="ml-1.5 bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full text-[10px]">{settlementReversions.length}</span>}
+          </button>
         </div>
       </div>
 
@@ -728,13 +824,24 @@ const PayablesReceivables = ({ token }) => {
                 <div>
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Settled History ({settledP.length})</h3>
                   <div className="space-y-1.5">
-                    {settledP.slice(0,15).map(p=>(
-                      <div key={p.id} className="bg-white border border-slate-100 rounded-lg p-3 flex items-center gap-3 opacity-60">
-                        <span className="text-sm">{ICON_MAP[p.category]||"📋"}</span>
-                        <div className="flex-1 min-w-0"><p className="text-xs font-medium text-slate-700 truncate">{p.title}</p><p className="text-[10px] text-slate-400">{p.payeeName} • {LABEL_MAP[p.category]||p.category} • {formatDate(p.updatedAt)}</p></div>
-                        <div className="text-right shrink-0"><StatusBadge status="SETTLED"/><p className="text-xs font-semibold text-slate-600 mt-0.5">{fmt(p.totalAmount)}</p></div>
-                      </div>
-                    ))}
+                    {settledP.slice(0,15).map(p=>{
+                      const rev = settlementReversions.find(r => r.originalRecordId === p.id);
+                      return (
+                        <div key={p.id} className={`bg-white border rounded-lg p-3 flex items-center gap-3 ${rev ? "border-amber-200 bg-amber-50/30" : "border-slate-100 opacity-60"}`}>
+                          <span className="text-sm">{ICON_MAP[p.category]||"📋"}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-slate-700 truncate">{p.title}</p>
+                            <p className="text-[10px] text-slate-400">{p.payeeName} • {LABEL_MAP[p.category]||p.category} • {formatDate(p.updatedAt)}</p>
+                            {rev&&<p className="text-[10px] text-amber-600 mt-0.5">↩ Reverted {formatDate(rev.revertedAt)} by {rev.revertedByEmail} — {rev.revertReason}</p>}
+                          </div>
+                          <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
+                            {rev ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">REVERTED</span> : <StatusBadge status="SETTLED"/>}
+                            <p className="text-xs font-semibold text-slate-600">{fmt(p.totalAmount)}</p>
+                            {!rev&&<button onClick={()=>{setShowRevert({type:"PAYABLE",recordId:p.id,title:p.title,amount:p.paidAmount||p.totalAmount,partyName:p.payeeName});setRevertReason("");}} className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 border border-amber-300 whitespace-nowrap">↩ Revert</button>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -800,18 +907,183 @@ const PayablesReceivables = ({ token }) => {
                 <div>
                   <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Collection History ({settledR.length})</h3>
                   <div className="space-y-1.5">
-                    {settledR.slice(0,15).map(r=>(
-                      <div key={r.id} className="bg-white border border-slate-100 rounded-lg p-3 flex items-center gap-3 opacity-60">
-                        <span className="text-sm">{ICON_MAP[r.category]||"💰"}</span>
-                        <div className="flex-1 min-w-0"><p className="text-xs font-medium text-slate-700 truncate">{r.title}</p><p className="text-[10px] text-slate-400">{r.payerName} • {LABEL_MAP[r.category]||r.category} • {formatDate(r.updatedAt)}</p></div>
-                        <div className="text-right shrink-0"><StatusBadge status="SETTLED"/><p className="text-xs font-semibold text-slate-600 mt-0.5">{fmt(r.totalAmount)}</p></div>
-                      </div>
-                    ))}
+                    {settledR.slice(0,15).map(r => {
+                      const rev = settlementReversions.find(rv => rv.originalRecordId === r.id);
+                      return (
+                        <div key={r.id} className={`bg-white border rounded-lg p-3 flex items-center gap-3 ${rev ? "border-amber-200 bg-amber-50/30" : "border-slate-100 opacity-60"}`}>
+                          <span className="text-sm">{ICON_MAP[r.category]||"💰"}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-slate-700 truncate">{r.title}</p>
+                            <p className="text-[10px] text-slate-400">{r.payerName} • {LABEL_MAP[r.category]||r.category} • {formatDate(r.updatedAt)}</p>
+                            {rev&&<p className="text-[10px] text-amber-600 mt-0.5">↩ Reverted {formatDate(rev.revertedAt)} by {rev.revertedByEmail} — {rev.revertReason}</p>}
+                          </div>
+                          <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
+                            {rev ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">REVERTED</span> : <StatusBadge status="SETTLED"/>}
+                            <p className="text-xs font-semibold text-slate-600">{fmt(r.totalAmount)}</p>
+                            {!rev&&<button onClick={()=>{setShowRevert({type:"RECEIVABLE",recordId:r.id,title:r.title,amount:r.receivedAmount,partyName:r.payerName});setRevertReason("");}} className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 border border-amber-300 whitespace-nowrap">↩ Revert</button>}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </>
           )}
+        </div>
+      )}
+
+      {tab==="transactions"&&(
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+          <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Settlement &amp; Cashflow Audit Trail</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">Real-time ledger of delivery courier remittances (NCM COD), manufacturer net payouts, and direct sales collections</p>
+            </div>
+            <span className="text-xs font-semibold text-slate-500 bg-white border border-slate-200 px-2.5 py-1 rounded-lg">
+              {recentTransactions.length} Record{recentTransactions.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-600 border-b border-slate-100">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Date &amp; Time</th>
+                  <th className="px-4 py-3 font-semibold">Category</th>
+                  <th className="px-4 py-3 font-semibold">Party / Carrier</th>
+                  <th className="px-4 py-3 font-semibold">Treasury Account</th>
+                  <th className="px-4 py-3 font-semibold text-right">Settled Amount</th>
+                  <th className="px-4 py-3 font-semibold">Description / Offset Memo</th>
+                  <th className="px-4 py-3 font-semibold text-center">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {recentTransactions.length === 0 ? (
+                  <tr>
+                    <td colSpan="7" className="px-4 py-12 text-center text-slate-400">
+                      No settlement transactions recorded yet.
+                    </td>
+                  </tr>
+                ) : (
+                  recentTransactions.map((tx) => {
+                    const isInflow = tx.type === "INFLOW";
+                    return (
+                      <tr key={tx.id} className="hover:bg-slate-50/80 transition">
+                        <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">
+                          {formatDate(tx.date)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            tx.category === "COD_REMITTANCE"
+                              ? "bg-purple-100 text-purple-700 border border-purple-200"
+                              : tx.category === "SUPPLIER_PAYMENT"
+                              ? "bg-red-100 text-red-700 border border-red-200"
+                              : "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                          }`}>
+                            {tx.category === "COD_REMITTANCE" ? "🚚 Courier COD" : tx.category === "SUPPLIER_PAYMENT" ? "🏭 Mfg Net Payout" : "💰 Sales Margin"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 font-bold text-slate-800">
+                          {tx.partyName || "—"}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className="font-semibold text-slate-800">{tx.accountName || "Treasury Account"}</span>
+                          <span className="text-[10px] text-slate-400 block">{tx.accountType || "Account"}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-black whitespace-nowrap">
+                          <span className={isInflow ? "text-emerald-700" : "text-red-700"}>
+                            {isInflow ? "+ " : "- "} {fmt(tx.amount)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600 max-w-sm">
+                          <p className="text-xs text-slate-700 truncate">{tx.description || "—"}</p>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            SETTLED
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab==="reversions"&&(
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+          <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-amber-50/40">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Settlement Reversions &amp; Reversals Audit Log</h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">Admin-authorized cancellations of settled payouts, collections, and remittance transactions</p>
+            </div>
+            <span className="text-xs font-semibold text-amber-700 bg-amber-100 border border-amber-200 px-2.5 py-1 rounded-lg">
+              {settlementReversions.length} Reversion{settlementReversions.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-600 border-b border-slate-100">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">Reverted At</th>
+                  <th className="px-4 py-3 font-semibold">Type</th>
+                  <th className="px-4 py-3 font-semibold">Party / Payee</th>
+                  <th className="px-4 py-3 font-semibold">Treasury Account</th>
+                  <th className="px-4 py-3 font-semibold text-right">Reverted Amount</th>
+                  <th className="px-4 py-3 font-semibold">Reason</th>
+                  <th className="px-4 py-3 font-semibold">Authorized By</th>
+                  <th className="px-4 py-3 font-semibold text-center">Restored Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {settlementReversions.length === 0 ? (
+                  <tr>
+                    <td colSpan="8" className="px-4 py-12 text-center text-slate-400">
+                      No settlements have been reverted yet. All settlement operations remain intact.
+                    </td>
+                  </tr>
+                ) : (
+                  settlementReversions.map((rev) => (
+                    <tr key={rev.id} className="hover:bg-amber-50/30 transition">
+                      <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">
+                        {formatDate(rev.revertedAt)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                          {rev.reversionType}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-bold text-slate-800">
+                        {rev.partyName || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">
+                        <span className="font-semibold text-slate-800">{rev.accountName || "Treasury"}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right font-black whitespace-nowrap text-amber-800">
+                        {fmt(rev.originalAmount)}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600 max-w-xs">
+                        <p className="text-xs text-slate-700 truncate" title={rev.revertReason}>{rev.revertReason || "—"}</p>
+                      </td>
+                      <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
+                        {rev.revertedByEmail || "Admin"}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-blue-50 text-blue-700 border border-blue-200">
+                          {rev.restoredStatus || "UNPAID"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -886,7 +1158,12 @@ const PayablesReceivables = ({ token }) => {
               <AccountSelector accounts={accounts} value={sForm.fromAccountId} onChange={id=>setSForm({...sForm,fromAccountId:id})} label="Pay From Account *" helpText="Select the cash drawer or bank account to pay from" forPayment={true}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Notes</label><input value={sForm.notes} onChange={e=>setSForm({...sForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Bank transfer, Cheque #1234"/></div>
               {insuff&&<div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">⚠️ Insufficient balance in <b>{selAcc?.accountName}</b>. Available: {fmt(selAcc?.currentBalance)}, required: {fmt(sForm.amount)}.</div>}
-              <div className="flex gap-2 pt-1"><button type="button" onClick={()=>setShowSettle(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50">Cancel</button><button type="submit" className="flex-1 py-2.5 bg-slate-900 text-white text-sm font-bold rounded-xl hover:bg-slate-700">Confirm Payment</button></div>
+              <div className="flex gap-2 pt-1">
+                <button type="button" disabled={sLoading} onClick={()=>setShowSettle(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+                <button type="submit" disabled={sLoading} className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-400 text-white text-sm font-bold rounded-xl hover:bg-slate-700 cursor-pointer disabled:cursor-not-allowed shadow-sm transition">
+                  {sLoading ? "Processing Payment..." : "Confirm Payment"}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -917,7 +1194,12 @@ const PayablesReceivables = ({ token }) => {
               </div>
               <AccountSelector accounts={accounts} value={cForm.toAccountId} onChange={id=>setCForm({...cForm,toAccountId:id})} label="Deposit Into Account *" helpText="Select where to receive the collected amount" forPayment={false}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Collection Notes</label><input value={cForm.notes} onChange={e=>setCForm({...cForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Cash received, eSewa transfer ref #"/></div>
-              <div className="flex gap-2 pt-1"><button type="button" onClick={()=>setShowCollect(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50">Cancel</button><button type="submit" className="flex-1 py-2.5 bg-emerald-700 text-white text-sm font-bold rounded-xl hover:bg-emerald-600">Confirm Collection</button></div>
+              <div className="flex gap-2 pt-1">
+                <button type="button" disabled={cLoading} onClick={()=>setShowCollect(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+                <button type="submit" disabled={cLoading} className="flex-1 py-2.5 bg-emerald-700 disabled:bg-slate-400 text-white text-sm font-bold rounded-xl hover:bg-emerald-600 cursor-pointer disabled:cursor-not-allowed shadow-sm transition">
+                  {cLoading ? "Processing Collection..." : "Confirm Collection"}
+                </button>
+              </div>
             </form>
           </div>
         </div>
@@ -928,32 +1210,36 @@ const PayablesReceivables = ({ token }) => {
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Pay to Manufacturer</h2>
-                <p className="text-[11px] text-slate-500 mt-0.5">Disburse approved production COGS from liquid accounts</p>
+                <h2 className="text-base font-bold text-slate-900">Pay Manufacturer (Net Settlement)</h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">Disburse net production balance (COGS less direct sales margin)</p>
               </div>
               <button onClick={()=>setShowPayMfg(false)} className="text-slate-400 hover:text-slate-700 text-xl leading-none">✕</button>
             </div>
 
-            <div className="bg-red-50 border border-red-200 rounded-xl p-3.5 mb-4">
+            <div className="bg-slate-900 text-white rounded-xl p-4 mb-4">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-red-900">🏭 {activeMfgObj.name || "Select Manufacturer"}</span>
-                <span className="text-[10px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full uppercase">
+                <span className="text-xs font-bold text-slate-100">🏭 {activeMfgObj.name || "Select Manufacturer"}</span>
+                <span className="text-[10px] font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded-full uppercase">
                   {activeMfgObj.city || "Hub"}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-red-200 text-xs">
+              <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-slate-800 text-xs">
                 <div>
-                  <span className="text-[10px] text-red-600 block">Total Approved COGS</span>
-                  <span className="font-bold text-slate-800">{fmt(activeMfgObj.payable || 0)}</span>
+                  <span className="text-[10px] text-slate-400 block">Approved COGS</span>
+                  <span className="font-bold text-slate-200">{fmt(activeMfgCogs)}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block">Direct Margin</span>
+                  <span className="font-bold text-red-300">- {fmt(activeMfgDirectReceivable)}</span>
                 </div>
                 <div className="text-right">
-                  <span className="text-[10px] text-red-600 block">Remaining Payable</span>
-                  <span className="font-black text-red-700 text-sm">{fmt(activeMfgMaxPayable)}</span>
+                  <span className="text-[10px] text-emerald-300 block font-bold">Net Payout Due</span>
+                  <span className="font-black text-emerald-400 text-sm">{fmt(activeMfgNetPayable)}</span>
                 </div>
               </div>
-              {activeMfgObj.paidAmount > 0 && (
-                <p className="text-[10px] text-emerald-700 font-medium mt-1">
-                  ✓ Already paid: {fmt(activeMfgObj.paidAmount)}
+              {activeMfgOffset > 0 && (
+                <p className="text-[10px] text-slate-300 mt-2.5 bg-slate-800/80 p-2 rounded-lg border border-slate-700">
+                  ⚖️ <b>Bilateral Netting:</b> Rs {activeMfgOffset.toLocaleString()} direct margin owed to admin is automatically deducted from COGS payout.
                 </p>
               )}
             </div>
@@ -966,20 +1252,27 @@ const PayablesReceivables = ({ token }) => {
                   onChange={(e) => {
                     const mId = e.target.value;
                     const selectedMfg = mfgList.find(m => m.id === mId) || {};
-                    const maxPay = selectedMfg.remainingPayable !== undefined ? selectedMfg.remainingPayable : (selectedMfg.payable || 0);
+                    const cogs = selectedMfg.remainingPayable !== undefined ? selectedMfg.remainingPayable : (selectedMfg.payable || 0);
+                    const direct = Number(selectedMfg.receivable || 0);
+                    const net = Math.max(0, cogs - direct);
                     setMfgPayForm({
                       ...mfgPayForm,
                       manufacturerId: mId,
-                      amount: String(maxPay),
+                      amount: String(net > 0 ? net : cogs),
                     });
                   }}
                   className="w-full px-3 py-2.5 text-xs font-semibold border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
                 >
-                  {mfgList.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.city || "Hub"}) — Due: {fmt(m.remainingPayable !== undefined ? m.remainingPayable : m.payable)}
-                    </option>
-                  ))}
+                  {mfgList.map((m) => {
+                    const c = m.remainingPayable !== undefined ? m.remainingPayable : (m.payable || 0);
+                    const d = Number(m.receivable || 0);
+                    const n = Math.max(0, c - d);
+                    return (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.city || "Hub"}) — Net Due: {fmt(n)} (COGS: {fmt(c)}, Direct: {fmt(d)})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -988,12 +1281,12 @@ const PayablesReceivables = ({ token }) => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setMfgPayForm({ ...mfgPayForm, partial: false, amount: String(activeMfgMaxPayable) })}
+                    onClick={() => setMfgPayForm({ ...mfgPayForm, partial: false, amount: String(activeMfgNetPayable > 0 ? activeMfgNetPayable : activeMfgCogs) })}
                     className={`py-2 rounded-xl text-xs font-semibold border transition-all ${
                       !mfgPayForm.partial ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"
                     }`}
                   >
-                    💳 Full Settlement
+                    💳 Full Net Settlement
                   </button>
                   <button
                     type="button"
@@ -1002,7 +1295,7 @@ const PayablesReceivables = ({ token }) => {
                       mfgPayForm.partial ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"
                     }`}
                   >
-                    📝 Partial Payment
+                    📝 Custom / Partial
                   </button>
                 </div>
               </div>
@@ -1012,7 +1305,7 @@ const PayablesReceivables = ({ token }) => {
                 <input
                   type="number"
                   min="1"
-                  max={activeMfgMaxPayable > 0 ? activeMfgMaxPayable : undefined}
+                  max={activeMfgNetPayable > 0 ? activeMfgNetPayable : activeMfgCogs}
                   value={mfgPayForm.amount}
                   onChange={(e) => setMfgPayForm({ ...mfgPayForm, amount: e.target.value })}
                   readOnly={!mfgPayForm.partial}
@@ -1022,7 +1315,7 @@ const PayablesReceivables = ({ token }) => {
                   placeholder="0"
                 />
                 {mfgPayForm.partial && (
-                  <p className="text-[10px] text-slate-400 mt-0.5">Maximum outstanding: {fmt(activeMfgMaxPayable)}</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Maximum net outstanding: {fmt(activeMfgNetPayable > 0 ? activeMfgNetPayable : activeMfgCogs)}</p>
                 )}
               </div>
 
@@ -1041,7 +1334,7 @@ const PayablesReceivables = ({ token }) => {
                   value={mfgPayForm.notes}
                   onChange={(e) => setMfgPayForm({ ...mfgPayForm, notes: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
-                  placeholder="e.g. Bank Transfer, Cheque, Batch COGS Payout"
+                  placeholder="e.g. Bank Transfer, Cheque, Batch Net Settlement"
                 />
               </div>
 
@@ -1054,20 +1347,93 @@ const PayablesReceivables = ({ token }) => {
               <div className="flex gap-2 pt-1">
                 <button
                   type="button"
+                  disabled={mfgLoading}
                   onClick={() => setShowPayMfg(false)}
-                  className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50"
+                  className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={mfgInsuff || !mfgPayForm.amount || Number(mfgPayForm.amount) <= 0}
-                  className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-300 text-white text-sm font-bold rounded-xl hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed"
+                  disabled={mfgLoading || mfgInsuff || !mfgPayForm.amount || Number(mfgPayForm.amount) <= 0}
+                  className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-300 text-white text-sm font-bold rounded-xl hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed shadow-sm transition"
                 >
-                  Confirm Payout
+                  {mfgLoading ? "Processing Payout..." : "Confirm Net Payout"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showRevert&&(
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 border border-amber-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <span className="p-2 bg-amber-100 text-amber-800 rounded-xl text-lg">↩</span>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">Revert Settlement</h2>
+                  <p className="text-[11px] text-amber-700 font-medium">Admin Authorization Required</p>
+                </div>
+              </div>
+              <button onClick={() => setShowRevert(null)} className="text-slate-400 hover:text-slate-700 text-lg leading-none">✕</button>
+            </div>
+
+            <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3.5 mb-4 text-xs text-slate-700 space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Record:</span>
+                <span className="font-bold text-slate-900">{showRevert.title}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Party:</span>
+                <span className="font-semibold text-slate-800">{showRevert.partyName || "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Settled Amount:</span>
+                <span className="font-black text-amber-800">{fmt(showRevert.amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Reversion Type:</span>
+                <span className="font-bold text-slate-700">{showRevert.type}</span>
+              </div>
+              <p className="text-[10px] text-amber-800 font-medium pt-1 border-t border-amber-200">
+                ⚠️ Reverting will restore the status to UNPAID, cancel the settlement history record, and post an offsetting cash reversal transaction to the treasury account.
+              </p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reason for Reversal *
+              </label>
+              <textarea
+                rows={3}
+                required
+                value={revertReason}
+                onChange={(e) => setRevertReason(e.target.value)}
+                placeholder="Explain why this settled transaction is being reverted (e.g., duplicate settlement, wrong amount, incorrect bank account, cancelled check)..."
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none resize-none"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={revertLoading}
+                onClick={() => setShowRevert(null)}
+                className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-xs font-semibold rounded-xl hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={revertLoading || !revertReason.trim()}
+                onClick={revertSettlement}
+                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:cursor-not-allowed shadow-sm"
+              >
+                {revertLoading ? "Reverting..." : "Confirm & Revert"}
+              </button>
+            </div>
           </div>
         </div>
       )}

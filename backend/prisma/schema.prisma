@@ -706,25 +706,27 @@ model FinancialAccount {
 }
 
 model CashTransaction {
-  id            String            @id @default(uuid())
-  date          DateTime          @default(now())
-  amount        Float
-  type          String // INFLOW, OUTFLOW, TRANSFER
-  fromAccountId String?
-  toAccountId   String?
-  category      String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
-  partyName     String?           @default("") // Whom paid to / Whom received from
-  invoiceNumber String?           @default("")
-  referenceId   String?           @default("")
-  description   String?           @db.Text
-  receiptUrl    String?           @default("")
-  fromAccount   FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
-  toAccount     FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
-  createdAt     DateTime          @default(now())
+  id             String            @id @default(uuid())
+  idempotencyKey String?           @unique @db.VarChar(191)
+  date           DateTime          @default(now())
+  amount         Float
+  type           String // INFLOW, OUTFLOW, TRANSFER
+  fromAccountId  String?
+  toAccountId    String?
+  category       String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
+  partyName      String?           @default("") // Whom paid to / Whom received from
+  invoiceNumber  String?           @default("")
+  referenceId    String?           @default("")
+  description    String?           @db.Text
+  receiptUrl     String?           @default("")
+  fromAccount    FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
+  toAccount      FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
+  createdAt      DateTime          @default(now())
 
   @@index([date])
   @@index([category])
   @@index([type])
+  @@index([referenceId])
 }
 
 model FixedAsset {
@@ -1773,4 +1775,39 @@ model LocationMapping {
   @@index([type])
   @@index([name])
   @@index([province])
+}
+
+// ============================================================
+// SETTLEMENT REVERSION AUDIT MODEL
+// Tracks every admin-initiated reversal of a settled payable,
+// receivable, or manufacturer net payout.
+// ============================================================
+model SettlementReversion {
+  id                  String   @id @default(uuid())
+  // What was reversed
+  reversionType       String   @db.VarChar(48) // PAYABLE | RECEIVABLE | MANUFACTURER_PAYMENT | NCM_COD
+  originalRecordId    String   @db.VarChar(191) // AccountPayable.id | AccountReceivable.id | CashTransaction.id
+  cashTransactionId   String?  @db.VarChar(191) // The original CashTransaction being reversed
+  reversalTransactionId String? @db.VarChar(191) // New CashTransaction created for the reversal (INFLOW for payable reversal, OUTFLOW for receivable reversal)
+  // Settlement snapshot at time of reversal
+  originalAmount      Float    // Amount that was paid/collected in the original settlement
+  offsetAmount        Float    @default(0) // Bilateral netting offset that was applied (manufacturer only)
+  partyName           String?  @db.VarChar(255) // Manufacturer / payee name
+  accountId           String?  @db.VarChar(191) // FinancialAccount used in original settlement
+  accountName         String?  @db.VarChar(255)
+  // Post-reversion state
+  priorStatus         String   @db.VarChar(32)  // Status before reversion (SETTLED | PARTIALLY_PAID | etc.)
+  restoredStatus      String   @db.VarChar(32)  // Status after reversion (UNPAID | PARTIALLY_PAID)
+  priorPaidAmount     Float    @default(0)
+  priorRemainingBalance Float  @default(0)
+  // Admin audit
+  revertedByAdminId   String?  @db.VarChar(191)
+  revertedByEmail     String?  @db.VarChar(255)
+  revertReason        String   @db.Text
+  revertedAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+
+  @@index([reversionType, originalRecordId])
+  @@index([revertedAt])
+  @@index([revertedByAdminId])
 }

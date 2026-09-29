@@ -5,7 +5,9 @@ import {
   postDeliveredOrderAccounting,
   postConfirmedDeliveryReturnAccounting,
   postMarketingCpaRedemptionAccounting,
+  postNcmRemittanceAccounting,
   postNcmSettlementAccounting,
+  postSupplierPaymentAccounting,
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
 } from "../services/accountingPostingEngine.js";
@@ -256,6 +258,62 @@ test("duplicate delivery sale posting is idempotent and does not create duplicat
 
   assert.equal(first.id, second.id);
   assert.equal(state.entries.length, 1);
+});
+
+test("delivered order posting reuses a transaction-scoped client", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-transaction-client-004",
+    amount: 5650,
+    paymentMethod: "COD",
+    orderType: "ONLINE_STORE",
+    manufacturerId: "mfg-001",
+    items: [{ quantity: 1, agreedUnitCogsVatInclusiveAtAcceptance: "2500.00" }],
+  }, { client });
+
+  assert.ok(journal);
+  assert.equal(journal.status, "POSTED");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "2500.00");
+});
+
+test("manufacturer payment reduces the manufacturer payable control account", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  const payment = {
+    payableId: "mfg-payable-001",
+    payeeName: "Alpha Textiles",
+    amount: 1200,
+    fromAccountType: "CASH",
+    payableAccountCode: "2160",
+    idempotencyKey: "SUPPLIER_PAYMENT:mfg-payment-001",
+    client,
+  };
+  const journal = await postSupplierPaymentAccounting(payment);
+  const retry = await postSupplierPaymentAccounting(payment);
+
+  assert.ok(journal);
+  assert.equal(retry.id, journal.id);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "1200.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "1200.00");
+});
+
+test("NCM cash remittance posts through the caller transaction client", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  const journal = await postNcmRemittanceAccounting({
+    settlementId: "ncm-settlement-001",
+    codCollected: 1331,
+    isCash: true,
+    destinationAccountName: "Cash In Hand",
+  }, { client });
+
+  assert.ok(journal);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1110").debit.toFixed(2), "1331.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1170").credit.toFixed(2), "1331.00");
 });
 
 test("confirmed delivery return reverses sales revenue, output VAT, and manufacturer AP", async () => {

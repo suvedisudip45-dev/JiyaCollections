@@ -512,8 +512,25 @@ export const getRealtimeFinancialStatements = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), 0, 1);
-    const end = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)) : new Date();
+    const parseDateBoundary = (value, isEndOfDay) => {
+      const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+      if (!dateOnly) {
+        const date = new Date(value);
+        if (isEndOfDay && value) date.setHours(23, 59, 59, 999);
+        return date;
+      }
+
+      // Date inputs are Nepal calendar dates; keep boundaries stable regardless of server timezone.
+      const [, year, month, day] = dateOnly;
+      const nepalOffsetMs = (5 * 60 + 45) * 60 * 1000;
+      const startOfDay = Date.UTC(Number(year), Number(month) - 1, Number(day)) - nepalOffsetMs;
+      return new Date(startOfDay + (isEndOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
+    };
+
+    const start = startDate
+      ? parseDateBoundary(startDate, false)
+      : parseDateBoundary(`${new Date().getFullYear()}-01-01`, false);
+    const end = endDate ? parseDateBoundary(endDate, true) : new Date();
 
     const [allAccounts, journalLines] = await Promise.all([
       prisma.account.findMany({ where: { isActive: true } }),

@@ -30,6 +30,7 @@ import {
   recordOperatingExpense,
   getFinancialStatements,
   getManufacturerFinancialSummary,
+  revertSettlement,
 } from "../controllers/financialController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
@@ -89,6 +90,7 @@ financialRouter.post("/create-receivable", authenticate, authorize("finance:rece
 financialRouter.post("/settle-payable", authenticate, authorize("finance:payable_settle"), settlePayable);
 financialRouter.post("/collect-receivable", authenticate, authorize("finance:receivable_collect"), collectReceivable);
 financialRouter.post("/pay-manufacturer", authenticate, authorize("finance:payable_settle"), payManufacturer);
+financialRouter.post("/revert-settlement", authenticate, authorize("finance:payable_settle"), revertSettlement);
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);

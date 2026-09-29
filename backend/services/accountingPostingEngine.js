@@ -261,7 +261,7 @@ export const postJournalEntry = async ({
   const normalized = normalizeBalancedJournalLines(lines);
 
   try {
-    return await client.$transaction(async (tx) => {
+    const postWithinTransaction = async (tx) => {
       if (idempKey) {
         const existingEntry = await tx.journalEntry.findUnique({
           where: { idempotencyKey: idempKey },
@@ -379,7 +379,11 @@ export const postJournalEntry = async ({
       });
 
       return journalEntry;
-    });
+    };
+
+    return await (typeof client.$transaction === "function"
+      ? client.$transaction(postWithinTransaction)
+      : postWithinTransaction(client));
   } catch (error) {
     if (idempKey && error.code === "P2002") {
       const existingEntry = await client.journalEntry.findUnique({
@@ -1093,6 +1097,9 @@ export const postSupplierPaymentAccounting = async ({
   amount,
   fromAccountType = "BANK",
   referenceNumber,
+  payableAccountCode = "2110",
+  idempotencyKey,
+  client = prisma,
 }) => {
   try {
     const amt = Number(amount || 0);
@@ -1104,12 +1111,12 @@ export const postSupplierPaymentAccounting = async ({
       transactionDate: new Date(),
       sourceType: "SUPPLIER_PAYMENT",
       sourceId: payableId,
-      idempotencyKey: `SUPPLIER_PAYMENT:${payableId}:${Date.now()}`,
+      idempotencyKey: idempotencyKey || `SUPPLIER_PAYMENT:${payableId}:${Date.now()}`,
       referenceNumber: referenceNumber || `SETTLE-${payableId ? payableId.slice(-6) : ""}`,
       description: `Payable settlement paid to ${payeeName}`,
       lines: [
         {
-          accountCode: "2110",
+          accountCode: payableAccountCode,
           debit: amt,
           credit: 0,
           description: `Settle Accounts Payable for ${payeeName}`,
@@ -1122,6 +1129,7 @@ export const postSupplierPaymentAccounting = async ({
           description: `Disbursed from liquid account to ${payeeName}`,
         },
       ],
+      client,
     });
   } catch (error) {
     console.error("Error in postSupplierPaymentAccounting:", error);
@@ -1705,6 +1713,7 @@ export const postNcmRemittanceAccounting = async ({
     description: `NCM COD Remittance settlement of Rs ${codDecimal.toString()}`,
     lines,
     createdBy,
-  }, { client });
+    client,
+  });
 };
 

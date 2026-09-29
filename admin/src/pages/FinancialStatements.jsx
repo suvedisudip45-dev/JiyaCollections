@@ -4,6 +4,17 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
+const getNepalDate = (date) => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kathmandu",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+};
+
 const FinancialStatements = ({ token }) => {
   const [activeTab, setActiveTab] = useState("PL"); // PL, BS, CF
   const [mode, setMode] = useState("REALTIME"); // REALTIME (from GL) | MONTHLY (Full cash flow & audited)
@@ -11,11 +22,10 @@ const FinancialStatements = ({ token }) => {
 
   // Date filters
   const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return getNepalDate(new Date()).slice(0, 7);
   });
-  const [startDate, setStartDate] = useState(() => `${new Date().getFullYear()}-01-01`);
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [startDate, setStartDate] = useState(() => `${getNepalDate(new Date()).slice(0, 4)}-01-01`);
+  const [endDate, setEndDate] = useState(() => getNepalDate(new Date()));
 
   const [realtimeData, setRealtimeData] = useState(null);
   const [monthlyData, setMonthlyData] = useState(null);
@@ -60,43 +70,50 @@ const FinancialStatements = ({ token }) => {
   const moBs = monthlyData?.balanceSheet || {};
   const moCf = monthlyData?.cashFlowStatement || {};
 
-  const plRevenue = rtPl.revenue || {
-    grossSales: moPl.grossRevenue || 0,
-    shippingRevenue: 0,
-    salesReturns: moPl.returnsAndAllowances || 0,
-    salesDiscounts: 0,
-    netRevenue: moPl.taxableNetRevenue || 0,
+  const rtRevenue = rtPl.revenue || {};
+  const rtCogs = rtPl.costOfGoodsSold || {};
+  const rtOpex = rtPl.operatingExpenses || {};
+  const monthlyOpex = moPl.operatingExpenses || {};
+  const plRevenue = {
+    grossSales: Number(rtRevenue.grossSales || moPl.grossRevenue || 0),
+    shippingRevenue: Number(rtRevenue.shippingRevenue || 0),
+    salesReturns: Number(rtRevenue.salesReturns || moPl.returnsAndAllowances || 0),
+    salesDiscounts: Number(rtRevenue.salesDiscounts || 0),
+    netRevenue: Number(rtRevenue.netRevenue || moPl.taxableNetRevenue || 0),
   };
 
-  const plCogs = rtPl.costOfGoodsSold || {
-    directCOGS: moPl.cogs || 0,
-    freightTransport: 0,
-    packagingExpense: 0,
-    scrapLoss: 0,
-    purchaseReturns: 0,
-    totalCOGS: moPl.cogs || 0,
+  const plCogs = {
+    directCOGS: Number(rtCogs.directCOGS || moPl.cogs || 0),
+    freightTransport: Number(rtCogs.freightTransport || 0),
+    packagingExpense: Number(rtCogs.packagingExpense || 0),
+    scrapLoss: Number(rtCogs.scrapLoss || 0),
+    purchaseReturns: Number(rtCogs.purchaseReturns || 0),
+    totalCOGS: Number(rtCogs.totalCOGS || moPl.cogs || 0),
   };
 
-  const plGrossProfit = rtPl.grossProfit ?? (moPl.grossProfit || 0);
+  const plGrossProfit = Number(rtPl.grossProfit || moPl.grossProfit || (plRevenue.netRevenue - plCogs.totalCOGS));
 
-  const plOpex = rtPl.operatingExpenses || {
-    salaries: moPl.operatingExpenses?.salaries || 0,
-    rent: moPl.operatingExpenses?.rent || 0,
-    utilities: moPl.operatingExpenses?.utilities || 0,
-    marketing: moPl.operatingExpenses?.marketing || 0,
-    softwareTools: moPl.operatingExpenses?.software || 0,
-    miscExpenses: moPl.operatingExpenses?.misc || 0,
-    totalOperatingExpenses: moPl.operatingExpenses?.total || 0,
+  const plOpex = {
+    salaries: Number(rtOpex.salaries || monthlyOpex.salaries || 0),
+    rent: Number(rtOpex.rent || monthlyOpex.rent || 0),
+    utilities: Number(rtOpex.utilities || monthlyOpex.utilities || 0),
+    marketing: Number(rtOpex.marketing || monthlyOpex.marketing || 0),
+    softwareTools: Number(rtOpex.softwareTools || monthlyOpex.software || 0),
+    miscExpenses: Number(rtOpex.miscExpenses || monthlyOpex.misc || 0),
+    totalOperatingExpenses: Number(rtOpex.totalOperatingExpenses || monthlyOpex.total || 0),
   };
 
-  const plEbitda = rtPl.ebitda ?? (plGrossProfit - (plOpex.totalOperatingExpenses || 0));
-  const plNonOp = rtPl.nonOperating || {
-    depreciationExpense: moPl.depreciation || 0,
-    loanInterest: 0,
-    bankCharges: 0,
-    otherIncome: 0,
+  const plEbitda = Number(plGrossProfit - plOpex.totalOperatingExpenses);
+  const rtNonOp = rtPl.nonOperating || {};
+  const plNonOp = {
+    depreciationExpense: Number(rtNonOp.depreciationExpense || moPl.depreciation || 0),
+    loanInterest: Number(rtNonOp.loanInterest || 0),
+    bankCharges: Number(rtNonOp.bankCharges || 0),
+    otherIncome: Number(rtNonOp.otherIncome || 0),
   };
-  const plNetProfit = rtPl.netProfitBeforeTax ?? (moPl.netIncomeAfterTax || 0);
+  const plNetProfit = Number(
+    plEbitda - plNonOp.depreciationExpense - plNonOp.loanInterest - plNonOp.bankCharges + plNonOp.otherIncome
+  );
 
   // Balance Sheet details
   const bsCurrentAssets = rtBs.assets?.currentAssets || {

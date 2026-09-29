@@ -317,34 +317,34 @@ export const adminConfirmSettlement = async (req, res) => {
       const updatedAccount = await tx.financialAccount.update({
         where: { id: financialAccountId },
         data: {
-          balance: { increment: netDeposit },
+          currentBalance: { increment: netDeposit },
         },
       });
 
       // 2. Create Cash Flow Inflow Record
       const cashTx = await tx.cashTransaction.create({
         data: {
-          accountId: financialAccountId,
+          toAccountId: financialAccountId,
           amount: netDeposit,
           type: "INFLOW",
           category: "COD_REMITTANCE",
-          source: "NCM_DELIVERY",
-          reference: reference || `NCM-REMIT-${toProcess[0]?.id?.slice(-6) || "BATCH"}`,
+          partyName: "Nepal Can Move (NCM)",
+          invoiceNumber: reference || "",
+          referenceId: toProcess[0]?.id || "",
           description: `NCM COD remittance deposit for ${toProcess.length} order(s). Total COD: Rs ${totalCod}, Courier Fees: Rs ${totalFee}. ${notes || ""}`.trim(),
-          balanceAfter: updatedAccount.balance,
-          createdById: req.userId || "ADMIN",
         },
       });
 
       // 3. Update Delivery Settlements
-      await tx.deliveryFinancialSettlement.updateMany({
-        where: { id: { in: toProcess.map((s) => s.id) } },
+      const settledAt = new Date();
+      await Promise.all(toProcess.map((settlement) => tx.deliveryFinancialSettlement.update({
+        where: { id: settlement.id },
         data: {
           settlementState: "SETTLED",
-          settledAt: new Date(),
-          codCollected: totalCod / toProcess.length, // distributed or exact
+          settledAt,
+          codCollected: Number(settlement.codCollected || settlement.codExpected || 0),
         },
-      });
+      })));
 
       // 4. Double-Entry Accounting Journal Posting
       const isCash = ["CASH", "CASH_IN_HAND"].includes(String(account.accountType).toUpperCase());
@@ -355,9 +355,7 @@ export const adminConfirmSettlement = async (req, res) => {
         isCash,
         destinationAccountName: account.accountName,
         createdBy: "ADMIN",
-      }, { client: tx }).catch((err) => {
-        console.error("NCM remittance GL posting notice:", err.message);
-      });
+      }, { client: tx });
 
       return { updatedAccount, cashTx };
     });
