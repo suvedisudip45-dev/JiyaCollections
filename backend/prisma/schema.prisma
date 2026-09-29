@@ -23,6 +23,7 @@ model AuthAccount {
 
   isEmailVerified Boolean @default(false)
   isPhoneVerified Boolean @default(false)
+  mustChangePassword Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -37,6 +38,8 @@ model AuthAccount {
   auditLogs     AuthAuditLog[]
   sessions      AuthSession[]
   roleMappings  AuthAccountRoleMapping[]
+  accessManagementEvents  AccessManagementAuditLog[] @relation("AccessManagementActor")
+  accessManagementTargets AccessManagementAuditLog[] @relation("AccessManagementTarget")
 
   @@index([email])
   @@index([phone])
@@ -48,6 +51,7 @@ model Role {
   code        String                   @unique @db.VarChar(64)
   name        String                   @db.VarChar(120)
   description String?                  @db.Text
+  portalScope String                   @default("ADMIN") @db.VarChar(32)
   isActive    Boolean                  @default(true)
   createdAt   DateTime                 @default(now())
   updatedAt   DateTime                 @updatedAt
@@ -190,6 +194,21 @@ model AuthAuditLog {
   @@index([identifier, createdAt])
   @@index([action, createdAt])
   @@index([accountId])
+}
+
+model AccessManagementAuditLog {
+  id             String       @id @default(uuid())
+  actorAccountId String?
+  targetAccountId String?
+  action         String       @db.VarChar(80)
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  actor          AuthAccount? @relation("AccessManagementActor", fields: [actorAccountId], references: [id], onDelete: SetNull)
+  target         AuthAccount? @relation("AccessManagementTarget", fields: [targetAccountId], references: [id], onDelete: SetNull)
+
+  @@index([actorAccountId, createdAt])
+  @@index([targetAccountId, createdAt])
+  @@index([action, createdAt])
 }
 
 model Notification {
@@ -682,6 +701,9 @@ model Admin {
   id        String       @id @default(uuid())
   accountId String?      @unique
   account   AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  displayName String     @default("") @db.VarChar(160)
+  firstName String?      @db.VarChar(80)
+  lastName  String?      @db.VarChar(80)
   email     String       @unique
   password  String?      @default("") // bcrypt-hashed
   phone     String?      @default("9846008536")

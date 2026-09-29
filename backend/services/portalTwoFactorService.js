@@ -120,6 +120,7 @@ const safeAccountSelect = {
   phone: true,
   role: true,
   status: true,
+  mustChangePassword: true,
 };
 
 export const createPortalTwoFactorChallenge = async ({

@@ -1,6 +1,8 @@
-/* eslint-disable no-unused-vars */
+/* eslint-disable no-unused-vars, react/prop-types */
 import React, { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
+import { usePermissions } from "../auth/PermissionsContext";
+import { ADMIN_ROUTE_PERMISSIONS, ADMIN_SECTION_PERMISSIONS } from "../auth/adminRoutePermissions";
 
 // ─── Icons ───────────────────────────────────────────────────────────────────
 const ChevronIcon = ({ open }) => (
@@ -14,35 +16,46 @@ const ChevronIcon = ({ open }) => (
 
 // ─── NavItem ─────────────────────────────────────────────────────────────────
 const NavItem = ({ to, icon, label, indent = false }) => (
-  <NavLink
-    to={to}
-    className={({ isActive }) =>
-      `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-medium transition-all duration-150 group ${
-        indent ? "ml-3 pl-3" : ""
-      } ${
-        isActive
-          ? "bg-slate-900 text-white shadow-sm"
-          : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
-      }`
-    }
-  >
-    {({ isActive }) => (
-      <>
-        <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-700"}`}>
-          {icon}
-        </span>
-        <span className="truncate">{label}</span>
-      </>
-    )}
-  </NavLink>
+  <PermissionNavItem to={to} icon={icon} label={label} indent={indent} />
 );
 
+const PermissionNavItem = ({ to, icon, label, indent = false }) => {
+  const { canAny } = usePermissions();
+  const required = ADMIN_ROUTE_PERMISSIONS[to];
+  if (required && !canAny(required)) return null;
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-medium transition-all duration-150 group ${
+          indent ? "ml-3 pl-3" : ""
+        } ${
+          isActive
+            ? "bg-slate-900 text-white shadow-sm"
+            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+        }`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-700"}`}>
+            {icon}
+          </span>
+          <span className="truncate">{label}</span>
+        </>
+      )}
+    </NavLink>
+  );
+};
+
 // ─── SectionGroup (collapsible dropdown) ─────────────────────────────────────
-const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [] }) => {
+const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [], requiredPermissions = [] }) => {
   const location = useLocation();
+  const { canAny } = usePermissions();
   // Auto-open if any child route is active
   const isAnyChildActive = routes.some((r) => location.pathname === r);
   const [open, setOpen] = useState(defaultOpen || isAnyChildActive);
+  if (requiredPermissions.length && !canAny(requiredPermissions)) return null;
 
   return (
     <div>
@@ -119,16 +132,33 @@ const Icon = {
 
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
 const Sidebar = () => {
+  const { can, canAny } = usePermissions();
   return (
     <aside className="w-60 shrink-0 bg-white border-r border-slate-200/80 flex flex-col select-none" style={{ height: "calc(100vh - 65px)", position: "sticky", top: "65px" }}>
 
       {/* Scrollable nav area */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#dfe7e3 transparent" }}>
 
+        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read"]) && (
+          <>
+            <SectionGroup
+              label="Access Control"
+              icon={Icon.lock}
+              routes={["/access-control/users", "/access-control/roles", "/access-control/permissions"]}
+            >
+              {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"]) && <NavItem to="/access-control/users" icon={Icon.customers} label="Portal Users" />}
+              {can("access:roles_read") && <NavItem to="/access-control/roles" icon={Icon.partners} label="Admin Roles" />}
+              {can("access:permissions_read") && <NavItem to="/access-control/permissions" icon={Icon.lock} label="Permissions" />}
+            </SectionGroup>
+            <div className="h-px bg-slate-100 my-1" />
+          </>
+        )}
+
         {/* ── CATALOG & PRODUCTS ── */}
         <SectionGroup
           label="Catalog & Products"
           icon={Icon.catalog}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.catalog}
           defaultOpen={true}
           routes={["/list", "/add", "/categories", "/special-offers"]}
         >
@@ -144,6 +174,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Sales & Orders"
           icon={Icon.sales}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.sales}
           routes={["/orders", "/create-order"]}
         >
           <NavItem to="/orders"        icon={Icon.orders}      label="Customer Orders" />
@@ -156,6 +187,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Supply Chain"
           icon={Icon.supply}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.supply}
           routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory"]}
         >
           <NavItem to="/order-assignments"     icon={Icon.routing}   label="Order Routing Engine" />
@@ -169,6 +201,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Marketing Partners"
           icon={Icon.marketing}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.marketing}
           routes={["/marketing-cards"]}
         >
           <NavItem to="/marketing-cards" icon={Icon.marketing} label="Card Assignment" />
@@ -180,6 +213,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Operations"
           icon={Icon.ops}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.operations}
           routes={["/inventory", "/cogs", "/shipping"]}
         >
           <NavItem to="/inventory" icon={Icon.inventory} label="Inventory & Stock" />
@@ -193,6 +227,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Finance"
           icon={Icon.finance}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.finance}
           routes={["/finance", "/treasury", "/assets", "/partners", "/expenses", "/tax", "/returns", "/payables", "/statements"]}
         >
           <NavItem to="/finance"     icon={Icon.money}      label="Financial Dashboard" />
@@ -212,6 +247,7 @@ const Sidebar = () => {
         <SectionGroup
           label="General Ledger"
           icon={Icon.gl}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.accounting}
           routes={["/chart-of-accounts", "/journal-entries", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
         >
           <NavItem to="/chart-of-accounts"  icon={Icon.chartAcct}  label="Chart of Accounts" />
@@ -228,6 +264,7 @@ const Sidebar = () => {
         <SectionGroup
           label="Customers & CRM"
           icon={Icon.crm}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.customers}
           routes={["/customers", "/loyalty-levels", "/reviews", "/story-letter-library"]}
         >
           <NavItem to="/customers"     icon={Icon.customers} label="Customer Profiles" />

@@ -600,6 +600,7 @@ export const authenticateAccount = async ({
     phone: account.phone,
     role: account.role,
     status: account.status,
+    mustChangePassword: Boolean(account.mustChangePassword),
   };
 
   if (requiresMfa(account.role)) {

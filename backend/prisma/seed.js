@@ -5,14 +5,19 @@ import "dotenv/config";
 const prisma = new PrismaClient();
 
 const roleDefinitions = [
-  { code: "ADMIN", name: "Administrator", description: "Administrative access to the platform." },
-  { code: "CUSTOMER", name: "Customer", description: "Customer account access." },
-  { code: "MANUFACTURER", name: "Manufacturer", description: "Manufacturer portal access." },
-  { code: "MARKETING_PARTNER", name: "Marketing Partner", description: "Marketing partner portal access." },
+  { code: "ADMIN", name: "Administrator", description: "Administrative access to the platform.", portalScope: "ADMIN" },
+  { code: "CUSTOMER", name: "Customer", description: "Customer account access.", portalScope: "CUSTOMER" },
+  { code: "MANUFACTURER", name: "Manufacturer", description: "Manufacturer portal access.", portalScope: "MANUFACTURER" },
+  { code: "MARKETING_PARTNER", name: "Marketing Partner", description: "Marketing partner portal access.", portalScope: "MARKETING_PARTNER" },
 ];
 
 const permissionDefinitions = [
   ["all:function", "Full server-side authorization bypass for administrators."],
+  ["access:admin_users_read", "List and view Admin portal accounts."], ["access:admin_users_create", "Create Admin portal accounts."], ["access:admin_users_update", "Update Admin portal account profiles."], ["access:admin_users_deactivate", "Activate or deactivate Admin portal accounts."], ["access:admin_users_assign_roles", "Assign Admin portal roles to Admin accounts."],
+  ["access:marketing_users_read", "List and view Marketing Partner accounts."], ["access:marketing_users_update", "Update Marketing Partner account profiles."], ["access:marketing_users_deactivate", "Activate or deactivate Marketing Partner accounts."],
+  ["access:manufacturer_users_read", "List and view Manufacturer accounts."], ["access:manufacturer_users_update", "Update Manufacturer account profiles."], ["access:manufacturer_users_deactivate", "Activate or deactivate Manufacturer accounts."],
+  ["access:customer_users_read", "List and view Customer accounts."], ["access:customer_users_update", "Update Customer account profiles."], ["access:customer_users_deactivate", "Activate or deactivate Customer accounts."],
+  ["access:roles_read", "List and view Admin portal roles."], ["access:roles_create", "Create Admin portal roles."], ["access:roles_update", "Update Admin portal roles."], ["access:roles_deactivate", "Activate or deactivate Admin portal roles."], ["access:roles_assign_permissions", "Assign permissions to Admin portal roles."], ["access:permissions_read", "View the system permission catalog."],
   ["admin:change_password", "Change an administrator password."],
   ["product:create", "Create products."], ["product:update", "Update products."], ["product:delete", "Delete products."],
   ["stock:adjust", "Adjust product stock."], ["stock:logs_read", "Read stock logs."],
@@ -128,26 +133,51 @@ async function main() {
         passwordHash: hashedPassword,
         role: "ADMIN",
         status: "ACTIVE",
+        mustChangePassword: true,
         isEmailVerified: true,
         isPhoneVerified: true,
       },
     });
-  } else if (!adminAccount.phone && adminPhone) {
-    adminAccount = await prisma.authAccount.update({
-      where: { id: adminAccount.id },
-      data: { phone: adminPhone, role: "ADMIN", status: "ACTIVE" },
-    });
+  } else {
+    const adminAccountUpdates = {};
+    if (!adminAccount.phone && adminPhone) {
+      adminAccountUpdates.phone = adminPhone;
+      adminAccountUpdates.role = "ADMIN";
+      adminAccountUpdates.status = "ACTIVE";
+    }
+    if (!adminAccount.passwordChangedAt && !adminAccount.mustChangePassword) {
+      adminAccountUpdates.mustChangePassword = true;
+    }
+    if (Object.keys(adminAccountUpdates).length) {
+      adminAccount = await prisma.authAccount.update({
+        where: { id: adminAccount.id },
+        data: adminAccountUpdates,
+      });
+    }
   }
 
   // 2. Idempotently Seed Admin Profile
+  const seededAdminDisplayName = String(process.env.ADMIN_DISPLAY_NAME || "System Administrator").trim();
+  const seededAdminFirstName = String(process.env.ADMIN_FIRST_NAME || "").trim();
+  const seededAdminLastName = String(process.env.ADMIN_LAST_NAME || "").trim();
+  const existingAdminProfile = await prisma.admin.findUnique({
+    where: { email: adminEmail },
+    select: { displayName: true, firstName: true, lastName: true },
+  });
   const admin = await prisma.admin.upsert({
     where: { email: adminEmail },
     update: {
       accountId: adminAccount.id,
       phone: adminPhone,
+      ...(!existingAdminProfile?.displayName ? { displayName: seededAdminDisplayName } : {}),
+      ...(!existingAdminProfile?.firstName && seededAdminFirstName ? { firstName: seededAdminFirstName } : {}),
+      ...(!existingAdminProfile?.lastName && seededAdminLastName ? { lastName: seededAdminLastName } : {}),
     },
     create: {
       accountId: adminAccount.id,
+      displayName: seededAdminDisplayName,
+      firstName: seededAdminFirstName || null,
+      lastName: seededAdminLastName || null,
       email: adminEmail,
       password: hashedPassword,
       phone: adminPhone,

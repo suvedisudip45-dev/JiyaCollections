@@ -66,6 +66,7 @@ const adminChangePassword = async (req, res) => {
         data: {
           passwordHash: hashedPassword,
           passwordChangedAt: new Date(),
+          mustChangePassword: false,
         },
       }),
       prisma.admin.update({

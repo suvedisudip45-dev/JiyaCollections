@@ -26,14 +26,16 @@ test("resolveAccountPermissions returns only active mapped permissions", async (
       },
     },
   };
-  const permissions = await resolveAccountPermissions("account-1", { client });
+  const permissions = await resolveAccountPermissions("account-1", { client, principalRole: "ADMIN" });
 
   assert.deepEqual([...permissions].sort(), ["all:function", "product:create"]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].where.role.accounts.some.accountId, "account-1");
+  assert.equal(calls[0].where.role.portalScope, "ADMIN");
   const customerPermissions = await resolveAccountPermissions("account-1", { client, principalRole: "CUSTOMER" });
   assert.deepEqual([...customerPermissions].sort(), ["all:function", "product:create"]);
   assert.equal(calls[1].where.role.code.not, "ADMIN");
+  assert.equal(calls[1].where.role.portalScope, "CUSTOMER");
   assert.equal(hasPermission(permissions, "product:create"), true);
   assert.equal(hasPermission(permissions, "finance:read"), true);
 });
@@ -81,4 +83,22 @@ test("requireRole uses the centralized mapped role context", async () => {
     auth: { role: "CUSTOMER", roles: ["CUSTOMER", "MANUFACTURER"] },
   });
   assert.equal(denied.code, 403);
+});
+
+test("required password rotation permits only the Admin password-change permission", async () => {
+  let resolverCalls = 0;
+  const permissionResolver = async () => {
+    resolverCalls += 1;
+    return new Set();
+  };
+  const request = {
+    auth: { accountId: "admin-1", role: "ADMIN", mustChangePassword: true },
+  };
+
+  assert.equal((await invoke(createAuthorize(permissionResolver)("admin:change_password"), request)).code, 200);
+  assert.equal(resolverCalls, 0);
+
+  const denied = await invoke(createAuthorize(permissionResolver)("access:admin_users_read"), request);
+  assert.equal(denied.code, 403);
+  assert.equal(resolverCalls, 1);
 });

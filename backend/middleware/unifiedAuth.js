@@ -92,6 +92,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
             id: true,
             role: true,
             status: true,
+            mustChangePassword: true,
             customerProfile: { select: { id: true } },
             adminProfile: { select: { id: true } },
             manufacturerProfile: { select: { id: true } },
@@ -99,7 +100,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
             roleMappings: {
               where: {
                 isActive: true,
-                role: { isActive: true },
+                role: { isActive: true, portalScope: role },
               },
               select: {
                 role: { select: { code: true } },
@@ -127,6 +128,20 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
         success: false,
         message: "Account is not active.",
         code: "ACCOUNT_INACTIVE",
+      });
+    }
+    const passwordChangeAllowedPaths = new Set([
+      "/api/auth/me",
+      "/api/auth/logout",
+      "/api/auth/change-password",
+      "/api/user/admin/change-password",
+    ]);
+    const requestPath = String(req.originalUrl || req.url || "").split("?")[0];
+    if (account.mustChangePassword && !passwordChangeAllowedPaths.has(requestPath)) {
+      return res.status(403).json({
+        success: false,
+        message: "Change your initial password before using the Admin Portal.",
+        code: "PASSWORD_CHANGE_REQUIRED",
       });
     }
 
@@ -159,6 +174,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
       mfaVerified: hasVerifiedMfa(decoded),
       sessionId: session.id,
       tokenFamilyId: session.tokenFamilyId,
+      mustChangePassword: account.mustChangePassword,
       manufacturerId: decoded.manufacturerId || null,
       partnerId: decoded.partnerId || null,
       role,

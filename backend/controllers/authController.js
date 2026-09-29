@@ -13,6 +13,7 @@ import {
   verifyOtpChallenge,
 } from "../services/otpService.js";
 import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
+import { resolveAccountPermissions } from "../services/rbacService.js";
 import {
   createPortalTwoFactorChallenge,
   resendPortalTwoFactorCode,
@@ -220,6 +221,10 @@ export const getMe = async (req, res) => {
         adminProfile: true,
         manufacturerProfile: true,
         marketingPartnerProfile: true,
+        roleMappings: {
+          where: { isActive: true, role: { isActive: true, portalScope: role } },
+          select: { role: { select: { id: true, code: true, name: true } } },
+        },
       },
     });
 
@@ -227,7 +232,16 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ success: false, message: "Account not found." });
     }
 
-    return res.json(serializeSessionProfile(account));
+    const sessionProfile = serializeSessionProfile(account);
+    const permissions = await resolveAccountPermissions(accountId, { principalRole: role });
+    return res.json({
+      ...sessionProfile,
+      account: {
+        ...sessionProfile.account,
+        permissions: [...permissions].sort(),
+        roles: account.roleMappings.map(({ role: mappedRole }) => mappedRole),
+      },
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -316,6 +330,7 @@ export const changePassword = async (req, res) => {
       data: {
         passwordHash: newHash,
         passwordChangedAt: new Date(),
+        mustChangePassword: false,
       },
     });
 
