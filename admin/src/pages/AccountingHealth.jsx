@@ -46,8 +46,10 @@ const AccountingHealth = ({ token }) => {
   const cashBank = reconciliation?.cashAndBank || {};
   const isTbBalanced = Boolean(trialBalanceData?.isBalanced);
   const isBsBalanced = Boolean(financialStatements?.isBalanceSheetBalanced);
+  const hasCompleteCoverage = reconciliation?.coverageStatus === "COMPLETE";
 
   const allReconciled =
+    hasCompleteCoverage &&
     Boolean(ar.isReconciled) &&
     Boolean(ap.isReconciled) &&
     Boolean(cashBank.isReconciled) &&
@@ -68,7 +70,7 @@ const AccountingHealth = ({ token }) => {
                   : "bg-amber-100 text-amber-800 border-amber-200"
               }`}
             >
-              {allReconciled ? "100% Invariant Reconciled" : "Action Required"}
+              {allReconciled ? "All Controls Reconciled" : hasCompleteCoverage ? "Action Required" : "Coverage Incomplete"}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
@@ -102,14 +104,18 @@ const AccountingHealth = ({ token }) => {
               <span className={`w-3 h-3 rounded-full ${allReconciled ? "bg-emerald-400" : "bg-amber-400 animate-ping"}`}></span>
               <h2 className="text-lg font-bold">
                 {allReconciled
-                  ? "Ledgers & Subledgers in Complete Harmony"
+                  ? "Configured balances match"
+                  : !hasCompleteCoverage
+                  ? "Reconciliation coverage incomplete"
                   : "Variance Identified Across Subsidiary Ledgers"}
               </h2>
             </div>
             <p className="text-xs text-slate-300">
               {allReconciled
-                ? "Every control account matches its operational records perfectly. No unposted transactions or balance drifts detected."
-                : "One or more operational subledgers diverge from the authoritative GL control balances. Review the reconciliation cards below."}
+                ? "All configured ledgers and source-event coverage checks match for this run."
+                : !hasCompleteCoverage
+                ? "Some control accounts and source-event populations are not yet connected to complete subledgers. Treat matching totals as partial checks, not a complete reconciliation."
+                : "One or more configured comparisons do not reconcile. Review the mapping and unmatched balances below."}
             </p>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-center">
@@ -123,6 +129,15 @@ const AccountingHealth = ({ token }) => {
         </div>
       </div>
 
+      {reconciliation?.coverageGaps?.length > 0 && (
+        <div className="border border-amber-200 bg-amber-50 p-4 rounded-lg">
+          <h2 className="text-xs font-bold text-amber-900">Reconciliation coverage gaps</h2>
+          <ul className="mt-2 space-y-1 text-xs text-amber-800">
+            {reconciliation.coverageGaps.map((gap) => <li key={gap}>{gap}</li>)}
+          </ul>
+        </div>
+      )}
+
       {/* RECONCILIATION CARDS GRID */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {/* 1. ACCOUNTS RECEIVABLE RECONCILIATION */}
@@ -134,12 +149,14 @@ const AccountingHealth = ({ token }) => {
               </span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                  ar.isReconciled
+                  ar.coverageStatus !== "COMPLETE"
+                    ? "bg-amber-100 text-amber-800"
+                    : ar.isReconciled
                     ? "bg-emerald-100 text-emerald-800"
                     : "bg-rose-100 text-rose-800"
                 }`}
               >
-                {ar.isReconciled ? "Reconciled" : "Variance Detected"}
+                {ar.coverageStatus !== "COMPLETE" ? "Partial Coverage" : ar.isReconciled ? "Reconciled" : "Variance Detected"}
               </span>
             </div>
             <h3 className="text-base font-bold text-slate-900 mt-1">
@@ -190,12 +207,14 @@ const AccountingHealth = ({ token }) => {
               </span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                  ap.isReconciled
+                  ap.coverageStatus !== "COMPLETE"
+                    ? "bg-amber-100 text-amber-800"
+                    : ap.isReconciled
                     ? "bg-emerald-100 text-emerald-800"
                     : "bg-rose-100 text-rose-800"
                 }`}
               >
-                {ap.isReconciled ? "Reconciled" : "Variance Detected"}
+                {ap.coverageStatus !== "COMPLETE" ? "Partial Coverage" : ap.isReconciled ? "Reconciled" : "Variance Detected"}
               </span>
             </div>
             <h3 className="text-base font-bold text-slate-900 mt-1">
@@ -248,26 +267,30 @@ const AccountingHealth = ({ token }) => {
                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
                   cashBank.isReconciled
                     ? "bg-emerald-100 text-emerald-800"
-                    : "bg-rose-100 text-rose-800"
+                    : "bg-amber-100 text-amber-800"
                 }`}
               >
-                {cashBank.isReconciled ? "Reconciled" : "Variance Detected"}
+                {cashBank.isReconciled
+                  ? "Reconciled"
+                  : Number(cashBank.unmappedAccountCount || 0) > 0
+                  ? "Mapping Required"
+                  : "Variance Detected"}
               </span>
             </div>
             <h3 className="text-base font-bold text-slate-900 mt-1">
               Treasury Cash vs GL Control
             </h3>
-            <p className="text-[11px] text-slate-400">GL Accounts: 1110 Cash + 1120 Bank</p>
+            <p className="text-[11px] text-slate-400">Each Treasury balance is compared with its explicitly mapped GL account.</p>
 
             <div className="space-y-2 mt-4 pt-3 border-t border-slate-100 text-xs">
               <div className="flex justify-between text-slate-600">
-                <span>GL Control Balance (1110+1120):</span>
+                <span>Mapped GL balance:</span>
                 <span className="font-mono font-bold text-slate-900">
                   Rs {Number(cashBank.glTotalBalance || 0).toLocaleString()}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600">
-                <span>Treasury Accounts Total:</span>
+                <span>Mapped Treasury balance:</span>
                 <span className="font-mono font-bold text-slate-900">
                   Rs {Number(cashBank.treasuryAccountsTotal || 0).toLocaleString()}
                 </span>
@@ -282,6 +305,14 @@ const AccountingHealth = ({ token }) => {
                   Rs {Number(cashBank.variance || 0).toLocaleString()}
                 </span>
               </div>
+              {Number(cashBank.unmappedAccountCount || 0) > 0 && (
+                <div className="pt-2 text-amber-700">
+                  {cashBank.unmappedAccountCount} Treasury account(s) need a GL mapping.
+                  {cashBank.unmappedAccounts?.length > 0 && (
+                    <span className="block mt-1">{cashBank.unmappedAccounts.map((account) => account.accountName).join(", ")}</span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

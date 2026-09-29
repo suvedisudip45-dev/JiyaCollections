@@ -965,22 +965,23 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
     const customerName = paramsOrOrder.customerName || (paramsOrOrder.userId ? `Customer (${paramsOrOrder.userId.slice(-6)})` : "Customer");
     const amt = Number(paramsOrOrder.amount || 0);
     const depositAccountType = paramsOrOrder.depositAccountType || "BANK";
+    const depositAccountCode = paramsOrOrder.depositAccountCode || (depositAccountType === "CASH" ? "1110" : "1120");
     const referenceNumber = paramsOrOrder.referenceNumber;
+    const idempotencyKey = paramsOrOrder.idempotencyKey || `CUSTOMER_PAYMENT:${orderId}:${amt}`;
+    const client = paramsOrOrder.client || prisma;
 
     if (amt <= 0) return null;
-
-    const bankOrCashCode = depositAccountType === "CASH" ? "1110" : "1120";
 
     return await postJournalEntry({
       transactionDate: new Date(),
       sourceType: "CUSTOMER_PAYMENT",
       sourceId: orderId,
-      idempotencyKey: `CUSTOMER_PAYMENT:${orderId}:${amt}`,
+      idempotencyKey,
       referenceNumber: referenceNumber || `PAY-${orderId ? orderId.slice(-6) : Date.now()}`,
       description: `Customer payment received from ${customerName || "Customer"}`,
       lines: [
         {
-          accountCode: bankOrCashCode,
+          accountCode: depositAccountCode,
           debit: amt,
           credit: 0,
           description: `Cash/Bank receipt for Order #${orderId ? orderId.slice(-6) : ""}`,
@@ -993,6 +994,7 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
           customerName,
         },
       ],
+      client,
     });
   } catch (error) {
     console.error("Error in postCustomerPaymentAccounting:", error);
@@ -1098,6 +1100,7 @@ export const postSupplierPaymentAccounting = async ({
   fromAccountType = "BANK",
   referenceNumber,
   payableAccountCode = "2110",
+  cashAccountCode,
   idempotencyKey,
   client = prisma,
 }) => {
@@ -1105,7 +1108,7 @@ export const postSupplierPaymentAccounting = async ({
     const amt = Number(amount || 0);
     if (amt <= 0) return null;
 
-    const cashBankCode = fromAccountType === "CASH" ? "1110" : "1120";
+    const cashBankCode = cashAccountCode || (fromAccountType === "CASH" ? "1110" : "1120");
 
     return await postJournalEntry({
       transactionDate: new Date(),
@@ -1668,6 +1671,7 @@ export const postNcmRemittanceAccounting = async ({
   codCollected,
   deliveryFeeActual = 0,
   isCash = false,
+  cashAccountCode,
   destinationAccountName = "Bank Account",
   createdBy = "admin",
 }, { client = prisma } = {}) => {
@@ -1681,7 +1685,7 @@ export const postNcmRemittanceAccounting = async ({
 
   const lines = [
     {
-      mappingKey: isCash ? "CASH_ON_HAND" : "BANK",
+      accountCode: cashAccountCode || (isCash ? "1110" : "1120"),
       debit: netDecimal,
       credit: 0,
       description: `Net COD remittance received into ${destinationAccountName}`,

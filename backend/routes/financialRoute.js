@@ -1,10 +1,6 @@
 import express from "express";
 import {
   getFinancialAnalyticsDashboard,
-  getTreasuryAccounts,
-  createTreasuryAccount,
-  recordCashTransfer,
-  getCashTransactions,
   getFixedAssets,
   createFixedAsset,
   runDepreciationBatch,
@@ -24,7 +20,6 @@ import {
   createPayable,
   createReceivable,
   settlePayable,
-  collectReceivable,
   payManufacturer,
   getVATAndTaxReport,
   recordOperatingExpense,
@@ -32,6 +27,14 @@ import {
   getManufacturerFinancialSummary,
   revertSettlement,
 } from "../controllers/financialController.js";
+import {
+  getTreasuryAccounts,
+  createTreasuryAccount,
+  mapTreasuryAccount,
+  recordCashTransfer,
+  getCashTransactions,
+  collectReceivable,
+} from "../controllers/treasuryAccountingController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const financialRouter = express.Router();
@@ -58,6 +61,7 @@ financialRouter.get("/manufacturer-summary", authenticate, authorize("finance:ma
 // Treasury & Liquid Cash & Expenses
 financialRouter.get("/treasury-accounts", authenticate, authorize("finance:treasury_read"), getTreasuryAccounts);
 financialRouter.post("/create-account", authenticate, authorize("finance:treasury_create"), createTreasuryAccount);
+financialRouter.post("/map-treasury-account", authenticate, authorize("finance:treasury_create"), mapTreasuryAccount);
 financialRouter.post("/cash-transfer", authenticate, authorize("finance:cash_transfer"), recordCashTransfer);
 financialRouter.post("/record-operating-expense", authenticate, authorize("finance:expense_record"), recordOperatingExpense);
 financialRouter.get("/cash-transactions", authenticate, authorize("finance:transactions_read"), getCashTransactions);

@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import {
   postDeliveredOrderAccounting,
   postConfirmedDeliveryReturnAccounting,
+  postCustomerPaymentAccounting,
   postMarketingCpaRedemptionAccounting,
   postNcmRemittanceAccounting,
   postNcmSettlementAccounting,
@@ -298,6 +299,26 @@ test("manufacturer payment reduces the manufacturer payable control account", as
   assert.equal(retry.id, journal.id);
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "1200.00");
   assert.equal(journal.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "1200.00");
+});
+
+test("customer receipt uses its mapped clearing account and stable idempotency key", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const payment = {
+    id: "receipt-001",
+    orderId: "ar-001",
+    amount: 900,
+    depositAccountCode: "1180",
+    idempotencyKey: "RECEIPT:ar-001:part-1",
+    client,
+  };
+
+  const first = await postCustomerPaymentAccounting(payment);
+  const retry = await postCustomerPaymentAccounting(payment);
+
+  assert.equal(retry.id, first.id);
+  assert.equal(state.entries.length, 1);
+  assert.equal(first.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "900.00");
+  assert.equal(first.lines.find((line) => line.account.accountCode === "1130").credit.toFixed(2), "900.00");
 });
 
 test("NCM cash remittance posts through the caller transaction client", async () => {

@@ -1,5 +1,5 @@
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
@@ -7,6 +7,13 @@ import { backendUrl, currency } from "../App";
 const fmt = (n) => `${currency}${Number(n || 0).toLocaleString("en-NP", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 const formatDate = (d) => { if (!d) return "—"; return new Date(d).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }); };
 const isOverdue = (dueDate) => { if (!dueDate) return false; return new Date(dueDate) < new Date(); };
+const getStableIdempotencyKey = (ref, prefix, request) => {
+  const signature = JSON.stringify(request);
+  if (ref.current?.signature !== signature) {
+    ref.current = { signature, key: `${prefix}-${crypto.randomUUID()}` };
+  }
+  return ref.current.key;
+};
 
 const PAYABLE_CATS = [
   { value: "SUPPLIER_INVOICE", label: "Supplier Invoice / Manufacturer COGS" },
@@ -140,6 +147,9 @@ const PayablesReceivables = ({ token }) => {
   const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false });
   const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false });
   const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false });
+  const payableRequestRef = useRef(null);
+  const receivableRequestRef = useRef(null);
+  const manufacturerPaymentRequestRef = useRef(null);
   const [showRevert, setShowRevert] = useState(null); // { type, recordId, title, amount }
   const [revertReason, setRevertReason] = useState("");
   const [revertLoading, setRevertLoading] = useState(false);
@@ -196,7 +206,11 @@ const PayablesReceivables = ({ token }) => {
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient balance in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
     setSLoading(true);
-    const idempotencyKey = `PAY-${showSettle.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const idempotencyKey = getStableIdempotencyKey(payableRequestRef, "PAY", {
+      payableId: showSettle.id,
+      amount: amt,
+      fromAccountId: sForm.fromAccountId,
+    });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{
         payableId: showSettle.id,
@@ -206,6 +220,7 @@ const PayablesReceivables = ({ token }) => {
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
+        payableRequestRef.current = null;
         toast.success(res.data.message);
         setShowSettle(null);
         setSForm({amount:"",fromAccountId:"",notes:"",partial:false});
@@ -228,7 +243,11 @@ const PayablesReceivables = ({ token }) => {
     if (amt>showCollect.remainingBalance) return toast.warn("Exceeds remaining balance");
     
     setCLoading(true);
-    const idempotencyKey = `COLL-${showCollect.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const idempotencyKey = getStableIdempotencyKey(receivableRequestRef, "COLL", {
+      receivableId: showCollect.id,
+      amount: amt,
+      toAccountId: cForm.toAccountId,
+    });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/collect-receivable`,{
         receivableId: showCollect.id,
@@ -238,6 +257,7 @@ const PayablesReceivables = ({ token }) => {
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
+        receivableRequestRef.current = null;
         toast.success(res.data.message);
         setShowCollect(null);
         setCForm({amount:"",toAccountId:"",notes:"",partial:false});
@@ -261,7 +281,11 @@ const PayablesReceivables = ({ token }) => {
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
     setMfgLoading(true);
-    const idempotencyKey = `MFGPAY-${mfgPayForm.manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const idempotencyKey = getStableIdempotencyKey(manufacturerPaymentRequestRef, "MFGPAY", {
+      manufacturerId: mfgPayForm.manufacturerId,
+      amount: amt,
+      fromAccountId: mfgPayForm.fromAccountId,
+    });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
         manufacturerId: mfgPayForm.manufacturerId,
@@ -271,6 +295,7 @@ const PayablesReceivables = ({ token }) => {
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
+        manufacturerPaymentRequestRef.current = null;
         toast.success(res.data.message);
         setShowPayMfg(false);
         setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false});

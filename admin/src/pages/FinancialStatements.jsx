@@ -15,6 +15,9 @@ const getNepalDate = (date) => {
   return `${values.year}-${values.month}-${values.day}`;
 };
 
+const formatPostedAmount = (value) =>
+  value === null || value === undefined ? "Unavailable" : `Rs ${Number(value).toLocaleString()}`;
+
 const FinancialStatements = ({ token }) => {
   const [activeTab, setActiveTab] = useState("PL"); // PL, BS, CF
   const [mode, setMode] = useState("REALTIME"); // REALTIME (from GL) | MONTHLY (Full cash flow & audited)
@@ -24,7 +27,7 @@ const FinancialStatements = ({ token }) => {
   const [selectedMonth, setSelectedMonth] = useState(() => {
     return getNepalDate(new Date()).slice(0, 7);
   });
-  const [startDate, setStartDate] = useState(() => `${getNepalDate(new Date()).slice(0, 4)}-01-01`);
+  const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState(() => getNepalDate(new Date()));
 
   const [realtimeData, setRealtimeData] = useState(null);
@@ -36,7 +39,7 @@ const FinancialStatements = ({ token }) => {
       const [rtRes, moRes] = await Promise.all([
         axios.get(`${backendUrl}/api/accounting/financial-statements`, {
           headers: { token },
-          params: { startDate, endDate },
+          params: { startDate: startDate || undefined, endDate },
         }).catch(() => ({ data: { success: false } })),
         axios.get(`${backendUrl}/api/finance/statements`, {
           headers: { token },
@@ -65,82 +68,93 @@ const FinancialStatements = ({ token }) => {
   // Derive active statements based on data availability
   const rtPl = realtimeData?.incomeStatement || {};
   const rtBs = realtimeData?.balanceSheet || {};
+  const displayedStartDate = startDate || (realtimeData?.period?.start
+    ? getNepalDate(new Date(realtimeData.period.start))
+    : "Nepali fiscal-year start");
 
   const moPl = monthlyData?.incomeStatement || {};
-  const moBs = monthlyData?.balanceSheet || {};
   const moCf = monthlyData?.cashFlowStatement || {};
 
   const rtRevenue = rtPl.revenue || {};
   const rtCogs = rtPl.costOfGoodsSold || {};
   const rtOpex = rtPl.operatingExpenses || {};
-  const monthlyOpex = moPl.operatingExpenses || {};
   const plRevenue = {
-    grossSales: Number(rtRevenue.grossSales || moPl.grossRevenue || 0),
+    grossSales: Number(rtRevenue.grossSales || 0),
     shippingRevenue: Number(rtRevenue.shippingRevenue || 0),
-    salesReturns: Number(rtRevenue.salesReturns || moPl.returnsAndAllowances || 0),
+    salesReturns: Number(rtRevenue.salesReturns || 0),
     salesDiscounts: Number(rtRevenue.salesDiscounts || 0),
-    netRevenue: Number(rtRevenue.netRevenue || moPl.taxableNetRevenue || 0),
+    netRevenue: Number(rtRevenue.netRevenue || 0),
   };
 
   const plCogs = {
-    directCOGS: Number(rtCogs.directCOGS || moPl.cogs || 0),
+    directCOGS: Number(rtCogs.directCOGS || 0),
     freightTransport: Number(rtCogs.freightTransport || 0),
     packagingExpense: Number(rtCogs.packagingExpense || 0),
     scrapLoss: Number(rtCogs.scrapLoss || 0),
     purchaseReturns: Number(rtCogs.purchaseReturns || 0),
-    totalCOGS: Number(rtCogs.totalCOGS || moPl.cogs || 0),
+    totalCOGS: Number(rtCogs.totalCOGS || 0),
   };
 
-  const plGrossProfit = Number(rtPl.grossProfit || moPl.grossProfit || (plRevenue.netRevenue - plCogs.totalCOGS));
+  const plGrossProfit = rtPl.grossProfit === null || rtPl.grossProfit === undefined
+    ? null
+    : Number(rtPl.grossProfit);
 
   const plOpex = {
-    salaries: Number(rtOpex.salaries || monthlyOpex.salaries || 0),
-    rent: Number(rtOpex.rent || monthlyOpex.rent || 0),
-    utilities: Number(rtOpex.utilities || monthlyOpex.utilities || 0),
-    marketing: Number(rtOpex.marketing || monthlyOpex.marketing || 0),
-    softwareTools: Number(rtOpex.softwareTools || monthlyOpex.software || 0),
-    miscExpenses: Number(rtOpex.miscExpenses || monthlyOpex.misc || 0),
-    totalOperatingExpenses: Number(rtOpex.totalOperatingExpenses || monthlyOpex.total || 0),
+    salaries: Number(rtOpex.salaries || 0),
+    rent: Number(rtOpex.rent || 0),
+    utilities: Number(rtOpex.utilities || 0),
+    marketing: Number(rtOpex.marketing || 0),
+    manufacturerCommission: Number(rtOpex.manufacturerCommission || 0),
+    marketingPartnerCpa: Number(rtOpex.marketingPartnerCpa || 0),
+    deliveryExpense: Number(rtOpex.deliveryExpense || 0),
+    softwareTools: Number(rtOpex.softwareTools || 0),
+    miscExpenses: Number(rtOpex.miscExpenses || 0),
+    totalOperatingExpenses: Number(rtOpex.totalOperatingExpenses || 0),
   };
 
-  const plEbitda = Number(plGrossProfit - plOpex.totalOperatingExpenses);
+  const plEbitda = rtPl.ebitda === null || rtPl.ebitda === undefined ? null : Number(rtPl.ebitda);
   const rtNonOp = rtPl.nonOperating || {};
   const plNonOp = {
-    depreciationExpense: Number(rtNonOp.depreciationExpense || moPl.depreciation || 0),
+    depreciationExpense: Number(rtNonOp.depreciationExpense || 0),
     loanInterest: Number(rtNonOp.loanInterest || 0),
     bankCharges: Number(rtNonOp.bankCharges || 0),
     otherIncome: Number(rtNonOp.otherIncome || 0),
   };
-  const plNetProfit = Number(
-    plEbitda - plNonOp.depreciationExpense - plNonOp.loanInterest - plNonOp.bankCharges + plNonOp.otherIncome
-  );
+  const plNetProfit = rtPl.netProfitBeforeTax === null || rtPl.netProfitBeforeTax === undefined
+    ? null
+    : Number(rtPl.netProfitBeforeTax);
 
   // Balance Sheet details
   const bsCurrentAssets = rtBs.assets?.currentAssets || {
-    cash: moBs.assets?.currentAssets?.cashAndEquivalents || 0,
+    cash: 0,
     bank: 0,
     accountsReceivable: 0,
-    inventory: moBs.assets?.currentAssets?.inventoryValuation || 0,
+    codReceivable: 0,
+    gatewayClearing: 0,
+    inventory: 0,
     inputVat: 0,
     supplierAdvances: 0,
-    totalCurrentAssets: moBs.assets?.currentAssets?.total || 0,
+    totalCurrentAssets: 0,
   };
 
   const bsFixedAssets = rtBs.assets?.fixedAssets || {
-    grossAssets: moBs.assets?.fixedAssets?.grossCost || 0,
-    accumulatedDepreciation: moBs.assets?.fixedAssets?.accumulatedDepreciation || 0,
-    netFixedAssets: moBs.assets?.fixedAssets?.netBookValue || 0,
+    grossAssets: 0,
+    accumulatedDepreciation: 0,
+    netFixedAssets: 0,
   };
 
-  const bsTotalAssets = rtBs.assets?.totalAssets ?? (moBs.assets?.totalAssets || 0);
+  const bsTotalAssets = rtBs.assets?.totalAssets ?? 0;
 
   const bsCurrentLiab = rtBs.liabilities?.currentLiabilities || {
-    accountsPayable: moBs.liabilities?.totalLiabilities || 0,
+    accountsPayable: 0,
+    manufacturerPayable: 0,
+    marketingPartnerPayable: 0,
+    carrierPayable: 0,
     outputVat: 0,
     taxPayable: 0,
     customerRefundsPayable: 0,
     dividendsPayable: 0,
-    totalCurrentLiabilities: moBs.liabilities?.totalLiabilities || 0,
+    totalCurrentLiabilities: 0,
   };
 
   const bsLongTermLiab = rtBs.liabilities?.longTermLiabilities || {
@@ -148,18 +162,18 @@ const FinancialStatements = ({ token }) => {
     totalLongTermLiabilities: 0,
   };
 
-  const bsTotalLiab = rtBs.liabilities?.totalLiabilities ?? (moBs.liabilities?.totalLiabilities || 0);
+  const bsTotalLiab = rtBs.liabilities?.totalLiabilities ?? 0;
 
   const bsEquity = rtBs.equity || {
-    shareCapital: moBs.equity?.partnerCapital || 0,
+    shareCapital: 0,
     sharePremium: 0,
-    retainedEarnings: moBs.equity?.retainedEarnings || 0,
-    currentPeriodNetProfit: plNetProfit,
-    totalEquity: moBs.equity?.totalEquity || 0,
+    retainedEarnings: 0,
+    currentFiscalYearNetProfit: 0,
+    totalEquity: 0,
   };
 
-  const bsTotalLiabEquity = rtBs.totalLiabilitiesAndEquity ?? (bsTotalLiab + (bsEquity.totalEquity || 0));
-  const isBsBalanced = Boolean(rtBs.isBalanceSheetBalanced ?? (Math.abs(bsTotalAssets - bsTotalLiabEquity) <= 0.05));
+  const bsTotalLiabEquity = rtBs.totalLiabilitiesAndEquity ?? 0;
+  const isBsBalanced = Boolean(rtBs.isBalanceSheetBalanced);
 
   const handlePrint = () => {
     window.print();
@@ -167,18 +181,28 @@ const FinancialStatements = ({ token }) => {
 
   return (
     <div className="space-y-6 pb-12 p-4 sm:p-6 max-w-7xl mx-auto">
+      {!realtimeData && (
+        <div role="alert" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
+          General Ledger statements are unavailable. Values are not being filled from operational estimates.
+        </div>
+      )}
+      {activeTab === "CF" && (
+        <div role="status" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
+          Cash flow is an operational estimate and is not yet generated from classified GL cash movements.
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
           <div className="flex items-center gap-2">
             <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-teal-50 text-teal-700 rounded-lg border border-teal-200/60">
-              GAAP &amp; Double-Entry Standard
+              General Ledger Reports
             </span>
             <span className="text-xs font-medium text-slate-400">Statement Suite</span>
           </div>
           <h1 className="text-2xl font-black text-slate-900 mt-1">Financial Statements</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Authoritative Income Statement (P&amp;L), Statement of Financial Position (Balance Sheet), and Cash Flow Statement
+            P&amp;L and balance sheet use posted journals. Cash flow is currently an operational estimate.
           </p>
         </div>
 
@@ -252,7 +276,7 @@ const FinancialStatements = ({ token }) => {
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Profit &amp; Loss</p>
             <p className="text-xs text-slate-500 font-medium mt-1">
-              For Period: {startDate} to {endDate}
+              For Period: {displayedStartDate} to {endDate}
             </p>
           </div>
 
@@ -318,7 +342,7 @@ const FinancialStatements = ({ token }) => {
                 )}
                 <div className="flex justify-between py-1.5 font-black text-slate-900 pt-2 border-t border-slate-200">
                   <span className="text-sm">Gross Profit</span>
-                  <span className="font-mono text-sm text-emerald-700">Rs {Number(plGrossProfit).toLocaleString()}</span>
+                  <span className="font-mono text-sm text-emerald-700">{formatPostedAmount(plGrossProfit)}</span>
                 </div>
               </div>
             </div>
@@ -340,9 +364,27 @@ const FinancialStatements = ({ token }) => {
                   <span className="font-mono">Rs {Number(plOpex.utilities || 0).toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
-                  <span>Marketing &amp; Partner Commissions (Account 6400)</span>
+                  <span>Marketing &amp; Advertising (Account 6400)</span>
                   <span className="font-mono">Rs {Number(plOpex.marketing || 0).toLocaleString()}</span>
                 </div>
+                {Number(plOpex.manufacturerCommission || 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Manufacturer Commission (Account 6410)</span>
+                    <span className="font-mono">Rs {Number(plOpex.manufacturerCommission).toLocaleString()}</span>
+                  </div>
+                )}
+                {Number(plOpex.marketingPartnerCpa || 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Marketing Partner CPA (Account 6420)</span>
+                    <span className="font-mono">Rs {Number(plOpex.marketingPartnerCpa).toLocaleString()}</span>
+                  </div>
+                )}
+                {Number(plOpex.deliveryExpense || 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Delivery &amp; Carrier Expense (Account 6430)</span>
+                    <span className="font-mono">Rs {Number(plOpex.deliveryExpense).toLocaleString()}</span>
+                  </div>
+                )}
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Software &amp; Digital Tools (Account 6500)</span>
                   <span className="font-mono">Rs {Number(plOpex.softwareTools || 0).toLocaleString()}</span>
@@ -362,8 +404,8 @@ const FinancialStatements = ({ token }) => {
             <div>
               <div className="flex justify-between py-1.5 font-bold text-slate-900 border-t border-b border-slate-200">
                 <span className="uppercase tracking-wider text-[11px]">Operating Profit (EBITDA)</span>
-                <span className={`font-mono ${plEbitda >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
-                  Rs {Number(plEbitda).toLocaleString()}
+                <span className={`font-mono ${plEbitda === null ? "text-slate-500" : plEbitda >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                  {formatPostedAmount(plEbitda)}
                 </span>
               </div>
 
@@ -398,8 +440,8 @@ const FinancialStatements = ({ token }) => {
             {/* NET PROFIT BEFORE TAX */}
             <div className="pt-4 border-t-2 border-slate-900 flex justify-between items-center">
               <span className="text-base font-black text-slate-900 uppercase">Net Income Before Tax (Bottom Line)</span>
-              <span className={`text-xl font-black font-mono ${plNetProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
-                Rs {Number(plNetProfit).toLocaleString()}
+              <span className={`text-xl font-black font-mono ${plNetProfit === null ? "text-slate-500" : plNetProfit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                {formatPostedAmount(plNetProfit)}
               </span>
             </div>
           </div>
@@ -437,6 +479,14 @@ const FinancialStatements = ({ token }) => {
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Accounts Receivable (Account 1130)</span>
                     <span className="font-mono">Rs {Number(bsCurrentAssets.accountsReceivable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>COD Receivable from Carrier (Account 1170)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentAssets.codReceivable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Payment Gateway Clearing (Account 1180)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentAssets.gatewayClearing || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Inventory at Valuation (Account 1140)</span>
@@ -494,8 +544,20 @@ const FinancialStatements = ({ token }) => {
                 <p className="font-bold text-slate-800 uppercase text-[11px] mb-2">Current Liabilities</p>
                 <div className="space-y-1.5 pl-3 text-slate-700">
                   <div className="flex justify-between py-1 border-b border-slate-50">
-                    <span>Accounts Payable (Account 2110)</span>
+                    <span>General Accounts Payable (Account 2110)</span>
                     <span className="font-mono">Rs {Number(bsCurrentLiab.accountsPayable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Manufacturer Payable (Account 2160)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentLiab.manufacturerPayable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Marketing Partner Payable (Account 2170)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentLiab.marketingPartnerPayable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Carrier Payable (Account 2180)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentLiab.carrierPayable || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Output 13% VAT Payable (Account 2120)</span>
@@ -542,9 +604,9 @@ const FinancialStatements = ({ token }) => {
                     <span className="font-mono">Rs {Number(bsEquity.retainedEarnings || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50 font-semibold">
-                    <span>Current Period Net Income</span>
-                    <span className={`font-mono ${Number(bsEquity.currentPeriodNetProfit || 0) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
-                      Rs {Number(bsEquity.currentPeriodNetProfit || 0).toLocaleString()}
+                    <span>Current Fiscal-Year Income</span>
+                    <span className={`font-mono ${Number(bsEquity.currentFiscalYearNetProfit || 0) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                      Rs {Number(bsEquity.currentFiscalYearNetProfit || 0).toLocaleString()}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">

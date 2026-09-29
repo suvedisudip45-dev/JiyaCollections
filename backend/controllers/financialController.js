@@ -13,6 +13,59 @@ import {
 } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
+const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
+  const payableAccount = await prisma.account.findUnique({
+    where: { accountCode: "2160" },
+    select: { id: true },
+  });
+
+  if (!payableAccount) return { recognized: 0, paid: 0, outstanding: 0 };
+
+  const lines = await prisma.journalLine.findMany({
+    where: { accountId: payableAccount.id },
+    select: {
+      debit: true,
+      credit: true,
+      supplierId: true,
+      supplierName: true,
+      accountingParty: { select: { partyType: true, sourceEntityId: true } },
+      journalEntry: { select: { sourceType: true, sourceId: true } },
+    },
+  });
+
+  let recognized = 0;
+  let paid = 0;
+  const normalizedName = String(manufacturerName || "").trim().toLowerCase();
+  const isManufacturerLine = (line) =>
+    line.supplierId === manufacturerId ||
+    (line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturerId) ||
+    String(line.supplierName || "").trim().toLowerCase() === normalizedName;
+
+  for (const line of lines) {
+    const debit = Number(line.debit || 0);
+    const credit = Number(line.credit || 0);
+    const sourceType = line.journalEntry?.sourceType;
+
+    if (["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
+      recognized += credit - debit;
+    }
+
+    if (sourceType === "SUPPLIER_PAYMENT" && (
+      isManufacturerLine(line) ||
+      line.journalEntry?.sourceId === `MFG-COGS-${manufacturerId}`
+    )) {
+      paid += debit - credit;
+    }
+  }
+
+  const outstanding = Math.max(0, Number((recognized - paid).toFixed(2)));
+  return {
+    recognized: Number(recognized.toFixed(2)),
+    paid: Number(paid.toFixed(2)),
+    outstanding,
+  };
+};
+
 // Helper to get current Year-Month
 const getCurrentYearMonth = () => {
   const now = new Date();
@@ -3134,13 +3187,22 @@ export const payManufacturer = async (req, res) => {
       if (tx.type === "INFLOW") prevCollected += Number(tx.amount || 0);
     });
 
-    const remainingPayable = Math.max(0, Number((totalCogs - prevPaid).toFixed(2)));
+    let remainingPayable = Math.max(0, Number((totalCogs - prevPaid).toFixed(2)));
     const remainingReceivable = Math.max(0, Number((totalDirectReceivable - prevCollected).toFixed(2)));
-    const netPayable = Math.max(0, Number((remainingPayable - remainingReceivable).toFixed(2)));
 
     // If amount is not passed or <= 0, default to the full Net Payable
+    const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer.name);
+    remainingPayable = postedPayable.outstanding;
     if (payAmount <= 0) {
-      payAmount = netPayable;
+      payAmount = postedPayable.outstanding;
+    }
+
+    if (payAmount > postedPayable.outstanding) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment exceeds posted manufacturer payable. Posted outstanding: Rs ${postedPayable.outstanding.toLocaleString()}; requested: Rs ${payAmount.toLocaleString()}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
+        postedPayable,
+      });
     }
 
     if (payAmount <= 0 && remainingPayable === 0) {
@@ -3192,7 +3254,7 @@ export const payManufacturer = async (req, res) => {
       });
     }
 
-    const offsetApplied = Math.min(remainingPayable, remainingReceivable);
+    const offsetApplied = 0;
 
     // Find or create AccountPayable record
     let payable = await prisma.accountPayable.findFirst({
@@ -3222,8 +3284,8 @@ export const payManufacturer = async (req, res) => {
     };
     history.push(settlementEntry);
 
-    const newTotalPaid = prevPaid + payAmount + offsetApplied;
-    const finalRemainingPayable = Math.max(0, totalCogs - newTotalPaid);
+    const newTotalPaid = postedPayable.paid + payAmount;
+    const finalRemainingPayable = Math.max(0, postedPayable.recognized - newTotalPaid);
     const newStatus = finalRemainingPayable === 0 ? "SETTLED" : "PARTIALLY_PAID";
 
     const description = `Net Settlement to ${manufacturer.name}: Approved COGS Rs ${remainingPayable.toLocaleString()} less Direct Margin Rs ${remainingReceivable.toLocaleString()} = Net Paid Rs ${payAmount.toLocaleString()}${notes ? ` (${notes})` : ""}`;
@@ -3249,7 +3311,7 @@ export const payManufacturer = async (req, res) => {
         await tx.accountPayable.update({
             where: { id: payable.id },
             data: {
-              totalAmount: Math.max(totalCogs, Number(payable.totalAmount || 0)),
+              totalAmount: postedPayable.recognized,
               paidAmount: newTotalPaid,
               remainingBalance: finalRemainingPayable,
               status: newStatus,
@@ -3264,7 +3326,7 @@ export const payManufacturer = async (req, res) => {
               category: "SUPPLIER_INVOICE",
               referenceType: "MANUFACTURER_COGS",
               referenceId: manufacturer.id,
-              totalAmount: totalCogs,
+              totalAmount: postedPayable.recognized,
               paidAmount: newTotalPaid,
               remainingBalance: finalRemainingPayable,
               status: newStatus,

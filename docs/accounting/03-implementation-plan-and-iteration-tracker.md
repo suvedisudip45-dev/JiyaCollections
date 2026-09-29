@@ -1,8 +1,8 @@
 # Accounting Implementation Plan And Iteration Tracker
 
 **Owner:** Engineering + business/accounting approver  
-**Last updated:** 2026-09-28  
-**Overall status:** Iteration 02 complete; Iteration 03 in progress, Decimal/BS-calendar subphase complete.  
+**Last updated:** 2026-09-29
+**Overall status:** Treasury mapping and a limited atomic posting slice are in progress; no migration has been applied.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
 
 ## Goals And Invariants
@@ -53,7 +53,9 @@ Use the existing unified RBAC for accounting permissions. Do not add a new auth 
 | `docs/accounting/checkpoints/iteration-02-recognition-and-acceptance.md` | Complete | Acceptance gates and recognition policies; 13 isolated tests pass |
 | `docs/accounting/checkpoints/iteration-03-decimal-calendar.md` | Complete | Decimal/BS calendar subphase; migrations deployed and 22 isolated tests pass |
 | `docs/accounting/checkpoints/iteration-04-operational-events-wiring.md` | Complete | Delivery, return reversal, Marketing CPA, and NCM settlement posting adapters wired; 41 isolated tests pass |
-| `docs/accounting/checkpoints/iteration-05-subledger-documents-and-allocations.md` | Complete | Bill-wise AR/AP documents, FIFO allocations, and control account reconciliation; 45 tests pass |
+| `docs/accounting/checkpoints/iteration-05-subledger-documents-and-allocations.md` | Historical checkpoint | Document/allocation services exist; normal AP/AR controller paths are still not fully integrated |
+| `docs/accounting/06-sandbox-migration-and-cutover-runbook.md` | Current gate | Sandbox migration, validation, rollback and production sign-off procedure |
+| `docs/accounting-system-redesign.md` | Current target design | Consolidated accounting policy, source-of-truth, posting matrix, research limits, and staged implementation gates |
 
 No runtime source, schema, frontend, database or accounting records were changed during discovery.
 
@@ -67,15 +69,15 @@ No runtime source, schema, frontend, database or accounting records were changed
 | 3 | Precision, database foundation, COA/account mappings and periods | COMPLETE | Decimal schema and BS periods are migrated/validated; party/event/account mappings seeded and tested |
 | 4 | Central posting service and durable idempotent accounting events | COMPLETE | Atomic balanced posting, immutable journals, stable idempotency, operational event wiring and 41 tests pass |
 | 5 | Party master, bill-wise AR/AP, payments, receipts and allocations | COMPLETE | Partial/full/advance/overpayment allocation tests and subledger-to-control reconciliation pass |
-| 6 | Cash, bank, petty cash and readiness controls | NOT STARTED | Atomic solvency checks, cash/bank journals, approved opening balances, reconciliation and finance-only readiness gate pass |
+| 6 | Cash, bank, petty cash and readiness controls | IN PROGRESS (partial) | Treasury-to-GL mapping is explicit; internal transfers and limited direct entries post atomically; opening vouchers, full source reconciliation, complete failure coverage, and finance readiness remain |
 | 7 | Sales, manufacturer COGS and delivery-triggered payable | COMPLETE | Delivered/non-returned rule, approved-cost snapshot, direct-order commission classification, COD/revenue event timing and idempotency pass |
 | 8 | Customer/supplier returns, RTO and exchanges | COMPLETE | Original-event links, reversals, inventory/ownership treatment, refund and tax effects pass |
 | 9 | Manufacturer, marketing-partner and NCM settlements | COMPLETE | Gross AP/AR, CPA/commission basis, COD/fee settlement, offsets and statements reconcile |
 | 10 | Expenses, procurement, tax, assets, debt and equity | NOT STARTED | Each supported finance event posts exactly once; policy-based tax and period behavior verified |
-| 11 | GL reports, statements, ageing and health reconciliation | NOT STARTED | Trial balance, P&L, balance sheet and cash flow reconcile to journals/subledgers and source events |
+| 11 | GL reports, statements, ageing and health reconciliation | IN PROGRESS (partial) | GL statement now includes key manufacturer/partner/carrier controls; report UI has no operational P&L/BS fallback; AP/AR/event coverage and ledger cash flow remain incomplete |
 | 12 | Admin accounting UI and permissions | NOT STARTED | Existing required finance capability covered with drill-down, filters, statuses, warnings and exports |
 | 13 | Failure, concurrency, security and portal regression | NOT STARTED | Duplicate/retry/out-of-order/concurrent/failure scenarios pass; customer/manufacturer/marketing/admin flows remain compatible |
-| 14 | Cutover and final audit | NOT STARTED | Verified empty-data assertion or approved migration; deploy/rollback plan, reconciliations, operator runbook and accountant sign-off |
+| 14 | Cutover and final audit | IN PROGRESS (sandbox gate) | Sandbox migration runbook, reconciliation gate, rollback plan and accountant sign-off are documented; live deployment remains blocked |
 
 ## Iteration Checkpoint Template
 

@@ -690,19 +690,23 @@ model Admin {
 }
 
 model FinancialAccount {
-  id             String            @id @default(uuid())
-  accountName    String            @unique
-  accountType    String            @default("BANK") // CASH, BANK, WALLET, ESCROW
-  accountNumber  String?           @default("")
-  bankName       String?           @default("")
-  currentBalance Float             @default(0)
-  currency       String            @default("NPR")
-  isDefault      Boolean           @default(false)
-  status         String            @default("ACTIVE")
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  outflows       CashTransaction[] @relation("FromAccount")
-  inflows        CashTransaction[] @relation("ToAccount")
+  id                   String            @id @default(uuid())
+  accountName          String            @unique
+  accountType          String            @default("BANK") // CASH, BANK, WALLET, ESCROW
+  accountNumber        String?           @default("")
+  bankName             String?           @default("")
+  currentBalance       Float             @default(0)
+  currency             String            @default("NPR")
+  isDefault            Boolean           @default(false)
+  status               String            @default("ACTIVE")
+  accountingAccountId  String?
+  accountingAccount    Account?          @relation("FinancialAccountGLAccount", fields: [accountingAccountId], references: [id], onDelete: Restrict)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  outflows             CashTransaction[] @relation("FromAccount")
+  inflows              CashTransaction[] @relation("ToAccount")
+
+  @@index([accountingAccountId])
 }
 
 model CashTransaction {
@@ -990,6 +994,7 @@ model Account {
   updatedAt       DateTime      @updatedAt
   journalLines    JournalLine[]
   mappings        AccountingAccountMapping[]
+  treasuryAccounts FinancialAccount[] @relation("FinancialAccountGLAccount")
 
   @@index([accountType])
   @@index([parentAccountId])
