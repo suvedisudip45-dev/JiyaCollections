@@ -7,9 +7,64 @@ import {
   postShareIssuanceAccounting,
   postShareBuybackAccounting,
   postSupplierPaymentAccounting,
+  postCustomerPaymentAccounting,
   postDirectExpenseAccounting,
+  postNcmRemittanceAccounting,
 } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+
+const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
+  const payableAccount = await prisma.account.findUnique({
+    where: { accountCode: "2160" },
+    select: { id: true },
+  });
+
+  if (!payableAccount) return { recognized: 0, paid: 0, outstanding: 0 };
+
+  const lines = await prisma.journalLine.findMany({
+    where: { accountId: payableAccount.id },
+    select: {
+      debit: true,
+      credit: true,
+      supplierId: true,
+      supplierName: true,
+      accountingParty: { select: { partyType: true, sourceEntityId: true } },
+      journalEntry: { select: { sourceType: true, sourceId: true } },
+    },
+  });
+
+  let recognized = 0;
+  let paid = 0;
+  const normalizedName = String(manufacturerName || "").trim().toLowerCase();
+  const isManufacturerLine = (line) =>
+    line.supplierId === manufacturerId ||
+    (line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturerId) ||
+    String(line.supplierName || "").trim().toLowerCase() === normalizedName;
+
+  for (const line of lines) {
+    const debit = Number(line.debit || 0);
+    const credit = Number(line.credit || 0);
+    const sourceType = line.journalEntry?.sourceType;
+
+    if (["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
+      recognized += credit - debit;
+    }
+
+    if (sourceType === "SUPPLIER_PAYMENT" && (
+      isManufacturerLine(line) ||
+      line.journalEntry?.sourceId === `MFG-COGS-${manufacturerId}`
+    )) {
+      paid += debit - credit;
+    }
+  }
+
+  const outstanding = Math.max(0, Number((recognized - paid).toFixed(2)));
+  return {
+    recognized: Number(recognized.toFixed(2)),
+    paid: Number(paid.toFixed(2)),
+    outstanding,
+  };
+};
 
 // Helper to get current Year-Month
 const getCurrentYearMonth = () => {
@@ -84,51 +139,302 @@ export const getManufacturerFinancialSummary = async (req, res) => {
     const manufactureIdFromToken = req.manufacturerId;
     const manufacturerId = manufactureIdFromToken || req.query?.manufacturerId || req.body?.manufacturerId;
 
-    if (!manufacturerId) {
-      return res.status(400).json({ success: false, message: "Manufacturer ID is required." });
-    }
-
     const { start, end } = getDateWindow(req.query);
     const startTs = BigInt(start.getTime());
     const endTs = BigInt(end.getTime());
 
-    const [orders, manufacturer, inventoryRows, allProducts] = await Promise.all([
+    if (manufacturerId) {
+      // 1. Single Manufacturer Scope (Manufacturer portal or Admin scoped filter)
+      const [orders, manufacturer, inventoryRows, allProducts, mfgTransactions] = await Promise.all([
+        prisma.order.findMany({
+          where: {
+            manufacturerId,
+            date: { gte: startTs, lte: endTs },
+          },
+          orderBy: { date: "desc" },
+        }),
+        prisma.manufacturer.findUnique({
+          where: { id: manufacturerId },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            city: true,
+            agreedCommissionRate: true,
+            proposedCommissionRate: true,
+            commissionStatus: true,
+            commissionLastProposedBy: true,
+            commissionHistory: true,
+            commissionFinalizedAt: true,
+            commissionLockUntil: true,
+          },
+        }),
+        prisma.manufacturerInventory.findMany({
+          where: { manufacturerId },
+          select: { productId: true, agreedCostPrice: true, proposedCostPrice: true },
+        }),
+        prisma.product.findMany({
+          select: { id: true, costPrice: true },
+        }),
+        prisma.cashTransaction.findMany({
+          where: {
+            OR: [
+              { referenceId: manufacturerId },
+              { partyName: manufacturerId },
+            ],
+            category: { in: ["SUPPLIER_PAYMENT", "SALES", "EXPENSE", "COD_REMITTANCE"] },
+            date: { gte: start, lte: end },
+          },
+          include: {
+            fromAccount: { select: { accountName: true, accountType: true } },
+            toAccount: { select: { accountName: true, accountType: true } },
+          },
+          orderBy: { date: "desc" },
+        }),
+      ]);
+
+      const inventoryMap = {};
+      inventoryRows.forEach((entry) => {
+        inventoryMap[entry.productId] = Number(entry.agreedCostPrice || entry.proposedCostPrice || 0);
+      });
+
+      const productCostMap = {};
+      allProducts.forEach((product) => {
+        productCostMap[product.id] = Number(product.costPrice || 0);
+      });
+
+      const commissionRate = Number(
+        manufacturer?.agreedCommissionRate ?? manufacturer?.proposedCommissionRate ?? 12
+      );
+
+      let totalSales = 0;
+      let totalCogs = 0;
+      let totalPayable = 0;
+      let totalReceivable = 0;
+      let totalCommission = 0;
+      let totalDelivered = 0;
+      let totalReturned = 0;
+      let itemsSold = 0;
+      let itemsDelivered = 0;
+      let itemsReturned = 0;
+
+      const orderBreakdown = orders.map((order) => {
+        const items = parseOrderItems(order.items);
+        const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
+        const orderSales = Number(order.amount || 0);
+
+        let orderCost = 0;
+        items.forEach((item) => {
+          const qty = Number(item.quantity || 1);
+          const productId = item.productId || item._id || item.id;
+          const customCost = inventoryMap[productId];
+          const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
+          orderCost += qty * unitCost;
+        });
+        orderCost = Number(orderCost.toFixed(2));
+
+        const statusText = String(order.status || "").trim().toLowerCase();
+        const isDelivered = statusText.includes("deliver") || order.fulfillmentStatus === "DELIVERED";
+        const isReturned = statusText.includes("return") || statusText.includes("cancel");
+        const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
+
+        const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
+        const orderCommission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
+        const manufacturerReceivable = Number((orderCost + orderCommission).toFixed(2));
+        const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
+        const payable = req.auth?.role === "ADMIN" ? manufacturerReceivable : manufacturerPayable;
+        const receivable = req.auth?.role === "ADMIN" ? manufacturerPayable : manufacturerReceivable;
+
+        totalSales += isDirect ? orderSales : 0;
+        totalCogs += orderCost;
+        totalPayable += payable;
+        totalReceivable += receivable;
+        totalCommission += orderCommission;
+        itemsSold += orderQuantity;
+
+        if (isDelivered) {
+          itemsDelivered += orderQuantity;
+          totalDelivered += 1;
+        }
+        if (isReturned) {
+          itemsReturned += orderQuantity;
+          totalReturned += 1;
+        }
+
+        return {
+          id: order.id,
+          manufacturerId,
+          manufacturerName: manufacturer?.name || "Manufacturer",
+          orderType: order.orderType,
+          directOrderType: order.directOrderType || null,
+          isDirect,
+          status: order.status,
+          fulfillmentStatus: order.fulfillmentStatus,
+          date: order.date ? Number(order.date) : null,
+          ...(isDirect ? { amount: orderSales } : {}),
+          quantity: orderQuantity,
+          cogs: orderCost,
+          payable,
+          receivable,
+          commission: orderCommission,
+          netPosition: receivable - payable,
+        };
+      });
+
+      let totalPaidToMfg = 0;
+      let totalCollectedFromMfg = 0;
+      const formattedTransactions = mfgTransactions.map((tx) => {
+        const amt = Number(tx.amount || 0);
+        if (tx.type === "OUTFLOW") totalPaidToMfg += amt;
+        if (tx.type === "INFLOW") totalCollectedFromMfg += amt;
+        return {
+          id: tx.id,
+          date: tx.date || tx.createdAt,
+          amount: amt,
+          type: tx.type,
+          category: tx.category,
+          partyName: tx.partyName,
+          accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
+          accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
+          description: tx.description,
+          createdAt: tx.createdAt,
+        };
+      });
+
+      const isAdminView = req.auth?.role === "ADMIN";
+      const paidAgainstPayable = isAdminView ? totalPaidToMfg : totalCollectedFromMfg;
+      const paidAgainstReceivable = isAdminView ? totalCollectedFromMfg : totalPaidToMfg;
+      const remainingPayable = Math.max(0, Number((totalPayable - paidAgainstPayable).toFixed(2)));
+      const remainingReceivable = Math.max(0, Number((totalReceivable - paidAgainstReceivable).toFixed(2)));
+      const netPayable = Math.max(0, Number((remainingPayable - remainingReceivable).toFixed(2)));
+      const netReceivable = Math.max(0, Number((remainingReceivable - remainingPayable).toFixed(2)));
+
+      const singleSummary = {
+        totalOrders: orders.length,
+        totalSales: Number(totalSales.toFixed(2)),
+        totalCogs: Number(totalCogs.toFixed(2)),
+        payable: Number(totalPayable.toFixed(2)),
+        paidAmount: Number(totalPaidToMfg.toFixed(2)),
+        remainingPayable,
+        receivable: Number(totalReceivable.toFixed(2)),
+        collectedAmount: Number(totalCollectedFromMfg.toFixed(2)),
+        remainingReceivable,
+        netPayable,
+        netReceivable,
+        netSettlementDue: netPayable > 0 ? netPayable : -netReceivable,
+        totalCommission: Number(totalCommission.toFixed(2)),
+        itemsSold,
+        itemsDelivered,
+        itemsReturned,
+        deliveredOrders: totalDelivered,
+        returnedOrders: totalReturned,
+        agreedCommissionRate: commissionRate,
+      };
+
+      return res.json({
+        success: true,
+        range: req.query?.range || "month",
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        data: {
+          manufacturer: manufacturer || { id: manufacturerId },
+          summary: singleSummary,
+          manufacturers: [
+            {
+              id: manufacturer?.id || manufacturerId,
+              name: manufacturer?.name || "Manufacturer",
+              email: manufacturer?.email || "",
+              phone: manufacturer?.phone || "",
+              city: manufacturer?.city || "",
+              ...singleSummary,
+              orders: orderBreakdown,
+            }
+          ],
+          orders: orderBreakdown,
+          transactions: formattedTransactions,
+        },
+      });
+    }
+
+    // 2. Aggregate / System-wide Scope for Admin (All Manufacturers)
+    const [orders, manufacturers, inventoryRows, allProducts, supplierPayments, apRecords] = await Promise.all([
       prisma.order.findMany({
         where: {
-          manufacturerId,
           date: { gte: startTs, lte: endTs },
         },
         orderBy: { date: "desc" },
       }),
-      prisma.manufacturer.findUnique({
-        where: { id: manufacturerId },
+      prisma.manufacturer.findMany({
         select: {
           id: true,
           name: true,
+          email: true,
+          phone: true,
+          city: true,
           agreedCommissionRate: true,
           proposedCommissionRate: true,
-          commissionStatus: true,
-          commissionLastProposedBy: true,
-          commissionHistory: true,
-          commissionFinalizedAt: true,
-          commissionLockUntil: true,
+          isActive: true,
         },
+        orderBy: { name: "asc" },
       }),
       prisma.manufacturerInventory.findMany({
-        where: { manufacturerId },
-        select: { productId: true, agreedCostPrice: true, proposedCostPrice: true },
+        select: { manufacturerId: true, productId: true, agreedCostPrice: true, proposedCostPrice: true },
       }),
       prisma.product.findMany({
         select: { id: true, costPrice: true },
-      })
+      }),
+      prisma.cashTransaction.findMany({
+        where: { category: { in: ["SUPPLIER_PAYMENT", "SALES", "COD_REMITTANCE", "EXPENSE"] } },
+        include: {
+          fromAccount: { select: { accountName: true, accountType: true } },
+          toAccount: { select: { accountName: true, accountType: true } },
+        },
+        orderBy: { date: "desc" },
+        take: 50,
+      }),
+      prisma.accountPayable.findMany({
+        where: { referenceType: "MANUFACTURER_COGS" },
+        select: { referenceId: true, paidAmount: true },
+      }),
     ]);
+
+    // Compute payments made to each manufacturer
+    const mfgPaidMap = {};
+    supplierPayments.forEach((tx) => {
+      const amt = Number(tx.amount || 0);
+      if (tx.referenceId && mfgPaidMap[tx.referenceId] !== undefined) {
+        mfgPaidMap[tx.referenceId] += amt;
+      } else if (tx.referenceId) {
+        mfgPaidMap[tx.referenceId] = amt;
+      }
+      manufacturers.forEach((m) => {
+        if (
+          tx.referenceId === m.id ||
+          tx.partyName?.toLowerCase() === m.name?.toLowerCase() ||
+          tx.description?.toLowerCase().includes(m.name?.toLowerCase())
+        ) {
+          mfgPaidMap[m.id] = (mfgPaidMap[m.id] || 0) + (tx.referenceId === m.id ? 0 : amt);
+        }
+      });
+    });
+
+    apRecords.forEach((ap) => {
+      if (ap.referenceId) {
+        mfgPaidMap[ap.referenceId] = Math.max(mfgPaidMap[ap.referenceId] || 0, Number(ap.paidAmount || 0));
+      }
+    });
+
+    const mfgMap = {};
+    const mfgDetailsMap = {};
+    manufacturers.forEach((m) => {
+      mfgMap[m.id] = Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12);
+      mfgDetailsMap[m.id] = m;
+    });
 
     const inventoryMap = {};
     inventoryRows.forEach((entry) => {
-      inventoryMap[entry.productId] = {
-        agreedCostPrice: Number(entry.agreedCostPrice || 0),
-        proposedCostPrice: Number(entry.proposedCostPrice || 0),
-      };
+      inventoryMap[`${entry.manufacturerId}_${entry.productId}`] = Number(entry.agreedCostPrice || entry.proposedCostPrice || 0);
     });
 
     const productCostMap = {};
@@ -136,12 +442,38 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       productCostMap[product.id] = Number(product.costPrice || 0);
     });
 
-    const commissionRate = Number(
-      manufacturer?.agreedCommissionRate ?? manufacturer?.proposedCommissionRate ?? 12
-    );
+    // Manufacturer grouped metrics dictionary
+    const mfgGroups = {};
+    manufacturers.forEach((m) => {
+      mfgGroups[m.id] = {
+        id: m.id,
+        name: m.name,
+        email: m.email,
+        phone: m.phone,
+        city: m.city,
+        agreedCommissionRate: mfgMap[m.id] || 12,
+        totalOrders: 0,
+        totalSales: 0,
+        totalCogs: 0,
+        payable: 0,
+        paidAmount: Number((mfgPaidMap[m.id] || 0).toFixed(2)),
+        remainingPayable: 0,
+        receivable: 0,
+        totalCommission: 0,
+        itemsSold: 0,
+        itemsDelivered: 0,
+        itemsReturned: 0,
+        deliveredOrders: 0,
+        returnedOrders: 0,
+        orders: [],
+      };
+    });
+
     let totalSales = 0;
+    let totalCogs = 0;
     let totalPayable = 0;
     let totalReceivable = 0;
+    let totalCommission = 0;
     let totalDelivered = 0;
     let totalReturned = 0;
     let itemsSold = 0;
@@ -152,32 +484,41 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       const items = parseOrderItems(order.items);
       const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
       const orderSales = Number(order.amount || 0);
-      let orderCost = 0;
-      let orderReceivable = 0;
+      const orderMfgId = order.manufacturerId || items[0]?.manufacturerId;
+      const commissionRate = orderMfgId ? (mfgMap[orderMfgId] ?? 12) : 12;
 
+      let orderCost = 0;
       items.forEach((item) => {
         const qty = Number(item.quantity || 1);
         const productId = item.productId || item._id || item.id;
-        const inventoryEntry = inventoryMap[productId];
-        const unitCost = inventoryEntry
-          ? (inventoryEntry.agreedCostPrice || inventoryEntry.proposedCostPrice || productCostMap[productId] || 0)
-          : productCostMap[productId] || 0;
+        const itemMfgId = item.manufacturerId || orderMfgId;
+        const customCost = itemMfgId ? inventoryMap[`${itemMfgId}_${productId}`] : undefined;
+        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
         orderCost += qty * unitCost;
       });
+      orderCost = Number(orderCost.toFixed(2));
 
-      const commission = Number((orderSales * (commissionRate / 100)).toFixed(2));
       const statusText = String(order.status || "").trim().toLowerCase();
       const isDelivered = statusText.includes("deliver") || order.fulfillmentStatus === "DELIVERED";
       const isReturned = statusText.includes("return") || statusText.includes("cancel");
+      const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
 
-      if (isDelivered) {
-        orderReceivable = Math.max(0, Number((orderSales - orderCost - commission).toFixed(2)));
-      }
+      if (!orderMfgId || !mfgGroups[orderMfgId]) return null;
 
-      totalSales += orderSales;
-      totalPayable += orderCost;
-      totalReceivable += orderReceivable;
+      const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
+      const orderCommission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
+      const manufacturerReceivable = Number((orderCost + orderCommission).toFixed(2));
+      const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
+      const payable = manufacturerReceivable;
+      const receivable = manufacturerPayable;
+
+      totalSales += isDirect ? orderSales : 0;
+      totalCogs += orderCost;
+      totalPayable += payable;
+      totalReceivable += receivable;
+      totalCommission += orderCommission;
       itemsSold += orderQuantity;
+
       if (isDelivered) {
         itemsDelivered += orderQuantity;
         totalDelivered += 1;
@@ -187,50 +528,117 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         totalReturned += 1;
       }
 
-      return {
+      const orderItem = {
         id: order.id,
+        manufacturerId: orderMfgId || null,
+        manufacturerName: (orderMfgId && mfgDetailsMap[orderMfgId]?.name) || "Unassigned",
+        orderType: order.orderType,
+        directOrderType: order.directOrderType || null,
+        isDirect,
         status: order.status,
         fulfillmentStatus: order.fulfillmentStatus,
-        date: order.date,
-        amount: orderSales,
+        date: order.date ? Number(order.date) : null,
+        ...(isDirect ? { amount: orderSales } : {}),
         quantity: orderQuantity,
-        payable: orderCost,
-        receivable: orderReceivable,
-        commission,
-        netReceivable: orderReceivable - orderCost,
+        cogs: orderCost,
+        payable,
+        receivable,
+        commission: orderCommission,
+        netPosition: receivable - payable,
+      };
+
+      // Add to manufacturer group if assigned
+      {
+        const grp = mfgGroups[orderMfgId];
+        grp.totalOrders += 1;
+        grp.totalSales += isDirect ? orderSales : 0;
+        grp.totalCogs += orderCost;
+        grp.payable += payable;
+        grp.receivable += receivable;
+        grp.totalCommission += orderCommission;
+        grp.itemsSold += orderQuantity;
+        if (isDelivered) {
+          grp.itemsDelivered += orderQuantity;
+          grp.deliveredOrders += 1;
+        }
+        if (isReturned) {
+          grp.itemsReturned += orderQuantity;
+          grp.returnedOrders += 1;
+        }
+        grp.orders.push(orderItem);
+      }
+
+      return orderItem;
+    }).filter(Boolean);
+
+    let totalPaidMfg = 0;
+    const manufacturersList = Object.values(mfgGroups).map((mfg) => {
+      const remainingPayable = Math.max(0, Number((mfg.payable - (mfg.paidAmount || 0)).toFixed(2)));
+      totalPaidMfg += Number(mfg.paidAmount || 0);
+      return {
+        ...mfg,
+        totalSales: Number(mfg.totalSales.toFixed(2)),
+        totalCogs: Number(mfg.totalCogs.toFixed(2)),
+        payable: Number(mfg.payable.toFixed(2)),
+        paidAmount: Number((mfg.paidAmount || 0).toFixed(2)),
+        remainingPayable,
+        receivable: Number(mfg.receivable.toFixed(2)),
+        netPayable: Math.max(0, Number((remainingPayable - mfg.receivable).toFixed(2))),
+        netReceivable: Math.max(0, Number((mfg.receivable - remainingPayable).toFixed(2))),
+        totalCommission: Number(mfg.totalCommission.toFixed(2)),
       };
     });
 
-    const response = {
+    const remainingSummaryPayable = Math.max(0, Number((totalPayable - totalPaidMfg).toFixed(2)));
+
+    return res.json({
       success: true,
       range: req.query?.range || "month",
       startDate: start.toISOString(),
       endDate: end.toISOString(),
       data: {
-        manufacturer: manufacturer || { id: manufacturerId },
+        manufacturer: { id: "ALL", name: "All Manufacturers" },
         summary: {
-          totalOrders: orders.length,
-          totalSales,
-          payable: totalPayable,
-          receivable: totalReceivable,
-          netReceivable: Math.max(0, totalReceivable - totalPayable),
+          totalOrders: orderBreakdown.length,
+          totalSales: Number(totalSales.toFixed(2)),
+          totalCogs: Number(totalCogs.toFixed(2)),
+          payable: Number(totalPayable.toFixed(2)),
+          paidAmount: Number(totalPaidMfg.toFixed(2)),
+          remainingPayable: remainingSummaryPayable,
+          receivable: Number(totalReceivable.toFixed(2)),
+          netPayable: Math.max(0, Number((remainingSummaryPayable - totalReceivable).toFixed(2))),
+          netReceivable: Math.max(0, Number((totalReceivable - remainingSummaryPayable).toFixed(2))),
+          totalCommission: Number(totalCommission.toFixed(2)),
           itemsSold,
           itemsDelivered,
           itemsReturned,
           deliveredOrders: totalDelivered,
           returnedOrders: totalReturned,
-          agreedCommissionRate: commissionRate,
+          agreedCommissionRate: 12,
         },
+        manufacturers: manufacturersList,
         orders: orderBreakdown,
+        transactions: (supplierPayments || []).map((tx) => ({
+          id: tx.id,
+          date: tx.date || tx.createdAt,
+          amount: Number(tx.amount || 0),
+          type: tx.type,
+          category: tx.category,
+          partyName: tx.partyName,
+          accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
+          accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
+          description: tx.description,
+          createdAt: tx.createdAt,
+        })),
       },
-    };
-
-    return res.json(response);
+    });
   } catch (error) {
     console.error("getManufacturerFinancialSummary error:", error);
     return res.status(500).json({ success: false, message: error.message || "Unable to load manufacturer financial summary." });
   }
 };
+
+
 
 // ==========================================
 // 1. EXECUTIVE FINANCIAL ANALYTICS & DASHBOARD
@@ -2258,7 +2666,19 @@ export const recordLiabilityRepayment = async (req, res) => {
 // ==========================================
 export const getPayablesAndReceivables = async (req, res) => {
   try {
-    const [payables, receivables, accounts] = await Promise.all([
+    const [
+      storedPayables,
+      storedReceivables,
+      accounts,
+      manufacturers,
+      orders,
+      products,
+      manufacturerInventories,
+      ncmSettlements,
+      supplierCashOutflows,
+      recentSettlementTransactions,
+      settlementReversions,
+    ] = await Promise.all([
       prisma.accountPayable.findMany({
         orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
       }),
@@ -2269,7 +2689,260 @@ export const getPayablesAndReceivables = async (req, res) => {
         where: { status: "ACTIVE" },
         select: { id: true, accountName: true, currentBalance: true, accountType: true },
       }),
+      prisma.manufacturer.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true, email: true, phone: true, city: true, agreedCommissionRate: true },
+      }),
+      prisma.order.findMany({
+        where: {
+          status: { notIn: ["Cancelled"] },
+        },
+        select: {
+          id: true,
+          date: true,
+          amount: true,
+          status: true,
+          fulfillmentStatus: true,
+          manufacturerId: true,
+          orderType: true,
+          directOrderType: true,
+          items: true,
+          deliveryOrder: { select: { manufacturerId: true, state: true } },
+        },
+      }),
+      prisma.product.findMany({
+        select: { id: true, costPrice: true },
+      }),
+      prisma.manufacturerInventory.findMany({
+        select: { manufacturerId: true, productId: true, agreedCostPrice: true, proposedCostPrice: true },
+      }),
+      prisma.deliveryFinancialSettlement.findMany({
+        where: { settlementState: { notIn: ["SETTLED", "CANCELLED"] } },
+      }),
+      prisma.cashTransaction.findMany({
+        where: { category: "SUPPLIER_PAYMENT" },
+        select: { id: true, amount: true, referenceId: true, partyName: true, description: true, fromAccountId: true, date: true },
+      }),
+      prisma.cashTransaction.findMany({
+        where: { category: { in: ["SUPPLIER_PAYMENT", "COD_REMITTANCE", "SALES", "EXPENSE"] } },
+        include: {
+          fromAccount: { select: { id: true, accountName: true, accountType: true } },
+          toAccount: { select: { id: true, accountName: true, accountType: true } },
+        },
+        orderBy: { date: "desc" },
+        take: 50,
+      }),
+      prisma.settlementReversion.findMany({
+        orderBy: { revertedAt: "desc" },
+        take: 100,
+      }),
     ]);
+
+    // Build Product Cost lookup
+    const productCostMap = {};
+    products.forEach((p) => {
+      productCostMap[p.id] = Number(p.costPrice || 0);
+    });
+
+    const inventoryMap = {};
+    manufacturerInventories.forEach((inv) => {
+      const price = inv.agreedCostPrice !== null && inv.agreedCostPrice !== undefined ? inv.agreedCostPrice : inv.proposedCostPrice;
+      if (price !== null && price !== undefined) {
+        inventoryMap[`${inv.manufacturerId}_${inv.productId}`] = Number(price);
+      }
+    });
+
+    // Map manufacturer payments already recorded
+    const mfgPaidMap = {};
+    supplierCashOutflows.forEach((tx) => {
+      const amt = Number(tx.amount || 0);
+      if (tx.referenceId && mfgPaidMap[tx.referenceId] !== undefined) {
+        mfgPaidMap[tx.referenceId] += amt;
+      } else if (tx.referenceId) {
+        mfgPaidMap[tx.referenceId] = amt;
+      }
+      manufacturers.forEach((m) => {
+        if (
+          tx.referenceId === m.id ||
+          tx.partyName?.toLowerCase() === m.name?.toLowerCase() ||
+          tx.description?.toLowerCase().includes(m.name?.toLowerCase())
+        ) {
+          mfgPaidMap[m.id] = (mfgPaidMap[m.id] || 0) + (tx.referenceId === m.id ? 0 : amt);
+        }
+      });
+    });
+
+    // Also account for settlements recorded in stored AccountPayable records
+    storedPayables.forEach((p) => {
+      if (p.referenceType === "MANUFACTURER_COGS" && p.referenceId) {
+        mfgPaidMap[p.referenceId] = Math.max(mfgPaidMap[p.referenceId] || 0, Number(p.paidAmount || 0));
+      }
+    });
+
+    // Calculate COGS and Direct Sales per Manufacturer from Orders
+    const mfgCogsMap = {};
+    const mfgDirectReceivableMap = {};
+
+    manufacturers.forEach((m) => {
+      mfgCogsMap[m.id] = 0;
+      mfgDirectReceivableMap[m.id] = 0;
+    });
+
+    orders.forEach((order) => {
+      const items = parseOrderItems(order.items);
+      const orderSales = Number(order.amount || 0);
+      const orderMfgId =
+        order.manufacturerId ||
+        items[0]?.manufacturerId ||
+        order.deliveryOrder?.manufacturerId;
+
+      if (!orderMfgId) return;
+
+      const mfg = manufacturers.find((m) => m.id === orderMfgId);
+      const commissionRate = Number(mfg?.agreedCommissionRate ?? 12);
+      const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
+
+      let orderCost = 0;
+      items.forEach((item) => {
+        const qty = Number(item.quantity || 1);
+        const productId = item.productId || item._id || item.id;
+        const itemMfgId = item.manufacturerId || orderMfgId;
+        const customCost = itemMfgId ? inventoryMap[`${itemMfgId}_${productId}`] : undefined;
+        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[productId] || 0);
+        orderCost += qty * unitCost;
+      });
+      orderCost = Number(orderCost.toFixed(2));
+
+      const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
+      const commission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
+      const manufacturerReceivable = Number((orderCost + commission).toFixed(2));
+      mfgCogsMap[orderMfgId] = (mfgCogsMap[orderMfgId] || 0) + manufacturerReceivable;
+      if (isDirect) {
+        const manufacturerPayable = Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2)));
+        mfgDirectReceivableMap[orderMfgId] = (mfgDirectReceivableMap[orderMfgId] || 0) + manufacturerPayable;
+      }
+    });
+
+    // Merge stored payables and direct-sale COGS-plus-commission payables.
+    const payables = [...storedPayables];
+
+    manufacturers.forEach((m) => {
+      const totalCogs = Number((mfgCogsMap[m.id] || 0).toFixed(2));
+      const totalPaid = Number((mfgPaidMap[m.id] || 0).toFixed(2));
+      const remainingPayable = Math.max(0, Number((totalCogs - totalPaid).toFixed(2)));
+
+      const existingIndex = payables.findIndex(
+        (p) => p.referenceType === "MANUFACTURER_COGS" && p.referenceId === m.id
+      );
+
+      if (existingIndex >= 0) {
+        payables[existingIndex] = {
+          ...payables[existingIndex],
+          title: `Manufacturer Payable - ${m.name}`,
+          totalAmount: totalCogs,
+          paidAmount: totalPaid,
+          remainingBalance: remainingPayable,
+          notes: `Platform orders are payable at COGS; direct orders at COGS plus commission.`,
+          status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
+        };
+      } else if (totalCogs > 0 || totalPaid > 0) {
+        payables.push({
+          id: `AP-MFG-${m.id}`,
+          title: `Manufacturer Payable - ${m.name}`,
+          payeeName: m.name,
+          category: "SUPPLIER_INVOICE",
+          referenceType: "MANUFACTURER_COGS",
+          referenceId: m.id,
+          totalAmount: totalCogs,
+          paidAmount: totalPaid,
+          remainingBalance: remainingPayable,
+          dueDate: null,
+          invoiceNumber: `COGS-${m.id.slice(0, 6).toUpperCase()}`,
+          status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
+          priority: "HIGH",
+          notes: `Platform orders are payable at COGS; direct orders at COGS plus commission.`,
+          settlementHistory: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    });
+
+    // Merge Stored Receivables, NCM COD Remittances, and Direct Sales Receivables
+    const receivables = [...storedReceivables];
+
+    // 1. Nepal Can Move (NCM) COD Settlements
+    ncmSettlements.forEach((s) => {
+      const cod = Number(s.codCollected || s.codExpected || 0);
+      const fee = Number(s.deliveryFeeActual || s.deliveryFeeExpected || 0);
+      const netRemittance = Math.max(0, Number((cod - fee).toFixed(2)));
+
+      if (netRemittance > 0) {
+        const existing = receivables.find((r) => r.referenceId === s.id || r.id === s.id);
+        if (!existing) {
+          receivables.push({
+            id: s.id,
+            title: `NCM COD Remittance (Order #${s.ncmOrderId || s.deliveryOrder?.ncmOrderId || s.deliveryOrderId?.slice(-6) || "NCM"})`,
+            payerName: "Nepal Can Move (NCM)",
+            category: "CARRIER_COD_RECEIVABLE",
+            referenceType: "DELIVERY_SETTLEMENT",
+            referenceId: s.id,
+            totalAmount: netRemittance,
+            receivedAmount: 0,
+            remainingBalance: netRemittance,
+            dueDate: null,
+            invoiceNumber: s.ncmOrderId ? `NCM-${s.ncmOrderId}` : `NCM-${s.id.slice(0, 6).toUpperCase()}`,
+            status: "UNPAID",
+            priority: "HIGH",
+            notes: `Pending COD collection remittance from Nepal Can Move courier (Total COD: Rs ${cod}, Courier Fee: Rs ${fee}).`,
+            collectionHistory: [],
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+          });
+        }
+      }
+    });
+
+    // 2. Direct Manufacturer Sales Receivables
+    manufacturers.forEach((m) => {
+      const directDue = Number((mfgDirectReceivableMap[m.id] || 0).toFixed(2));
+      const existingIndex = receivables.findIndex(
+        (r) => r.referenceType === "MANUFACTURER_DIRECT" && r.referenceId === m.id
+      );
+      if (existingIndex >= 0) {
+        const existing = receivables[existingIndex];
+        const receivedAmount = Number(existing.receivedAmount || 0);
+        const remainingBalance = Math.max(0, Number((directDue - receivedAmount).toFixed(2)));
+        receivables[existingIndex] = {
+          ...existing,
+          title: `Direct Sales Margin - ${m.name}`,
+          totalAmount: directDue,
+          receivedAmount,
+          remainingBalance,
+          notes: `Direct manufacturer sales less COGS and commission, payable to the platform.`,
+          status: remainingBalance === 0 && directDue > 0 ? "SETTLED" : receivedAmount > 0 ? "PARTIALLY_PAID" : "UNPAID",
+        };
+      } else if (directDue > 0) {
+          receivables.push({
+            id: `AR-MFG-DIRECT-${m.id}`,
+            title: `Direct Sales Margin - ${m.name}`,
+            payerName: m.name,
+            category: "CUSTOMER_RECEIVABLE",
+            referenceType: "MANUFACTURER_DIRECT",
+            referenceId: m.id,
+            totalAmount: directDue,
+            receivedAmount: 0,
+            remainingBalance: directDue,
+            dueDate: null,
+            invoiceNumber: `DIR-${m.id.slice(0, 6).toUpperCase()}`,
+            status: "UNPAID",
+            notes: `Direct manufacturer sales less COGS and commission, payable to the platform.`,
+            collectionHistory: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+      }
+    });
 
     const totalPayablesOutstanding = payables
       .filter((p) => p.status !== "SETTLED" && p.status !== "CANCELLED")
@@ -2293,6 +2966,30 @@ export const getPayablesAndReceivables = async (req, res) => {
         payables,
         receivables,
         accounts,
+        recentTransactions: (recentSettlementTransactions || []).map((tx) => ({
+          id: tx.id,
+          date: tx.date || tx.createdAt,
+          amount: Number(tx.amount || 0),
+          type: tx.type,
+          category: tx.category,
+          partyName: tx.partyName,
+          accountName: tx.fromAccount?.accountName || tx.toAccount?.accountName || "Treasury Account",
+          accountType: tx.fromAccount?.accountType || tx.toAccount?.accountType || "BANK",
+          description: tx.description,
+          createdAt: tx.createdAt,
+        })),
+        settlementReversions: (settlementReversions || []).map((rev) => ({
+          id: rev.id,
+          reversionType: rev.reversionType,
+          originalRecordId: rev.originalRecordId,
+          originalAmount: Number(rev.originalAmount),
+          partyName: rev.partyName,
+          accountName: rev.accountName,
+          revertReason: rev.revertReason,
+          revertedByEmail: rev.revertedByEmail,
+          revertedAt: rev.revertedAt,
+          restoredStatus: rev.restoredStatus,
+        })),
         metrics: {
           totalPayablesOutstanding: Number(totalPayablesOutstanding.toFixed(2)),
           totalPayablesSettled: Number(totalPayablesSettled.toFixed(2)),
@@ -2385,6 +3082,288 @@ export const createReceivable = async (req, res) => {
   }
 };
 
+// ==========================================
+// PAY TO MANUFACTURER (COGS Payout & Solvency Check)
+// ==========================================
+export const payManufacturer = async (req, res) => {
+  try {
+    const { manufacturerId, amount, fromAccountId, notes } = req.body;
+    let payAmount = Number(amount || 0);
+
+    if (!manufacturerId || !fromAccountId) {
+      return res.status(400).json({
+        success: false,
+        message: "Manufacturer ID and source treasury account are required.",
+      });
+    }
+
+    const [manufacturer, fromAccount, orders, allProducts, inventoryRows, pastTransactions] = await Promise.all([
+      prisma.manufacturer.findUnique({ where: { id: manufacturerId } }),
+      prisma.financialAccount.findUnique({ where: { id: fromAccountId } }),
+      prisma.order.findMany({
+        where: {
+          status: { notIn: ["Cancelled"] },
+        },
+        select: {
+          id: true,
+          amount: true,
+          status: true,
+          fulfillmentStatus: true,
+          manufacturerId: true,
+          orderType: true,
+          directOrderType: true,
+          items: true,
+        },
+      }),
+      prisma.product.findMany({ select: { id: true, costPrice: true } }),
+      prisma.manufacturerInventory.findMany({
+        where: { manufacturerId },
+        select: { productId: true, agreedCostPrice: true, proposedCostPrice: true },
+      }),
+      prisma.cashTransaction.findMany({
+        where: {
+          OR: [
+            { referenceId: manufacturerId },
+            { partyName: manufacturerId },
+          ],
+        },
+        select: { amount: true, type: true, category: true },
+      }),
+    ]);
+
+    if (!manufacturer) {
+      return res.status(404).json({ success: false, message: "Manufacturer not found." });
+    }
+    if (!fromAccount) {
+      return res.status(404).json({ success: false, message: "Source payment account not found." });
+    }
+
+    // Build cost lookups
+    const productCostMap = {};
+    allProducts.forEach((p) => { productCostMap[p.id] = Number(p.costPrice || 0); });
+    const inventoryMap = {};
+    inventoryRows.forEach((inv) => {
+      const price = inv.agreedCostPrice !== null && inv.agreedCostPrice !== undefined ? inv.agreedCostPrice : inv.proposedCostPrice;
+      if (price !== null && price !== undefined) inventoryMap[inv.productId] = Number(price);
+    });
+
+    const commissionRate = Number(manufacturer.agreedCommissionRate ?? manufacturer.proposedCommissionRate ?? 12);
+
+    let totalCogs = 0;
+    let totalDirectReceivable = 0;
+
+    orders.forEach((order) => {
+      const items = parseOrderItems(order.items);
+      const orderSales = Number(order.amount || 0);
+      const orderMfgId = order.manufacturerId || items[0]?.manufacturerId;
+      if (orderMfgId !== manufacturerId) return;
+
+      let orderCost = 0;
+      items.forEach((item) => {
+        const qty = Number(item.quantity || 1);
+        const pId = item.productId || item._id || item.id;
+        const customCost = inventoryMap[pId];
+        const unitCost = customCost !== undefined && customCost > 0 ? customCost : (productCostMap[pId] || 0);
+        orderCost += qty * unitCost;
+      });
+      orderCost = Number(orderCost.toFixed(2));
+
+      const isDirect = String(order.orderType || "").toUpperCase() === "DIRECT_MANUFACTURER" || ["PHONE_ORDER", "HUB_VISIT"].includes(String(order.directOrderType || "").toUpperCase());
+
+      if (isDirect) {
+        const grossProfit = Math.max(0, orderSales - orderCost);
+        const comm = Number((grossProfit * (commissionRate / 100)).toFixed(2));
+        const receivable = Math.max(0, Number((orderSales - orderCost - comm).toFixed(2)));
+        totalDirectReceivable += receivable;
+      } else {
+        totalCogs += orderCost;
+      }
+    });
+
+    let prevPaid = 0;
+    let prevCollected = 0;
+    pastTransactions.forEach((tx) => {
+      if (tx.type === "OUTFLOW") prevPaid += Number(tx.amount || 0);
+      if (tx.type === "INFLOW") prevCollected += Number(tx.amount || 0);
+    });
+
+    let remainingPayable = Math.max(0, Number((totalCogs - prevPaid).toFixed(2)));
+    const remainingReceivable = Math.max(0, Number((totalDirectReceivable - prevCollected).toFixed(2)));
+
+    // If amount is not passed or <= 0, default to the full Net Payable
+    const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer.name);
+    remainingPayable = postedPayable.outstanding;
+    if (payAmount <= 0) {
+      payAmount = postedPayable.outstanding;
+    }
+
+    if (payAmount > postedPayable.outstanding) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment exceeds posted manufacturer payable. Posted outstanding: Rs ${postedPayable.outstanding.toLocaleString()}; requested: Rs ${payAmount.toLocaleString()}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
+        postedPayable,
+      });
+    }
+
+    if (payAmount <= 0 && remainingPayable === 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No outstanding net payable for ${manufacturer.name}. (Approved COGS: Rs ${totalCogs.toLocaleString()}, Paid: Rs ${prevPaid.toLocaleString()}, Direct Margin Offset: Rs ${remainingReceivable.toLocaleString()})`,
+      });
+    }
+
+    // STRICT CAPITAL SOLVENCY CHECK
+    if (fromAccount.currentBalance < payAmount) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient liquid cash in ${fromAccount.accountName}. Available balance: Rs ${fromAccount.currentBalance.toLocaleString()}, required: Rs ${payAmount.toLocaleString()}. Please deposit funds first or pay a smaller partial amount.`,
+      });
+    }
+
+    // Ensure unique idempotency key for this payout transaction
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `MFGPAY-${manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Check if duplicate transaction with this idempotency key already exists
+    const existingTx = await prisma.cashTransaction.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `This manufacturer payout transaction (Rs ${existingTx.amount.toLocaleString()}) has already been processed and recorded.`,
+      });
+    }
+
+    // Debounce check: prevent duplicate rapid clicks within 4 seconds
+    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
+      where: {
+        referenceId: manufacturerId,
+        fromAccountId,
+        amount: payAmount,
+        type: "OUTFLOW",
+        category: "SUPPLIER_PAYMENT",
+        createdAt: { gte: new Date(Date.now() - 4000) },
+      },
+    });
+    if (duplicateRecentTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `Duplicate transaction rejected: an identical payout of Rs ${payAmount.toLocaleString()} to ${manufacturer.name} was just processed moments ago.`,
+      });
+    }
+
+    const offsetApplied = 0;
+
+    // Find or create AccountPayable record
+    let payable = await prisma.accountPayable.findFirst({
+      where: { referenceType: "MANUFACTURER_COGS", referenceId: manufacturerId },
+    });
+
+    let history = [];
+    if (payable) {
+      try {
+        history = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []);
+      } catch {
+        history = [];
+      }
+    }
+
+    const settlementEntry = {
+      id: Date.now().toString(),
+      idempotencyKey,
+      date: new Date().toISOString(),
+      amount: payAmount,
+      offsetAmount: offsetApplied,
+      grossPayable: remainingPayable,
+      grossReceivable: remainingReceivable,
+      fromAccountId,
+      accountName: fromAccount.accountName,
+      notes: notes || `Net settlement payout to ${manufacturer.name}`,
+    };
+    history.push(settlementEntry);
+
+    const newTotalPaid = postedPayable.paid + payAmount;
+    const finalRemainingPayable = Math.max(0, postedPayable.recognized - newTotalPaid);
+    const newStatus = finalRemainingPayable === 0 ? "SETTLED" : "PARTIALLY_PAID";
+
+    const description = `Net Settlement to ${manufacturer.name}: Approved COGS Rs ${remainingPayable.toLocaleString()} less Direct Margin Rs ${remainingReceivable.toLocaleString()} = Net Paid Rs ${payAmount.toLocaleString()}${notes ? ` (${notes})` : ""}`;
+
+    const { updatedAccount } = await prisma.$transaction(async (tx) => {
+      const updatedAccount = await tx.financialAccount.update({
+        where: { id: fromAccountId },
+        data: { currentBalance: { decrement: payAmount } },
+      });
+      await tx.cashTransaction.create({
+        data: {
+          idempotencyKey,
+          amount: payAmount,
+          type: "OUTFLOW",
+          fromAccountId,
+          category: "SUPPLIER_PAYMENT",
+          partyName: manufacturer.name,
+          referenceId: manufacturer.id,
+          description,
+        },
+      });
+      if (payable) {
+        await tx.accountPayable.update({
+            where: { id: payable.id },
+            data: {
+              totalAmount: postedPayable.recognized,
+              paidAmount: newTotalPaid,
+              remainingBalance: finalRemainingPayable,
+              status: newStatus,
+              settlementHistory: history,
+            },
+          });
+      } else {
+        await tx.accountPayable.create({
+            data: {
+              title: `COGS Obligation - ${manufacturer.name}`,
+              payeeName: manufacturer.name,
+              category: "SUPPLIER_INVOICE",
+              referenceType: "MANUFACTURER_COGS",
+              referenceId: manufacturer.id,
+              totalAmount: postedPayable.recognized,
+              paidAmount: newTotalPaid,
+              remainingBalance: finalRemainingPayable,
+              status: newStatus,
+              priority: "HIGH",
+              notes: notes || `Production cost COGS settlement`,
+              settlementHistory: history,
+            },
+          });
+      }
+
+      await postSupplierPaymentAccounting({
+        payableId: payable?.id || `MFG-COGS-${manufacturer.id}`,
+        payeeName: manufacturer.name,
+        amount: payAmount,
+        fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
+        payableAccountCode: "2160",
+        idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
+        referenceNumber: `MFG-NET-${idempotencyKey.slice(-8)}`,
+        client: tx,
+      });
+
+      return { updatedAccount };
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name} from ${fromAccount.accountName}. (Gross COGS: Rs ${remainingPayable.toLocaleString()}, Direct Offset: Rs ${offsetApplied.toLocaleString()}). Remaining balance in ${fromAccount.accountName}: Rs ${updatedAccount.currentBalance.toLocaleString()}`,
+      newAccountBalance: updatedAccount.currentBalance,
+      netDisbursed: payAmount,
+      offsetApplied,
+    });
+  } catch (error) {
+    console.error("Pay Manufacturer Error:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to process manufacturer payment." });
+  }
+};
+
 export const settlePayable = async (req, res) => {
   try {
     const { payableId, amount, fromAccountId, notes } = req.body;
@@ -2394,13 +3373,33 @@ export const settlePayable = async (req, res) => {
       return res.json({ success: false, message: "Payable ID, positive payment amount, and source account are required" });
     }
 
-    const payable = await prisma.accountPayable.findUnique({ where: { id: payableId } });
+    // Check if this is a synthesized or direct manufacturer payable
+    if (String(payableId).startsWith("AP-MFG-")) {
+      const manufacturerId = payableId.replace("AP-MFG-", "");
+      req.body.manufacturerId = manufacturerId;
+      return payManufacturer(req, res);
+    }
+
+    let payable = await prisma.accountPayable.findUnique({ where: { id: payableId } });
     if (!payable) {
       return res.json({ success: false, message: "Payable record not found" });
     }
 
+    if (payable.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {
+      req.body.manufacturerId = payable.referenceId;
+      return payManufacturer(req, res);
+    }
+
     if (payable.status === "SETTLED") {
-      return res.json({ success: false, message: "This payable has already been completely settled" });
+      const lastSettlement = (() => { try { const h = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []); return h[h.length - 1] || null; } catch { return null; } })();
+      return res.status(409).json({
+        success: false,
+        alreadySettled: true,
+        message: `This payable "${payable.title}" has already been completely settled. No further payments can be made.`,
+        settledAt: lastSettlement?.date || payable.updatedAt,
+        settledAmount: payable.paidAmount,
+        settledTo: lastSettlement?.accountName || null,
+      });
     }
 
     if (settleAmount > payable.remainingBalance) {
@@ -2423,6 +3422,39 @@ export const settlePayable = async (req, res) => {
       });
     }
 
+    // Unique idempotency key
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `PAY-${payable.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Check duplicate transaction by idempotencyKey
+    const existingTx = await prisma.cashTransaction.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `This payment transaction (Rs ${existingTx.amount.toLocaleString()}) has already been processed and recorded.`,
+      });
+    }
+
+    // Debounce check: prevent duplicate rapid clicks within 4 seconds
+    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
+      where: {
+        referenceId: payable.id,
+        fromAccountId,
+        amount: settleAmount,
+        type: "OUTFLOW",
+        createdAt: { gte: new Date(Date.now() - 4000) },
+      },
+    });
+    if (duplicateRecentTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `Duplicate transaction rejected: an identical payment of Rs ${settleAmount.toLocaleString()} was just recorded moments ago.`,
+      });
+    }
+
     const newPaid = Number(payable.paidAmount) + settleAmount;
     const newRemaining = Math.max(0, Number(payable.totalAmount) - newPaid);
     const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_PAID";
@@ -2436,6 +3468,7 @@ export const settlePayable = async (req, res) => {
 
     const settlementEntry = {
       id: Date.now().toString(),
+      idempotencyKey,
       date: new Date().toISOString(),
       amount: settleAmount,
       fromAccountId,
@@ -2459,6 +3492,7 @@ export const settlePayable = async (req, res) => {
       }),
       prisma.cashTransaction.create({
         data: {
+          idempotencyKey,
           amount: settleAmount,
           type: "OUTFLOW",
           fromAccountId,
@@ -2517,13 +3551,150 @@ export const collectReceivable = async (req, res) => {
       return res.json({ success: false, message: "Receivable ID, positive amount, and deposit account are required" });
     }
 
+    const toAccount = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
+    if (!toAccount) {
+      return res.json({ success: false, message: "Deposit account not found" });
+    }
+
+    // Unique idempotency key for this collection event
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `REC-${receivableId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    // Check if this exact transaction was already executed
+    const existingTx = await prisma.cashTransaction.findUnique({
+      where: { idempotencyKey },
+    });
+    if (existingTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `This collection transaction (Rs ${existingTx.amount.toLocaleString()}) has already been recorded and processed into the ledger.`,
+      });
+    }
+
+    // Debounce check: prevent duplicate rapid clicks within 4 seconds for the same receivable
+    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
+      where: {
+        referenceId: receivableId,
+        toAccountId,
+        amount: collectAmount,
+        type: "INFLOW",
+        createdAt: { gte: new Date(Date.now() - 4000) },
+      },
+    });
+    if (duplicateRecentTx) {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: `Duplicate transaction rejected: an identical collection of Rs ${collectAmount.toLocaleString()} was just recorded moments ago. Please check transaction history.`,
+      });
+    }
+
+    // Check if this is a Nepal Can Move (NCM) COD settlement
+    const ncmSettlement = await prisma.deliveryFinancialSettlement.findFirst({
+      where: { OR: [{ id: receivableId }, { deliveryOrderId: receivableId }] },
+    });
+
+    if (ncmSettlement) {
+      if (ncmSettlement.settlementState === "SETTLED") {
+        return res.status(409).json({
+          success: false,
+          alreadySettled: true,
+          message: `NCM COD remittance for delivery order has already been collected and settled. No further collection allowed.`,
+          settledAt: ncmSettlement.settledAt,
+        });
+      }
+      const cod = Number(ncmSettlement.codCollected || ncmSettlement.codExpected || collectAmount);
+      const fee = Number(ncmSettlement.deliveryFeeActual || ncmSettlement.deliveryFeeExpected || 0);
+
+      await prisma.$transaction([
+        prisma.financialAccount.update({
+          where: { id: toAccountId },
+          data: { currentBalance: { increment: collectAmount } },
+        }),
+        prisma.cashTransaction.create({
+          data: {
+            idempotencyKey,
+            amount: collectAmount,
+            type: "INFLOW",
+            toAccountId,
+            category: "COD_REMITTANCE",
+            partyName: "Nepal Can Move (NCM)",
+            referenceId: ncmSettlement.id,
+            description: `NCM COD Remittance collected into ${toAccount.accountName}${notes ? ` - ${notes}` : ""}`,
+          },
+        }),
+        prisma.deliveryFinancialSettlement.update({
+          where: { id: ncmSettlement.id },
+          data: {
+            settlementState: "SETTLED",
+            settledAt: new Date(),
+            codCollected: cod,
+          },
+        }),
+      ]);
+
+      // Post NCM Remittance to Double-Entry General Ledger
+      postNcmRemittanceAccounting({
+        settlementId: ncmSettlement.id,
+        codCollected: cod,
+        deliveryFeeActual: fee,
+        isCash: toAccount.accountType === "CASH",
+        destinationAccountName: toAccount.accountName,
+      }).catch((glErr) => {
+        console.error("General Ledger NCM remittance posting error:", glErr);
+      });
+
+      return res.json({
+        success: true,
+        message: `Successfully collected NCM COD remittance of Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}. Settlement marked as SETTLED.`,
+      });
+    }
+
+    // Check if direct manufacturer sales receivable
+    if (String(receivableId).startsWith("AR-MFG-DIRECT-")) {
+      const manufacturerId = receivableId.replace("AR-MFG-DIRECT-", "");
+      const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
+
+      await prisma.$transaction([
+        prisma.financialAccount.update({
+          where: { id: toAccountId },
+          data: { currentBalance: { increment: collectAmount } },
+        }),
+        prisma.cashTransaction.create({
+          data: {
+            idempotencyKey,
+            amount: collectAmount,
+            type: "INFLOW",
+            toAccountId,
+            category: "SALES",
+            partyName: manufacturer ? manufacturer.name : "Direct Manufacturer Sale",
+            referenceId: manufacturerId,
+            description: `Direct sales retail margin collected from ${manufacturer?.name || "Manufacturer"}${notes ? ` - ${notes}` : ""}`,
+          },
+        }),
+      ]);
+
+      return res.json({
+        success: true,
+        message: `Successfully collected Rs ${collectAmount.toLocaleString()} from ${manufacturer?.name || "Manufacturer"} into ${toAccount.accountName}.`,
+      });
+    }
+
     const receivable = await prisma.accountReceivable.findUnique({ where: { id: receivableId } });
     if (!receivable) {
       return res.json({ success: false, message: "Receivable record not found" });
     }
 
     if (receivable.status === "SETTLED") {
-      return res.json({ success: false, message: "This receivable has already been completely collected" });
+      const lastCollection = (() => { try { const h = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []); return h[h.length - 1] || null; } catch { return null; } })();
+      return res.status(409).json({
+        success: false,
+        alreadySettled: true,
+        message: `This receivable "${receivable.title}" has already been fully collected. No further collection can be made.`,
+        settledAt: lastCollection?.date || receivable.updatedAt,
+        collectedAmount: receivable.receivedAmount,
+        collectedTo: lastCollection?.accountName || null,
+      });
     }
 
     if (collectAmount > receivable.remainingBalance) {
@@ -2531,11 +3702,6 @@ export const collectReceivable = async (req, res) => {
         success: false,
         message: `Collection amount (Rs ${collectAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${receivable.remainingBalance.toLocaleString()})`,
       });
-    }
-
-    const toAccount = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
-    if (!toAccount) {
-      return res.json({ success: false, message: "Deposit account not found" });
     }
 
     const newReceived = Number(receivable.receivedAmount) + collectAmount;
@@ -2551,6 +3717,7 @@ export const collectReceivable = async (req, res) => {
 
     const collectionEntry = {
       id: Date.now().toString(),
+      idempotencyKey,
       date: new Date().toISOString(),
       amount: collectAmount,
       toAccountId,
@@ -2566,6 +3733,7 @@ export const collectReceivable = async (req, res) => {
       }),
       prisma.cashTransaction.create({
         data: {
+          idempotencyKey,
           amount: collectAmount,
           type: "INFLOW",
           toAccountId,
@@ -2585,13 +3753,366 @@ export const collectReceivable = async (req, res) => {
       }),
     ]);
 
+    // Post to Double-Entry General Ledger
+    postCustomerPaymentAccounting({
+      id: receivable.id,
+      orderId: receivable.referenceId || receivable.id,
+      customerName: receivable.payerName,
+      amount: collectAmount,
+      depositAccountType: toAccount.accountType === "CASH" ? "CASH" : "BANK",
+      referenceNumber: `REC-COLL-${Date.now()}`,
+    }).catch((glErr) => {
+      console.error("General Ledger AR collection posting error:", glErr);
+    });
+
     res.json({
       success: true,
       message: `Successfully collected Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}. Remaining: Rs ${newRemaining.toLocaleString()}`,
     });
   } catch (error) {
     console.error("Collect Receivable Error:", error);
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        success: false,
+        alreadyProcessed: true,
+        message: "Duplicate transaction rejected by database constraint: this transaction has already been recorded.",
+      });
+    }
     res.json({ success: false, message: error.message });
+  }
+};
+
+// ==========================================
+// REVERT SETTLEMENT (Admin Only)
+// Atomically reverses a settled payable, receivable,
+// manufacturer payout, or NCM COD remittance.
+// Creates a compensation CashTransaction,
+// restores AP/AR balances, and logs to SettlementReversion.
+// ==========================================
+export const revertSettlement = async (req, res) => {
+  try {
+    // Admin guard
+    if (req.auth?.role !== "ADMIN") {
+      return res.status(403).json({ success: false, message: "Only ADMIN role can revert settlements." });
+    }
+
+    const { type, recordId, cashTransactionId, revertReason } = req.body;
+    if (!type || !recordId || !revertReason?.trim()) {
+      return res.status(400).json({ success: false, message: "type, recordId, and revertReason are required." });
+    }
+
+    const adminEmail = req.auth?.email || "admin";
+    const adminId = req.auth?.sub || req.auth?.accountId || null;
+
+    const validTypes = ["PAYABLE", "RECEIVABLE", "MANUFACTURER_PAYMENT", "NCM_COD"];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ success: false, message: `Invalid reversion type. Must be one of: ${validTypes.join(", ")}` });
+    }
+
+    // Check no double-revert
+    const existing = await prisma.settlementReversion.findFirst({
+      where: { reversionType: type, originalRecordId: recordId },
+    });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        alreadyReverted: true,
+        message: `This settlement has already been reverted on ${new Date(existing.revertedAt).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} by ${existing.revertedByEmail || "admin"}. Reason: ${existing.revertReason}`,
+        reversionId: existing.id,
+        revertedAt: existing.revertedAt,
+      });
+    }
+
+    // ── PAYABLE REVERSION ──────────────────────────────────────
+    if (type === "PAYABLE" || type === "MANUFACTURER_PAYMENT") {
+      const payable = await prisma.accountPayable.findUnique({ where: { id: recordId } });
+      if (!payable) return res.status(404).json({ success: false, message: "Payable record not found." });
+
+      if (payable.status === "UNPAID" && Number(payable.paidAmount) === 0) {
+        return res.status(400).json({ success: false, message: "This payable has no payments to revert." });
+      }
+
+      // Find the original CashTransaction
+      const cashTx = cashTransactionId
+        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
+        : await prisma.cashTransaction.findFirst({
+            where: { referenceId: payable.referenceId || payable.id, type: "OUTFLOW" },
+            orderBy: { createdAt: "desc" },
+          });
+
+      const revertAmount = cashTx ? Number(cashTx.amount) : Number(payable.paidAmount);
+      const accountId = cashTx?.fromAccountId || null;
+
+      const priorStatus = payable.status;
+      const priorPaid = Number(payable.paidAmount);
+      const priorRemaining = Number(payable.remainingBalance);
+
+      const newPaid = Math.max(0, priorPaid - revertAmount);
+      const newRemaining = Number(payable.totalAmount) - newPaid;
+      const restoredStatus = newPaid <= 0 ? "UNPAID" : "PARTIALLY_PAID";
+
+      // Restore settlement history
+      let history = [];
+      try { history = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []); } catch { history = []; }
+      // Remove last settlement entry matching the reverted cash tx
+      if (cashTx && history.length > 0) {
+        const idx = history.findLastIndex(h => Math.abs(Number(h.amount) - revertAmount) < 0.01);
+        if (idx !== -1) history.splice(idx, 1);
+      } else {
+        history = [];
+      }
+
+      // Compensation transaction (money flows BACK into the treasury account)
+      let reversalTxId = null;
+      await prisma.$transaction(async (tx) => {
+        let reversalTx = null;
+        if (accountId) {
+          // Credit back the account
+          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { increment: revertAmount } } });
+          reversalTx = await tx.cashTransaction.create({
+            data: {
+              amount: revertAmount,
+              type: "INFLOW",
+              toAccountId: accountId,
+              category: "REFUND",
+              referenceId: payable.id,
+              partyName: payable.payeeName,
+              description: `ADMIN REVERSAL: Settlement of "${payable.title}" reverted. Reason: ${revertReason}`,
+            },
+          });
+          reversalTxId = reversalTx.id;
+        }
+
+        await tx.accountPayable.update({
+          where: { id: payable.id },
+          data: {
+            paidAmount: newPaid,
+            remainingBalance: newRemaining,
+            status: restoredStatus,
+            settlementHistory: history,
+          },
+        });
+
+        // Find the FinancialAccount name for the audit record
+        let accountName = null;
+        if (accountId) {
+          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
+          accountName = acc?.accountName || null;
+        }
+
+        await tx.settlementReversion.create({
+          data: {
+            reversionType: type,
+            originalRecordId: payable.id,
+            cashTransactionId: cashTx?.id || null,
+            reversalTransactionId: reversalTxId,
+            originalAmount: revertAmount,
+            partyName: payable.payeeName,
+            accountId,
+            accountName,
+            priorStatus,
+            restoredStatus,
+            priorPaidAmount: priorPaid,
+            priorRemainingBalance: priorRemaining,
+            revertedByAdminId: adminId,
+            revertedByEmail: adminEmail,
+            revertReason: revertReason.trim(),
+          },
+        });
+      });
+
+      return res.json({
+        success: true,
+        message: `Successfully reverted settlement of Rs ${revertAmount.toLocaleString()} for "${payable.title}". Status restored to ${restoredStatus}. Amount refunded to treasury.`,
+        restoredStatus,
+        newPaidAmount: newPaid,
+        newRemainingBalance: newRemaining,
+      });
+    }
+
+    // ── RECEIVABLE REVERSION ──────────────────────────────────────
+    if (type === "RECEIVABLE") {
+      const receivable = await prisma.accountReceivable.findUnique({ where: { id: recordId } });
+      if (!receivable) return res.status(404).json({ success: false, message: "Receivable record not found." });
+
+      if (receivable.status === "UNPAID" && Number(receivable.receivedAmount) === 0) {
+        return res.status(400).json({ success: false, message: "This receivable has no collections to revert." });
+      }
+
+      const cashTx = cashTransactionId
+        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
+        : await prisma.cashTransaction.findFirst({
+            where: { referenceId: receivable.id, type: "INFLOW" },
+            orderBy: { createdAt: "desc" },
+          });
+
+      const revertAmount = cashTx ? Number(cashTx.amount) : Number(receivable.receivedAmount);
+      const accountId = cashTx?.toAccountId || null;
+
+      const priorStatus = receivable.status;
+      const priorReceived = Number(receivable.receivedAmount);
+      const priorRemaining = Number(receivable.remainingBalance);
+
+      const newReceived = Math.max(0, priorReceived - revertAmount);
+      const newRemaining = Number(receivable.totalAmount) - newReceived;
+      const restoredStatus = newReceived <= 0 ? "UNPAID" : "PARTIALLY_RECEIVED";
+
+      let history = [];
+      try { history = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []); } catch { history = []; }
+      if (cashTx && history.length > 0) {
+        const idx = history.findLastIndex(h => Math.abs(Number(h.amount) - revertAmount) < 0.01);
+        if (idx !== -1) history.splice(idx, 1);
+      } else {
+        history = [];
+      }
+
+      let reversalTxId = null;
+      await prisma.$transaction(async (tx) => {
+        let reversalTx = null;
+        if (accountId) {
+          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { decrement: revertAmount } } });
+          reversalTx = await tx.cashTransaction.create({
+            data: {
+              amount: revertAmount,
+              type: "OUTFLOW",
+              fromAccountId: accountId,
+              category: "REFUND",
+              referenceId: receivable.id,
+              partyName: receivable.payerName,
+              description: `ADMIN REVERSAL: Collection of "${receivable.title}" reverted. Reason: ${revertReason}`,
+            },
+          });
+          reversalTxId = reversalTx.id;
+        }
+
+        await tx.accountReceivable.update({
+          where: { id: receivable.id },
+          data: {
+            receivedAmount: newReceived,
+            remainingBalance: newRemaining,
+            status: restoredStatus,
+            collectionHistory: history,
+          },
+        });
+
+        let accountName = null;
+        if (accountId) {
+          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
+          accountName = acc?.accountName || null;
+        }
+
+        await tx.settlementReversion.create({
+          data: {
+            reversionType: "RECEIVABLE",
+            originalRecordId: receivable.id,
+            cashTransactionId: cashTx?.id || null,
+            reversalTransactionId: reversalTxId,
+            originalAmount: revertAmount,
+            partyName: receivable.payerName,
+            accountId,
+            accountName,
+            priorStatus,
+            restoredStatus,
+            priorPaidAmount: priorReceived,
+            priorRemainingBalance: priorRemaining,
+            revertedByAdminId: adminId,
+            revertedByEmail: adminEmail,
+            revertReason: revertReason.trim(),
+          },
+        });
+      });
+
+      return res.json({
+        success: true,
+        message: `Successfully reverted collection of Rs ${revertAmount.toLocaleString()} for "${receivable.title}". Status restored to ${restoredStatus}.`,
+        restoredStatus,
+        newReceivedAmount: newReceived,
+        newRemainingBalance: newRemaining,
+      });
+    }
+
+    // ── NCM COD REVERSION ──────────────────────────────────────
+    if (type === "NCM_COD") {
+      const ncmSettlement = await prisma.deliveryFinancialSettlement.findFirst({
+        where: { OR: [{ id: recordId }, { deliveryOrderId: recordId }] },
+      });
+      if (!ncmSettlement) return res.status(404).json({ success: false, message: "NCM settlement record not found." });
+      if (ncmSettlement.settlementState !== "SETTLED") {
+        return res.status(400).json({ success: false, message: "This NCM settlement is not in SETTLED state — nothing to revert." });
+      }
+
+      const cashTx = cashTransactionId
+        ? await prisma.cashTransaction.findUnique({ where: { id: cashTransactionId } })
+        : await prisma.cashTransaction.findFirst({
+            where: { referenceId: ncmSettlement.id, type: "INFLOW", category: "COD_REMITTANCE" },
+            orderBy: { createdAt: "desc" },
+          });
+
+      const revertAmount = cashTx ? Number(cashTx.amount) : Number(ncmSettlement.codCollected || ncmSettlement.codExpected || 0);
+      const accountId = cashTx?.toAccountId || null;
+
+      let reversalTxId = null;
+      await prisma.$transaction(async (tx) => {
+        let reversalTx = null;
+        if (accountId) {
+          await tx.financialAccount.update({ where: { id: accountId }, data: { currentBalance: { decrement: revertAmount } } });
+          reversalTx = await tx.cashTransaction.create({
+            data: {
+              amount: revertAmount,
+              type: "OUTFLOW",
+              fromAccountId: accountId,
+              category: "REFUND",
+              referenceId: ncmSettlement.id,
+              partyName: "Nepal Can Move (NCM) — REVERSAL",
+              description: `ADMIN REVERSAL: NCM COD remittance reverted. Reason: ${revertReason}`,
+            },
+          });
+          reversalTxId = reversalTx.id;
+        }
+
+        await tx.deliveryFinancialSettlement.update({
+          where: { id: ncmSettlement.id },
+          data: { settlementState: "PENDING", settledAt: null },
+        });
+
+        let accountName = null;
+        if (accountId) {
+          const acc = await tx.financialAccount.findUnique({ where: { id: accountId }, select: { accountName: true } });
+          accountName = acc?.accountName || null;
+        }
+
+        await tx.settlementReversion.create({
+          data: {
+            reversionType: "NCM_COD",
+            originalRecordId: ncmSettlement.id,
+            cashTransactionId: cashTx?.id || null,
+            reversalTransactionId: reversalTxId,
+            originalAmount: revertAmount,
+            partyName: "Nepal Can Move (NCM)",
+            accountId,
+            accountName,
+            priorStatus: "SETTLED",
+            restoredStatus: "PENDING",
+            priorPaidAmount: revertAmount,
+            priorRemainingBalance: 0,
+            revertedByAdminId: adminId,
+            revertedByEmail: adminEmail,
+            revertReason: revertReason.trim(),
+          },
+        });
+      });
+
+      return res.json({
+        success: true,
+        message: `Successfully reverted NCM COD remittance of Rs ${revertAmount.toLocaleString()}. Settlement state restored to PENDING.`,
+        restoredStatus: "PENDING",
+      });
+    }
+
+    return res.status(400).json({ success: false, message: "Could not process reversion for the given type." });
+  } catch (error) {
+    console.error("Revert Settlement Error:", error);
+    res.status(500).json({ success: false, message: error.message || "Failed to revert settlement." });
   }
 };
 

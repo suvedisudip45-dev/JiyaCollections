@@ -48,6 +48,9 @@ const Finance = () => {
 
   const summary = data?.summary || {};
   const orders = data?.orders || [];
+  const transactions = data?.transactions || [];
+  const netOwed = Number(summary.remainingPayable ?? summary.payable ?? 0)
+    - Number(summary.remainingReceivable ?? summary.receivable ?? 0);
   const isPendingCommission = (data?.manufacturer?.commissionStatus || "PENDING") === "PENDING";
   const commissionLastProposedBy = (data?.manufacturer?.commissionLastProposedBy || "ADMIN").toUpperCase();
   const commissionLockUntil = data?.manufacturer?.commissionLockUntil ? new Date(data.manufacturer.commissionLockUntil) : null;
@@ -152,38 +155,46 @@ const Finance = () => {
           <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
             <div className="bg-white border border-slate-200 rounded-2xl p-4">
               <div className="flex items-center justify-between">
-                <p className="text-[10px] uppercase tracking-wider text-slate-500">Sales value</p>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Approved COGS Earned</p>
                 <TrendingUp className="w-4 h-4 text-emerald-600" />
               </div>
-              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.totalSales || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">{summary.totalOrders || 0} orders in range</p>
+              <p className="mt-3 text-2xl font-black text-slate-900">{money(summary.receivable || 0)}</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Gross COGS + commission · Remaining this period: {money(summary.remainingReceivable ?? summary.receivable ?? 0)}
+              </p>
             </div>
 
             <div className="bg-white border border-red-200 rounded-2xl p-4">
               <div className="flex items-center justify-between">
-                <p className="text-[10px] uppercase tracking-wider text-red-500">Account payable</p>
+                <p className="text-[10px] uppercase tracking-wider text-red-500 font-bold">Direct Sales Due to Platform</p>
                 <Wallet className="w-4 h-4 text-red-500" />
               </div>
               <p className="mt-3 text-2xl font-black text-red-700">{money(summary.payable || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">Manufacturing / supply cost due</p>
-            </div>
-
-            <div className="bg-white border border-emerald-200 rounded-2xl p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] uppercase tracking-wider text-emerald-500">Account receivable</p>
-                <FileText className="w-4 h-4 text-emerald-500" />
-              </div>
-              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.receivable || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">Completed deliveries credited to hub</p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Received this period: {money(summary.collectedAmount || 0)} · Remaining this period: {money(summary.remainingPayable ?? summary.payable ?? 0)}
+              </p>
             </div>
 
             <div className="bg-white border border-blue-200 rounded-2xl p-4">
               <div className="flex items-center justify-between">
-                <p className="text-[10px] uppercase tracking-wider text-blue-500">Net receivable</p>
+                <p className="text-[10px] uppercase tracking-wider text-blue-500 font-bold">Net Settlement Position</p>
                 <PackageCheck className="w-4 h-4 text-blue-500" />
               </div>
-              <p className="mt-3 text-2xl font-black text-blue-700">{money(summary.netReceivable || 0)}</p>
-              <p className="mt-1 text-[11px] text-slate-500">Receivable minus payable</p>
+              <p className={`mt-3 text-2xl font-black ${netOwed >= 0 ? "text-amber-700" : "text-blue-700"}`}>
+                {money(Math.abs(netOwed))}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {netOwed >= 0 ? "⚠️ Net payable owed to platform" : "✅ Net receivable owed to you"}
+              </p>
+            </div>
+
+            <div className="bg-white border border-emerald-200 rounded-2xl p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] uppercase tracking-wider text-emerald-500 font-bold">Payouts Received This Period</p>
+                <FileText className="w-4 h-4 text-emerald-500" />
+              </div>
+              <p className="mt-3 text-2xl font-black text-emerald-700">{money(summary.paidAmount || 0)}</p>
+              <p className="mt-1 text-[11px] text-slate-500">{transactions.length} settlement transaction(s)</p>
             </div>
           </div>
 
@@ -281,8 +292,8 @@ const Finance = () => {
                     <th className="px-4 py-3 font-semibold">Order</th>
                     <th className="px-4 py-3 font-semibold">Status</th>
                     <th className="px-4 py-3 font-semibold">Qty</th>
-                    <th className="px-4 py-3 font-semibold">Sales</th>
-                    <th className="px-4 py-3 font-semibold">Payable</th>
+                    <th className="px-4 py-3 font-semibold">Direct sales</th>
+                    <th className="px-4 py-3 font-semibold">Payable to admin</th>
                     <th className="px-4 py-3 font-semibold">Receivable</th>
                   </tr>
                 </thead>
@@ -309,9 +320,88 @@ const Finance = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-slate-700">{order.quantity}</td>
-                        <td className="px-4 py-3 text-slate-700">{money(order.amount)}</td>
+                        <td className="px-4 py-3 text-slate-700">{order.amount != null ? money(order.amount) : "—"}</td>
                         <td className="px-4 py-3 text-red-700 font-semibold">{money(order.payable)}</td>
                         <td className="px-4 py-3 text-emerald-700 font-semibold">{money(order.receivable)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Settlement & Payout Transactions Table (Summary view) */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
+            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <span className="text-base">💳</span>
+                <h2 className="text-sm font-bold text-slate-900">Settlement &amp; Payout Transactions</h2>
+              </div>
+              <span className="text-[11px] font-semibold text-slate-500">
+                {transactions.length} record{transactions.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-600 border-b border-slate-100">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Date &amp; Time</th>
+                    <th className="px-4 py-3 font-semibold">Transaction ID</th>
+                    <th className="px-4 py-3 font-semibold">Type</th>
+                    <th className="px-4 py-3 font-semibold">Account / Channel</th>
+                    <th className="px-4 py-3 font-semibold text-right">Net Amount Paid</th>
+                    <th className="px-4 py-3 font-semibold text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {transactions.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" className="px-4 py-8 text-center text-slate-400">
+                        No settlement or payout transactions recorded yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    transactions.map((tx) => (
+                      <tr key={tx.id} className="hover:bg-slate-50/80 transition">
+                        <td className="px-4 py-3 font-medium text-slate-700 whitespace-nowrap">
+                          {new Date(tx.date || tx.createdAt).toLocaleDateString("en-NP", {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-slate-500 text-[11px]">
+                          {tx.id.slice(0, 10)}...
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              tx.type === "OUTFLOW"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-blue-100 text-blue-700"
+                            }`}
+                          >
+                            {tx.type === "OUTFLOW" ? "Payout Received" : "Direct Margin Settled"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className="font-semibold text-slate-800">{tx.accountName || "Treasury Account"}</span>
+                          {tx.description ? (
+                            <p className="text-[10px] text-slate-400 truncate max-w-xs mt-0.5">{tx.description}</p>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-right font-black whitespace-nowrap">
+                          <span className={tx.type === "OUTFLOW" ? "text-emerald-700" : "text-blue-700"}>
+                            {tx.type === "OUTFLOW" ? "+" : "-"} {money(tx.amount)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            SETTLED
+                          </span>
+                        </td>
                       </tr>
                     ))
                   )}

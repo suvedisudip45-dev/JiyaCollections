@@ -6,6 +6,17 @@ import {
   reverseJournalEntryById,
 } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
+import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
+
+const getNepalDateBoundary = (value, endOfDay = false) => {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  if (!dateOnly) return value ? new Date(value) : null;
+  const [, year, month, day] = dateOnly;
+  const nepalOffsetMs = (5 * 60 + 45) * 60 * 1000;
+  const startOfDay = Date.UTC(Number(year), Number(month) - 1, Number(day)) - nepalOffsetMs;
+  return new Date(startOfDay + (endOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
+};
 
 // ==========================================
 // 1. CHART OF ACCOUNTS (COA)
@@ -189,13 +200,13 @@ export const createManualJournalEntry = async (req, res) => {
       referenceNumber: referenceNumber || "",
       description: description || "Manual Journal Entry",
       lines,
-      createdBy: "admin",
+      createdBy: req.auth?.accountId || req.auth?.profileId || "admin",
     });
 
     res.json({
       success: true,
-      message: `Journal entry ${result.journalEntry.journalNumber} created and posted successfully.`,
-      journalEntry: result.journalEntry,
+      message: `Journal entry ${result.journalNumber} created and posted successfully.`,
+      journalEntry: result,
     });
   } catch (error) {
     console.error("Create Manual Journal Entry Error:", error);
@@ -245,8 +256,8 @@ export const getGeneralLedgerReport = async (req, res) => {
       return res.json({ success: false, message: "Selected account not found." });
     }
 
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), 0, 1);
-    const end = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)) : new Date();
+    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
+    const end = endDate ? getNepalDateBoundary(endDate, true) : new Date();
 
     // 1. Calculate Opening Balance prior to startDate
     const priorLines = await prisma.journalLine.findMany({
@@ -363,15 +374,14 @@ export const getTrialBalanceReport = async (req, res) => {
   try {
     const { startDate, endDate, asOfDate } = req.query;
 
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
     const end = asOfDate
-      ? new Date(new Date(asOfDate).setHours(23, 59, 59, 999))
+      ? getNepalDateBoundary(asOfDate, true)
       : endDate
-      ? new Date(new Date(endDate).setHours(23, 59, 59, 999))
+      ? getNepalDateBoundary(endDate, true)
       : new Date();
 
     const accounts = await prisma.account.findMany({
-      where: { isActive: true },
       orderBy: { accountCode: "asc" },
     });
 
@@ -512,11 +522,28 @@ export const getRealtimeFinancialStatements = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
-    const start = startDate ? new Date(startDate) : new Date(new Date().getFullYear(), 0, 1);
-    const end = endDate ? new Date(new Date(endDate).setHours(23, 59, 59, 999)) : new Date();
+    const parseDateBoundary = (value, isEndOfDay) => {
+      const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+      if (!dateOnly) {
+        const date = new Date(value);
+        if (isEndOfDay && value) date.setHours(23, 59, 59, 999);
+        return date;
+      }
+
+      // Date inputs are Nepal calendar dates; keep boundaries stable regardless of server timezone.
+      const [, year, month, day] = dateOnly;
+      const nepalOffsetMs = (5 * 60 + 45) * 60 * 1000;
+      const startOfDay = Date.UTC(Number(year), Number(month) - 1, Number(day)) - nepalOffsetMs;
+      return new Date(startOfDay + (isEndOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
+    };
+
+    const start = startDate
+      ? parseDateBoundary(startDate, false)
+      : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
+    const end = endDate ? parseDateBoundary(endDate, true) : new Date();
 
     const [allAccounts, journalLines] = await Promise.all([
-      prisma.account.findMany({ where: { isActive: true } }),
+      prisma.account.findMany(),
       prisma.journalLine.findMany({
         where: {
           journalEntry: {
@@ -530,14 +557,17 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         },
       }),
     ]);
+    const balanceSheetFiscalYearStart = getNepaliFiscalPeriod(end).fiscalYearStart;
 
     // Compute Net Activity per account for (1) Cumulative and (2) In-Period
     const accountPeriodMap = {};
     const accountCumulativeMap = {};
+    const accountFiscalYearMap = {};
 
     allAccounts.forEach((a) => {
       accountPeriodMap[a.id] = 0;
       accountCumulativeMap[a.id] = 0;
+      accountFiscalYearMap[a.id] = 0;
     });
 
     journalLines.forEach((l) => {
@@ -550,6 +580,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       accountCumulativeMap[l.accountId] = (accountCumulativeMap[l.accountId] || 0) + net;
       if (isPeriod) {
         accountPeriodMap[l.accountId] = (accountPeriodMap[l.accountId] || 0) + net;
+      }
+      if (new Date(l.journalEntry.transactionDate) >= balanceSheetFiscalYearStart) {
+        accountFiscalYearMap[l.accountId] = (accountFiscalYearMap[l.accountId] || 0) + net;
       }
     });
 
@@ -568,6 +601,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let rent = 0;
     let utilities = 0;
     let marketing = 0;
+    let manufacturerCommission = 0;
+    let marketingPartnerCpa = 0;
+    let deliveryExpense = 0;
     let softwareTools = 0;
     let depreciationExpense = 0;
     let miscExpenses = 0;
@@ -592,6 +628,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       else if (code === "6200") rent += periodBal;
       else if (code === "6300") utilities += periodBal;
       else if (code === "6400") marketing += periodBal;
+      else if (code === "6410") manufacturerCommission += periodBal;
+      else if (code === "6420") marketingPartnerCpa += periodBal;
+      else if (code === "6430") deliveryExpense += periodBal;
       else if (code === "6500") softwareTools += periodBal;
       else if (code === "6600") depreciationExpense += periodBal;
       else if (code === "6700") miscExpenses += periodBal;
@@ -603,14 +642,75 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     const netRevenue = Number((grossSales + shippingRevenue - salesReturns - salesDiscounts).toFixed(2));
     const totalCOGS = Number((directCOGS + freightTransport + packagingExpense + scrapLoss - purchaseReturns).toFixed(2));
     const grossProfit = Number((netRevenue - totalCOGS).toFixed(2));
-    const totalOperatingExpenses = Number((salaries + rent + utilities + marketing + softwareTools + miscExpenses).toFixed(2));
+    const totalOperatingExpenses = Number((salaries + rent + utilities + marketing + manufacturerCommission + marketingPartnerCpa + deliveryExpense + softwareTools + miscExpenses).toFixed(2));
     const ebitda = Number((grossProfit - totalOperatingExpenses).toFixed(2));
     const netProfitBeforeTax = Number((ebitda - depreciationExpense - loanInterest - bankCharges + otherIncome).toFixed(2));
+
+    let fiscalYearGrossSales = 0;
+    let fiscalYearShippingRevenue = 0;
+    let fiscalYearSalesReturns = 0;
+    let fiscalYearSalesDiscounts = 0;
+    let fiscalYearDirectCOGS = 0;
+    let fiscalYearFreightTransport = 0;
+    let fiscalYearPackagingExpense = 0;
+    let fiscalYearPurchaseReturns = 0;
+    let fiscalYearScrapLoss = 0;
+    let fiscalYearSalaries = 0;
+    let fiscalYearRent = 0;
+    let fiscalYearUtilities = 0;
+    let fiscalYearMarketing = 0;
+    let fiscalYearManufacturerCommission = 0;
+    let fiscalYearMarketingPartnerCpa = 0;
+    let fiscalYearDeliveryExpense = 0;
+    let fiscalYearSoftwareTools = 0;
+    let fiscalYearMiscExpenses = 0;
+    let fiscalYearDepreciationExpense = 0;
+    let fiscalYearLoanInterest = 0;
+    let fiscalYearBankCharges = 0;
+    let fiscalYearOtherIncome = 0;
+
+    allAccounts.forEach((account) => {
+      const balance = Number(accountFiscalYearMap[account.id] || 0);
+      switch (account.accountCode) {
+        case "4100": fiscalYearGrossSales += balance; break;
+        case "4200": fiscalYearShippingRevenue += balance; break;
+        case "4500": fiscalYearSalesReturns += balance; break;
+        case "4600": fiscalYearSalesDiscounts += balance; break;
+        case "5100": fiscalYearDirectCOGS += balance; break;
+        case "5200": fiscalYearFreightTransport += balance; break;
+        case "5300": fiscalYearPackagingExpense += balance; break;
+        case "5400": fiscalYearPurchaseReturns += balance; break;
+        case "5500": fiscalYearScrapLoss += balance; break;
+        case "6100": fiscalYearSalaries += balance; break;
+        case "6200": fiscalYearRent += balance; break;
+        case "6300": fiscalYearUtilities += balance; break;
+        case "6400": fiscalYearMarketing += balance; break;
+        case "6410": fiscalYearManufacturerCommission += balance; break;
+        case "6420": fiscalYearMarketingPartnerCpa += balance; break;
+        case "6430": fiscalYearDeliveryExpense += balance; break;
+        case "6500": fiscalYearSoftwareTools += balance; break;
+        case "6600": fiscalYearDepreciationExpense += balance; break;
+        case "6700": fiscalYearMiscExpenses += balance; break;
+        case "7100": fiscalYearLoanInterest += balance; break;
+        case "7200": fiscalYearBankCharges += balance; break;
+        case "8100": fiscalYearOtherIncome += balance; break;
+        default: break;
+      }
+    });
+
+    const fiscalYearNetRevenue = fiscalYearGrossSales + fiscalYearShippingRevenue - fiscalYearSalesReturns - fiscalYearSalesDiscounts;
+    const fiscalYearTotalCogs = fiscalYearDirectCOGS + fiscalYearFreightTransport + fiscalYearPackagingExpense + fiscalYearScrapLoss - fiscalYearPurchaseReturns;
+    const fiscalYearTotalOpex = fiscalYearSalaries + fiscalYearRent + fiscalYearUtilities + fiscalYearMarketing +
+      fiscalYearManufacturerCommission + fiscalYearMarketingPartnerCpa + fiscalYearDeliveryExpense + fiscalYearSoftwareTools + fiscalYearMiscExpenses;
+    const currentFiscalYearNetProfit = Number((fiscalYearNetRevenue - fiscalYearTotalCogs - fiscalYearTotalOpex -
+      fiscalYearDepreciationExpense - fiscalYearLoanInterest - fiscalYearBankCharges + fiscalYearOtherIncome).toFixed(2));
 
     // 2. BALANCE SHEET BREAKDOWN (Cumulative as of endDate)
     let cash = 0;
     let bank = 0;
     let ar = 0;
+    let codReceivable = 0;
+    let gatewayClearing = 0;
     let inventory = 0;
     let inputVat = 0;
     let supplierAdvances = 0;
@@ -618,6 +718,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let accumulatedDepreciation = 0;
 
     let ap = 0;
+    let manufacturerPayable = 0;
+    let marketingPartnerPayable = 0;
+    let carrierPayable = 0;
     let outputVat = 0;
     let taxPayable = 0;
     let customerRefundsPayable = 0;
@@ -635,12 +738,17 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       if (code === "1110") cash += cumBal;
       else if (code === "1120") bank += cumBal;
       else if (code === "1130") ar += cumBal;
+      else if (code === "1170") codReceivable += cumBal;
+      else if (code === "1180") gatewayClearing += cumBal;
       else if (code === "1140") inventory += cumBal;
       else if (code === "1150") inputVat += cumBal;
       else if (code === "1160") supplierAdvances += cumBal;
       else if (["1510", "1520", "1530"].includes(code)) fixedAssetsGross += cumBal;
       else if (code === "1590") accumulatedDepreciation += cumBal;
       else if (code === "2110") ap += cumBal;
+      else if (code === "2160") manufacturerPayable += cumBal;
+      else if (code === "2170") marketingPartnerPayable += cumBal;
+      else if (code === "2180") carrierPayable += cumBal;
       else if (code === "2120") outputVat += cumBal;
       else if (code === "2130") taxPayable += cumBal;
       else if (code === "2140") customerRefundsPayable += cumBal;
@@ -652,15 +760,15 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     });
 
     const netFixedAssets = Number((fixedAssetsGross - accumulatedDepreciation).toFixed(2));
-    const totalCurrentAssets = Number((cash + bank + ar + inventory + inputVat + supplierAdvances).toFixed(2));
+    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + gatewayClearing + inventory + inputVat + supplierAdvances).toFixed(2));
     const totalAssets = Number((totalCurrentAssets + netFixedAssets).toFixed(2));
 
-    const totalCurrentLiabilities = Number((ap + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
+    const totalCurrentLiabilities = Number((ap + manufacturerPayable + marketingPartnerPayable + carrierPayable + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
     const totalLongTermLiabilities = Number(bankLoans.toFixed(2));
     const totalLiabilities = Number((totalCurrentLiabilities + totalLongTermLiabilities).toFixed(2));
 
     // Retained Earnings + Current Year Net Profit from P&L
-    const totalEquity = Number((shareCapital + sharePremium + retainedEarnings + netProfitBeforeTax).toFixed(2));
+    const totalEquity = Number((shareCapital + sharePremium + retainedEarnings + currentFiscalYearNetProfit).toFixed(2));
     const totalLiabilitiesAndEquity = Number((totalLiabilities + totalEquity).toFixed(2));
 
     const isBalanceSheetBalanced = Math.abs(totalAssets - totalLiabilitiesAndEquity) <= 0.05;
@@ -690,6 +798,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           rent,
           utilities,
           marketing,
+          manufacturerCommission,
+          marketingPartnerCpa,
+          deliveryExpense,
           softwareTools,
           miscExpenses,
           totalOperatingExpenses,
@@ -709,6 +820,8 @@ export const getRealtimeFinancialStatements = async (req, res) => {
             cash,
             bank,
             accountsReceivable: ar,
+            codReceivable,
+            gatewayClearing,
             inventory,
             inputVat,
             supplierAdvances,
@@ -724,6 +837,9 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         liabilities: {
           currentLiabilities: {
             accountsPayable: ap,
+            manufacturerPayable,
+            marketingPartnerPayable,
+            carrierPayable,
             outputVat,
             taxPayable,
             customerRefundsPayable,
@@ -740,7 +856,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           shareCapital,
           sharePremium,
           retainedEarnings,
-          currentPeriodNetProfit: netProfitBeforeTax,
+          currentFiscalYearNetProfit,
           totalEquity,
         },
         totalLiabilitiesAndEquity,
@@ -759,14 +875,15 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 
 export const getSubledgerReconciliation = async (req, res) => {
   try {
-    const [arAccount, apAccount, bankAccount, cashAccount, payables, receivables, accounts] = await Promise.all([
+    const [arAccount, apAccount, payables, receivables, accounts] = await Promise.all([
       prisma.account.findUnique({ where: { accountCode: "1130" } }),
       prisma.account.findUnique({ where: { accountCode: "2110" } }),
-      prisma.account.findUnique({ where: { accountCode: "1120" } }),
-      prisma.account.findUnique({ where: { accountCode: "1110" } }),
       prisma.accountPayable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_PAID"] } } }),
       prisma.accountReceivable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_RECEIVED"] } } }),
-      prisma.financialAccount.findMany({ where: { status: "ACTIVE" } }),
+      prisma.financialAccount.findMany({
+        where: { status: "ACTIVE" },
+        include: { accountingAccount: true },
+      }),
     ]);
 
     const arControlBalance = Number(arAccount?.currentBalance || 0);
@@ -775,15 +892,26 @@ export const getSubledgerReconciliation = async (req, res) => {
     const apControlBalance = Number(apAccount?.currentBalance || 0);
     const sumPayables = payables.reduce((acc, p) => acc + Number(p.remainingBalance || 0), 0);
 
-    const bankControlBalance = Number(bankAccount?.currentBalance || 0);
-    const cashControlBalance = Number(cashAccount?.currentBalance || 0);
-    const sumLiquidTreasury = accounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
+    const cashAndBankReconciliation = buildTreasuryGlReconciliation(accounts);
 
     res.json({
       success: true,
+      coverageStatus: "PARTIAL",
+      coverageGaps: [
+        "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
+        "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
+        "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+      ],
       reconciliation: {
+        coverageStatus: "PARTIAL",
+        coverageGaps: [
+          "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
+          "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
+          "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+        ],
         accountsReceivable: {
           glControlAccount: "1130 Accounts Receivable",
+          coverageStatus: "LEGACY_PARTIAL",
           glControlBalance: arControlBalance,
           subledgerTotal: Number(sumReceivables.toFixed(2)),
           variance: Number((arControlBalance - sumReceivables).toFixed(2)),
@@ -791,17 +919,15 @@ export const getSubledgerReconciliation = async (req, res) => {
         },
         accountsPayable: {
           glControlAccount: "2110 Accounts Payable",
+          coverageStatus: "LEGACY_PARTIAL",
           glControlBalance: apControlBalance,
           subledgerTotal: Number(sumPayables.toFixed(2)),
           variance: Number((apControlBalance - sumPayables).toFixed(2)),
           isReconciled: Math.abs(apControlBalance - sumPayables) <= 0.05,
         },
         cashAndBank: {
-          glControlAccounts: "1110 Cash + 1120 Bank Accounts",
-          glTotalBalance: Number((cashControlBalance + bankControlBalance).toFixed(2)),
-          treasuryAccountsTotal: Number(sumLiquidTreasury.toFixed(2)),
-          variance: Number((cashControlBalance + bankControlBalance - sumLiquidTreasury).toFixed(2)),
-          isReconciled: Math.abs(cashControlBalance + bankControlBalance - sumLiquidTreasury) <= 0.05,
+          glControlAccounts: "Explicitly mapped Treasury asset accounts",
+          ...cashAndBankReconciliation,
         },
       },
     });

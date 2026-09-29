@@ -1,13 +1,19 @@
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
 const TreasuryCash = ({ token }) => {
   const [accounts, setAccounts] = useState([]);
+  const [accountingAccounts, setAccountingAccounts] = useState([]);
+  const [mappingSelections, setMappingSelections] = useState({});
   const [transactions, setTransactions] = useState([]);
+  const [transactionPage, setTransactionPage] = useState(1);
+  const [transactionPagination, setTransactionPagination] = useState({ page: 1, total: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
+  const transferIdempotencyKey = useRef(null);
+  const directEntryIdempotencyKey = useRef(null);
 
   // Modal states
   const [showAddAccount, setShowAddAccount] = useState(false);
@@ -20,7 +26,7 @@ const TreasuryCash = ({ token }) => {
     accountType: "BANK",
     accountNumber: "",
     bankName: "",
-    initialBalance: "",
+    accountingAccountId: "",
   });
 
   const [transferData, setTransferData] = useState({
@@ -36,20 +42,41 @@ const TreasuryCash = ({ token }) => {
     amount: "",
     partyName: "",
     invoiceNumber: "",
-    category: "CAPITAL_INJECTION",
+    category: "MISC_INFLOW",
     description: "",
   });
 
-  const fetchData = async () => {
+  const fetchData = async (page = 1) => {
     try {
       setLoading(true);
-      const [accRes, txRes] = await Promise.all([
+      const [accRes, txRes, coaRes] = await Promise.all([
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/finance/cash-transactions`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/finance/cash-transactions`, {
+          headers: { token },
+          params: { page, limit: 12 },
+        }),
+        axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, { headers: { token } })
+          .catch(() => ({ data: { success: false, accounts: [] } })),
       ]);
 
-      if (accRes.data.success) setAccounts(accRes.data.accounts || []);
-      if (txRes.data.success) setTransactions(txRes.data.transactions || []);
+      if (accRes.data.success) {
+        const treasuryAccounts = accRes.data.accounts || [];
+        setAccounts(treasuryAccounts);
+        setMappingSelections(Object.fromEntries(treasuryAccounts.map((account) => [account.id, account.accountingAccountId || ""])));
+      }
+      if (coaRes.data.success) {
+        setAccountingAccounts((coaRes.data.accounts || []).filter((account) =>
+          account.isActive &&
+          account.accountType === "ASSET" &&
+          account.normalBalance === "DEBIT" &&
+          ["1110", "1120", "1180"].includes(account.accountCode)
+        ));
+      }
+      if (txRes.data.success) {
+        setTransactions(txRes.data.transactions || []);
+        setTransactionPagination(txRes.data.pagination || { page, total: 0, totalPages: 0 });
+        setTransactionPage(page);
+      }
     } catch (err) {
       console.error(err);
       toast.error("Failed to load treasury data");
@@ -65,6 +92,7 @@ const TreasuryCash = ({ token }) => {
   const handleCreateAccount = async (e) => {
     e.preventDefault();
     if (!newAccount.accountName) return toast.warn("Account name is required");
+    if (!newAccount.accountingAccountId) return toast.warn("Select the matching GL account");
     try {
       const res = await axios.post(`${backendUrl}/api/finance/create-account`, newAccount, {
         headers: { token },
@@ -72,11 +100,27 @@ const TreasuryCash = ({ token }) => {
       if (res.data.success) {
         toast.success("Account created successfully");
         setShowAddAccount(false);
-        setNewAccount({ accountName: "", accountType: "BANK", accountNumber: "", bankName: "", initialBalance: "" });
+        setNewAccount({ accountName: "", accountType: "BANK", accountNumber: "", bankName: "", accountingAccountId: "" });
         fetchData();
       } else {
         toast.error(res.data.message);
       }
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message);
+    }
+  };
+
+  const handleMapAccount = async (financialAccountId) => {
+    const accountingAccountId = mappingSelections[financialAccountId];
+    if (!accountingAccountId) return toast.warn("Select the matching GL account");
+    try {
+      const res = await axios.post(`${backendUrl}/api/finance/map-treasury-account`, {
+        financialAccountId,
+        accountingAccountId,
+      }, { headers: { token } });
+      if (!res.data.success) return toast.error(res.data.message || "Failed to map account");
+      toast.success("Treasury account mapped to the GL");
+      fetchData(transactionPage);
     } catch (err) {
       toast.error(err.response?.data?.message || err.message);
     }
@@ -93,11 +137,16 @@ const TreasuryCash = ({ token }) => {
     try {
       const res = await axios.post(
         `${backendUrl}/api/finance/cash-transfer`,
-        { ...transferData, type: "TRANSFER" },
+        {
+          ...transferData,
+          type: "TRANSFER",
+          idempotencyKey: transferIdempotencyKey.current || (transferIdempotencyKey.current = crypto.randomUUID()),
+        },
         { headers: { token } }
       );
       if (res.data.success) {
         toast.success("Fund transfer completed");
+        transferIdempotencyKey.current = null;
         setShowTransfer(false);
         setTransferData({ fromAccountId: "", toAccountId: "", amount: "", description: "" });
         fetchData();
@@ -117,6 +166,7 @@ const TreasuryCash = ({ token }) => {
     try {
       const payload = {
         type: directEntry.type,
+        idempotencyKey: directEntryIdempotencyKey.current || (directEntryIdempotencyKey.current = crypto.randomUUID()),
         amount: directEntry.amount,
         partyName: directEntry.partyName,
         invoiceNumber: directEntry.invoiceNumber,
@@ -130,6 +180,7 @@ const TreasuryCash = ({ token }) => {
       });
       if (res.data.success) {
         toast.success(`${directEntry.type} recorded successfully`);
+        directEntryIdempotencyKey.current = null;
         setShowDirectEntry(false);
         setDirectEntry({
           type: "INFLOW",
@@ -137,7 +188,7 @@ const TreasuryCash = ({ token }) => {
           amount: "",
           partyName: "",
           invoiceNumber: "",
-          category: "CAPITAL_INJECTION",
+          category: "MISC_INFLOW",
           description: "",
         });
         fetchData();
@@ -149,7 +200,9 @@ const TreasuryCash = ({ token }) => {
     }
   };
 
-  const totalLiquid = accounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
+  const liquidAccounts = accounts.filter((account) => ["CASH", "BANK", "WALLET"].includes(account.accountType));
+  const totalLiquid = liquidAccounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
+  const unmappedAccountCount = accounts.filter((account) => !account.accountingAccountId).length;
 
   return (
     <div className="space-y-8 pb-12">
@@ -208,12 +261,14 @@ const TreasuryCash = ({ token }) => {
             {currency}{totalLiquid.toLocaleString()}
           </p>
           <p className="text-xs text-slate-400 mt-1">
-            Across {accounts.length} active cash in hand, bank accounts, digital wallets &amp; escrow accounts.
+            Across {liquidAccounts.length} cash, bank, and wallet accounts. Carrier COD is not company cash.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span className="text-xs font-medium text-emerald-300">Live Solvency Synchronized</span>
+          <span className={`w-2.5 h-2.5 rounded-full ${unmappedAccountCount ? "bg-amber-400" : "bg-emerald-400"}`}></span>
+          <span className={`text-xs font-medium ${unmappedAccountCount ? "text-amber-200" : "text-emerald-300"}`}>
+            {unmappedAccountCount ? `${unmappedAccountCount} account(s) need GL mapping` : "All Treasury accounts mapped"}
+          </span>
         </div>
       </div>
 
@@ -268,6 +323,31 @@ const TreasuryCash = ({ token }) => {
                 {acc.accountNumber && (
                   <p className="text-[11px] font-mono text-slate-400 mt-0.5">{acc.accountNumber}</p>
                 )}
+                <div className="mt-4">
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-1">GL account</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={mappingSelections[acc.id] ?? acc.accountingAccountId ?? ""}
+                      onChange={(event) => setMappingSelections({ ...mappingSelections, [acc.id]: event.target.value })}
+                      className="min-w-0 flex-1 p-2 bg-slate-50 border border-slate-200 rounded text-xs"
+                    >
+                      <option value="">Select GL account...</option>
+                      {accountingAccounts.map((glAccount) => (
+                        <option key={glAccount.id} value={glAccount.id}>
+                          {glAccount.accountCode} - {glAccount.accountName}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => handleMapAccount(acc.id)}
+                      disabled={!mappingSelections[acc.id] || mappingSelections[acc.id] === acc.accountingAccountId}
+                      className="px-2 py-1 border border-slate-200 rounded text-[10px] font-semibold disabled:opacity-40"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="mt-6 pt-3 border-t border-slate-100 flex items-baseline justify-between">
@@ -288,7 +368,7 @@ const TreasuryCash = ({ token }) => {
             <h2 className="text-base font-bold text-slate-900">Treasury Transaction Log</h2>
             <p className="text-xs text-slate-400">Chronological history of inflows, outflows, and transfers</p>
           </div>
-          <span className="text-xs text-slate-400 font-semibold">{transactions.length} Records</span>
+          <span className="text-xs text-slate-400 font-semibold">{transactionPagination.total} Records</span>
         </div>
 
         <div className="overflow-x-auto mt-4">
@@ -356,6 +436,27 @@ const TreasuryCash = ({ token }) => {
             </tbody>
           </table>
         </div>
+        <div className="flex items-center justify-between mt-4 text-xs text-slate-500">
+          <span>Page {transactionPage} of {Math.max(transactionPagination.totalPages, 1)}</span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => fetchData(transactionPage - 1)}
+              disabled={transactionPage <= 1}
+              className="px-3 py-1.5 border border-slate-200 rounded disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => fetchData(transactionPage + 1)}
+              disabled={!transactionPagination.hasNextPage}
+              className="px-3 py-1.5 border border-slate-200 rounded disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* MODAL: ADD ACCOUNT */}
@@ -382,7 +483,7 @@ const TreasuryCash = ({ token }) => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div>
                 <div>
                   <label className="font-semibold text-slate-700 block mb-1">Account Type</label>
                   <select
@@ -393,20 +494,26 @@ const TreasuryCash = ({ token }) => {
                     <option value="BANK">Bank Account</option>
                     <option value="CASH">Cash in Hand</option>
                     <option value="WALLET">Digital Wallet (eSewa/Khalti)</option>
-                    <option value="ESCROW">Courier COD Escrow</option>
                   </select>
                 </div>
+              </div>
 
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Opening Balance ({currency})</label>
-                  <input
-                    type="number"
-                    placeholder="0"
-                    value={newAccount.initialBalance}
-                    onChange={(e) => setNewAccount({ ...newAccount, initialBalance: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                  />
-                </div>
+              <div>
+                <label className="font-semibold text-slate-700 block mb-1">GL account *</label>
+                <select
+                  value={newAccount.accountingAccountId}
+                  onChange={(event) => setNewAccount({ ...newAccount, accountingAccountId: event.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                  required
+                >
+                  <option value="">Select the matching accounting account...</option>
+                  {accountingAccounts.map((glAccount) => (
+                    <option key={glAccount.id} value={glAccount.id}>
+                      {glAccount.accountCode} - {glAccount.accountName}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">New Treasury accounts start at zero. Opening balances need an approved opening journal.</p>
               </div>
 
               <div>
@@ -564,7 +671,11 @@ const TreasuryCash = ({ token }) => {
                       <label className="font-semibold text-slate-700 block mb-1">Entry Type</label>
                       <select
                         value={directEntry.type}
-                        onChange={(e) => setDirectEntry({ ...directEntry, type: e.target.value })}
+                        onChange={(e) => setDirectEntry({
+                          ...directEntry,
+                          type: e.target.value,
+                          category: e.target.value === "INFLOW" ? "MISC_INFLOW" : "EXPENSE",
+                        })}
                         className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-bold"
                       >
                         <option value="INFLOW">🟢 Cash Inflow (+)</option>
@@ -600,17 +711,12 @@ const TreasuryCash = ({ token }) => {
                       >
                         {directEntry.type === "INFLOW" ? (
                           <>
-                            <option value="CAPITAL_INJECTION">Owner Capital Injection</option>
-                            <option value="SALES">Direct Sales Income</option>
-                            <option value="LOAN_DISBURSEMENT">Loan Received</option>
-                            <option value="MISC_INFLOW">Other Income</option>
+                            <option value="MISC_INFLOW">Other Non-Sales Receipt</option>
                           </>
                         ) : (
                           <>
                             <option value="EXPENSE">Direct Operating Expense</option>
                             <option value="DRAWINGS">Owner / Partner Drawings</option>
-                            <option value="LOAN_REPAYMENT">Loan Principal Repayment</option>
-                            <option value="SUPPLIER_PAYMENT">Vendor Direct Settlement</option>
                           </>
                         )}
                       </select>
@@ -628,6 +734,9 @@ const TreasuryCash = ({ token }) => {
                       />
                     </div>
                   </div>
+                  <p className="text-[11px] text-slate-500">
+                    Use this for simple, non-tax entries only. Sales, bills, loans, COD, and asset purchases use dedicated workflows.
+                  </p>
 
                   {/* Party Name & Invoice Number */}
                   <div className="grid grid-cols-2 gap-3">

@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { expireCampaignCards } from "./marketingCardService.js";
+import { postMarketingCpaRedemptionAccounting } from "./accountingPostingEngine.js";
 
 /**
  * Partner-scoped read-only service functions.
@@ -322,6 +323,7 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
       include: {
         campaign: true,
         benefit: true,
+        partner: true,
         customerLinks: { where: { status: { not: "CANCELLED" } } },
       },
     });
@@ -369,6 +371,16 @@ export const redeemPartnerBenefit = async ({ partnerId, cardCode, benefitId }) =
         metadata: { benefitName: benefit.name, value: benefit.value, redemptionId: redemption.id },
       },
     });
+
+    // Accrue Marketing CPA Double-Entry Accounting
+    if (card.campaign?.cpaRate > 0) {
+      await postMarketingCpaRedemptionAccounting(
+        { redemption, campaign: card.campaign, partner: card.partner },
+        { client: tx }
+      ).catch((err) => {
+        console.error("Marketing CPA accounting posting error:", err.message);
+      });
+    }
 
     return {
       success: true,

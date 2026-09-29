@@ -690,41 +690,47 @@ model Admin {
 }
 
 model FinancialAccount {
-  id             String            @id @default(uuid())
-  accountName    String            @unique
-  accountType    String            @default("BANK") // CASH, BANK, WALLET, ESCROW
-  accountNumber  String?           @default("")
-  bankName       String?           @default("")
-  currentBalance Float             @default(0)
-  currency       String            @default("NPR")
-  isDefault      Boolean           @default(false)
-  status         String            @default("ACTIVE")
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-  outflows       CashTransaction[] @relation("FromAccount")
-  inflows        CashTransaction[] @relation("ToAccount")
+  id                   String            @id @default(uuid())
+  accountName          String            @unique
+  accountType          String            @default("BANK") // CASH, BANK, WALLET, ESCROW
+  accountNumber        String?           @default("")
+  bankName             String?           @default("")
+  currentBalance       Float             @default(0)
+  currency             String            @default("NPR")
+  isDefault            Boolean           @default(false)
+  status               String            @default("ACTIVE")
+  accountingAccountId  String?
+  accountingAccount    Account?          @relation("FinancialAccountGLAccount", fields: [accountingAccountId], references: [id], onDelete: Restrict)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  outflows             CashTransaction[] @relation("FromAccount")
+  inflows              CashTransaction[] @relation("ToAccount")
+
+  @@index([accountingAccountId])
 }
 
 model CashTransaction {
-  id            String            @id @default(uuid())
-  date          DateTime          @default(now())
-  amount        Float
-  type          String // INFLOW, OUTFLOW, TRANSFER
-  fromAccountId String?
-  toAccountId   String?
-  category      String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
-  partyName     String?           @default("") // Whom paid to / Whom received from
-  invoiceNumber String?           @default("")
-  referenceId   String?           @default("")
-  description   String?           @db.Text
-  receiptUrl    String?           @default("")
-  fromAccount   FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
-  toAccount     FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
-  createdAt     DateTime          @default(now())
+  id             String            @id @default(uuid())
+  idempotencyKey String?           @unique @db.VarChar(191)
+  date           DateTime          @default(now())
+  amount         Float
+  type           String // INFLOW, OUTFLOW, TRANSFER
+  fromAccountId  String?
+  toAccountId    String?
+  category       String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
+  partyName      String?           @default("") // Whom paid to / Whom received from
+  invoiceNumber  String?           @default("")
+  referenceId    String?           @default("")
+  description    String?           @db.Text
+  receiptUrl     String?           @default("")
+  fromAccount    FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
+  toAccount      FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
+  createdAt      DateTime          @default(now())
 
   @@index([date])
   @@index([category])
   @@index([type])
+  @@index([referenceId])
 }
 
 model FixedAsset {
@@ -983,10 +989,12 @@ model Account {
   description     String?       @db.Text
   isSystemAccount Boolean       @default(false)
   isActive        Boolean       @default(true)
-  currentBalance  Float         @default(0)
+  currentBalance  Decimal       @default(0) @db.Decimal(20, 2)
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
   journalLines    JournalLine[]
+  mappings        AccountingAccountMapping[]
+  treasuryAccounts FinancialAccount[] @relation("FinancialAccountGLAccount")
 
   @@index([accountType])
   @@index([parentAccountId])
@@ -1031,8 +1039,10 @@ model JournalEntry {
   status             String        @default("POSTED") // DRAFT, POSTED, REVERSED, VOID
   reversedEntryId    String?
   reversalReason     String?       @db.Text
-  totalDebit         Float         @default(0)
-  totalCredit        Float         @default(0)
+  accountingEventId  String?       @unique
+  accountingEvent    AccountingEvent? @relation(fields: [accountingEventId], references: [id], onDelete: Restrict)
+  totalDebit         Decimal       @default(0) @db.Decimal(20, 2)
+  totalCredit        Decimal       @default(0) @db.Decimal(20, 2)
   createdBy          String?       @default("system")
   postedAt           DateTime      @default(now())
   createdAt          DateTime      @default(now())
@@ -1044,14 +1054,22 @@ model JournalEntry {
   @@index([status])
 }
 
+model JournalSequence {
+  fiscalYear Int      @id
+  nextNumber Int      @default(1)
+  updatedAt  DateTime @updatedAt
+}
+
 model JournalLine {
   id             String       @id @default(uuid())
   journalEntryId String
   journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   accountId      String
   account        Account      @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  debit          Float        @default(0)
-  credit         Float        @default(0)
+  accountingPartyId String?
+  accountingParty AccountingParty? @relation(fields: [accountingPartyId], references: [id], onDelete: Restrict)
+  debit          Decimal      @default(0) @db.Decimal(20, 2)
+  credit         Decimal      @default(0) @db.Decimal(20, 2)
   description    String?      @db.Text
   customerId     String?
   customerName   String?      @default("")
@@ -1066,6 +1084,98 @@ model JournalLine {
   @@index([accountId])
   @@index([customerId])
   @@index([supplierId])
+  @@index([accountingPartyId, createdAt])
+}
+
+model AccountingParty {
+  id             String               @id @default(uuid())
+  partyType      String               @db.VarChar(40) // CUSTOMER | MANUFACTURER | MARKETING_PARTNER | CARRIER | VENDOR | PAYMENT_PROVIDER | OTHER
+  sourceEntityId String               @db.VarChar(191)
+  legalName      String?              @db.VarChar(255)
+  displayName    String               @db.VarChar(255)
+  currency       String               @default("NPR") @db.VarChar(3)
+  status         String               @default("ACTIVE") @db.VarChar(24)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  journalLines   JournalLine[]
+  documents      AccountingDocument[]
+
+  @@unique([partyType, sourceEntityId])
+  @@index([partyType, status])
+  @@index([displayName])
+}
+
+model AccountingAccountMapping {
+  id         String   @id @default(uuid())
+  mappingKey String   @unique @db.VarChar(96)
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([accountId])
+}
+
+model AccountingEvent {
+  id             String        @id @default(uuid())
+  idempotencyKey String        @unique @db.VarChar(191)
+  sourceType     String        @db.VarChar(64)
+  sourceId       String        @db.VarChar(191)
+  sourceVersion  Int           @default(1)
+  eventType      String        @db.VarChar(64)
+  effectiveAt    DateTime
+  status         String        @default("PENDING") @db.VarChar(24) // PENDING | PROCESSING | POSTED | FAILED | BLOCKED
+  payload        Json
+  payloadHash    String        @db.Char(64)
+  attemptCount   Int           @default(0)
+  lastError      String?       @db.Text
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  journalEntry   JournalEntry?
+
+  @@index([status, createdAt])
+  @@index([sourceType, sourceId])
+  @@index([effectiveAt])
+}
+
+model AccountingDocument {
+  id              String                 @id @default(uuid())
+  documentType    String                 @db.VarChar(32) // INVOICE | BILL | CREDIT_NOTE | DEBIT_NOTE
+  documentNumber  String                 @unique @db.VarChar(64)
+  partyId         String
+  party           AccountingParty        @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  side            String                 @db.VarChar(16) // RECEIVABLE | PAYABLE
+  sourceType      String                 @db.VarChar(64)
+  sourceId        String                 @db.VarChar(191)
+  issueDate       DateTime               @default(now())
+  dueDate         DateTime?
+  currency        String                 @default("NPR") @db.VarChar(3)
+  originalAmount  Decimal                @db.Decimal(20, 2)
+  allocatedAmount Decimal                @default(0) @db.Decimal(20, 2)
+  remainingAmount Decimal                @db.Decimal(20, 2)
+  status          String                 @default("OPEN") @db.VarChar(24) // OPEN | PARTIALLY_PAID | PAID | CANCELLED
+  notes           String?                @db.Text
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  allocations     AccountingAllocation[]
+
+  @@index([partyId, side, status])
+  @@index([sourceType, sourceId])
+  @@index([dueDate])
+}
+
+model AccountingAllocation {
+  id             String             @id @default(uuid())
+  documentId     String
+  document       AccountingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  journalEntryId String?
+  amount         Decimal            @db.Decimal(20, 2)
+  allocatedAt    DateTime           @default(now())
+  notes          String?            @db.Text
+
+  @@index([documentId, allocatedAt])
+  @@index([journalEntryId])
 }
 
 // ============================================================
@@ -1596,24 +1706,65 @@ model DeliveryFinancialSettlement {
 
 // Operating, Marketing & Overhead Expenses Model
 model OperatingExpense {
-  id            String   @id @default(uuid())
-  title         String
-  category      String // MARKETING | RENT | ELECTRICITY | SALARIES | UTILITIES | MISCELLANEOUS | MAINTENANCE
-  amount        Float // Total expense amount
-  isVatBill     Boolean  @default(false)
-  vatAmount     Float    @default(0) // Input VAT embedded if 13% VAT bill provided
-  date          DateTime @default(now())
-  paymentMethod String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
-  vendorName    String? // Vendor / landlord / service provider
-  invoiceNumber String? // Bill reference
-  notes         String?  @db.Text
-  createdBy     String   @default("ADMIN")
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                 String   @id @default(uuid())
+  title              String
+  category           String // MARKETING | RENT | ELECTRICITY | SALARIES | UTILITIES | MISCELLANEOUS | MAINTENANCE | PRINTING | CUSTOM
+  amount             Float // Total expense amount
+  isVatBill          Boolean  @default(false)
+  vatAmount          Float    @default(0) // Input VAT embedded if 13% VAT bill provided
+  date               DateTime @default(now())
+  paymentMethod      String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
+  paymentStatus      String   @default("PAID") // PAID | PAYABLE
+  financialAccountId String?
+  payableId          String?
+  vendorName         String? // Vendor / landlord / service provider / employee
+  invoiceNumber      String? // Bill reference
+  notes              String?  @db.Text
+  createdBy          String   @default("ADMIN")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([category])
   @@index([date])
   @@index([isVatBill])
+  @@index([paymentStatus])
+  @@index([financialAccountId])
+  @@index([payableId])
+}
+
+// Direct & Miscellaneous Incomes Model
+model DirectIncome {
+  id                 String   @id @default(uuid())
+  title              String
+  category           String // DIRECT_SALES | SCRAP_SALES | CUSTOM_WORK | PRINTING_SERVICE | COMMISSION | OTHER
+  amount             Float
+  date               DateTime @default(now())
+  toAccountId        String
+  payerName          String?
+  invoiceNumber      String?
+  notes              String?  @db.Text
+  createdBy          String   @default("ADMIN")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([category])
+  @@index([date])
+  @@index([toAccountId])
+}
+
+// Dynamic Custom Income & Expense Categories
+model FinancialCategory {
+  id          String   @id @default(uuid())
+  type        String // EXPENSE | INCOME
+  name        String
+  code        String   @unique
+  description String?  @db.Text
+  color       String?  @default("#6366f1")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type, isActive])
 }
 
 // Nepal Location Mapping (4-character unique code map for provinces and 77 districts)
@@ -1629,4 +1780,39 @@ model LocationMapping {
   @@index([type])
   @@index([name])
   @@index([province])
+}
+
+// ============================================================
+// SETTLEMENT REVERSION AUDIT MODEL
+// Tracks every admin-initiated reversal of a settled payable,
+// receivable, or manufacturer net payout.
+// ============================================================
+model SettlementReversion {
+  id                  String   @id @default(uuid())
+  // What was reversed
+  reversionType       String   @db.VarChar(48) // PAYABLE | RECEIVABLE | MANUFACTURER_PAYMENT | NCM_COD
+  originalRecordId    String   @db.VarChar(191) // AccountPayable.id | AccountReceivable.id | CashTransaction.id
+  cashTransactionId   String?  @db.VarChar(191) // The original CashTransaction being reversed
+  reversalTransactionId String? @db.VarChar(191) // New CashTransaction created for the reversal (INFLOW for payable reversal, OUTFLOW for receivable reversal)
+  // Settlement snapshot at time of reversal
+  originalAmount      Float    // Amount that was paid/collected in the original settlement
+  offsetAmount        Float    @default(0) // Bilateral netting offset that was applied (manufacturer only)
+  partyName           String?  @db.VarChar(255) // Manufacturer / payee name
+  accountId           String?  @db.VarChar(191) // FinancialAccount used in original settlement
+  accountName         String?  @db.VarChar(255)
+  // Post-reversion state
+  priorStatus         String   @db.VarChar(32)  // Status before reversion (SETTLED | PARTIALLY_PAID | etc.)
+  restoredStatus      String   @db.VarChar(32)  // Status after reversion (UNPAID | PARTIALLY_PAID)
+  priorPaidAmount     Float    @default(0)
+  priorRemainingBalance Float  @default(0)
+  // Admin audit
+  revertedByAdminId   String?  @db.VarChar(191)
+  revertedByEmail     String?  @db.VarChar(255)
+  revertReason        String   @db.Text
+  revertedAt          DateTime @default(now())
+  createdAt           DateTime @default(now())
+
+  @@index([reversionType, originalRecordId])
+  @@index([revertedAt])
+  @@index([revertedByAdminId])
 }

@@ -17,6 +17,7 @@ import {
 } from "./ncmClient.js";
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
+import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -876,6 +877,19 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
         }).catch((err) => {
           logger.warn("Financial settlement upsert notice", { error: err.message });
         });
+      }
+
+      // Post Delivered Order Double-Entry Accounting
+      if (deliveryState === "DELIVERED") {
+        const fullOrder = await tx.order.findUnique({ where: { id: delivery.orderId } });
+        if (fullOrder) {
+          await postDeliveredOrderAccounting(
+            { order: fullOrder, deliveryOrder: delivery },
+            { client: tx }
+          ).catch((err) => {
+            logger.error("Delivered order accounting posting notice", { error: err.message, orderId: fullOrder.id });
+          });
+        }
       }
 
       return record;

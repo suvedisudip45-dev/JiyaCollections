@@ -212,12 +212,14 @@ const Sidebar = () => {
         <SectionGroup
           label="General Ledger"
           icon={Icon.gl}
-          routes={["/chart-of-accounts", "/journal-entries", "/general-ledger", "/trial-balance"]}
+          routes={["/chart-of-accounts", "/journal-entries", "/general-ledger", "/trial-balance", "/fiscal-periods", "/accounting-health"]}
         >
-          <NavItem to="/chart-of-accounts" icon={Icon.chartAcct} label="Chart of Accounts" />
-          <NavItem to="/journal-entries"   icon={Icon.journal}   label="Journal Entries" />
-          <NavItem to="/general-ledger"    icon={Icon.ledger}    label="General Ledger" />
-          <NavItem to="/trial-balance"     icon={Icon.balance}   label="Trial Balance" />
+          <NavItem to="/chart-of-accounts"  icon={Icon.chartAcct}  label="Chart of Accounts" />
+          <NavItem to="/journal-entries"    icon={Icon.journal}    label="Journal Entries" />
+          <NavItem to="/general-ledger"     icon={Icon.ledger}     label="General Ledger" />
+          <NavItem to="/trial-balance"      icon={Icon.balance}    label="Trial Balance" />
+          <NavItem to="/fiscal-periods"     icon={Icon.lock}       label="Fiscal Periods" />
+          <NavItem to="/accounting-health"  icon={Icon.ops}        label="Accounting Health" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />
