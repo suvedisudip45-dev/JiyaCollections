@@ -41,7 +41,7 @@ const Cart = () => {
           <div className="text-center py-16 text-gray-500">
             <p className="text-lg">Your cart is currently empty.</p>
             <button
-              onClick={() => navigate("/collection")}
+              onClick={() => navigate("/shop")}
               className="mt-4 bg-black text-white px-6 py-2 text-sm rounded hover:bg-gray-800 cursor-pointer"
             >
               Shop Now
@@ -93,6 +93,10 @@ const Cart = () => {
                     <p className="text-xs sm:text-lg font-medium">
                       {productData.name}
                     </p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                      {Array.isArray(productData.categories) ? productData.categories.join(", ") : productData.category || "Uncategorized"}
+                    </p>
+                    {productData.description && <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-gray-500 line-clamp-2">{productData.description}</p>}
                     <div className="flex items-center gap-3 sm:gap-5 mt-2 flex-wrap">
                       {productData.discount > 0 ? (
                         <p className="flex items-center gap-2">
@@ -108,6 +112,9 @@ const Cart = () => {
                           {currency} {productData.price}
                         </p>
                       )}
+                      <p className="text-xs font-semibold text-gray-700">
+                        Line total: {currency}{(Math.round(Number(productData.price) * (1 - Number(productData.discount || 0) / 100)) * item.quantity).toLocaleString()}
+                      </p>
                       <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm font-semibold">
                         Size: {item.size}
                       </p>
@@ -198,6 +205,7 @@ const Cart = () => {
                   }
                 }
 
+                sessionStorage.removeItem("pendingComboBundlePurchase");
                 if (!token) {
                   toast.info("Please sign in or create an account to proceed with checkout");
                   navigate("/login", { state: { from: "/place-order" } });

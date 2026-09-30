@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ADMIN_ROUTE_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
 import { createAuthorize } from "../middleware/authorize.js";
 import { requireRole } from "../middleware/unifiedAuth.js";
 import { hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
@@ -101,4 +102,8 @@ test("required password rotation permits only the Admin password-change permissi
   const denied = await invoke(createAuthorize(permissionResolver)("access:admin_users_read"), request);
   assert.equal(denied.code, 403);
   assert.equal(resolverCalls, 1);
+});
+
+test("combo bundle management permissions are exposed to the admin route map", () => {
+  assert.deepEqual(ADMIN_ROUTE_PERMISSIONS["/combo-bundles"], ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"]);
 });

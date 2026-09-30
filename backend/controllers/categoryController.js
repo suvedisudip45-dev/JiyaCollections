@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { parseProductCategoryNames } from "../services/productCategoryRules.js";
 
 // Add Category
 const addCategory = async (req, res) => {
@@ -49,50 +50,44 @@ const listCategories = async (req, res) => {
   }
 };
 
-const listCollectionNavigation = async (req, res) => {
+const listCategoryNavigation = async (req, res) => {
   try {
     const [categories, products] = await Promise.all([
-      prisma.category.findMany({ orderBy: { name: "asc" } }),
+      prisma.category.findMany({
+        orderBy: { name: "asc" },
+        include: {
+          comboBundles: {
+            where: { status: "ACTIVE" },
+            orderBy: { name: "asc" },
+            select: { id: true, name: true, slug: true, image: true, bannerImage: true },
+          },
+        },
+      }),
       prisma.product.findMany({
         where: { published: true },
-        select: { category: true, subCategory: true, newInStore: true },
+        select: { category: true, subCategory: true },
       }),
     ]);
 
-    const groups = new Map();
-
-    products.forEach((product) => {
-      let productCategories = [];
-      try {
-        productCategories = Array.isArray(product.category)
-          ? product.category
-          : JSON.parse(product.category || "[]");
-      } catch {
-        productCategories = String(product.category || "")
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-      }
-
-      productCategories.forEach((category) => {
-        if (!groups.has(category)) {
-          groups.set(category, { subcategories: new Set(), newArrivalCount: 0 });
-        }
-        const group = groups.get(category);
-        if (product.subCategory) group.subcategories.add(product.subCategory);
-        if (product.newInStore) group.newArrivalCount += 1;
-      });
-    });
+    const navigation = categories.map((category) => {
+      const categoryProducts = products.filter((product) =>
+        parseProductCategoryNames(product.category).some(
+          (name) => name.toLowerCase() === category.name.trim().toLowerCase()
+        )
+      );
+      return {
+        id: category.id,
+        name: category.name,
+        productCount: categoryProducts.length,
+        subcategories: [...new Set(categoryProducts.map((product) => product.subCategory).filter(Boolean))]
+          .sort((first, second) => first.localeCompare(second)),
+        comboBundles: category.comboBundles,
+      };
+    }).filter((category) => category.productCount > 0 || category.comboBundles.length > 0);
 
     res.json({
       success: true,
-      navigation: [...groups.entries()]
-        .sort(([first], [second]) => first.localeCompare(second))
-        .map(([name, group]) => ({
-        name,
-        subcategories: [...group.subcategories].sort((a, b) => a.localeCompare(b)),
-        newArrivalCount: group.newArrivalCount,
-      })),
+      navigation,
     });
   } catch (error) {
     console.log(error);
@@ -114,4 +109,4 @@ const removeCategory = async (req, res) => {
   }
 };
 
-export { addCategory, listCategories, listCollectionNavigation, removeCategory };
+export { addCategory, listCategories, listCategoryNavigation, removeCategory };

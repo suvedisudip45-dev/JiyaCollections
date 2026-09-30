@@ -94,6 +94,7 @@ const addProduct = async (req, res) => {
       bestseller,
       newInStore,
       showInNavigation,
+      isUnisex,
       discount,
       costPrice,
       stockQuantity,
@@ -198,6 +199,7 @@ const addProduct = async (req, res) => {
     }
     const categoriesArray = normalizeCategories(category);
     const isNewInStore = newInStore === "true" || newInStore === true;
+    const isProductUnisex = isUnisex === "true" || isUnisex === true;
 
     const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
     const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
@@ -239,6 +241,7 @@ const addProduct = async (req, res) => {
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
       showInNavigation: showInNavigation === "true" || showInNavigation === true,
+      isUnisex: isProductUnisex,
       discount: numDiscount,
       costPrice: numCostPrice,
       stockQuantity: Math.max(0, qty),
@@ -291,6 +294,7 @@ const updateProduct = async (req, res) => {
       bestseller,
       newInStore,
       showInNavigation,
+      isUnisex,
       discount,
       costPrice,
       stockQuantity,
@@ -431,6 +435,7 @@ const updateProduct = async (req, res) => {
     const isShownInNavigation = showInNavigation !== undefined
       ? showInNavigation === "true" || showInNavigation === true
       : undefined;
+    const isProductUnisex = isUnisex !== undefined ? isUnisex === "true" || isUnisex === true : undefined;
 
     const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
     const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
@@ -476,6 +481,7 @@ const updateProduct = async (req, res) => {
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
       ...(isShownInNavigation !== undefined && { showInNavigation: isShownInNavigation }),
+      ...(isProductUnisex !== undefined && { isUnisex: isProductUnisex }),
       ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
       ...(validatedCostPrice !== undefined && { costPrice: validatedCostPrice }),
       stockQuantity: Math.max(0, newQty),
@@ -490,6 +496,21 @@ const updateProduct = async (req, res) => {
       where: { id },
       data: updateData,
     });
+
+    const productCategories = normalizeCategories(categoryStorage ?? existingProduct.category)
+      .map((name) => name.toLowerCase());
+    const bundleMemberships = await prisma.comboBundleProduct.findMany({
+      where: { productId: id },
+      include: { comboBundle: { include: { category: { select: { name: true } } } } },
+    });
+    const invalidComboBundleIds = bundleMemberships
+      .filter((membership) => !productCategories.includes(membership.comboBundle.category.name.toLowerCase()))
+      .map((membership) => membership.comboBundleId);
+    if (invalidComboBundleIds.length > 0) {
+      await prisma.comboBundleProduct.deleteMany({
+        where: { productId: id, comboBundleId: { in: invalidComboBundleIds } },
+      });
+    }
 
     res.json({ success: true, message: "Product and Varieties Updated Successfully" });
   } catch (error) {

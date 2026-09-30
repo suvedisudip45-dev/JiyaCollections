@@ -391,7 +391,7 @@ const Product = () => {
         </Link>
         <span className="text-gray-300">/</span>
         <Link
-          to="/collection"
+          to="/shop"
           className="hover:text-black transition-colors font-medium"
         >
           Shop
@@ -400,7 +400,7 @@ const Product = () => {
           <>
             <span className="text-gray-300">/</span>
             <Link
-              to={`/collection?category=${encodeURIComponent(
+              to={`/shop?category=${encodeURIComponent(
                 productData.category
               )}`}
               className="hover:text-black transition-colors font-medium"
@@ -413,7 +413,7 @@ const Product = () => {
           <>
             <span className="text-gray-300">/</span>
             <Link
-              to={`/collection?subCategory=${encodeURIComponent(
+              to={`/shop?subCategory=${encodeURIComponent(
                 productData.subCategory
               )}`}
               className="hover:text-black transition-colors font-medium"

@@ -21,7 +21,7 @@ const Wishlist = () => {
       ) : (
         <div className="border border-dashed border-[var(--line)] px-6 py-20 text-center">
           <p className="text-lg font-semibold">Nothing saved yet.</p>
-          <Link to="/collection" className="mt-5 inline-flex bg-[var(--ink)] px-6 py-3 text-xs font-bold uppercase tracking-[0.14em] text-white">Explore the collection</Link>
+          <Link to="/shop" className="mt-5 inline-flex bg-[var(--ink)] px-6 py-3 text-xs font-bold uppercase tracking-[0.14em] text-white">Explore the shop</Link>
         </div>
       )}
     </section>

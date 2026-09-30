@@ -24,6 +24,7 @@ const permissionDefinitions = [
   ["order:list_all", "Read all orders."], ["order:list_admin", "Read administrative order views."], ["order:customer_lookup", "Look up order customers."],
   ["order:customer_verify", "Verify order customers."], ["order:admin_create", "Create orders administratively."],
   ["category:create", "Create categories."], ["category:delete", "Delete categories."],
+  ["combo_bundle:create", "Create combo bundles."], ["combo_bundle:update", "Update combo bundles."], ["combo_bundle:delete", "Delete combo bundles."],
   ["subcategory:create", "Create subcategories."], ["subcategory:update", "Update subcategories."], ["subcategory:delete", "Delete subcategories."],
   ["color:create", "Create colors."], ["color:delete", "Delete colors."],
   ["review:admin_list", "Read administrative review listings."], ["review:admin_delete", "Delete reviews administratively."],

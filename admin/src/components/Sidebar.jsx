@@ -160,11 +160,12 @@ const Sidebar = () => {
           icon={Icon.catalog}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.catalog}
           defaultOpen={true}
-          routes={["/list", "/add", "/categories", "/special-offers"]}
+          routes={["/list", "/add", "/categories", "/combo-bundles", "/special-offers"]}
         >
           <NavItem to="/list"          icon={Icon.products}   label="All Products" />
           <NavItem to="/add"           icon={Icon.add}        label="Add Product" />
           <NavItem to="/categories"    icon={Icon.categories} label="Categories & Types" />
+          <NavItem to="/combo-bundles" icon={Icon.categories} label="Combo Bundles" />
           <NavItem to="/special-offers" icon={Icon.offers}   label="Festive Campaigns" />
         </SectionGroup>
 

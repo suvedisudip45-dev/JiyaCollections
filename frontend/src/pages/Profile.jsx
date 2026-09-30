@@ -885,7 +885,7 @@ const Profile = () => {
           </button>
 
           <button
-            onClick={() => navigate("/collection")}
+            onClick={() => navigate("/shop")}
             className="flex items-center gap-4 p-4 bg-white border border-gray-200 rounded-2xl shadow-sm hover:border-gray-400 hover:shadow-md active:scale-[0.98] transition-all text-left group"
           >
             <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center group-hover:bg-black group-hover:text-white transition-all">
@@ -895,7 +895,7 @@ const Profile = () => {
               </svg>
             </div>
             <div>
-              <p className="font-semibold text-sm text-gray-900">Browse Collection</p>
+              <p className="font-semibold text-sm text-gray-900">Browse Shop</p>
               <p className="text-xs text-gray-500">Explore our latest arrivals</p>
             </div>
             <svg className="w-4 h-4 text-gray-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">

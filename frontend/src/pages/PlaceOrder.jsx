@@ -1,9 +1,11 @@
 /* eslint-disable no-unused-vars */
 import React, { useContext, useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
 import { assets } from "../assets/assets";
 import { ShopContext } from "../context/ShopContext";
+import { getSharedComboBundleVariants } from "../utils/comboBundleVariants";
 import { clearAuthTokens } from "../auth/tokenStorage";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -22,6 +24,7 @@ const isValidNepalMobileNumber = (value = "") => {
 };
 
 const PlaceOrder = () => {
+  const location = useLocation();
   const [
     method, setMethod
   ] = useState("cod");
@@ -41,6 +44,47 @@ const PlaceOrder = () => {
     getMaxStock,
     getProductsData,
   } = useContext(ShopContext);
+
+  const [comboBundlePurchase, setComboBundlePurchase] = useState(() => {
+    if (location.state?.comboBundlePurchase) return location.state.comboBundlePurchase;
+    try {
+      return JSON.parse(sessionStorage.getItem("pendingComboBundlePurchase") || "null");
+    } catch {
+      return null;
+    }
+  });
+  const [comboBundleData, setComboBundleData] = useState(null);
+  const [comboBundleLoadError, setComboBundleLoadError] = useState("");
+  const checkoutBundleVariant = comboBundleData
+    ? getSharedComboBundleVariants(
+        (comboBundleData.products || []).map((entry) => entry.product).filter(Boolean),
+        Number(comboBundlePurchase?.quantity || 1)
+      ).find((variant) => variant.size.toLowerCase() === String(comboBundlePurchase?.size || "").toLowerCase())
+    : null;
+  const orderSubtotal = comboBundleData
+    ? Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0) * Number(comboBundlePurchase?.quantity || 1)
+    : getCartAmount();
+
+  const checkoutReviewItems = comboBundleData
+    ? [{
+        comboBundle: comboBundleData,
+        size: comboBundlePurchase?.size || "",
+        color: comboBundlePurchase?.color || "",
+        quantity: Number(comboBundlePurchase?.quantity || 1),
+        unitPrice: Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0),
+        lineTotal: orderSubtotal,
+      }]
+    : Object.entries(cartItems).flatMap(([productId, variants]) => {
+        const product = products.find((entry) => entry._id === productId || entry.id === productId);
+        if (!product) return [];
+        return Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
+          const [size, color] = variantKey.split("-");
+          const unitPrice = Number(product.discount) > 0
+            ? Math.round(Number(product.price) * (1 - Number(product.discount) / 100))
+            : Number(product.price || 0);
+          return { product, size, color: color || "", quantity: Number(quantity), unitPrice, lineTotal: unitPrice * Number(quantity) };
+        });
+      });
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -145,6 +189,37 @@ const PlaceOrder = () => {
   };
 
   useEffect(() => {
+    if (!comboBundlePurchase?.comboBundleId) {
+      setComboBundleData(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const fetchComboBundle = async () => {
+      try {
+        setComboBundleLoadError("");
+        const response = await axios.get(
+          `${backendUrl}/api/combo-bundles/${encodeURIComponent(comboBundlePurchase.comboBundleId)}`,
+          { params: { categoryId: comboBundlePurchase.categoryId || undefined, status: "ACTIVE" } }
+        );
+        const comboBundle = response.data.success ? response.data.comboBundle : null;
+        if (!comboBundle || !Array.isArray(comboBundle.products) || comboBundle.products.length === 0) {
+          throw new Error(response.data.message || "This combo bundle is no longer available for checkout.");
+        }
+        if (!cancelled) setComboBundleData(comboBundle);
+      } catch (error) {
+        if (!cancelled) {
+          setComboBundleData(null);
+          setComboBundleLoadError(error.response?.data?.message || error.message || "Unable to load this combo bundle.");
+        }
+      }
+    };
+
+    fetchComboBundle();
+    return () => { cancelled = true; };
+  }, [backendUrl, comboBundlePurchase?.comboBundleId, comboBundlePurchase?.categoryId]);
+
+  useEffect(() => {
     if (!token) {
       toast.info("Please sign in or create an account to proceed with checkout");
       navigate("/login", { state: { from: "/place-order" } });
@@ -200,7 +275,7 @@ const PlaceOrder = () => {
   useEffect(() => {
     let isCancelled = false;
     const updateRates = async () => {
-      const subtotal = getCartAmount();
+      const subtotal = orderSubtotal;
       const district = formData.district || "Kathmandu";
       const province = formData.province || "Bagmati Province";
 
@@ -274,7 +349,7 @@ const PlaceOrder = () => {
     return () => {
       isCancelled = true;
     };
-  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData]);
+  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData, orderSubtotal]);
 
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
@@ -417,36 +492,48 @@ const PlaceOrder = () => {
     try {
       setSubmitting(true);
       let orderItems = [];
-      for (const items in cartItems) {
-        for (const item in cartItems[items]) {
-          if (cartItems[items][item] > 0) {
-            const itemInfo = structuredClone(
-              products.find((product) => product._id === items)
-            );
-            if (itemInfo) {
-              const [size, color] = item.split("-");
+      if (comboBundleData) {
+        if (!checkoutBundleVariant) {
+          toast.error("The selected combo bundle size is no longer available for every included item.");
+          return;
+        }
+        for (const [index, entry] of comboBundleData.products.entries()) {
+          const product = entry.product;
+          if (!product) continue;
+          const itemInfo = structuredClone(product);
+          itemInfo.size = checkoutBundleVariant.size;
+          itemInfo.color = checkoutBundleVariant.productVariants[index]?.color || "";
+          itemInfo.quantity = Number(comboBundlePurchase.quantity || 1);
+          const maxStock = getMaxStock(itemInfo, itemInfo.size, itemInfo.color);
+          if (maxStock < itemInfo.quantity) {
+            toast.error("The selected combo bundle variant is no longer available for every included item.");
+            return;
+          }
+          orderItems.push(itemInfo);
+        }
+      } else {
+        for (const productId in cartItems) {
+          for (const variantKey in cartItems[productId]) {
+            if (cartItems[productId][variantKey] > 0) {
+              const itemInfo = structuredClone(products.find((product) => product._id === productId));
+              if (!itemInfo) continue;
+              const [size, color] = variantKey.split("-");
               itemInfo.size = size;
               itemInfo.color = color || "";
-              itemInfo.quantity = cartItems[items][item];
-
+              itemInfo.quantity = cartItems[productId][variantKey];
               const maxStock = getMaxStock(itemInfo, size, color);
-              if (maxStock <= 0) {
-                toast.error(`"${itemInfo.name}" (${size}/${color || 'Default'}) is out of stock.`);
+              if (maxStock < itemInfo.quantity) {
+                toast.error(`"${itemInfo.name}" (${size}/${color || "Default"}) exceeds available stock (${maxStock}). Please adjust your cart.`);
                 return;
               }
-              if (itemInfo.quantity > maxStock) {
-                toast.error(`"${itemInfo.name}" (${size}/${color || 'Default'}) exceeds available stock (${maxStock}). Please adjust your cart.`);
-                return;
-              }
-
               orderItems.push(itemInfo);
             }
           }
         }
       }
 
-      if (orderItems.length === 0) {
-        toast.error("Your cart is empty");
+      if (orderItems.length === 0 || (comboBundlePurchase && !comboBundleData)) {
+        toast.error(comboBundleLoadError || "Your cart is empty");
         return;
       }
 
@@ -461,8 +548,15 @@ const PlaceOrder = () => {
           country: "Nepal",
         },
         items: orderItems,
+        ...(comboBundleData && {
+          comboBundle: {
+            comboBundleId: comboBundleData.id,
+            size: comboBundlePurchase.size,
+            quantity: Number(comboBundlePurchase.quantity || 1),
+          },
+        }),
         deliveryFee: dynamicDeliveryFee,
-        amount: getCartAmount() + dynamicDeliveryFee,
+        amount: orderSubtotal + dynamicDeliveryFee,
       };
 
       switch (method) {
@@ -474,8 +568,11 @@ const PlaceOrder = () => {
           );
 
           if (response.data.success) {
-            setCartItems({});
-            localStorage.removeItem("cartItems");
+            if (!comboBundleData) {
+              setCartItems({});
+              localStorage.removeItem("cartItems");
+            }
+            sessionStorage.removeItem("pendingComboBundlePurchase");
             if (getProductsData) {
               await getProductsData();
             }
@@ -747,6 +844,43 @@ const PlaceOrder = () => {
           <div>
             <div className="min-w-full">
 
+              <section className="mb-4 border border-gray-200 bg-white p-4">
+                <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-gray-900">Items in this order</h2>
+                <div className="mt-3 divide-y divide-gray-100">
+                  {comboBundleData ? (
+                    <div className="flex justify-between gap-3 py-3 text-xs">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-gray-900">{comboBundleData.name}</p>
+                        <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{comboBundleData.category?.name || "Combo Bundle"}</p>
+                        {comboBundleData.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{comboBundleData.description}</p>}
+                        <p className="mt-1 text-[10px] text-gray-600">Size {comboBundlePurchase.size} · Qty {comboBundlePurchase.quantity}</p>
+                        <ul className="mt-2 space-y-0.5 text-[10px] text-gray-600">
+                          {(comboBundleData.products || []).map((entry, index) => (
+                            <li key={entry.productId}>{entry.product?.name} · {checkoutBundleVariant?.productVariants[index]?.color || "Unavailable"}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <p className="shrink-0 font-bold text-gray-900">Rs. {orderSubtotal.toLocaleString()}</p>
+                    </div>
+                  ) : checkoutReviewItems.map((entry, index) => {
+                    const categoryNames = Array.isArray(entry.product.categories)
+                      ? entry.product.categories.join(", ")
+                      : String(entry.product.category || "").replace(/[\[\]"]+/g, "");
+                    return (
+                      <div key={`${entry.product._id || entry.product.id}-${entry.size}-${entry.color}-${index}`} className="flex justify-between gap-3 py-3 text-xs">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-gray-900">{entry.product.name}</p>
+                          <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{categoryNames || "Uncategorized"}</p>
+                          {entry.product.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{entry.product.description}</p>}
+                          <p className="mt-1 text-[10px] text-gray-600">Size {entry.size}{entry.color ? ` · ${entry.color}` : ""} · Qty {entry.quantity}</p>
+                        </div>
+                        <p className="shrink-0 font-bold text-gray-900">Rs. {entry.lineTotal.toLocaleString()}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+
               {/* ===== VIP LOYALTY REWARD BANNER ===== */}
               {loyaltyData?.activeReward?.isEligible && (
                 <div className="mb-4 rounded-2xl overflow-hidden border border-amber-300 shadow-sm">
@@ -796,7 +930,7 @@ const PlaceOrder = () => {
                           <span className="font-bold text-rose-800">Price Discount</span>
                           <span className="text-rose-600 ml-1">— deducted from your total</span>
                         </div>
-                        <span className="font-black text-rose-700 text-sm">- Rs. {Math.min(getCartAmount(), Number(loyaltyData.activeReward.discountAmount))}</span>
+                        <span className="font-black text-rose-700 text-sm">- Rs. {Math.min(orderSubtotal, Number(loyaltyData.activeReward.discountAmount))}</span>
                       </div>
                     )}
 
@@ -866,6 +1000,7 @@ const PlaceOrder = () => {
                 </div>
               )}
               <CartTotal
+                subtotalOverride={orderSubtotal}
                 deliveryFee={dynamicDeliveryFee}
                 shippingLabel={shippingTierLabel}
                 loyaltyDiscount={loyaltyDiscountAmount}

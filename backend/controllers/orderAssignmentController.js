@@ -132,6 +132,47 @@ export const runAllocationEngine = async (orderId) => {
 
     if (order.assignmentId) return { success: false, message: "Order already assigned" };
 
+    if (order.specialOrder) {
+      const fallbackManufacturerId = order.manufacturerId || (parseJSON(order.specialOrderManufacturerIds, [])[0] ?? null);
+      if (!fallbackManufacturerId) {
+        return {
+          success: false,
+          message: "Order is marked as a special order and requires manual assignment because no fallback manufacturer is available.",
+        };
+      }
+
+      const manufacturer = await prisma.manufacturer.findUnique({ where: { id: fallbackManufacturerId } });
+      const assignment = await prisma.orderAssignment.create({
+        data: {
+          orderId,
+          manufacturerId: fallbackManufacturerId,
+          status: "assigned",
+          notes: `Special order fallback assignment: ${order.specialOrderReason || "Mixed manufacturer fulfillment requires manual oversight."}`,
+        },
+      });
+
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          fulfillmentStatus: "assigned",
+          assignmentId: assignment.id,
+          manufacturerId: fallbackManufacturerId,
+        },
+      });
+
+      return {
+        success: true,
+        assignment,
+        manufacturer,
+        scoreDetails: {
+          totalScore: 0,
+          locationTier: "Special Order Fallback",
+          qualityRating: 0,
+          hasAllItemsInStock: false,
+        },
+      };
+    }
+
     const address = parseJSON(order.address, {});
     const customerCity = normalize(address?.city);
 

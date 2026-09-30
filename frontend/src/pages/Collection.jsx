@@ -7,7 +7,7 @@ import { Loader2, ArrowUpDown } from "lucide-react";
 
 const Collection = () => {
   const { search, showSearch, backendUrl } = useContext(ShopContext);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
 
   // Filters from URL
   const [category, setCategory] = useState([]);
@@ -96,7 +96,7 @@ const Collection = () => {
     };
 
     fetchFirstChunk();
-  }, [backendUrl, category, subCategory, featuredFilter]);
+  }, [backendUrl, category, subCategory, featuredFilter, searchParams]);
 
   // Infinite Scroll IntersectionObserver to fetch next chunk dynamically
   useEffect(() => {
@@ -171,7 +171,6 @@ const Collection = () => {
   };
 
   const displayedProducts = getProcessedProducts();
-
   // Subcategory or Category Banner Title
   const bannerTitle = subCategory[0]
     ? subCategory[0].toUpperCase()
@@ -193,16 +192,18 @@ const Collection = () => {
       ? "Our most sought-after silhouettes and crowd favorites, loved by customers across Nepal."
       : "Shop our complete catalog of clothing, essentials, and signature wear.");
 
+  const heroImage = subcategoryMeta?.image;
+
   const shouldTruncateDescription = descriptionText.length > 140;
 
   return (
     <div className="mx-auto w-full max-w-[1440px] pb-16">
       {/* --- HERO BANNER & BREADCRUMBS SECTION (BONKERS CORNER STYLE) --- */}
       <section className="relative w-full overflow-hidden bg-[var(--stone)]">
-        {subcategoryMeta?.image ? (
+        {heroImage ? (
           <div className="relative h-[280px] sm:h-[380px] md:h-[460px] w-full overflow-hidden">
             <img
-              src={subcategoryMeta.image}
+              src={heroImage}
               alt={bannerTitle}
               className="h-full w-full object-cover object-center"
             />
@@ -215,26 +216,11 @@ const Collection = () => {
                 Home
               </Link>
               <span className="text-white/60">/</span>
-              <Link to="/collection" className="underline hover:text-white transition-colors">
+              <Link to="/shop" className="underline hover:text-white transition-colors">
                 Shop
               </Link>
-              {category[0] && (
-                <>
-                  <span className="text-white/60">/</span>
-                  <Link
-                    to={`/collection?category=${encodeURIComponent(category[0])}`}
-                    className="underline hover:text-white transition-colors"
-                  >
-                    {category[0]}
-                  </Link>
-                </>
-              )}
-              {subCategory[0] && (
-                <>
-                  <span className="text-white/60">/</span>
-                  <span className="text-white font-bold">{subCategory[0]}</span>
-                </>
-              )}
+              {category[0] && <><span className="text-white/60">/</span><Link to={`/shop?category=${encodeURIComponent(category[0])}`} className="underline hover:text-white transition-colors">{category[0]}</Link></>}
+              {subCategory[0] && <><span className="text-white/60">/</span><span className="font-bold text-white">{subCategory[0]}</span></>}
             </div>
 
             {/* Centered Large Bold Title */}
@@ -252,26 +238,11 @@ const Collection = () => {
                 Home
               </Link>
               <span>/</span>
-              <Link to="/collection" className="hover:text-[var(--ink)] underline transition-colors">
+              <Link to="/shop" className="hover:text-[var(--ink)] underline transition-colors">
                 Shop
               </Link>
-              {category[0] && (
-                <>
-                  <span>/</span>
-                  <Link
-                    to={`/collection?category=${encodeURIComponent(category[0])}`}
-                    className="hover:text-[var(--ink)] underline transition-colors"
-                  >
-                    {category[0]}
-                  </Link>
-                </>
-              )}
-              {subCategory[0] && (
-                <>
-                  <span>/</span>
-                  <span className="text-[var(--ink)] font-bold">{subCategory[0]}</span>
-                </>
-              )}
+              {category[0] && <><span>/</span><Link to={`/shop?category=${encodeURIComponent(category[0])}`} className="underline hover:text-[var(--ink)]">{category[0]}</Link></>}
+              {subCategory[0] && <><span>/</span><span className="font-bold text-[var(--ink)]">{subCategory[0]}</span></>}
             </div>
 
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-black uppercase tracking-wider text-[var(--ink)]">
@@ -303,100 +274,41 @@ const Collection = () => {
         )}
       </section>
 
-      {/* --- TOOLBAR: PRODUCT COUNT & SORT DROPDOWN --- */}
-      <div className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--paper)]/95 backdrop-blur-md px-4 py-3 sm:px-8">
-        <div className="flex items-center justify-between gap-4">
-          {/* Left: Product Count */}
-          <div className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]">
-            <span>{totalCount} PRODUCTS</span>
+      <div className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--paper)]/95 px-4 py-3 backdrop-blur-md sm:px-8">
+          <div className="flex items-center justify-between gap-4">
+            <div className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]"><span>{totalCount} PRODUCTS</span></div>
+            <div className="flex items-center gap-2">
+              <ArrowUpDown size={14} className="hidden text-[var(--muted)] sm:inline-block" />
+              <select value={sortType} onChange={(event) => setSortType(event.target.value)} className="border border-[var(--line)] bg-[var(--white)] px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[var(--ink)] outline-none">
+                <option value="relavent">Sort by: Relevant</option>
+                <option value="newest">Sort by: Newest Arrivals</option>
+                <option value="top-rated">Sort by: Top Rated</option>
+                <option value="low-high">Sort by: Price: Low to High</option>
+                <option value="high-low">Sort by: Price: High to Low</option>
+              </select>
+            </div>
           </div>
-
-          {/* Right: Clean Sort Dropdown */}
-          <div className="flex items-center gap-2">
-            <ArrowUpDown size={14} className="text-[var(--muted)] hidden sm:inline-block" />
-            <select
-              value={sortType}
-              onChange={(e) => setSortType(e.target.value)}
-              className="border border-[var(--line)] bg-[var(--white)] px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[var(--ink)] outline-none rounded-md shadow-xs hover:border-[var(--ink)] cursor-pointer transition-colors"
-            >
-              <option value="relavent">Sort by: Relevant</option>
-              <option value="newest">Sort by: Newest Arrivals</option>
-              <option value="top-rated">Sort by: Top Rated</option>
-              <option value="low-high">Sort by: Price: Low to High</option>
-              <option value="high-low">Sort by: Price: High to Low</option>
-            </select>
-          </div>
-        </div>
       </div>
 
-      {/* --- PRODUCT GRID --- */}
-      <div className="px-4 sm:px-8 pt-8">
-        {isLoading ? (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
-            {[...Array(8)].map((_, i) => (
-              <div key={i} className="animate-pulse flex flex-col space-y-3">
-                <div className="bg-gray-200 aspect-[3/4] w-full rounded-md" />
-                <div className="h-4 bg-gray-200 rounded w-3/4" />
-                <div className="h-3 bg-gray-200 rounded w-1/2" />
-              </div>
-            ))}
-          </div>
-        ) : displayedProducts.length === 0 ? (
-          <div className="py-20 text-center flex flex-col items-center justify-center">
-            <span className="text-4xl mb-3">🛍️</span>
-            <p className="text-lg font-bold uppercase tracking-wider text-[var(--ink)]">
-              No products found
-            </p>
-            <p className="text-xs text-[var(--muted)] mt-1 max-w-sm">
-              We couldn&apos;t find any items in this collection yet.
-            </p>
-            <Link
-              to="/collection"
-              className="mt-6 bg-black text-white px-6 py-2.5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-gray-800 transition-colors"
-            >
-              View All Products
-            </Link>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
-            {displayedProducts.map((item, index) => (
-              <ProductItem
-                key={`${item._id || item.id}-${index}`}
-                name={item.name}
-                id={item._id || item.id}
-                price={item.price}
-                image={item.image}
-                discount={item.discount}
-                stockStatus={item.stockStatus}
-                stockQuantity={item.stockQuantity ?? 0}
-                variants={item.variants}
-                rating={item.rating}
-                reviewCount={item.reviewCount}
-                newInStore={item.newInStore}
-                bestseller={item.bestseller}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Dynamic Chunked Scroll Observer Anchor & Loading State */}
-        <div
-          ref={loadMoreRef}
-          className="flex min-h-24 items-center justify-center py-10 text-xs font-bold uppercase tracking-widest text-[var(--muted)]"
-        >
-          {isLoadingMore ? (
-            <div className="flex items-center gap-2 text-[var(--ink)]">
-              <Loader2 className="animate-spin" size={18} />
-              <span>Loading more products...</span>
+      <div className="px-4 pt-8 sm:px-8">
+          {isLoading ? (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+              {[...Array(8)].map((_, i) => <div key={i} className="animate-pulse flex flex-col space-y-3"><div className="bg-gray-200 aspect-[3/4] w-full rounded-md" /><div className="h-4 bg-gray-200 rounded w-3/4" /><div className="h-3 bg-gray-200 rounded w-1/2" /></div>)}
             </div>
-          ) : hasNextPage ? (
-            <span>Scroll down for more items</span>
-          ) : displayedProducts.length > 0 ? (
-            <span className="border-t border-[var(--line)] pt-4 w-full text-center text-gray-400">
-              Showing all {totalCount} products • End of collection
-            </span>
-          ) : null}
-        </div>
+          ) : displayedProducts.length === 0 ? (
+            <div className="py-20 text-center flex flex-col items-center justify-center">
+              <p className="text-lg font-bold uppercase tracking-wider text-[var(--ink)]">No products found</p>
+              <p className="mt-1 max-w-sm text-xs text-[var(--muted)]">We couldn&apos;t find any items in this category yet.</p>
+              <Link to="/shop" className="mt-6 bg-black px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-gray-800">View All Products</Link>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+              {displayedProducts.map((item, index) => <ProductItem key={`${item._id || item.id}-${index}`} name={item.name} id={item._id || item.id} price={item.price} image={item.image} discount={item.discount} stockStatus={item.stockStatus} stockQuantity={item.stockQuantity ?? 0} variants={item.variants} rating={item.rating} reviewCount={item.reviewCount} newInStore={item.newInStore} bestseller={item.bestseller} />)}
+            </div>
+          )}
+          <div ref={loadMoreRef} className="flex min-h-24 items-center justify-center py-10 text-xs font-bold uppercase tracking-widest text-[var(--muted)]">
+            {isLoadingMore ? <div className="flex items-center gap-2 text-[var(--ink)]"><Loader2 className="animate-spin" size={18} /><span>Loading more products...</span></div> : hasNextPage ? <span>Scroll down for more items</span> : displayedProducts.length > 0 ? <span className="w-full border-t border-[var(--line)] pt-4 text-center text-gray-400">Showing all {totalCount} products · End of category</span> : null}
+          </div>
       </div>
     </div>
   );

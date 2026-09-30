@@ -30,6 +30,41 @@ import {
   Sparkles,
 } from "lucide-react";
 
+const toCustomerDisplayItems = (items = []) => {
+  const displayItems = [];
+  const comboBundleRows = new Map();
+
+  items.forEach((item) => {
+    if (!item.comboBundleId) {
+      displayItems.push(item);
+      return;
+    }
+
+    let bundle = comboBundleRows.get(item.comboBundleId);
+    if (!bundle) {
+      bundle = {
+        ...item,
+        isComboBundle: true,
+        name: item.comboBundleName || "Combo Bundle",
+        category: item.comboBundleCategory || item.category || "",
+        description: item.comboBundleDescription || "",
+        image: item.comboBundleImage || item.image,
+        quantity: Number(item.comboBundleQuantity || item.quantity || 1),
+        purchasedUnitPrice: Number(item.comboBundleUnitPrice || 0),
+        price: Number(item.comboBundleUnitPrice || 0),
+        lineTotal: 0,
+        componentCount: 0,
+      };
+      comboBundleRows.set(item.comboBundleId, bundle);
+      displayItems.push(bundle);
+    }
+    bundle.lineTotal += Number(item.lineTotal || Number(item.purchasedUnitPrice || item.price || 0) * Number(item.quantity || 1));
+    bundle.componentCount += 1;
+  });
+
+  return displayItems;
+};
+
 const Orders = () => {
   const { backendUrl, token, setToken, currency, navigate } = useContext(ShopContext);
   const [orders, setOrders] = useState([]);
@@ -97,6 +132,7 @@ const Orders = () => {
             ...order,
             id: order._id || order.id,
             items,
+            displayItems: toCustomerDisplayItems(items),
             parsedReward,
             dateNum: Number(order.date || 0),
           };
@@ -465,10 +501,10 @@ const Orders = () => {
               </p>
             </div>
             <Link
-              to="/collection"
+              to="/shop"
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition shadow-sm"
             >
-              <span>Explore Collection</span>
+              <span>Explore Shop</span>
               <ChevronRight className="w-4 h-4" />
             </Link>
           </div>
@@ -477,7 +513,8 @@ const Orders = () => {
             {filteredOrders.map((order) => {
               const statusBadge = getStatusBadge(order.status, order.fulfillmentStatus);
               const StatusIcon = statusBadge.icon;
-              const itemCount = (order.items || []).reduce(
+              const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
+              const itemCount = displayItems.reduce(
                 (sum, item) => sum + Number(item.quantity || 1),
                 0
               );
@@ -577,7 +614,7 @@ const Orders = () => {
 
                   {/* Items List Inside Single Order */}
                   <div className="divide-y divide-slate-100">
-                    {order.items.map((item, idx) => {
+                    {displayItems.map((item, idx) => {
                       const unitPrice = Number(item.purchasedUnitPrice ?? item.price ?? 0);
                       const qty = Number(item.quantity || 1);
                       const lineTotal = Number(item.lineTotal || unitPrice * qty);
@@ -600,12 +637,13 @@ const Orders = () => {
 
                             {/* Product Info */}
                             <div className="space-y-1">
-                              <Link
-                                to={`/product/${item._id || item.productId || item.id}`}
-                                className="text-sm sm:text-base font-bold text-slate-900 hover:text-slate-600 transition line-clamp-1"
-                              >
-                                {item.name}
-                              </Link>
+                              {item.isComboBundle ? (
+                                <p className="text-sm font-bold text-slate-900 sm:text-base">{item.name}</p>
+                              ) : (
+                                <Link to={`/product/${item._id || item.productId || item.id}`} className="line-clamp-1 text-sm font-bold text-slate-900 transition hover:text-slate-600 sm:text-base">
+                                  {item.name}
+                                </Link>
+                              )}
 
                               <div className="flex flex-wrap items-center gap-1.5 text-xs">
                                 {item.category && (
@@ -627,6 +665,11 @@ const Orders = () => {
                                     {item.color}
                                   </span>
                                 )}
+                                {item.isComboBundle && (
+                                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-bold">
+                                    {item.componentCount} included pieces
+                                  </span>
+                                )}
                                 {item.offerTag && (
                                   <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold flex items-center gap-1">
                                     <Sparkles className="w-2.5 h-2.5" />
@@ -641,9 +684,9 @@ const Orders = () => {
                                 </span>
                                 <span>×</span>
                                 <span className="font-semibold text-slate-700">{qty} qty</span>
-                                {item.discountPercentage > 0 && (
+                                {(item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage) > 0 && (
                                   <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.2 rounded">
-                                    {item.discountPercentage}% OFF
+                                    {item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage}% OFF
                                   </span>
                                 )}
                               </div>
@@ -968,7 +1011,7 @@ const Orders = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {invoiceOrder.items.map((item, idx) => {
+                    {(invoiceOrder.displayItems || toCustomerDisplayItems(invoiceOrder.items)).map((item, idx) => {
                       const unitPrice = Number(item.purchasedUnitPrice ?? item.price ?? 0);
                       const qty = Number(item.quantity || 1);
                       const lineTotal = Number(item.lineTotal || unitPrice * qty);
@@ -1005,8 +1048,8 @@ const Orders = () => {
                     <span>Items Subtotal:</span>
                     <span className="font-mono">
                       {currency}
-                      {invoiceOrder.items
-                        .reduce((sum, item) => sum + (Number(item.purchasedUnitPrice ?? item.price ?? 0) * Number(item.quantity || 1)), 0)
+                      {(invoiceOrder.displayItems || toCustomerDisplayItems(invoiceOrder.items))
+                        .reduce((sum, item) => sum + Number(item.lineTotal || (Number(item.purchasedUnitPrice ?? item.price ?? 0) * Number(item.quantity || 1))), 0)
                         .toLocaleString()}
                     </span>
                   </div>

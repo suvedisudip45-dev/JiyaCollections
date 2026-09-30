@@ -497,6 +497,7 @@ model Product {
   bestseller        Boolean   @default(false)
   newInStore        Boolean   @default(false)
   showInNavigation  Boolean   @default(false)
+  isUnisex          Boolean   @default(false)
   isSpecialOffer    Boolean   @default(false)
   offerTag          String?   @default("")
   offerEndDate      DateTime?
@@ -506,38 +507,84 @@ model Product {
   lowStockThreshold Int       @default(5)
   published         Boolean   @default(true)
   date              BigInt
+  comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
 
   @@index([published])
   @@index([category])
   @@index([bestseller])
 }
 
+model ComboBundle {
+  id                  String    @id @default(uuid())
+  categoryId          String
+  name                String
+  slug                String    @unique
+  description         String?   @db.Text
+  status              String    @default("ACTIVE") // ACTIVE | INACTIVE
+  color               String?   @default("")
+  image               String?   @db.Text
+  bannerImage         String?   @db.Text
+  calculatedPrice     Float     @default(0)
+  sellingPrice        Float     @default(0)
+  discountPercentage  Float     @default(0)
+  manualPriceOverride Boolean   @default(false)
+  priceReviewRequired Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  category            Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  products            ComboBundleProduct[]
+
+  @@index([status])
+  @@index([slug])
+  @@index([categoryId, status])
+}
+
+model ComboBundleProduct {
+  id            String     @id @default(uuid())
+  comboBundleId String
+  productId     String
+  selectedColor String?    @db.VarChar(100)
+  sortOrder     Int        @default(0)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  comboBundle ComboBundle @relation(fields: [comboBundleId], references: [id], onDelete: Cascade)
+  product     Product     @relation("ComboBundleProductProduct", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([comboBundleId, productId])
+  @@index([comboBundleId])
+  @@index([productId])
+}
+
 model Order {
-  id                    String              @id @default(uuid())
-  userId                String
-  items                 Json
-  amount                Float
-  deliveryFee           Float               @default(0)
-  address               Json
-  status                String              @default("Order Placed")
-  paymentMethod         String
-  payment               Boolean             @default(false)
-  date                  BigInt
-  loyaltyDiscount       Float?              @default(0)
-  rewardApplied         Json?
+  id                          String              @id @default(uuid())
+  userId                      String
+  items                       Json
+  amount                      Float
+  deliveryFee                 Float               @default(0)
+  address                     Json
+  status                      String              @default("Order Placed")
+  paymentMethod               String
+  payment                     Boolean             @default(false)
+  date                        BigInt
+  loyaltyDiscount             Float?              @default(0)
+  rewardApplied               Json?
+  specialOrder                Boolean             @default(false)
+  specialOrderReason          String?             @db.Text
+  specialOrderManufacturerIds Json?               @default("[]")
   // Fulfillment tracking
-  fulfillmentStatus     String              @default("PENDING_ASSIGNMENT")
+  fulfillmentStatus           String              @default("PENDING_ASSIGNMENT")
   // PENDING_ASSIGNMENT | ASSIGNED | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | IN_TRANSIT | DELIVERED | FAILED
-  assignmentId          String?
-  deliveryJobId         String?
-  orderType             String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
-  directOrderType       String?             @default("") // HUB_VISIT | PHONE_ORDER
-  manufacturerId        String? // Fulfilled directly by manufacturer
-  directNotes           String?             @db.Text
-  marketingCardRequired Boolean             @default(true)
-  deliveryOrder         DeliveryOrder?
-  letterDeliveries      LetterDelivery[]    @relation("OrderLetterDelivery")
-  marketingCardOrder    MarketingCardOrder?
+  assignmentId                String?
+  deliveryJobId               String?
+  orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
+  directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
+  manufacturerId              String? // Fulfilled directly by manufacturer
+  directNotes                 String?             @db.Text
+  marketingCardRequired       Boolean             @default(true)
+  deliveryOrder               DeliveryOrder?
+  letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
+  marketingCardOrder          MarketingCardOrder?
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -552,6 +599,7 @@ model Category {
   id            String        @id @default(uuid())
   name          String        @unique
   subCategories SubCategory[]
+  comboBundles  ComboBundle[]
 }
 
 model SubCategory {
@@ -1049,6 +1097,7 @@ model AccountingPeriod {
 
 model JournalEntry {
   id                 String        @id @default(uuid())
+  categoryId          String
   journalNumber      String        @unique // e.g. "JE-2026-00001"
   transactionDate    DateTime      @default(now())
   fiscalYearId       String?
@@ -1064,6 +1113,7 @@ model JournalEntry {
   accountingEventId  String?       @unique
   accountingEvent    AccountingEvent? @relation(fields: [accountingEventId], references: [id], onDelete: Restrict)
   totalDebit         Decimal       @default(0) @db.Decimal(20, 2)
+  @@index([categoryId, status])
   totalCredit        Decimal       @default(0) @db.Decimal(20, 2)
   createdBy          String?       @default("system")
   postedAt           DateTime      @default(now())

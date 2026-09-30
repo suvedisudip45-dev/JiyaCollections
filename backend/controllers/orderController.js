@@ -14,6 +14,13 @@ import {
   getAdminOrderCustomerForCreation,
 } from "../services/adminOrderCustomerService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { syncProductStock } from "../services/stockSyncService.js";
+import { productBelongsToCategory } from "../services/productCategoryRules.js";
+import {
+  allocateComboBundleComponentPrices,
+  calculateComboBundlePrice,
+  getSharedComboBundleVariants,
+} from "../services/comboBundleRules.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -29,6 +36,19 @@ const buildOrderListItem = (order) => {
       }
     }
     return order.rewardApplied;
+  })();
+
+  const specialOrderManufacturerIds = (() => {
+    if (!order?.specialOrderManufacturerIds) return [];
+    if (Array.isArray(order.specialOrderManufacturerIds)) return order.specialOrderManufacturerIds;
+    if (typeof order.specialOrderManufacturerIds === "string") {
+      try {
+        return JSON.parse(order.specialOrderManufacturerIds);
+      } catch {
+        return [];
+      }
+    }
+    return [];
   })();
 
   const parsedItems = (() => {
@@ -75,10 +95,110 @@ const buildOrderListItem = (order) => {
     orderType: order.orderType,
     directOrderType: order.directOrderType,
     manufacturerId: order.manufacturerId,
+    specialOrder: Boolean(order.specialOrder),
+    specialOrderReason: order.specialOrderReason || null,
+    specialOrderManufacturerIds,
     directNotes: order.directNotes,
     delivery: order.deliveryOrder || null,
     deliveryOrder: order.deliveryOrder || null,
     totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
+  };
+};
+
+const parseJsonArray = (value, fallback = []) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return fallback;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+};
+
+const getAvailableInventoryForItem = (inventoryEntry, item) => {
+  if (!inventoryEntry) return 0;
+
+  const variantsStock = parseJsonArray(inventoryEntry.variantsStock, []);
+  if (variantsStock.length > 0) {
+    const targetSize = (item?.size || "").trim().toLowerCase();
+    const targetColor = (item?.color || "").trim().toLowerCase();
+
+    let matchedVariant = null;
+    if (targetSize && targetColor) {
+      matchedVariant = variantsStock.find(
+        (v) =>
+          (v.size || "").trim().toLowerCase() === targetSize &&
+          (v.color || "").trim().toLowerCase() === targetColor
+      );
+    } else if (targetSize) {
+      matchedVariant = variantsStock.find(
+        (v) => (v.size || "").trim().toLowerCase() === targetSize
+      );
+    } else if (targetColor) {
+      matchedVariant = variantsStock.find(
+        (v) => (v.color || "").trim().toLowerCase() === targetColor
+      );
+    }
+
+    if (matchedVariant) {
+      return Math.max(0, Number(matchedVariant.quantity || 0) - Number(matchedVariant.reservedQty || 0));
+    }
+
+    return variantsStock.reduce(
+      (sum, v) => sum + Math.max(0, Number(v.quantity || 0) - Number(v.reservedQty || 0)),
+      0
+    );
+  }
+
+  return Math.max(0, Number(inventoryEntry.quantity || 0) - Number(inventoryEntry.reservedQty || 0));
+};
+
+export const resolveOrderManufacturingPlan = (items = [], inventoryRecords = []) => {
+  const productInventoryMap = new Map();
+  for (const inventoryEntry of inventoryRecords) {
+    if (!inventoryEntry?.productId) continue;
+    const list = productInventoryMap.get(inventoryEntry.productId) || [];
+    list.push(inventoryEntry);
+    productInventoryMap.set(inventoryEntry.productId, list);
+  }
+
+  const itemAssignments = items.map((item) => {
+    const productId = item?._id || item?.id || item?.productId;
+    const candidates = (productInventoryMap.get(productId) || []).filter(
+      (entry) => getAvailableInventoryForItem(entry, item) > 0
+    );
+    const candidateManufacturerIds = [...new Set(candidates.map((entry) => entry.manufacturerId).filter(Boolean))];
+    const primaryCandidateId = candidateManufacturerIds[0] || null;
+
+    return {
+      productId,
+      candidateManufacturerIds,
+      primaryCandidateId,
+      isSpecialOrder: candidateManufacturerIds.length === 0 || candidateManufacturerIds.length > 1,
+    };
+  });
+
+  const allCandidateManufacturerIds = [...new Set(itemAssignments.flatMap((item) => item.candidateManufacturerIds))];
+  const primaryManufacturerId =
+    allCandidateManufacturerIds.length === 1
+      ? allCandidateManufacturerIds[0]
+      : (itemAssignments.find((item) => item.primaryCandidateId)?.primaryCandidateId) || allCandidateManufacturerIds[0] || null;
+
+  const specialOrder = itemAssignments.some((item) => item.isSpecialOrder) || allCandidateManufacturerIds.length > 1;
+  const specialOrderReason = specialOrder
+    ? "Special order: this cart contains products sourced from multiple manufacturer hubs and needs a fallback assignment."
+    : null;
+
+  return {
+    specialOrder,
+    primaryManufacturerId,
+    specialOrderManufacturerIds: allCandidateManufacturerIds,
+    specialOrderReason,
+    itemAssignments,
   };
 };
 
@@ -168,7 +288,66 @@ const validateOrderStock = (items, dbProducts) => {
 // Placing orders using COD Method with Immutable Price Snapshot
 const placeOrder = async (req, res) => {
   try {
-    const { userId, items, address } = req.body;
+    const { userId, address, comboBundle } = req.body;
+    let items = Array.isArray(req.body.items) ? req.body.items : [];
+    let comboBundleRecord = null;
+
+    if (comboBundle?.comboBundleId) {
+      comboBundleRecord = await prisma.comboBundle.findUnique({
+        where: { id: String(comboBundle.comboBundleId) },
+        include: {
+          category: true,
+          products: {
+            include: { product: true },
+            orderBy: { sortOrder: "asc" },
+          },
+        },
+      });
+
+      if (!comboBundleRecord || comboBundleRecord.status !== "ACTIVE") {
+        return res.status(400).json({ success: false, message: "This combo bundle is no longer available." });
+      }
+
+      const initialMemberProducts = comboBundleRecord.products.map((entry) => entry.product).filter(Boolean);
+      await Promise.all(initialMemberProducts.map((product) => syncProductStock(product.id)));
+      const currentProducts = await prisma.product.findMany({
+        where: { id: { in: initialMemberProducts.map((product) => product.id) } },
+      });
+      const currentProductsById = new Map(currentProducts.map((product) => [product.id, product]));
+      comboBundleRecord.products = comboBundleRecord.products.map((entry) => ({
+        ...entry,
+        product: currentProductsById.get(entry.productId) || null,
+      }));
+      const memberProducts = comboBundleRecord.products.map((entry) => entry.product ? {
+        ...entry.product,
+        comboBundleColor: entry.selectedColor || "",
+      } : null).filter(Boolean);
+      if (memberProducts.length !== comboBundleRecord.products.length || memberProducts.some((product) => !product.published)) {
+        return res.status(400).json({ success: false, message: "Every product in this combo bundle must be published before checkout." });
+      }
+      if (memberProducts.some((product) => !productBelongsToCategory(product, comboBundleRecord.category.name))) {
+        return res.status(400).json({ success: false, message: "This combo bundle contains a product outside its assigned category." });
+      }
+
+      const bundleQuantity = Math.max(1, Math.floor(Number(comboBundle.quantity) || 1));
+      const sharedVariants = getSharedComboBundleVariants(memberProducts, bundleQuantity);
+      const selectedVariant = sharedVariants.find(
+        (variant) => variant.size.toLowerCase() === String(comboBundle.size || "").trim().toLowerCase()
+      );
+      if (!selectedVariant) {
+        return res.status(400).json({ success: false, message: "The selected size is not available for every product in this combo bundle." });
+      }
+
+      items = memberProducts.map((product, index) => ({
+        _id: product.id,
+        productId: product.id,
+        size: selectedVariant.size,
+        color: selectedVariant.productVariants[index].color,
+        quantity: bundleQuantity,
+      }));
+      comboBundle.quantity = bundleQuantity;
+      comboBundle.size = selectedVariant.size;
+    }
 
     if (!items || items.length === 0) {
       return res.json({ success: false, message: "No items in order" });
@@ -176,9 +355,14 @@ const placeOrder = async (req, res) => {
 
     // Extract product IDs and query current DB records to freeze price snapshots
     const productIds = items.map((i) => i._id || i.id || i.productId).filter(Boolean);
-    const dbProducts = await prisma.product.findMany({
-      where: { id: { in: productIds } },
-    });
+    const [dbProducts, manufacturerInventory] = await Promise.all([
+      prisma.product.findMany({
+        where: { id: { in: productIds } },
+      }),
+      prisma.manufacturerInventory.findMany({
+        where: { productId: { in: productIds } },
+      }),
+    ]);
 
     // Validate stock before proceeding
     const stockValidation = validateOrderStock(items, dbProducts);
@@ -186,7 +370,7 @@ const placeOrder = async (req, res) => {
       return res.json({ success: false, message: stockValidation.message });
     }
 
-    const frozenItemsSnapshot = items.map((cartItem) => {
+    let frozenItemsSnapshot = items.map((cartItem) => {
       const pId = cartItem._id || cartItem.id;
       const matchedProduct = dbProducts.find((p) => p.id === pId);
 
@@ -219,8 +403,38 @@ const placeOrder = async (req, res) => {
       };
     });
 
+    if (comboBundleRecord) {
+      const bundlePrice = calculateComboBundlePrice({
+        products: dbProducts,
+        discountPercentage: comboBundleRecord.discountPercentage,
+        manualPriceOverride: comboBundleRecord.manualPriceOverride,
+        sellingPrice: comboBundleRecord.sellingPrice,
+      });
+      const componentPrices = allocateComboBundleComponentPrices(frozenItemsSnapshot, bundlePrice.sellingPrice);
+      frozenItemsSnapshot = frozenItemsSnapshot.map((item, index) => {
+        const purchasedUnitPrice = componentPrices[index];
+        return {
+          ...item,
+          comboBundleId: comboBundleRecord.id,
+          comboBundleName: comboBundleRecord.name,
+          comboBundleCategory: comboBundleRecord.category.name,
+          comboBundleDescription: comboBundleRecord.description || "",
+          comboBundleImage: comboBundleRecord.bannerImage || parseJsonArray(comboBundleRecord.image, [])[0] || "",
+          comboBundleQuantity: comboBundle.quantity,
+          comboBundleUnitPrice: bundlePrice.sellingPrice,
+          comboBundleCalculatedPrice: bundlePrice.calculatedPrice,
+          comboBundleDiscountPercentage: bundlePrice.discountPercentage,
+          comboBundleManualPriceOverride: bundlePrice.manualPriceOverride,
+          purchasedUnitPrice,
+          price: purchasedUnitPrice,
+          lineTotal: purchasedUnitPrice * Number(item.quantity || 1),
+        };
+      });
+    }
+
     const itemsTotal = frozenItemsSnapshot.reduce((acc, item) => acc + item.lineTotal, 0);
-    
+    const manufacturingPlan = resolveOrderManufacturingPlan(frozenItemsSnapshot, manufacturerInventory);
+
     // Resolve dynamic shipping charge from ShippingConfig (authoritative backend calculation)
     let expectedFee = deliveryCharge;
     try {
@@ -285,6 +499,10 @@ const placeOrder = async (req, res) => {
       date: BigInt(Date.now()),
       address,
       loyaltyDiscount,
+      manufacturerId: manufacturingPlan.primaryManufacturerId || null,
+      specialOrder: Boolean(manufacturingPlan.specialOrder),
+      specialOrderReason: manufacturingPlan.specialOrderReason,
+      specialOrderManufacturerIds: manufacturingPlan.specialOrderManufacturerIds,
       rewardApplied: rewardApplied ? JSON.stringify(rewardApplied) : "{}",
     };
 
@@ -325,15 +543,17 @@ const placeOrder = async (req, res) => {
 
         await prisma.user.update({
           where: { id: userId },
-          data: { cartData: {}, addresses },
+          data: { ...(!comboBundleRecord && { cartData: {} }), addresses },
         });
       }
     } catch (addrErr) {
       console.error("Error saving address to user profile:", addrErr);
-      await prisma.user.update({
-        where: { id: userId },
-        data: { cartData: {} },
-      });
+      if (!comboBundleRecord) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { cartData: {} },
+        });
+      }
     }
 
     // Aggregate all requested items by product ID and variant
@@ -890,6 +1110,13 @@ const adminCreateOrder = async (req, res) => {
       giftEligible: customerDecision.giftEligible,
     };
 
+    const manufacturingPlan = resolveOrderManufacturingPlan(
+      frozenItemsSnapshot,
+      await prisma.manufacturerInventory.findMany({
+        where: { productId: { in: productIds } },
+      })
+    );
+
     const newOrder = await prisma.order.create({
       data: {
         userId: orderUserId,
@@ -902,6 +1129,10 @@ const adminCreateOrder = async (req, res) => {
         date: BigInt(Date.now()),
         address: addressSnapshot,
         loyaltyDiscount: manualDiscount,
+        manufacturerId: manufacturingPlan.primaryManufacturerId || null,
+        specialOrder: Boolean(manufacturingPlan.specialOrder),
+        specialOrderReason: manufacturingPlan.specialOrderReason,
+        specialOrderManufacturerIds: manufacturingPlan.specialOrderManufacturerIds,
         orderType: "ADMIN_DIRECT", // Mark as admin-created for guard in updateStatus
         rewardApplied: JSON.stringify({
           source: resolvedClient.source || "Social Media",

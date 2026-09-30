@@ -10,6 +10,7 @@ import Add from "./pages/Add";
 import List from "./pages/List";
 import Orders from "./pages/Orders";
 import Categories from "./pages/Categories";
+import ComboBundles from "./pages/ComboBundles";
 import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
 import Customers from "./pages/Customers";
@@ -204,6 +205,7 @@ const App = () => {
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />
                   <Route path="/categories" element={withPermission("/categories", <Categories token={token} />)} />
+                  <Route path="/combo-bundles" element={withPermission("/combo-bundles", <ComboBundles token={token} />)} />
                   <Route path="/reviews" element={withPermission("/reviews", <Reviews token={token} />)} />
                   <Route path="/story-letter-library" element={withPermission("/story-letter-library", <StoryLetterLibrary token={token} />)} />
                   <Route path="/shipping" element={withPermission("/shipping", <ShippingSettings token={token} />)} />

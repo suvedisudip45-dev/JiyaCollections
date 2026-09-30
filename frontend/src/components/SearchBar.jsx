@@ -11,15 +11,15 @@ const SearchBar = () => {
 
   const handleInputChange = (e) => {
     setSearch(e.target.value);
-    if (!location.pathname.includes("collection")) {
-      navigate("/collection");
+    if (!location.pathname.includes("shop") && !location.pathname.includes("collection")) {
+      navigate("/shop");
     }
   };
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
-    if (!location.pathname.includes("collection")) {
-      navigate("/collection");
+    if (!location.pathname.includes("shop") && !location.pathname.includes("collection")) {
+      navigate("/shop");
     }
   };
 

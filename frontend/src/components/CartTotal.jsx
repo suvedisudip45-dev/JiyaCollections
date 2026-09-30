@@ -18,11 +18,12 @@ const CartTotal = ({
   loyaltyDiscount = 0,
   loyaltyLabel,
   loyaltyGift,
+  subtotalOverride,
   isCartPage = false,
 }) => {
   const { currency, delivery_fee, getCartAmount, shippingConfig } = useContext(ShopContext);
 
-  const subtotal = getCartAmount();
+  const subtotal = subtotalOverride !== undefined ? Number(subtotalOverride) : getCartAmount();
   const freeMin = Number(shippingConfig?.freeShippingMin || 0);
   const isEligibleFreeShipping = freeMin > 0 && subtotal >= freeMin;
 
