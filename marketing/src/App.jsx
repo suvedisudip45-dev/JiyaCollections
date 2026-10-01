@@ -15,6 +15,7 @@ import CardDetailPage from "./pages/cards/CardDetailPage";
 import QrValidatorPage from "./pages/qr-validator/QrValidatorPage";
 import RedemptionsPage from "./pages/redemptions/RedemptionsPage";
 import ReportsPage from "./pages/reports/ReportsPage";
+import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
 import ProfilePage from "./pages/account/ProfilePage";
 import SettingsPage from "./pages/account/SettingsPage";
 import UnauthorizedPage from "./pages/error/UnauthorizedPage";
@@ -47,6 +48,7 @@ const App = () => {
             <Route path="redemptions" element={<RedemptionsPage />} />
             <Route path="qr-validator" element={<QrValidatorPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="collaborations" element={<CollaborationsPage />} />
             <Route path="profile" element={<ProfilePage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="unauthorized" element={<UnauthorizedPage />} />

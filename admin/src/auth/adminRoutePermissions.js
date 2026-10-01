@@ -15,7 +15,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/fiscal-periods": ["accounting:fiscal_years_read", "accounting:period_toggle"],
   "/accounting-health": ["accounting:coa_read", "accounting:journal_read", "accounting:subledger_read"],
   "/add": ["product:create"],
-  "/list": ["product:create", "product:update", "product:delete"],
+  "/list": ["product:list_admin", "product:create", "product:update", "product:delete"],
   "/inventory": ["inventory:admin_read_all"],
   "/cogs": ["cogs:read"],
   "/special-offers": ["offer:list", "offer:create", "offer:update"],
@@ -31,6 +31,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/loyalty-levels": ["loyalty:level_manage"],
   "/categories": ["category:create", "category:delete", "subcategory:create", "subcategory:update", "color:create"],
   "/combo-bundles": ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"],
+  "/collaborations": ["collaboration:admin_manage", "collaboration:admin_reports_read"],
   "/reviews": ["review:admin_list"],
   "/story-letter-library": ["storyletter:admin_manage"],
   "/shipping": ["shipping:config_update"],
@@ -40,7 +41,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
 };
 
 export const ADMIN_SECTION_PERMISSIONS = {
-  catalog: ["product:create", "product:update", "product:delete", "category:create", "category:delete", "combo_bundle:create", "combo_bundle:update", "combo_bundle:delete", "subcategory:create", "color:create", "offer:list", "offer:create", "offer:update"],
+  catalog: ["product:create", "product:update", "product:delete", "category:create", "category:delete", "combo_bundle:create", "combo_bundle:update", "combo_bundle:delete", "collaboration:admin_manage", "collaboration:admin_reports_read", "subcategory:create", "color:create", "offer:list", "offer:create", "offer:update"],
   sales: ["order:list_admin", "order:admin_create"],
   supply: ["assignment:admin_list", "delivery:admin_list", "manufacturer:admin_list", "inventory:admin_read_all", "inventory:admin_low_stock"],
   marketing: ["marketing_card:admin_manage"],

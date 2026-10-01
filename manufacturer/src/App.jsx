@@ -17,6 +17,7 @@ import CustomerLoyalty from "./pages/CustomerLoyalty";
 import PickupProfile from "./pages/PickupProfile";
 import Finance from "./pages/Finance";
 import MarketingCards from "./pages/MarketingCards";
+import Collaborations from "./pages/Collaborations";
 import { installAuthInterceptor } from "./api/authInterceptor";
 
 installAuthInterceptor();
@@ -57,6 +58,7 @@ const MainLayout = () => {
               <Route path="/orders/:id" element={<OrderDetail />} />
               <Route path="/direct-orders" element={<DirectOrders />} />
               <Route path="/inventory" element={<Inventory />} />
+              <Route path="/collaborations" element={<Collaborations />} />
               <Route path="/pickup-profile" element={<PickupProfile />} />
               <Route path="/performance" element={<Performance />} />
               <Route path="/finance" element={<Finance />} />

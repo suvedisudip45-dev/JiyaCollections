@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { postCustomerReturnAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { applyCollaborationReturnAdjustments } from "../services/collaborationSalesService.js";
 
 // ==========================================
 // 1. CUSTOMER RETURNS (RMA & REFUNDS)
@@ -64,8 +65,9 @@ export const createCustomerReturn = async (req, res) => {
     }
 
     // 1. Create Return Record
-    const returnRecord = await prisma.customerReturn.create({
-      data: {
+    const returnRecord = await prisma.$transaction(async (tx) => {
+      const createdReturn = await tx.customerReturn.create({
+        data: {
         orderId: orderId || null,
         userId: userId || null,
         customerName: customerName.trim(),
@@ -78,7 +80,15 @@ export const createCustomerReturn = async (req, res) => {
         inventoryAction,
         reason: reason || "Customer Return",
         notes: notes || null,
-      },
+        },
+      });
+      await applyCollaborationReturnAdjustments({
+        orderId,
+        items: processedItems,
+        returnedAt: createdReturn.returnDate,
+        client: tx,
+      });
+      return createdReturn;
     });
 
     // 2. Adjust Inventory based on item condition / action

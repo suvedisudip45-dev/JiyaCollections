@@ -21,6 +21,7 @@ import {
   calculateComboBundlePrice,
   getSharedComboBundleVariants,
 } from "../services/comboBundleRules.js";
+import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -506,7 +507,11 @@ const placeOrder = async (req, res) => {
       rewardApplied: rewardApplied ? JSON.stringify(rewardApplied) : "{}",
     };
 
-    const createdOrder = await prisma.order.create({ data: orderData });
+    const createdOrder = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({ data: orderData });
+      await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
+      return order;
+    });
 
     // Update user cart and saved addresses
     try {
@@ -1117,8 +1122,9 @@ const adminCreateOrder = async (req, res) => {
       })
     );
 
-    const newOrder = await prisma.order.create({
-      data: {
+    const newOrder = await prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
         userId: orderUserId,
         items: frozenItemsSnapshot,
         amount: finalAmount,
@@ -1144,7 +1150,10 @@ const adminCreateOrder = async (req, res) => {
           socialCodeVerified: customerDecision.state === "VERIFIED",
           customerVerificationState: customerDecision.state,
         }),
-      },
+        },
+      });
+      await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
+      return order;
     });
 
 

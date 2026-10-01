@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Megaphone, CreditCard, RefreshCcw,
   QrCode, BarChart3, User, Settings, LogOut, ChevronDown,
-  Menu, X, BadgeCheck,
+  Menu, X, BadgeCheck, Handshake,
 } from "lucide-react";
 import { useAuth } from "../../auth/AuthContext";
 
@@ -14,6 +14,7 @@ const NAV = [
   { to: "/redemptions", label: "Redemptions",  icon: RefreshCcw },
   { to: "/qr-validator",label: "QR Validator", icon: QrCode },
   { to: "/reports",     label: "Reports",      icon: BarChart3 },
+  { to: "/collaborations", label: "Collaborations", icon: Handshake },
 ];
 
 const ACCOUNT_NAV = [

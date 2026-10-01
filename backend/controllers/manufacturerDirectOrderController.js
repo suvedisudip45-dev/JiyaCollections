@@ -3,6 +3,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
+import { accrueCollaborationSalesForOrder, createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -222,8 +223,9 @@ export const createDirectOrder = async (req, res) => {
     };
 
     // Create Order Record
-    const order = await prisma.order.create({
-      data: {
+    const order = await prisma.$transaction(async (tx) => {
+      const createdOrder = await tx.order.create({
+        data: {
         userId: loyaltyRewardApplied?.userId || (isWalkIn ? "GUEST_WALK_IN" : "GUEST_PHONE_ORDER"),
         items: acceptedItems,
         amount: netAmount,
@@ -243,7 +245,10 @@ export const createDirectOrder = async (req, res) => {
           (isWalkIn
             ? "In-Person Hub Counter Sale (No delivery partner needed)"
             : "Direct Phone Order (Self-Delivered by Manufacturer Hub)"),
-      },
+        },
+      });
+      await createCollaborationSalesForOrder({ order: createdOrder, items: acceptedItems, client: tx });
+      return createdOrder;
     });
 
     // Deduct stock from Manufacturer inventory and sync product stockQuantity
@@ -415,6 +420,9 @@ export const updateDirectOrderStatus = async (req, res) => {
       where: { id: orderId },
       data: updateData,
     });
+    if (status && status.toLowerCase() === "delivered") {
+      await accrueCollaborationSalesForOrder({ orderId, deliveredAt: new Date() });
+    }
 
     if (order.assignmentId && status) {
       await prisma.orderAssignment.update({

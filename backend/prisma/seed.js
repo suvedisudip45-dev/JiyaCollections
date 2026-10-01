@@ -19,7 +19,7 @@ const permissionDefinitions = [
   ["access:customer_users_read", "List and view Customer accounts."], ["access:customer_users_update", "Update Customer account profiles."], ["access:customer_users_deactivate", "Activate or deactivate Customer accounts."],
   ["access:roles_read", "List and view Admin portal roles."], ["access:roles_create", "Create Admin portal roles."], ["access:roles_update", "Update Admin portal roles."], ["access:roles_deactivate", "Activate or deactivate Admin portal roles."], ["access:roles_assign_permissions", "Assign permissions to Admin portal roles."], ["access:permissions_read", "View the system permission catalog."],
   ["admin:change_password", "Change an administrator password."],
-  ["product:create", "Create products."], ["product:update", "Update products."], ["product:delete", "Delete products."],
+  ["product:create", "Create products."], ["product:update", "Update products."], ["product:delete", "Delete products."], ["product:list_admin", "Read unpublished products in the administrative catalog."],
   ["stock:adjust", "Adjust product stock."], ["stock:logs_read", "Read stock logs."],
   ["order:list_all", "Read all orders."], ["order:list_admin", "Read administrative order views."], ["order:customer_lookup", "Look up order customers."],
   ["order:customer_verify", "Verify order customers."], ["order:admin_create", "Create orders administratively."],
@@ -43,14 +43,16 @@ const permissionDefinitions = [
   ["storyletter:admin_manage", "Manage administrative story letters."],
   ["marketing_card:admin_manage", "Manage marketing cards administratively."], ["marketing_card:manufacturer_manage", "Manage manufacturer marketing cards."], ["marketing_card:customer_manage", "Use customer marketing card features."], ["marketing_card:partner_manage", "Manage partner marketing cards."],
   ["customer:profile_read", "Read the customer profile."], ["customer:profile_update", "Update the customer profile."], ["customer:password_change", "Change the customer password."], ["customer:address_manage", "Manage customer addresses."], ["customer:cart_read", "Read the customer cart."], ["customer:cart_write", "Update the customer cart."], ["customer:order_place", "Place customer orders."], ["customer:order_read", "Read customer orders."], ["customer:review_write", "Write customer reviews."], ["customer:review_read", "Read customer review status."], ["customer:review_interact", "Interact with reviews."], ["customer:review_delete", "Delete customer reviews."], ["customer:loyalty_read", "Read customer loyalty status."],
-  ["manufacturer:loyalty_lookup", "Look up loyalty customers for manufacturers."], ["manufacturer:hub_customers_read", "Read manufacturer hub customers."], ["manufacturer:hub_gift_record", "Record manufacturer hub gifts."], ["manufacturer:hub_gifts_read", "Read manufacturer hub gifts."],
+  ["manufacturer:loyalty_lookup", "Look up loyalty customers for manufacturers."], ["manufacturer:hub_customers_read", "Read manufacturer hub customers."], ["manufacturer:hub_gift_record", "Record manufacturer hub gifts."], ["manufacturer:hub_gifts_read", "Read manufacturer hub gifts."], ["manufacturer:collaboration_read", "Read manufacturer collaboration sales and invoice activity for supplied products."],
   ["partner:campaign_manage", "Manage partner campaigns."], ["partner:card_manage", "Manage partner cards."], ["partner:profile_manage", "Manage the partner profile."],
+  ["partner:collaboration_read", "Read the partner's collaboration products, sales, and invoices."], ["partner:collaboration_terms_manage", "Propose, counter, or accept collaboration product terms."],
+  ["collaboration:admin_manage", "Manage collaboration product assignments and agreements."], ["collaboration:admin_reports_read", "Read collaboration sales and partner fee reports."],
 ];
 
 const rolePermissionCodes = {
   ADMIN: permissionDefinitions.map(([code]) => code),
   CUSTOMER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("customer:") && !code.startsWith("customer:admin_")) || code === "marketing_card:customer_manage"),
-  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_") && code !== "manufacturer:branches_sync") || code === "finance:manufacturer_summary" || code.startsWith("marketing_card:manufacturer")),
+  MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_") && code !== "manufacturer:branches_sync") || code === "finance:manufacturer_summary" || code.startsWith("marketing_card:manufacturer") || code === "manufacturer:collaboration_read"),
   MARKETING_PARTNER: permissionDefinitions.map(([code]) => code).filter((code) => code.startsWith("partner:") || code.startsWith("marketing_card:partner")),
 };
 

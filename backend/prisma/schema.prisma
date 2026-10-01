@@ -508,6 +508,8 @@ model Product {
   published         Boolean   @default(true)
   date              BigInt
   comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
+  collaborationLink CollaborationProduct?
+  collaborationSales CollaborationSale[]
 
   @@index([published])
   @@index([category])
@@ -585,6 +587,7 @@ model Order {
   deliveryOrder               DeliveryOrder?
   letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
   marketingCardOrder          MarketingCardOrder?
+  collaborationSales          CollaborationSale[]
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -1097,7 +1100,6 @@ model AccountingPeriod {
 
 model JournalEntry {
   id                 String        @id @default(uuid())
-  categoryId          String
   journalNumber      String        @unique // e.g. "JE-2026-00001"
   transactionDate    DateTime      @default(now())
   fiscalYearId       String?
@@ -1113,7 +1115,6 @@ model JournalEntry {
   accountingEventId  String?       @unique
   accountingEvent    AccountingEvent? @relation(fields: [accountingEventId], references: [id], onDelete: Restrict)
   totalDebit         Decimal       @default(0) @db.Decimal(20, 2)
-  @@index([categoryId, status])
   totalCredit        Decimal       @default(0) @db.Decimal(20, 2)
   createdBy          String?       @default("system")
   postedAt           DateTime      @default(now())
@@ -1330,6 +1331,9 @@ model MarketingPartner {
   campaigns    MarketingCampaign[]
   cards        MarketingCard[]
   settlements  MarketingPartnerSettlement[]
+  collaborationProducts CollaborationProduct[]
+  collaborationSales CollaborationSale[]
+  collaborationFeeInvoices CollaborationFeeInvoice[]
 
   @@index([status])
   @@index([email])
@@ -1547,6 +1551,124 @@ model MarketingPartnerSettlement {
 
   @@index([partnerId, paymentStatus])
   @@index([createdAt])
+}
+
+model CollaborationProduct {
+  id                   String   @id @default(uuid())
+  productId            String   @unique
+  partnerId            String
+  listingStatus        String   @default("DRAFT") // DRAFT | ACTIVE | PAUSED | ENDED
+  activeTermsVersion   Int?
+  pendingTermsVersion  Int?
+  publishedAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  product              Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  partner              MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  termsVersions        CollaborationTermsVersion[]
+  sales                CollaborationSale[]
+
+  @@index([partnerId, listingStatus])
+  @@index([listingStatus, publishedAt])
+}
+
+model CollaborationTermsVersion {
+  id                   String   @id @default(uuid())
+  collaborationProductId String
+  version              Int
+  proposedByRole       String   @db.VarChar(24) // ADMIN | MARKETING_PARTNER
+  proposedById         String
+  status               String   @default("PENDING_PARTNER") // PENDING_ADMIN | PENDING_PARTNER | ACCEPTED | REJECTED | SUPERSEDED
+  fixedFeePerUnit      Decimal  @default(0) @db.Decimal(20, 2)
+  retailPrice          Decimal  @db.Decimal(20, 2)
+  discountPercentage   Decimal  @default(0) @db.Decimal(5, 2)
+  vatTreatment         String   @default("VAT_EXCLUSIVE") @db.VarChar(24) // VAT_EXCLUSIVE | VAT_INCLUSIVE | EXEMPT
+  notes                String?  @db.Text
+  respondedByRole      String?  @db.VarChar(24)
+  respondedById        String?
+  proposedAt           DateTime @default(now())
+  respondedAt          DateTime?
+  createdAt            DateTime @default(now())
+  collaborationProduct CollaborationProduct @relation(fields: [collaborationProductId], references: [id], onDelete: Cascade)
+  sales                CollaborationSale[]
+
+  @@unique([collaborationProductId, version])
+  @@index([collaborationProductId, status])
+}
+
+model CollaborationSale {
+  id                     String   @id @default(uuid())
+  orderId                String
+  orderItemIndex         Int
+  productId              String
+  collaborationProductId String
+  partnerId              String
+  termsVersion           Int
+  quantity               Int
+  quantityReturned       Int      @default(0)
+  quantityInvoiced       Int      @default(0)
+  quantityCredited       Int      @default(0)
+  size                   String   @default("") @db.VarChar(64)
+  color                  String   @default("") @db.VarChar(100)
+  unitSellingPrice       Decimal  @db.Decimal(20, 2)
+  unitDiscount           Decimal  @default(0) @db.Decimal(20, 2)
+  partnerFeePerUnit      Decimal  @db.Decimal(20, 2)
+  vatTreatment           String   @default("VAT_EXCLUSIVE") @db.VarChar(24)
+  status                 String   @default("PENDING_DELIVERY") // PENDING_DELIVERY | ACCRUED | PARTIALLY_REVERSED | INVOICED | REVERSED
+  deliveredAt            DateTime?
+  accruedAt              DateTime?
+  lastReturnAt           DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  order                  Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product                Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  collaborationProduct   CollaborationProduct @relation(fields: [collaborationProductId], references: [id], onDelete: Restrict)
+  partner                MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  terms                  CollaborationTermsVersion @relation(fields: [collaborationProductId, termsVersion], references: [collaborationProductId, version], onDelete: Restrict)
+  invoiceLines           CollaborationFeeInvoiceLine[]
+
+  @@unique([orderId, orderItemIndex])
+  @@index([partnerId, status, deliveredAt])
+  @@index([collaborationProductId, status])
+}
+
+model CollaborationFeeInvoice {
+  id                String   @id @default(uuid())
+  invoiceNumber     String   @unique @db.VarChar(64)
+  partnerId         String
+  periodStart       DateTime
+  periodEnd         DateTime
+  totalUnits        Int      @default(0)
+  netAmount         Decimal  @default(0) @db.Decimal(20, 2)
+  vatAmount         Decimal  @default(0) @db.Decimal(20, 2)
+  totalAmount       Decimal  @default(0) @db.Decimal(20, 2)
+  accountingDocumentId String? @unique
+  status            String   @default("ISSUED") // ISSUED | PAID | VOID
+  issuedAt          DateTime @default(now())
+  createdAt         DateTime @default(now())
+  partner           MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  lines             CollaborationFeeInvoiceLine[]
+
+  @@unique([partnerId, periodStart])
+  @@index([partnerId, issuedAt])
+}
+
+model CollaborationFeeInvoiceLine {
+  id             String   @id @default(uuid())
+  invoiceId      String
+  saleId         String
+  entryType      String   @default("FEE") // FEE | RETURN_CREDIT
+  quantity       Int
+  unitFee        Decimal  @db.Decimal(20, 2)
+  netAmount      Decimal  @db.Decimal(20, 2)
+  vatAmount      Decimal  @db.Decimal(20, 2)
+  totalAmount    Decimal  @db.Decimal(20, 2)
+  createdAt      DateTime @default(now())
+  invoice        CollaborationFeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  sale           CollaborationSale @relation(fields: [saleId], references: [id], onDelete: Restrict)
+
+  @@unique([invoiceId, saleId, entryType])
+  @@index([saleId, createdAt])
 }
 
 model NcmBranch {

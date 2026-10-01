@@ -105,7 +105,7 @@ const ComboBundles = ({ token }) => {
 
   const fetchProducts = async () => {
     try {
-      const response = await axios.get(`${backendUrl}/api/product/list?admin=true`);
+      const response = await axios.get(`${backendUrl}/api/product/list?admin=true`, { headers: { token } });
       if (response.data.success) {
         setProducts(response.data.products || []);
       }

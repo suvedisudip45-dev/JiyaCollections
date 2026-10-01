@@ -109,6 +109,9 @@ const Navbar = () => {
               <Link to={collectionDirectoryUrl(group)} className="mt-4 block border-t border-[var(--line)] pt-4 text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
                 Combo Bundles <span aria-hidden="true">→</span>
               </Link>
+              <Link to="/collaborations" className="mt-3 block text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
+                Collaboration <span aria-hidden="true">→</span>
+              </Link>
             </div>
           </li>
         ))}
@@ -184,6 +187,9 @@ const Navbar = () => {
               ))}
               <Link onClick={() => setVisible(false)} to={collectionDirectoryUrl(activeMobileGroup)} className="flex items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
                 Combo Bundles <span className="text-xl">→</span>
+              </Link>
+              <Link onClick={() => setVisible(false)} to="/collaborations" className="flex items-center justify-between px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
+                Collaboration <span className="text-xl">→</span>
               </Link>
             </div>
           )}

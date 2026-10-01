@@ -308,9 +308,21 @@ const updateProduct = async (req, res) => {
       existingImages,
     } = req.body;
 
-    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    const existingProduct = await prisma.product.findUnique({
+      where: { id },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true, pendingTermsVersion: true } } },
+    });
     if (!existingProduct) {
       return res.json({ success: false, message: "Product not found" });
+    }
+    if ((published === "true" || published === true) && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
+      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
+    }
+    const hasCollaborationPriceTerms = Boolean(existingProduct.collaborationLink?.activeTermsVersion || existingProduct.collaborationLink?.pendingTermsVersion);
+    const collaborationPriceChanged = (price !== undefined && Number(price) !== Number(existingProduct.price))
+      || (discount !== undefined && Number(discount) !== Number(existingProduct.discount));
+    if (hasCollaborationPriceTerms && collaborationPriceChanged) {
+      return res.status(409).json({ success: false, message: "Propose a new collaboration terms version to change the agreed retail price or discount." });
     }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
@@ -523,9 +535,15 @@ const updateProduct = async (req, res) => {
 const togglePublish = async (req, res) => {
   try {
     const { id } = req.body;
-    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    const existingProduct = await prisma.product.findUnique({
+      where: { id },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+    });
     if (!existingProduct) {
       return res.json({ success: false, message: "Product not found" });
+    }
+    if (!existingProduct.published && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
+      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
     }
 
     const updatedProduct = await prisma.product.update({
@@ -571,7 +589,14 @@ const toggleBestseller = async (req, res) => {
 const getSubcategoryBestsellers = async (req, res) => {
   try {
     const { category, subcategory } = req.query;
-    const whereCondition = { published: true, bestseller: true };
+    const whereCondition = {
+      published: true,
+      bestseller: true,
+      OR: [
+        { collaborationLink: null },
+        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
+      ],
+    };
     if (category) {
       whereCondition.category = { contains: category.replace(/"/g, "") };
     }
@@ -602,7 +627,7 @@ const getSubcategoryBestsellers = async (req, res) => {
 // function for list products
 const listProducts = async (req, res) => {
   try {
-    const isAdmin = req.headers.token || req.query.admin === "true";
+    const isAdmin = req.auth?.role === "ADMIN";
     const pagination = getPagination(req.query);
     const requestedCategoryValue = String(req.query.category || "").trim();
     const requestedCategory = requestedCategoryValue.toLowerCase();
@@ -614,7 +639,13 @@ const listProducts = async (req, res) => {
     await syncAllProductsStock();
 
     // Admin sees all products; Public customers see only published products
-    const whereCondition = { ...(isAdmin ? {} : { published: true }) };
+    const whereCondition = isAdmin ? {} : {
+      published: true,
+      OR: [
+        { collaborationLink: null },
+        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
+      ],
+    };
     if (hasPublicFilters) {
       if (requestedCategory) {
         const categoryValue = requestedCategoryValue.replace(/"/g, "");
@@ -722,8 +753,10 @@ const singleProduct = async (req, res) => {
 
     const rawProduct = await prisma.product.findUnique({
       where: { id: productId },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
     });
-    if (!rawProduct) {
+    const isAdmin = req.auth?.role === "ADMIN";
+    if (!rawProduct || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
       return res.json({ success: false, message: "Product not found" });
     }
 

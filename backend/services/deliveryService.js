@@ -18,6 +18,7 @@ import {
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
 import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
+import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -806,6 +807,9 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
           where: { id: delivery.orderId },
           data: orderUpdateData,
         });
+        if (deliveryState === "DELIVERED") {
+          await accrueCollaborationSalesForOrder({ orderId: delivery.orderId, deliveredAt: new Date(), client: tx });
+        }
       }
 
       // Synchronize OrderAssignment model
