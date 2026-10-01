@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
-import { createExchangeOrder, getOrderStatus } from "./ncmClient.js";
+import { createExchangeOrder, createOrderComment, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, getOrderStatus } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
 
 const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
@@ -55,7 +55,7 @@ const addEvent = (tx, {
   },
 });
 
-export const requestHashFor = ({ orderId, reasonCode, reasonDetails, items }) => createHash("sha256")
+export const requestHashFor = ({ orderId, reasonCode, reasonDetails, items, replacementItems }) => createHash("sha256")
   .update(JSON.stringify({
     orderId,
     reasonCode,
@@ -68,8 +68,30 @@ export const requestHashFor = ({ orderId, reasonCode, reasonDetails, items }) =>
         quantity: Number(item.quantity || 0),
       }))
       .sort((left, right) => itemKey(left).localeCompare(itemKey(right))),
+    replacementItems: (Array.isArray(replacementItems) ? replacementItems : [])
+      .map((item) => ({
+        productId: String(item.productId || ""),
+        size: String(item.size || "").trim(),
+        color: String(item.color || "").trim(),
+        quantity: Number(item.quantity || 0),
+      }))
+      .sort((left, right) => itemKey(left).localeCompare(itemKey(right))),
   }))
   .digest("hex");
+
+export const buildExchangeNcmReturnComment = (request) => {
+  const returnItems = parseArray(request.items)
+    .map((item) => `${item.name || item.productId} ${item.size || ""} ${item.color || ""} x${item.quantity}`.trim())
+    .join(", ");
+  const replacementItems = parseArray(request.replacementItems)
+    .map((item) => `${item.name || item.productId} ${item.size || ""} ${item.color || ""} x${item.quantity}`.trim())
+    .join(", ");
+  return [
+    `Exchange return cause: ${request.reasonDetails || request.reasonCode || "Not provided"}`,
+    returnItems ? `Returning: ${returnItems}` : "",
+    replacementItems ? `Replacement requested: ${replacementItems}` : "",
+  ].filter(Boolean).join(" | ").slice(0, 1000);
+};
 
 const findRequestDuplicate = async (requestKey, customerId, orderId, requestHash) => {
   const existing = await prisma.orderExchangeRequest.findUnique({ where: { requestKey } });
@@ -132,11 +154,86 @@ const snapshotRequestedItems = (orderItems, requestedItems, priorExchanges) => {
   });
 };
 
-export const createCustomerExchangeRequest = async ({ customerId, orderId, requestKey, reasonCode, reasonDetails, items }) => {
+export const snapshotReplacementItems = ({ orderItems, requestedItems, replacementItems }) => {
+  const requestedByProduct = new Map();
+  for (const item of requestedItems) {
+    requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + Number(item.quantity || 0));
+  }
+  const replacements = Array.isArray(replacementItems) && replacementItems.length
+    ? replacementItems
+    : requestedItems.map((item) => ({ productId: item.productId, size: item.size, color: item.color, quantity: item.quantity }));
+  const replacementByProduct = new Map();
+  const snapshots = replacements.map((item) => {
+    const productId = String(item.productId || "");
+    const quantity = Number(item.quantity);
+    if (!productId || !Number.isInteger(quantity) || quantity <= 0) {
+      throw fail("Choose a replacement product and a positive whole-number quantity.", "INVALID_EXCHANGE_REPLACEMENT");
+    }
+    const purchased = parseArray(orderItems).find((orderItem) => String(orderItem.productId || orderItem._id || orderItem.id || "") === productId);
+    if (!purchased) throw fail("Replacement items must use a product from the original order.", "INVALID_EXCHANGE_REPLACEMENT");
+    replacementByProduct.set(productId, (replacementByProduct.get(productId) || 0) + quantity);
+    return {
+      productId,
+      name: String(purchased.name || "Product"),
+      size: String(item.size || ""),
+      color: String(item.color || ""),
+      quantity,
+      unitPrice: Number(purchased.purchasedUnitPrice ?? purchased.price ?? 0),
+    };
+  });
+  if (requestedByProduct.size !== replacementByProduct.size || [...requestedByProduct].some(([productId, quantity]) => replacementByProduct.get(productId) !== quantity)) {
+    throw fail("Replacement quantities must match the returned quantities for each product.", "EXCHANGE_REPLACEMENT_QUANTITY_MISMATCH");
+  }
+  return snapshots;
+};
+
+const adjustReplacementInventory = async ({ tx, manufacturerId, items, direction }) => {
+  if (!manufacturerId) throw fail("The order has no manufacturer inventory owner for replacement reservation.", "EXCHANGE_MANUFACTURER_MISSING", 409);
+  for (const item of items) {
+    const inventory = await tx.manufacturerInventory.findUnique({
+      where: { manufacturerId_productId: { manufacturerId, productId: item.productId } },
+    });
+    if (!inventory) throw fail(`Replacement inventory is missing for ${item.name || item.productId}.`, "EXCHANGE_REPLACEMENT_STOCK_MISSING", 409);
+    const variants = parseArray(inventory.variantsStock);
+    const hasVariants = variants.length > 0;
+    const matches = (variant) => normalized(variant.size || "Standard") === normalized(item.size || "Standard") && normalized(variant.color || "Standard") === normalized(item.color || "Standard");
+    if (hasVariants) {
+      const selected = variants.find(matches);
+      if (!selected) throw fail(`The replacement size/color is unavailable for ${item.name}.`, "EXCHANGE_REPLACEMENT_VARIANT_MISSING", 409);
+      const available = Number(selected.quantity || 0) - Number(selected.reservedQty || 0);
+      if (direction === "reserve" && available < item.quantity) throw fail(`Insufficient replacement stock for ${item.name} (${item.size || "One size"} / ${item.color || "Standard"}).`, "EXCHANGE_REPLACEMENT_STOCK_UNAVAILABLE", 409);
+      if (direction === "validate") continue;
+      const updatedVariants = variants.map((variant) => matches(variant)
+        ? { ...variant, reservedQty: Math.max(0, Number(variant.reservedQty || 0) + (direction === "reserve" ? item.quantity : -item.quantity)), ...(direction === "consume" ? { quantity: Math.max(0, Number(variant.quantity || 0) - item.quantity) } : {}) }
+        : variant);
+      await tx.manufacturerInventory.update({
+        where: { manufacturerId_productId: { manufacturerId, productId: item.productId } },
+        data: {
+          ...(direction === "consume" ? { quantity: { decrement: item.quantity } } : {}),
+          reservedQty: Math.max(0, inventory.reservedQty + (direction === "reserve" ? item.quantity : -item.quantity)),
+          variantsStock: updatedVariants,
+        },
+      });
+    } else {
+      const available = inventory.quantity - inventory.reservedQty;
+      if (direction === "reserve" && available < item.quantity) throw fail(`Insufficient replacement stock for ${item.name}.`, "EXCHANGE_REPLACEMENT_STOCK_UNAVAILABLE", 409);
+      if (direction === "validate") continue;
+      await tx.manufacturerInventory.update({
+        where: { manufacturerId_productId: { manufacturerId, productId: item.productId } },
+        data: {
+          ...(direction === "consume" ? { quantity: { decrement: item.quantity } } : {}),
+          reservedQty: Math.max(0, inventory.reservedQty + (direction === "reserve" ? item.quantity : -item.quantity)),
+        },
+      });
+    }
+  }
+};
+
+export const createCustomerExchangeRequest = async ({ customerId, orderId, requestKey, reasonCode, reasonDetails, items, replacementItems, actorRole = "CUSTOMER", actorId }) => {
   const code = String(reasonCode || "").trim().toUpperCase();
   const details = String(reasonDetails || "").trim();
   const key = String(requestKey || randomUUID()).trim();
-  const requestHash = requestHashFor({ orderId, reasonCode: code, reasonDetails: details, items });
+  const requestHash = requestHashFor({ orderId, reasonCode: code, reasonDetails: details, items, replacementItems });
   if (!customerId || !orderId || key.length > 128 || !REASONS.has(code)) {
     throw fail("Order and a valid exchange reason are required.", "INVALID_EXCHANGE_REQUEST");
   }
@@ -180,6 +277,14 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       select: { items: true },
     });
     const requestedItems = snapshotRequestedItems(order.items, items || [], existingRequests);
+    const requestedReplacements = snapshotReplacementItems({ orderItems: order.items, requestedItems, replacementItems });
+    await adjustReplacementInventory({ tx, manufacturerId: order.manufacturerId, items: requestedReplacements, direction: "validate" });
+    let priceDifference = 0;
+    for (const item of requestedReplacements) {
+      const product = await tx.product.findUnique({ where: { id: item.productId }, select: { price: true } });
+      const currentUnitPrice = Number(product?.price ?? item.unitPrice);
+      priceDifference += (currentUnitPrice - Number(item.unitPrice || 0)) * Number(item.quantity || 0);
+    }
     const [customer, manufacturer] = await Promise.all([
       tx.user.findUnique({ where: { id: customerId }, select: { name: true, phone: true } }),
       order.manufacturerId ? tx.manufacturer.findUnique({ where: { id: order.manufacturerId }, select: { name: true } }) : null,
@@ -199,6 +304,8 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
         reasonCode: code,
         reasonDetails: details || null,
         items: requestedItems,
+        replacementItems: requestedReplacements,
+        priceDifference: Number(priceDifference.toFixed(2)),
         status: "REQUESTED",
       },
     });
@@ -217,10 +324,10 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       exchangeRequestId: created.id,
       eventType: "REQUESTED",
       toStatus: "REQUESTED",
-      actorId: customerId,
-      actorRole: "CUSTOMER",
+      actorId: actorId || customerId,
+      actorRole,
       reason: details || code,
-      metadata: { reasonCode: code, items: requestedItems },
+      metadata: { reasonCode: code, items: requestedItems, replacementItems: requestedReplacements, priceDifference: Number(priceDifference.toFixed(2)) },
       idempotencyKey: `EXCHANGE:${created.id}:REQUESTED`,
     });
     return { request: created, duplicate: false };
@@ -239,6 +346,18 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
   return result;
 };
 
+export const createAdminExchangeRequest = async ({ adminId, orderId, ...details }) => {
+  const order = await prisma.order.findUnique({ where: { id: orderId }, select: { userId: true } });
+  if (!order) throw fail("Order not found.", "ORDER_NOT_FOUND", 404);
+  return createCustomerExchangeRequest({
+    ...details,
+    orderId,
+    customerId: order.userId,
+    actorRole: "ADMIN",
+    actorId: adminId,
+  });
+};
+
 export const listCustomerExchangeRequests = ({ customerId, orderId }) => prisma.orderExchangeRequest.findMany({
   where: { customerId, ...(orderId ? { orderId } : {}) },
   select: {
@@ -247,6 +366,10 @@ export const listCustomerExchangeRequests = ({ customerId, orderId }) => prisma.
     reasonCode: true,
     reasonDetails: true,
     items: true,
+    replacementItems: true,
+    priceDifference: true,
+    replacementItems: true,
+    priceDifference: true,
     status: true,
     decisionReason: true,
     decidedAt: true,
@@ -259,7 +382,16 @@ export const listCustomerExchangeRequests = ({ customerId, orderId }) => prisma.
     inspectedAt: true,
     completedAt: true,
     createdAt: true,
+    ncmSubmissionError: true,
+    ncmReturnCharge: true,
+    ncmReplacementCharge: true,
+    ncmTotalCharge: true,
+    ncmChargePayer: true,
+    replacementStockReservedAt: true,
+    replacementStockReleasedAt: true,
+    replacementStockConsumedAt: true,
     events: { select: { eventType: true, fromStatus: true, toStatus: true, reason: true, occurredAt: true }, orderBy: { occurredAt: "asc" } },
+    ncmAttempts: { select: { operation: true, attemptNumber: true, requestJson: true, responseJson: true, httpStatus: true, result: true, errorCode: true, errorMessage: true, startedAt: true, finishedAt: true }, orderBy: { attemptNumber: "asc" } },
   },
   orderBy: { createdAt: "desc" },
 });
@@ -281,6 +413,7 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
         order: { select: { id: true, status: true, amount: true, date: true, items: true, deliveryOrder: { select: { ncmOrderId: true, state: true } } } },
         customer: { select: { id: true, name: true, phone: true, email: true } },
         events: { orderBy: { occurredAt: "asc" } },
+        ncmAttempts: { orderBy: { attemptNumber: "asc" } },
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -319,7 +452,7 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
   };
 };
 
-export const decideCustomerExchangeRequest = async ({ requestId, adminId, decision, reason }) => {
+export const decideCustomerExchangeRequest = async ({ requestId, adminId, decision, reason, chargePayer }) => {
   const normalizedDecision = String(decision || "").trim().toUpperCase();
   const decisionReason = String(reason || "").trim();
   if (!requestId || !["APPROVE", "REJECT"].includes(normalizedDecision) || decisionReason.length < 3) {
@@ -343,9 +476,34 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
     }
 
     const nextStatus = normalizedDecision === "APPROVE" ? "APPROVED" : "REJECTED";
+    const now = new Date();
+    if (normalizedDecision === "APPROVE" && !current.replacementStockReservedAt) {
+      await adjustReplacementInventory({
+        tx,
+        manufacturerId: current.manufacturerId,
+        items: parseArray(current.replacementItems).length ? parseArray(current.replacementItems) : parseArray(current.items),
+        direction: "reserve",
+      });
+    }
+    if (normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt) {
+      await adjustReplacementInventory({
+        tx,
+        manufacturerId: current.manufacturerId,
+        items: parseArray(current.replacementItems).length ? parseArray(current.replacementItems) : parseArray(current.items),
+        direction: "release",
+      });
+    }
     const claimed = await tx.orderExchangeRequest.updateMany({
       where: { id: current.id, status: current.status },
-      data: { status: nextStatus, decisionActorId: adminId, decisionReason, decidedAt: new Date() },
+      data: {
+        status: nextStatus,
+        decisionActorId: adminId,
+        decisionReason,
+        decidedAt: now,
+        ...(normalizedDecision === "APPROVE" && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
+        ...(normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt ? { replacementStockReleasedAt: now } : {}),
+        ...(normalizedDecision === "APPROVE" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+      },
     });
     if (claimed.count !== 1) throw fail("This exchange request was reviewed by another admin.", "EXCHANGE_ALREADY_REVIEWED", 409);
     const updated = await tx.orderExchangeRequest.findUnique({ where: { id: current.id } });
@@ -401,25 +559,91 @@ export const submitApprovedExchange = async (requestId) => {
     });
     if (claimed.count !== 1) throw fail("Another NCM submission is already in progress.", "EXCHANGE_SUBMISSION_CONFLICT", 409);
     const updated = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
+    const attemptNumber = await tx.returnExchangeNcmAttempt.count({
+      where: { exchangeRequestId: request.id, operation: "CREATE_EXCHANGE" },
+    }) + 1;
+    const requestJson = { pk: ncmOrderId };
+    const attempt = await tx.returnExchangeNcmAttempt.create({
+      data: {
+        exchangeRequestId: request.id,
+        operation: "CREATE_EXCHANGE",
+        idempotencyKey: `EXCHANGE:${request.id}:CREATE_EXCHANGE:${attemptNumber}`,
+        attemptNumber,
+        requestUrl: "/api/v2/vendor/order/exchange-create",
+        requestJson,
+        result: "STARTED",
+      },
+    });
     await addEvent(tx, {
       exchangeRequestId: request.id,
       eventType: "NCM_SUBMISSION_STARTED",
       fromStatus: previousStatus,
       toStatus: "SUBMITTING",
       actorRole: "SYSTEM",
-      idempotencyKey: `EXCHANGE:${request.id}:SUBMISSION:${attemptedAt.getTime()}`,
+      metadata: { attemptNumber, requestJson },
+      idempotencyKey: `EXCHANGE:${request.id}:SUBMISSION:${attemptNumber}`,
     });
-    return { request: updated, ncmOrderId };
+    return { request: updated, ncmOrderId, attempt };
   }, { isolationLevel: "Serializable" });
 
   try {
     const response = await createExchangeOrder({ pk: submission.ncmOrderId });
+    const rejection = getNcmResponseRejection(response.data);
+    if (rejection) {
+      throw Object.assign(new Error(rejection), {
+        code: "NCM_RESPONSE_REJECTED",
+        httpStatus: response.httpStatus,
+        response: response.data,
+      });
+    }
     const returnOrderId = Number(response.data?.ven_order);
     const replacementOrderId = Number(response.data?.cust_order);
     if (!Number.isInteger(returnOrderId) || returnOrderId <= 0 || !Number.isInteger(replacementOrderId) || replacementOrderId <= 0) {
-      throw Object.assign(new Error("NCM returned an invalid exchange response; verify the exchange in the NCM portal before retrying."), { code: "NCM_EXCHANGE_RESPONSE_UNKNOWN" });
+      throw Object.assign(new Error("NCM returned an invalid exchange response; verify the exchange in the NCM portal before retrying."), {
+        code: "NCM_EXCHANGE_RESPONSE_UNKNOWN",
+        httpStatus: response.httpStatus,
+        response: response.data,
+      });
     }
 
+    const responseData = response.data?.data && typeof response.data.data === "object" ? response.data.data : response.data;
+    const [returnDetailResult, replacementDetailResult] = await Promise.allSettled([
+      getOrder(returnOrderId),
+      getOrder(replacementOrderId),
+    ]);
+    const returnComment = buildExchangeNcmReturnComment(submission.request);
+    const commentResult = await createOrderComment({ orderid: returnOrderId, comments: returnComment }).then(
+      (result) => ({ status: "fulfilled", data: result.data, attemptHistory: result.attemptHistory || [] }),
+      (error) => ({ status: "rejected", error: getNcmErrorMessage(error), response: error.response || null, attemptHistory: error.attemptHistory || [] }),
+    );
+    const returnDetail = returnDetailResult.status === "fulfilled" ? returnDetailResult.value.data : null;
+    const replacementDetail = replacementDetailResult.status === "fulfilled" ? replacementDetailResult.value.data : null;
+    const chargeFrom = (...values) => {
+      const value = values.find((candidate) => candidate !== undefined && candidate !== null && candidate !== "");
+      if (value === undefined) return null;
+      const amount = Number(value);
+      return Number.isFinite(amount) && amount >= 0 ? amount : null;
+    };
+    const returnCharge = chargeFrom(responseData?.ven_delivery_charge, responseData?.return_delivery_charge, responseData?.return_charge, extractNcmCharge(returnDetail));
+    const replacementCharge = chargeFrom(responseData?.cust_delivery_charge, responseData?.replacement_delivery_charge, responseData?.replacement_charge, extractNcmCharge(replacementDetail));
+    const responseTotal = extractNcmCharge(response.data);
+    const totalCharge = responseTotal ?? (
+      returnCharge !== null && replacementCharge !== null
+        ? returnCharge + replacementCharge
+        : null
+    );
+    const auditResponse = {
+      exchangeCreate: response.data,
+      attemptHistory: response.attemptHistory || [],
+      returnOrderDetail: returnDetail,
+      replacementOrderDetail: replacementDetail,
+      returnOrderComment: returnComment,
+      returnOrderCommentResponse: commentResult.status === "fulfilled" ? commentResult.data : null,
+      returnOrderCommentError: commentResult.status === "rejected" ? commentResult.error : null,
+      returnOrderCommentAttemptHistory: commentResult.attemptHistory,
+      returnOrderDetailError: returnDetailResult.status === "rejected" ? getNcmErrorMessage(returnDetailResult.reason) : null,
+      replacementOrderDetailError: replacementDetailResult.status === "rejected" ? getNcmErrorMessage(replacementDetailResult.reason) : null,
+    };
     return await prisma.$transaction(async (tx) => {
       const current = await tx.orderExchangeRequest.findUnique({ where: { id: requestId } });
       if (!current || current.status !== "SUBMITTING") return current;
@@ -431,35 +655,55 @@ export const submitApprovedExchange = async (requestId) => {
           ncmReplacementOrderId: replacementOrderId,
           returnPickupStatus: "AWAITING_PICKUP",
           replacementStatus: "CREATED",
+          ncmReturnCharge: Number.isFinite(returnCharge) && returnCharge >= 0 ? returnCharge : null,
+          ncmReplacementCharge: Number.isFinite(replacementCharge) && replacementCharge >= 0 ? replacementCharge : null,
+          ncmTotalCharge: totalCharge,
           ncmSubmissionError: null,
         },
+      });
+      await tx.returnExchangeNcmAttempt.update({
+        where: { id: submission.attempt.id },
+        data: { result: "SUCCESS", httpStatus: response.httpStatus, responseJson: auditResponse, finishedAt: new Date() },
       });
       await addEvent(tx, {
         exchangeRequestId: requestId,
         eventType: "NCM_EXCHANGE_CREATED",
         fromStatus: "SUBMITTING",
         toStatus: "NCM_CREATED",
-        metadata: { returnOrderId, replacementOrderId, ncmResponse: response.data },
+        metadata: { returnOrderId, replacementOrderId, returnCharge: updated.ncmReturnCharge, replacementCharge: updated.ncmReplacementCharge, totalCharge, ncmResponse: response.data },
         idempotencyKey: `EXCHANGE:${requestId}:NCM_CREATED`,
       });
       return updated;
     });
   } catch (error) {
-    const explicitRejection = /^NCM_HTTP_4\d\d$/.test(String(error.code || ""));
+    const explicitRejection = error.code === "NCM_RESPONSE_REJECTED" || /^NCM_HTTP_4\d\d$/.test(String(error.code || ""));
     const nextStatus = explicitRejection ? "NCM_REJECTED" : "NCM_SUBMISSION_UNKNOWN";
+    const errorMessage = getNcmErrorMessage(error);
     return prisma.$transaction(async (tx) => {
       const current = await tx.orderExchangeRequest.findUnique({ where: { id: requestId } });
       if (!current || current.status !== "SUBMITTING") return current;
       const updated = await tx.orderExchangeRequest.update({
         where: { id: requestId },
-        data: { status: nextStatus, ncmSubmissionError: String(error.message || "NCM submission failed").slice(0, 4000) },
+        data: { status: nextStatus, ncmSubmissionError: errorMessage },
+      });
+      await tx.returnExchangeNcmAttempt.update({
+        where: { id: submission.attempt.id },
+        data: {
+          result: explicitRejection ? "FAILED" : "UNKNOWN",
+          httpStatus: error.httpStatus || null,
+          responseJson: { response: error.response || null, attemptHistory: error.attemptHistory || [] },
+          errorCode: error.code || "NCM_EXCHANGE_FAILED",
+          errorMessage,
+          finishedAt: new Date(),
+        },
       });
       await addEvent(tx, {
         exchangeRequestId: requestId,
         eventType: nextStatus,
         fromStatus: "SUBMITTING",
         toStatus: nextStatus,
-        reason: String(error.message || "NCM submission failed").slice(0, 2000),
+        reason: errorMessage.slice(0, 2000),
+        metadata: { httpStatus: error.httpStatus || null, errorCode: error.code || null, response: error.response || null },
         idempotencyKey: `EXCHANGE:${requestId}:${nextStatus}:${current.ncmSubmissionAttemptedAt?.getTime() || Date.now()}`,
       });
       return updated;
@@ -569,6 +813,32 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
           replacementStatus: appliedLegStatus,
           ...(appliedLegStatus === "DELIVERED" ? { replacementDeliveredAt: current.replacementDeliveredAt || happenedAt } : {}),
         };
+
+    const replacementJustDelivered = !isReturnLeg && appliedLegStatus === "DELIVERED" && !current.replacementDeliveredAt;
+    if (replacementJustDelivered && current.replacementStockReservedAt && !current.replacementStockConsumedAt) {
+      const replacementItems = parseArray(current.replacementItems).length ? parseArray(current.replacementItems) : parseArray(current.items);
+      await adjustReplacementInventory({ tx, manufacturerId: current.manufacturerId, items: replacementItems, direction: "consume" });
+      for (const item of replacementItems) {
+        const product = await tx.product.findUnique({ where: { id: item.productId }, select: { id: true, name: true, stockQuantity: true } });
+        const updatedProduct = await syncProductStock(item.productId, { client: tx, throwOnError: true });
+        if (product && updatedProduct) {
+          await tx.stockLog.create({
+            data: {
+              productId: item.productId,
+              productName: product.name,
+              variantLabel: item.size && item.color ? `${item.size} / ${item.color}` : "",
+              previousQty: product.stockQuantity,
+              newQty: updatedProduct.stockQuantity,
+              changeQty: -Number(item.quantity || 0),
+              reason: `Exchange replacement delivered (${current.id.slice(0, 8)})`,
+              orderId: current.orderId,
+              source: "exchange",
+            },
+          });
+        }
+      }
+      patch.replacementStockConsumedAt = happenedAt;
+    }
 
     const returnReceivedAt = isReturnLeg && appliedLegStatus === "DELIVERED"
       ? current.manufacturerReceivedAt || happenedAt

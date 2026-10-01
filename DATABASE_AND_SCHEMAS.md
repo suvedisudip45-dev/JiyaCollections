@@ -22,7 +22,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Users & profiles | `User`, `Admin`, `Manufacturer`, `MarketingPartner` | customer and portal profiles |
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
-| Returns & exchanges | `CustomerReturn`, `OrderExchangeRequest`, `OrderExchangeEvent`, `DeliveryReturn` | customer returns, exchange approvals, inspections |
+| Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
 | Inventory | `ManufacturerInventory`, `StockLog`, `InboundShipment` | manufacturer-level stock and movement history |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
@@ -80,9 +80,11 @@ The auth layer is built around `AuthAccount` and related session tables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `CustomerReturn` | `orderId`, `items`, `totalRefundAmount`, `refundStatus`, `inventoryAction`, `reason` | refund operations |
-| `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, `cardId`, `reasonCode`, `status`, `ncmReturnOrderId`, `ncmReplacementOrderId` | exchange lifecycle |
+| `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, refund and inspection fields | approved RMA lifecycle; legacy rows default to `LEGACY_PROCESSED` |
+| `CustomerReturnEvent` | `customerReturnId`, event/status transition, actor, reason, metadata, idempotency key | return audit trail |
+| `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, returned `items`, `replacementItems`, `priceDifference`, NCM leg IDs/charges, stock reservation timestamps | exchange lifecycle and replacement-stock control |
 | `OrderExchangeEvent` | `exchangeRequestId`, `eventType`, `fromStatus`, `toStatus`, `metadata` | audit trail for exchange state transitions |
+| `ReturnExchangeNcmAttempt` | optional return/exchange ID, operation, request/response JSON, HTTP status, result, error, idempotency key | durable NCM request history |
 | `DeliveryReturn` | `deliveryOrderId`, `orderId`, `manufacturerId`, `state`, `returnReason`, `inspectionResult` | return-inspection record |
 
 ### 3.6 Inventory and manufacturer operations
@@ -148,7 +150,10 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 
 ### Returns / exchange state
 
-- `OrderExchangeRequest.status`: starts from `REQUESTED` and moves through review/reconciliation states defined in service logic
+- `CustomerReturn.lifecycleStatus`: starts at `PENDING_ADMIN_REVIEW`; NCM handoff, return transit, warehouse receipt, inspection, and refund are separate states.
+- `OrderExchangeRequest.status`: begins at `REQUESTED`; NCM attempts and outcomes are separately audited. Replacement stock is reserved at approval and consumed on confirmed replacement delivery.
+- NCM HTTP 4xx response bodies are retained in the attempt record; an attempted request must not be treated as a successful booking.
+- NCM return marking uses the original order ID (`vendor_return` flag); exchange leg IDs are NCM's `ven_order` (return) and `cust_order` (replacement).
 - `MarketingCard.physicalStatus`: `GENERATED`, `ASSIGNED`, `RECEIVED`, `AVAILABLE`, `RESERVED`, `ATTACHED`, `CANCELLED`
 - `MarketingCardCustomer.status`: `LINKED`, `ACTIVE`, `CANCELLED`
 
@@ -166,3 +171,4 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 - The schema is the canonical business model; future AI work should treat it as the source of truth before writing new endpoints or UI logic.
 - New features should preserve existing relationships and status semantics rather than inventing alternate tables for domain concepts already covered here.
 - The repo uses a `db push` / `prisma db seed` workflow in local development, but production deployment guidance in the notifications docs warns against using `db push` in production and prefers staged migration review.
+- Apply `20261001193000_return_exchange_lifecycle_overhaul`, run the RBAC seed to register new return/exchange permissions, and regenerate Prisma Client before restarting the API. The migration is additive, preserves existing processed return data, and maps its composite attempt indexes to MySQL-safe names under the 64-character identifier limit.

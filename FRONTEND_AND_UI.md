@@ -124,6 +124,8 @@ The application exposes modules such as:
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
 - integrates `react-toastify` for action feedback
+- `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
+- the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
 
 ## 4. Manufacturer Portal (`manufacturer/`)
 
@@ -172,8 +174,9 @@ This portal is clearly structured around the backend `marketing-cards` router an
 1. Product catalog loads from the backend.
 2. `ShopContext` handles cart state and local storage fallback.
 3. Checkout uses backend order creation plus shipping/config lookup.
-4. `Orders` page reads customer order history and supports order cancellation / exchange UI.
-5. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
+4. `Orders` page reads customer order history and supports cancellation, return requests, and exchange requests with replacement-variant selection.
+5. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
+6. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 
 ### Admin flow
 
@@ -187,6 +190,7 @@ This portal is clearly structured around the backend `marketing-cards` router an
 1. Manufacturer logs in to a dedicated portal.
 2. The provider loads manufacturer context and verifies a valid token.
 3. Orders, inventory, and pickup configuration are managed via manufacturer-specific pages.
+4. The orders page shows a manufacturer-scoped queue of incoming customer returns with pickup state and NCM charge payer.
 
 ### Marketing partner flow
 

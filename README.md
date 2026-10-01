@@ -101,6 +101,13 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 - **Quantity-Aware Stock Reservation**: Inventory is automatically reserved upon order assignment and finalized upon delivery.
 - **Low-Stock Alerts**: Automatic warnings when hub stock falls below safety thresholds.
 
+### 5. ↩️ Audited Customer Return & Exchange Lifecycle
+- Customers can request a return or exchange from delivered-order history; admins can also create cases on a customer's behalf.
+- Every request records its cause, selected items, requester, timestamps, and idempotency key. Admin approval is required before NCM is called.
+- NCM request/response attempts, rejection details, available charges, and charge payer are stored. Failed and unknown handoffs remain distinct from successful bookings.
+- Return refunds and inventory changes wait for manufacturer receipt and inspection. Exchange replacement stock is reserved at approval and consumed on confirmed replacement delivery.
+- The current NCM exchange-create API accepts only the original order ID; admins must verify the replacement waybill against the internally reserved replacement variant.
+
 ---
 
 ## 🛠️ Tech Stack
@@ -171,6 +178,15 @@ ADMIN_PASSWORD="adminpassword"
 ```env
 VITE_BACKEND_URL=http://localhost:4000
 ```
+
+### Return and exchange schema rollout
+From `backend/`, apply the additive migration, seed the new RBAC permissions, and regenerate Prisma Client before starting the API:
+```bash
+npx prisma migrate deploy
+npm run seed
+npx prisma generate
+```
+On Windows, stop the running backend before `prisma generate` if its native query-engine DLL is locked.
 
 ---
 

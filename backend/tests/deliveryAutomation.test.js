@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -217,5 +217,46 @@ test("NCM exchange client uses the documented vendor exchange endpoint and origi
     global.fetch = originalFetch;
     restoreEnv("NCM_API_TOKEN", originalToken);
     restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
+
+test("NCM errors preserve partner response detail and carrier charges normalize", () => {
+  assert.equal(
+    getNcmErrorMessage({ message: "NCM request failed with HTTP 400", response: { detail: "Invalid vendor order" } }),
+    "NCM request failed with HTTP 400: Invalid vendor order",
+  );
+  assert.equal(extractNcmCharge({ data: { delivery_charge: "145.50" } }), 145.5);
+  assert.equal(extractNcmCharge({ data: { delivery_charge: "unknown" } }), null);
+  assert.equal(getNcmResponseRejection({ success: false, detail: "Order is not eligible for return" }), "Order is not eligible for return");
+  assert.equal(getNcmResponseRejection({ order: 4041, vendor_return: false, message: "Return was not marked" }), "Return was not marked");
+  assert.equal(getNcmResponseRejection({ Message: "Exchange orders created" }), null);
+});
+
+test("NCM client retries bounded 5xx responses and returns attempt history", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  const originalRetryDelay = process.env.NCM_HTTP_RETRY_DELAY_MS;
+  let calls = 0;
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  process.env.NCM_HTTP_RETRY_DELAY_MS = "0";
+  global.fetch = async () => {
+    calls += 1;
+    return calls === 1
+      ? new Response(JSON.stringify({ detail: "temporary outage" }), { status: 503 })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  try {
+    const result = await requestNcm("/retry-test");
+    assert.equal(calls, 2);
+    assert.equal(result.data.ok, true);
+    assert.deepEqual(result.attemptHistory.map((attempt) => attempt.result), ["SERVER_ERROR", "SUCCESS"]);
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+    restoreEnv("NCM_HTTP_RETRY_DELAY_MS", originalRetryDelay);
   }
 });

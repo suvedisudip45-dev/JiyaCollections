@@ -1,5 +1,6 @@
 import { getPagination } from "../utils/pagination.js";
 import {
+  createAdminExchangeRequest,
   createCustomerExchangeRequest,
   decideCustomerExchangeRequest,
   listAdminExchangeRequests,
@@ -25,6 +26,7 @@ export const customerCreateExchangeRequest = async (req, res) => {
       reasonCode: req.body.reasonCode,
       reasonDetails: req.body.reasonDetails,
       items: req.body.items,
+      replacementItems: req.body.replacementItems,
     });
     return res.status(result.duplicate ? 200 : 201).json({ success: true, ...result });
   } catch (error) {
@@ -66,6 +68,7 @@ export const adminDecideExchangeRequest = async (req, res) => {
       adminId: req.adminId,
       decision: req.body.decision,
       reason: req.body.reason,
+      chargePayer: req.body.chargePayer,
     });
     return res.json({ success: true, ...result });
   } catch (error) {
@@ -116,6 +119,23 @@ export const adminResolveUnknownExchange = async (req, res) => {
       reason: req.body.reason,
     });
     return res.json({ success: true, request });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const adminCreateExchangeRequest = async (req, res) => {
+  try {
+    const result = await createAdminExchangeRequest({
+      adminId: req.adminId,
+      orderId: req.body.orderId,
+      requestKey: req.body.requestKey,
+      reasonCode: req.body.reasonCode,
+      reasonDetails: req.body.reasonDetails,
+      items: req.body.items,
+      replacementItems: req.body.replacementItems,
+    });
+    return res.status(result.duplicate ? 200 : 201).json({ success: true, ...result });
   } catch (error) {
     return sendError(res, error);
   }

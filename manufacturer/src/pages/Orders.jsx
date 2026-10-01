@@ -24,6 +24,7 @@ import Pagination from "../components/Pagination";
 const Orders = () => {
   const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
   const [assignments, setAssignments] = useState([]);
+  const [returnCases, setReturnCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
@@ -72,6 +73,8 @@ const Orders = () => {
         const list = res.data.assignments || [];
         setAssignments(list);
         setPagination(res.data.pagination || null);
+        const returnsResponse = await axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }).catch(() => null);
+        if (returnsResponse?.data?.success) setReturnCases(returnsResponse.data.returns || []);
 
         const pending = list.filter((a) => a.status === "assigned").length;
         const accepted = list.filter((a) => a.status === "accepted").length;
@@ -233,6 +236,24 @@ const Orders = () => {
           </button>
         </div>
       </div>
+
+      {returnCases.length > 0 && (
+        <section className="border-y border-rose-200 bg-rose-50/70 py-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h2 className="text-sm font-bold text-rose-950">Incoming customer returns</h2>
+            <span className="text-[11px] font-semibold text-rose-800">{returnCases.length} active</span>
+          </div>
+          <div className="space-y-2">
+            {returnCases.map((record) => (
+              <article key={record.id} className="grid gap-2 border border-rose-200 bg-white p-3 text-xs sm:grid-cols-[1fr_1fr_auto]">
+                <div><p className="font-bold text-slate-900">RMA-{record.id.slice(0, 8).toUpperCase()} · Order #{String(record.orderId || "").slice(0, 8).toUpperCase()}</p><p className="text-slate-500">{record.customerName} · NCM #{record.ncmReturnOrderId || record.originalNcmOrderId || "Pending"}</p></div>
+                <div><p className="text-slate-700">{record.reason}</p><p className="text-slate-500">Pickup: {String(record.returnPickupStatus || record.lifecycleStatus).replace(/_/g, " ")}</p></div>
+                <p className="font-semibold text-slate-800">NCM-reported charge: {record.ncmDeliveryCharge == null ? "Not supplied" : `${currency}${Number(record.ncmDeliveryCharge).toLocaleString()}`} · {record.ncmChargePayer}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200">

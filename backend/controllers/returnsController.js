@@ -7,6 +7,12 @@ import { applyCollaborationReturnAdjustments } from "../services/collaborationSa
 // 1. CUSTOMER RETURNS (RMA & REFUNDS)
 // ==========================================
 export const createCustomerReturn = async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    code: "RETURN_WORKFLOW_REQUIRED",
+    message: "Direct return processing is disabled. Create a return request and complete admin approval, NCM handoff, receipt, and inspection first.",
+  });
+
   try {
     const {
       orderId,
@@ -229,6 +235,12 @@ export const getCustomerReturns = async (req, res) => {
 };
 
 export const updateCustomerReturnStatus = async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    code: "RETURN_WORKFLOW_REQUIRED",
+    message: "Return status changes must use the reviewed return lifecycle endpoints.",
+  });
+
   try {
     const { id, refundStatus } = req.body;
     const updated = await prisma.customerReturn.update({

@@ -34,6 +34,9 @@ const ExchangeRequestsPanel = ({ token }) => {
   const [decisionReasons, setDecisionReasons] = useState({});
   const [inspectionForms, setInspectionForms] = useState({});
   const [ncmResolutionForms, setNcmResolutionForms] = useState({});
+  const [chargePayers, setChargePayers] = useState({});
+  const [createForm, setCreateForm] = useState({ orderId: "", productId: "", size: "", color: "", quantity: 1, reasonCode: "DEFECTIVE", reasonDetails: "" });
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const fetchRequests = useCallback(async () => {
     try {
@@ -62,13 +65,40 @@ const ExchangeRequestsPanel = ({ token }) => {
         headers: { token },
       });
       if (response.data.success) {
-        toast.success(successMessage);
+        const request = response.data.request;
+        if (request?.status === "NCM_REJECTED") toast.error(request.ncmSubmissionError || "NCM rejected the exchange request");
+        else if (request?.status === "NCM_SUBMISSION_UNKNOWN") toast.warning("NCM outcome is unknown. Reconcile with the carrier before retrying.");
+        else toast.success(successMessage);
         await fetchRequests();
       } else {
         toast.error(response.data.message || "Exchange action failed");
       }
     } catch (error) {
       toast.error(error.response?.data?.message || "Exchange action failed");
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const createExchange = async (event) => {
+    event.preventDefault();
+    if (!createForm.orderId || !createForm.productId || Number(createForm.quantity) < 1) return;
+    setBusyId("create");
+    try {
+      const response = await axios.post(`${backendUrl}/api/returns/exchange/admin`, {
+        orderId: createForm.orderId.trim(),
+        requestKey: crypto.randomUUID(),
+        reasonCode: createForm.reasonCode,
+        reasonDetails: createForm.reasonDetails.trim(),
+        items: [{ productId: createForm.productId.trim(), size: createForm.size.trim(), color: createForm.color.trim(), quantity: Number(createForm.quantity) }],
+      }, { headers: { token } });
+      if (!response.data.success) throw new Error(response.data.message || "Unable to create exchange request");
+      toast.success("Exchange request created for admin review.");
+      setCreateForm({ orderId: "", productId: "", size: "", color: "", quantity: 1, reasonCode: "DEFECTIVE", reasonDetails: "" });
+      setShowCreateForm(false);
+      await fetchRequests();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to create exchange request");
     } finally {
       setBusyId("");
     }
@@ -84,8 +114,27 @@ const ExchangeRequestsPanel = ({ token }) => {
     <div className="space-y-3 py-4">
       <div className="flex items-center justify-between">
         <p className="text-xs text-slate-500">{requests.length} exchange request{requests.length === 1 ? "" : "s"}</p>
-        <button onClick={fetchRequests} className="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-semibold text-slate-700">Refresh</button>
+        <div className="flex gap-2">
+          <button onClick={() => setShowCreateForm((value) => !value)} className="px-3 py-1.5 bg-slate-900 text-white rounded-md text-xs font-semibold">{showCreateForm ? "Close form" : "Create exchange"}</button>
+          <button onClick={fetchRequests} className="px-3 py-1.5 border border-slate-300 rounded-md text-xs font-semibold text-slate-700">Refresh</button>
+        </div>
       </div>
+      {showCreateForm && (
+        <form onSubmit={createExchange} className="grid gap-2 border border-slate-200 rounded-lg bg-slate-50 p-3 sm:grid-cols-2">
+          <input required value={createForm.orderId} onChange={(event) => setCreateForm({ ...createForm, orderId: event.target.value })} className="border border-slate-300 rounded-md px-3 py-2 text-xs" placeholder="Delivered order ID" />
+          <input required value={createForm.productId} onChange={(event) => setCreateForm({ ...createForm, productId: event.target.value })} className="border border-slate-300 rounded-md px-3 py-2 text-xs" placeholder="Purchased product ID" />
+          <div className="grid grid-cols-3 gap-2">
+            <input value={createForm.size} onChange={(event) => setCreateForm({ ...createForm, size: event.target.value })} className="min-w-0 border border-slate-300 rounded-md px-2 py-2 text-xs" placeholder="Size" />
+            <input value={createForm.color} onChange={(event) => setCreateForm({ ...createForm, color: event.target.value })} className="min-w-0 border border-slate-300 rounded-md px-2 py-2 text-xs" placeholder="Color" />
+            <input type="number" min="1" step="1" required value={createForm.quantity} onChange={(event) => setCreateForm({ ...createForm, quantity: event.target.value })} className="min-w-0 border border-slate-300 rounded-md px-2 py-2 text-xs" aria-label="Quantity" />
+          </div>
+          <select value={createForm.reasonCode} onChange={(event) => setCreateForm({ ...createForm, reasonCode: event.target.value })} className="border border-slate-300 rounded-md px-3 py-2 text-xs">
+            <option value="SIZE_OR_FIT">Size or fit</option><option value="DEFECTIVE">Defective product</option><option value="WRONG_ITEM">Wrong item</option><option value="DAMAGED_IN_TRANSIT">Damaged in transit</option><option value="OTHER">Other</option>
+          </select>
+          <input value={createForm.reasonDetails} onChange={(event) => setCreateForm({ ...createForm, reasonDetails: event.target.value })} className="border border-slate-300 rounded-md px-3 py-2 text-xs sm:col-span-2" placeholder="Admin note or customer explanation" />
+          <button disabled={busyId === "create"} className="justify-self-end px-3 py-2 bg-blue-800 text-white rounded-md text-xs font-bold disabled:opacity-50 sm:col-span-2">Create request for review</button>
+        </form>
+      )}
       {!requests.length && <div className="py-12 text-center text-sm text-slate-500">No exchange requests yet.</div>}
       {requests.map((request) => {
         const items = Array.isArray(request.items) ? request.items : [];
@@ -131,9 +180,28 @@ const ExchangeRequestsPanel = ({ token }) => {
               </div>
             </div>
 
+            <div className="border-t border-slate-100 pt-3">
+              <p className="text-[10px] font-bold uppercase text-slate-400 mb-1">Replacement plan</p>
+              <div className="space-y-1 text-xs text-slate-700">
+                {(Array.isArray(request.replacementItems) && request.replacementItems.length ? request.replacementItems : items).map((item, index) => (
+                  <p key={`${item.productId}-${index}`}>{item.name || "Product"} · {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {item.quantity}</p>
+                ))}
+                <p className="font-semibold">Estimated price adjustment: {formatMoney(request.priceDifference || 0)}</p>
+                {request.replacementStockReservedAt && <p className="text-emerald-700">Replacement stock reserved {formatDate(request.replacementStockReservedAt)}{request.replacementStockConsumedAt ? ` · consumed ${formatDate(request.replacementStockConsumedAt)}` : request.replacementStockReleasedAt ? ` · released ${formatDate(request.replacementStockReleasedAt)}` : ""}</p>}
+                <p className="text-amber-800">NCM exchange-create accepts the original order ID only. Verify the NCM replacement waybill matches this reserved variant before fulfillment.</p>
+              </div>
+            </div>
+
             {(request.ncmReturnOrderId || request.ncmReplacementOrderId) && (
               <div className="rounded-md bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-                NCM return #{request.ncmReturnOrderId || "Pending"} · Pickup: {request.returnPickupStatus || "Pending"} · Replacement #{request.ncmReplacementOrderId || "Pending"} · {request.replacementStatus || "Pending"}
+                NCM return #{request.ncmReturnOrderId || "Pending"} · Pickup: {request.returnPickupStatus || "Pending"} · Replacement #{request.ncmReplacementOrderId || "Pending"} · {request.replacementStatus || "Pending"} · Charge payer: {request.ncmChargePayer || "MERCHANT"}
+              </div>
+            )}
+            {(request.ncmSubmissionError || request.ncmAttempts?.length > 0) && (
+              <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-[11px] text-rose-900 space-y-1">
+                {request.ncmSubmissionError && <p><strong>Latest NCM response:</strong> {request.ncmSubmissionError}</p>}
+                <p><strong>Recorded NCM charge:</strong> Return {request.ncmReturnCharge == null ? "not supplied" : formatMoney(request.ncmReturnCharge)} · Replacement {request.ncmReplacementCharge == null ? "not supplied" : formatMoney(request.ncmReplacementCharge)} · Total {request.ncmTotalCharge == null ? "not supplied" : formatMoney(request.ncmTotalCharge)}</p>
+                {request.ncmAttempts?.length > 0 && <details><summary className="cursor-pointer font-bold">NCM attempts ({request.ncmAttempts.length})</summary><div className="mt-1 space-y-1">{request.ncmAttempts.map((attempt) => <div key={attempt.id}>Attempt {attempt.attemptNumber} · {attempt.result} · HTTP {attempt.httpStatus || "—"}{attempt.responseJson ? <pre className="whitespace-pre-wrap break-all">{JSON.stringify(attempt.responseJson)}</pre> : null}</div>)}</div></details>}
               </div>
             )}
             {request.status === "SUBMITTING" && !canResolveNcm && (
@@ -170,7 +238,8 @@ const ExchangeRequestsPanel = ({ token }) => {
                   className="min-w-0 flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs"
                   placeholder="Decision note (required)"
                 />
-                <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason }, "Exchange approved; NCM submission recorded")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
+                <select value={chargePayers[request.id] || "MERCHANT"} onChange={(event) => setChargePayers({ ...chargePayers, [request.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM exchange charges"><option value="MERCHANT">Merchant pays NCM</option><option value="CUSTOMER">Customer pays NCM</option></select>
+                <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason, chargePayer: chargePayers[request.id] || "MERCHANT" }, "Exchange approved; NCM submission recorded")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
                 <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "REJECT", reason: decisionReason }, "Exchange request rejected")} className="px-3 py-2 rounded-md bg-rose-700 text-white text-xs font-bold disabled:opacity-50">Reject</button>
               </div>
             )}

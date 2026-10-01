@@ -943,8 +943,11 @@ model InvestorLiability {
 
 model CustomerReturn {
   id                String   @id @default(uuid())
+  requestKey        String?  @unique @db.VarChar(128)
+  requestHash       String?  @db.Char(64)
   orderId           String?
   userId            String?
+  manufacturerId    String?
   customerName      String
   customerPhone     String?  @default("")
   returnDate        DateTime @default(now())
@@ -952,12 +955,34 @@ model CustomerReturn {
   totalRefundAmount Float    @default(0)
   vatRefunded       Float    @default(0) // 13% VAT portion reversed
   refundMethod      String   @default("CASH") // CASH, BANK_TRANSFER, WALLET, STORE_CREDIT
-  refundStatus      String   @default("COMPLETED") // PENDING, COMPLETED, REJECTED
+  refundStatus      String   @default("COMPLETED") // PENDING, PROCESSING, COMPLETED, REJECTED
   inventoryAction   String   @default("RESTOCKED") // RESTOCKED, WRITTEN_OFF_DAMAGED, PARTIAL
-  reason            String // e.g. "Size mismatch", "Defective/Damaged", "Customer changed mind"
+  reason            String   @db.Text
   notes             String?  @db.Text
+  lifecycleStatus   String   @default("LEGACY_PROCESSED")
+  adminReviewerId   String?
+  adminNotes        String?  @db.Text
+  approvedAt        DateTime?
+  originalNcmOrderId Int?
+  ncmReturnOrderId  Int?
+  ncmDeliveryCharge Float?
+  ncmChargeSource   String?  @db.VarChar(32)
+  ncmChargePayer    String   @default("MERCHANT") @db.VarChar(16)
+  ncmSubmissionAttemptedAt DateTime?
+  ncmSubmissionError String? @db.Text
+  returnPickupStatus String? @db.VarChar(64)
+  returnPickupCompletedAt DateTime?
+  manufacturerReceivedAt DateTime?
+  inspectedAt       DateTime?
+  inspectionResult  String?  @db.VarChar(64)
+  completedAt       DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  events            CustomerReturnEvent[]
+  ncmAttempts       ReturnExchangeNcmAttempt[]
+
+  @@index([lifecycleStatus, createdAt])
+  @@index([orderId, lifecycleStatus])
 }
 
 model OrderExchangeRequest {
@@ -974,12 +999,21 @@ model OrderExchangeRequest {
   reasonCode                String                    @db.VarChar(64)
   reasonDetails             String?                   @db.Text
   items                     Json
+  replacementItems          Json?
+  priceDifference            Float                     @default(0)
   status                    String                    @default("REQUESTED")
   decisionActorId           String?
   decisionReason            String?                   @db.Text
   decidedAt                 DateTime?
   ncmReturnOrderId          Int?                      @unique
   ncmReplacementOrderId     Int?                      @unique
+  ncmReturnCharge           Float?
+  ncmReplacementCharge      Float?
+  ncmTotalCharge            Float?
+  ncmChargePayer            String                    @default("MERCHANT") @db.VarChar(16)
+  replacementStockReservedAt DateTime?
+  replacementStockReleasedAt DateTime?
+  replacementStockConsumedAt DateTime?
   ncmSubmissionAttemptedAt  DateTime?
   ncmSubmissionError        String?                   @db.Text
   returnPickupStatus        String?                   @db.VarChar(64)
@@ -998,6 +1032,7 @@ model OrderExchangeRequest {
   manufacturer              Manufacturer?             @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
   card                      MarketingCard?            @relation(fields: [cardId], references: [id], onDelete: SetNull)
   events                    OrderExchangeEvent[]
+  ncmAttempts               ReturnExchangeNcmAttempt[]
 
   @@index([customerId, createdAt])
   @@index([orderId, status])
@@ -1021,6 +1056,48 @@ model OrderExchangeEvent {
 
   @@index([exchangeRequestId, occurredAt])
   @@index([eventType, occurredAt])
+}
+
+model CustomerReturnEvent {
+  id              String        @id @default(uuid())
+  customerReturnId String
+  eventType       String        @db.VarChar(64)
+  fromStatus      String?       @db.VarChar(64)
+  toStatus        String?       @db.VarChar(64)
+  actorId         String?
+  actorRole       String?       @db.VarChar(32)
+  reason          String?       @db.Text
+  metadata        Json?
+  idempotencyKey  String        @unique @db.VarChar(191)
+  occurredAt      DateTime      @default(now())
+  customerReturn CustomerReturn @relation(fields: [customerReturnId], references: [id], onDelete: Cascade)
+
+  @@index([customerReturnId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
+model ReturnExchangeNcmAttempt {
+  id                String              @id @default(uuid())
+  customerReturnId  String?
+  exchangeRequestId String?
+  operation         String              @db.VarChar(64)
+  idempotencyKey    String              @unique @db.VarChar(191)
+  attemptNumber     Int
+  requestUrl        String
+  requestJson       Json?
+  responseJson      Json?
+  httpStatus        Int?
+  result            String              @db.VarChar(32)
+  errorCode         String?
+  errorMessage      String?             @db.Text
+  startedAt         DateTime            @default(now())
+  finishedAt        DateTime?
+  customerReturn    CustomerReturn?     @relation(fields: [customerReturnId], references: [id], onDelete: Cascade)
+  exchangeRequest   OrderExchangeRequest? @relation(fields: [exchangeRequestId], references: [id], onDelete: Cascade)
+
+  @@index([customerReturnId, operation, attemptNumber], map: "RtnExNcmAttempt_return_op_num_idx")
+  @@index([exchangeRequestId, operation, attemptNumber], map: "RtnExNcmAttempt_exchange_op_num_idx")
+  @@index([result, startedAt])
 }
 
 model SupplierReturn {

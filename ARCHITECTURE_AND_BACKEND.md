@@ -75,6 +75,12 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/order/:orderId/cancel`
 - `POST /api/returns/exchange/customer`
 - `GET /api/returns/exchange/admin` (admin exchange list; serializes the related order's `BigInt` date as a decimal string for JSON clients)
+- `POST /api/returns/customer/request` and `GET /api/returns/customer/requests`
+- `GET /api/returns/customer/admin/requests` and `POST /api/returns/customer/admin/:id/decision`
+- `POST /api/returns/customer/admin/:id/retry-ncm`, `/:id/inspection`, and `/:id/refunded`
+- `POST /api/returns/customer/admin/:id/resolve-ncm` for verified ambiguous return outcomes
+- `GET /api/returns/customer/manufacturer` for the manufacturer's inbound return queue
+- `POST /api/returns/exchange/admin` for an admin-created exchange case
 - `GET /api/delivery/admin`
 - `POST /api/delivery/admin/:id/resolve-ncm-handoff`
 - `GET /api/marketing-cards/admin/cards`
@@ -174,3 +180,19 @@ The backend is not just a CRUD API. It contains domain logic for:
 - notifications and multi-portal access control
 
 This makes the backend the actual business service layer for the project rather than a thin wrapper around a database.
+
+## 9. Customer return and exchange lifecycle
+
+- Customer and admin requests are validated against a delivered order and purchased quantities. The backend records the cause and an idempotency key; customer input never calls NCM directly.
+- Admin approval is the dispatch gate. Return approval calls NCM's vendor-return endpoint; exchange approval reserves the requested replacement variant and calls NCM's exchange-create endpoint.
+- `ReturnExchangeNcmAttempt` stores each carrier request, response, HTTP result, error detail, and timestamps. Available NCM charges and the selected payer are stored on the case.
+- NCM HTTP 5xx responses retry up to three times by default; every transport attempt is included in the case audit. Timeouts are not blindly retried and remain an unknown outcome for admin reconciliation.
+- Per NCM's API guide, `{ pk, comment }` marks the original order for return (`vendor_return: true`) and does not create a new return waybill. Exchange creation returns `cust_order` for replacement and `ven_order` for the return leg.
+- Because exchange-create accepts only `pk`, the backend attaches the recorded return cause and replacement plan to the new `ven_order` using NCM's documented order-comment endpoint.
+- Return webhook milestones include Pickup Complete, Sent for Delivery, Dispatched, Arrived, and Delivered; updates are applied monotonically and the return is not received until its return leg is delivered.
+- The NCM return endpoint does not document a separate reverse-pickup tariff. The system records a charge from the return response when present, otherwise the documented order-detail `delivery_charge`, and records which source supplied it.
+- NCM rejection is failed/retryable, not success. Ambiguous outcomes must be reconciled before retrying.
+- Return webhooks use a separate state machine. Inventory is adjusted only after manufacturer receipt and inspection; refund payables are created after inspection, and a return closes only after settlement.
+- Exchange replacement stock is reserved on approval, released when a rejected request is closed, and consumed when the replacement delivery completes.
+- NCM exchange-create accepts only the original order `pk`; it cannot accept a replacement SKU or COD delta. The requested variant is stored/reserved internally, so admins must verify the NCM replacement waybill and coordinate any price adjustment.
+- Existing processed return rows are preserved as `LEGACY_PROCESSED`; new requests use the reviewed lifecycle rather than the old immediate refund/restock route.

@@ -20,6 +20,7 @@ import { ensureOrderCardAttached } from "./marketingCardService.js";
 import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
 import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
 import { applyExchangeNcmStatus } from "./orderExchangeService.js";
+import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -797,6 +798,16 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
   for (const ncmId of ids) {
     const trimmedId = String(ncmId || "").trim();
     if (!trimmedId) continue;
+    const appliedReturnStatus = await applyCustomerReturnNcmStatus({
+      ncmOrderId: trimmedId,
+      status: payload.status,
+      event: payload.event,
+      timestamp: payload.timestamp,
+    });
+    if (appliedReturnStatus) {
+      results.push({ ncmId: trimmedId, customerReturn: true });
+      continue;
+    }
 
     // Resolve delivery order by NCM ID, vendor reference, order ID, or delivery ID.
     let delivery = null;

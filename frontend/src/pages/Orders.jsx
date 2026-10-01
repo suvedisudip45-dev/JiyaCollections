@@ -103,13 +103,19 @@ const Orders = () => {
   const [invoiceOrder, setInvoiceOrder] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [exchangeRequests, setExchangeRequests] = useState([]);
+  const [returnRequests, setReturnRequests] = useState([]);
   const [cancelOrderTarget, setCancelOrderTarget] = useState(null);
   const [cancelReason, setCancelReason] = useState("");
   const [exchangeOrderTarget, setExchangeOrderTarget] = useState(null);
   const [exchangeReasonCode, setExchangeReasonCode] = useState("SIZE_OR_FIT");
   const [exchangeReasonDetails, setExchangeReasonDetails] = useState("");
   const [exchangeQuantities, setExchangeQuantities] = useState({});
+  const [replacementVariants, setReplacementVariants] = useState({});
   const [exchangeRequestKey, setExchangeRequestKey] = useState("");
+  const [returnOrderTarget, setReturnOrderTarget] = useState(null);
+  const [returnReason, setReturnReason] = useState("");
+  const [returnQuantities, setReturnQuantities] = useState({});
+  const [returnRequestKey, setReturnRequestKey] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
 
   const loadOrderData = async (isManualRefresh = false) => {
@@ -169,8 +175,10 @@ const Orders = () => {
         try {
           const exchangeResponse = await axios.get(`${backendUrl}/api/returns/exchange/customer`, { headers: { token } });
           if (exchangeResponse.data.success) setExchangeRequests(exchangeResponse.data.requests || []);
+          const returnResponse = await axios.get(`${backendUrl}/api/returns/customer/requests`, { headers: { token } });
+          if (returnResponse.data.success) setReturnRequests(returnResponse.data.returns || []);
         } catch (exchangeError) {
-          console.error("loadExchangeRequests error:", exchangeError);
+          console.error("loadReturnExchangeRequests error:", exchangeError);
         }
       } else {
         const msg = (response.data.message || "").toLowerCase();
@@ -243,6 +251,11 @@ const Orders = () => {
         quantity: Number(exchangeQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
       }))
       .filter((item) => item.quantity > 0);
+    const replacementItems = items.map((item) => {
+      const key = `${item.productId}|${item.size}|${item.color}`;
+      const replacement = replacementVariants[key] || {};
+      return { ...item, size: replacement.size ?? item.size, color: replacement.color ?? item.color };
+    });
     if (!items.length) return toast.warn("Select at least one product quantity to exchange.");
     if (exchangeReasonCode === "OTHER" && exchangeReasonDetails.trim().length < 5) return toast.warn("Please explain the reason for your exchange request.");
 
@@ -254,6 +267,7 @@ const Orders = () => {
         reasonCode: exchangeReasonCode,
         reasonDetails: exchangeReasonDetails,
         items,
+        replacementItems,
       }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Exchange request failed");
       toast.success("Exchange request submitted for admin review.");
@@ -274,7 +288,56 @@ const Orders = () => {
     setExchangeReasonCode("SIZE_OR_FIT");
     setExchangeReasonDetails("");
     setExchangeQuantities({});
+    setReplacementVariants({});
+    setReplacementVariants(Object.fromEntries((order.items || []).map((item) => {
+      const productId = item.productId || item._id || item.id;
+      const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+      return [key, { size: item.size || "", color: item.color || "" }];
+    })));
     setExchangeRequestKey(crypto.randomUUID());
+  };
+
+  const submitReturnRequest = async (event) => {
+    event.preventDefault();
+    if (!returnOrderTarget || actionLoading) return;
+    const items = (returnOrderTarget.items || [])
+      .map((item) => ({
+        productId: item.productId || item._id || item.id,
+        size: item.size || "",
+        color: item.color || "",
+        quantity: Number(returnQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
+      }))
+      .filter((item) => item.quantity > 0);
+    if (!items.length) return toast.warn("Select at least one product quantity to return.");
+    if (returnReason.trim().length < 5) return toast.warn("Please provide a return reason of at least five characters.");
+
+    setActionLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/returns/customer/request`, {
+        orderId: returnOrderTarget.id,
+        requestKey: returnRequestKey,
+        reason: returnReason.trim(),
+        items,
+      }, { headers: { token } });
+      if (!response.data.success) throw new Error(response.data.message || "Return request failed");
+      toast.success("Return request submitted for admin review.");
+      setReturnOrderTarget(null);
+      setReturnReason("");
+      setReturnQuantities({});
+      setReturnRequestKey("");
+      await loadOrderData(true);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to submit return request");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openReturnRequest = (order) => {
+    setReturnOrderTarget(order);
+    setReturnReason("");
+    setReturnQuantities({});
+    setReturnRequestKey(crypto.randomUUID());
   };
 
 
@@ -619,7 +682,10 @@ const Orders = () => {
               );
               const orderExchanges = exchangeRequests.filter((request) => request.orderId === order.id);
               const activeExchange = orderExchanges.find((request) => !["REJECTED", "CANCELLED"].includes(request.status));
+              const orderReturns = returnRequests.filter((request) => request.orderId === order.id);
+              const activeReturn = orderReturns.find((request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus));
               const canRequestExchange = isDeliveredOrder(order) && !activeExchange;
+              const canRequestReturn = isDeliveredOrder(order) && !activeReturn;
 
               return (
                 <div
@@ -712,6 +778,15 @@ const Orders = () => {
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
                             <span>Request Exchange</span>
+                          </button>
+                        )}
+                        {canRequestReturn && (
+                          <button
+                            onClick={() => openReturnRequest(order)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-white text-rose-800 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Request Return</span>
                           </button>
                         )}
                         <button
@@ -829,12 +904,20 @@ const Orders = () => {
                   </div>
 
                   {/* Order Footer & Shipping Destination */}
-                  {orderExchanges.length > 0 && (
+                  {(orderExchanges.length > 0 || orderReturns.length > 0) && (
                     <div className="px-4 sm:px-5 py-3 border-t border-blue-100 bg-blue-50/60 space-y-1">
                       {orderExchanges.map((request) => (
                         <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
                           <span className="font-semibold text-blue-950">Exchange {request.status.replace(/_/g, " ")}</span>
-                          <span className="text-blue-800">{request.reasonCode.replace(/_/g, " ")}{request.returnPickupStatus ? ` · Return ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}</span>
+                          <span className="text-blue-800">{request.reasonCode.replace(/_/g, " ")}{request.returnPickupStatus ? ` · Return ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.replacementItems?.length ? ` · Replacement ${request.replacementItems.map((item) => `${item.size || "One size"}${item.color ? `/${item.color}` : ""} ×${item.quantity}`).join(", ")}` : ""}{request.priceDifference ? ` · Price adjustment ${currency}${Number(request.priceDifference).toLocaleString()}` : ""}{request.ncmTotalCharge != null ? ` · NCM ${currency}${Number(request.ncmTotalCharge).toLocaleString()} (${request.ncmChargePayer || "MERCHANT"})` : ""}</span>
+                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
+                        </div>
+                      ))}
+                      {orderReturns.map((request) => (
+                        <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="font-semibold text-rose-950">Return {String(request.lifecycleStatus || "REQUESTED").replace(/_/g, " ")}</span>
+                          <span className="text-rose-800">{request.reason}{request.returnPickupStatus ? ` · Pickup ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.ncmDeliveryCharge != null ? ` · NCM-reported charge ${currency}${Number(request.ncmDeliveryCharge).toLocaleString()}` : ""}</span>
+                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
                         </div>
                       ))}
                     </div>
@@ -904,13 +987,25 @@ const Orders = () => {
               <button type="button" disabled={actionLoading} onClick={() => setExchangeOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Choose the item quantities and explain the issue. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM's exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
             <div className="space-y-2">
               {(exchangeOrderTarget.items || []).map((item, index) => {
                 const productId = item.productId || item._id || item.id;
                 const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                const replacement = replacementVariants[key] || { size: item.size || "", color: item.color || "" };
+                const variants = Array.isArray(item.variants) ? item.variants : [];
+                const sizes = [...new Set((Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)).filter(Boolean))];
+                const colors = [...new Set((Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)).filter(Boolean))];
                 return (
-                  <div key={`${key}-${index}`} className="grid grid-cols-[1fr_92px] gap-3 items-center border border-slate-200 rounded-lg p-3">
-                    <div><p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p><p className="text-[11px] text-slate-500">{item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Purchased {Number(item.quantity || 1)}</p></div>
+                  <div key={`${key}-${index}`} className="grid gap-3 border border-slate-200 rounded-lg p-3 sm:grid-cols-[1fr_92px]">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p>
+                      <p className="text-[11px] text-slate-500">Purchased {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {Number(item.quantity || 1)}</p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <label className="text-[10px] font-semibold text-slate-500">Replacement size<select value={replacement.size} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, size: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">One size</option>{sizes.map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
+                        <label className="text-[10px] font-semibold text-slate-500">Replacement color<select value={replacement.color} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, color: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{colors.map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
+                      </div>
+                    </div>
                     <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[key] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
@@ -927,6 +1022,34 @@ const Orders = () => {
               </label>
             </div>
             <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => setExchangeOrderTarget(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-xs font-bold">Back</button><button type="submit" disabled={actionLoading} className="flex-1 py-2.5 bg-slate-900 text-white rounded-lg text-xs font-bold disabled:opacity-50">{actionLoading ? "Submitting..." : "Submit for review"}</button></div>
+          </form>
+        </div>
+      )}
+
+      {returnOrderTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setReturnOrderTarget(null)}>
+          <form onSubmit={submitReturnRequest} onClick={(event) => event.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div><h2 className="text-base font-bold text-slate-900">Request a return</h2><p className="text-xs text-slate-500 mt-1">Order #{returnOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <button type="button" disabled={actionLoading} onClick={() => setReturnOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-600">Your request must be approved by an admin. Refund and stock adjustments happen only after the parcel is received and inspected.</p>
+            <div className="space-y-2">
+              {(returnOrderTarget.items || []).map((item, index) => {
+                const productId = item.productId || item._id || item.id;
+                const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                return (
+                  <div key={`${key}-${index}`} className="grid grid-cols-[1fr_92px] gap-3 items-center border border-slate-200 rounded-lg p-3">
+                    <div><p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p><p className="text-[11px] text-slate-500">{item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Purchased {Number(item.quantity || 1)}</p></div>
+                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={returnQuantities[key] ?? 0} onChange={(event) => setReturnQuantities({ ...returnQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
+                  </div>
+                );
+              })}
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">Cause of return
+              <textarea required minLength={5} maxLength={2000} value={returnReason} onChange={(event) => setReturnReason(event.target.value)} rows={3} className="mt-1 w-full border border-slate-300 rounded-lg p-3 font-normal" placeholder="Describe why you are returning these items" />
+            </label>
+            <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => setReturnOrderTarget(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-xs font-bold">Back</button><button type="submit" disabled={actionLoading} className="flex-1 py-2.5 bg-rose-700 text-white rounded-lg text-xs font-bold disabled:opacity-50">{actionLoading ? "Submitting..." : "Submit for review"}</button></div>
           </form>
         </div>
       )}
