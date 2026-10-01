@@ -198,6 +198,15 @@ const Sidebar = () => {
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
         </SectionGroup>
 
+        <SectionGroup
+          label="Location Pricing"
+          icon={Icon.offers}
+          requiredPermissions={["manufacturer:admin_update", "product:update"]}
+          routes={["/location-pricing"]}
+        >
+          <NavItem to="/location-pricing" icon={Icon.offers} label="District Rules" />
+        </SectionGroup>
+
         <div className="h-px bg-slate-100 my-1" />
 
         <SectionGroup

@@ -508,6 +508,7 @@ model Product {
   lowStockThreshold Int       @default(5)
   published         Boolean   @default(true)
   date              BigInt
+  locationDiscounts LocationProductDiscount[]
   comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
   collaborationLink CollaborationProduct?
   collaborationSales CollaborationSale[]
@@ -583,6 +584,10 @@ model Order {
   orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
   directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
   manufacturerId              String? // Fulfilled directly by manufacturer
+  locationDiscountManufacturerId String?
+  locationDiscountProvince    String?             @db.VarChar(120)
+  locationDiscountDistrict    String?             @db.VarChar(120)
+  locationPricingSnapshot     Json?
   directNotes                 String?             @db.Text
   cancelledAt                 DateTime?
   cancellationReason          String?             @db.Text
@@ -1445,6 +1450,7 @@ model Manufacturer {
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   inventory                ManufacturerInventory[]
+  locations                ManufacturerLocation[]
   assignments              OrderAssignment[]
   exchangeRequests         OrderExchangeRequest[]
   marketingCardAssignments MarketingCardAssignment[]
@@ -1840,6 +1846,37 @@ model NcmBranch {
 
   @@index([isActive, districtName])
   @@index([isActive, provinceName])
+}
+
+model ManufacturerLocation {
+  id             String       @id @default(uuid())
+  manufacturerId String
+  province       String       @db.VarChar(120)
+  district       String       @db.VarChar(120)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+
+  @@unique([manufacturerId, province, district])
+  @@index([province, district, isActive])
+  @@index([manufacturerId, isActive])
+}
+
+model LocationProductDiscount {
+  id                 String   @id @default(uuid())
+  productId          String
+  province           String   @db.VarChar(120)
+  district           String   @db.VarChar(120)
+  discountPercentage Decimal  @default(0) @db.Decimal(5, 2)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, province, district])
+  @@index([province, district, isActive])
+  @@index([productId, isActive])
 }
 
 // Per-manufacturer inventory for each product

@@ -38,6 +38,7 @@ import TrialBalance from "./pages/TrialBalance";
 import FiscalPeriods from "./pages/FiscalPeriods";
 import AccountingHealth from "./pages/AccountingHealth";
 import Manufacturers from "./pages/Manufacturers";
+import LocationPricing from "./pages/LocationPricing";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
@@ -201,6 +202,7 @@ const App = () => {
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
+                  <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />
                   <Route path="/manufacturer-inventory" element={withPermission("/manufacturer-inventory", <ManufacturerInventoryMonitor token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />

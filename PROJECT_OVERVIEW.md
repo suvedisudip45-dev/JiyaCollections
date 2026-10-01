@@ -27,12 +27,15 @@ The repository implements a distributed operating model where customer orders ar
 ### Fully implemented / active
 
 - Customer storefront browsing, cart, wishlist, product search, order placement, return/exchange flows, and marketing-card redemption UX.
+- Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
 - Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shipping config, access control, and exchange/return reconciliation.
 - Manufacturer portal with order acceptance, pickup profile, inventory management, performance, finance, and marketing card handling.
+- Location-aware assignment logic that maps qualifying local manufacturers to customer delivery districts, applies the product discount hierarchy, and reserves stock before final order confirmation.
 - Marketing partner portal with login, campaigns, campaign detail, card management, redemption validation, and reporting routes.
 - Delivery and NCM integration for ready-for-pickup, webhook handling, manual handoff recovery, delivery settlements, and return workflows.
+- NCM create-booking flows now preserve explicit failure states such as `submission_failed` / `failed_to_book_courier`, and the frontend must not surface those cases as a successful courier booking.
 - RBAC and auth system with user, admin, manufacturer, and partner roles plus permission checks and session validation.
-- MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, and delivery flows.
+- MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, delivery, and local pricing flows.
 
 ### Partially implemented or intentionally gated
 

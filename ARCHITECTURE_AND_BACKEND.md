@@ -47,6 +47,8 @@ The backend mounts the following major route groups in `backend/server.js`:
 | --- | --- |
 | `/api/auth` | Login, refresh, MFA, OTP, logout |
 | `/api/admin/access` | Access management and RBAC control |
+| `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local assignment logic |
+| `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
 | `/api/notifications` | Notification service endpoints |
 | `/api/user` | User profile / account management |
 | `/api/product` | Product creation, listing, publish toggles, stock adjustments |
@@ -69,6 +71,10 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
 - `POST /api/auth/2fa/send` and `/api/auth/2fa/verify`
+- `GET /api/admin/manufacturer-locations`
+- `POST /api/admin/manufacturer-locations`
+- `GET /api/admin/location-discounts`
+- `POST /api/admin/location-discounts`
 - `POST /api/product/add`
 - `GET /api/product/list`
 - `POST /api/order/place`
@@ -146,6 +152,14 @@ Authorization is enforced through a centralized `authorize` middleware that reso
 
 - The repo explicitly warns in `backend/notifications/README.md` not to place real secrets in `.env.example` or frontend config.
 - Some notification and incoming-SMS flows are disabled by default and intentionally require manual validation.
+
+### Location-aware pricing and assignment engine
+
+The backend has a server-side local pricing layer that canonicalizes Nepal province/district names, evaluates `ManufacturerLocation` and `LocationProductDiscount` rules, and resolves the effective discount/assigned manufacturer before an order is finalized.
+
+This is intentionally authoritative: the storefront may request a quote, but the backend decides whether a qualifying local manufacturer exists, whether product discount precedence applies, and whether the selected manufacturer still has sufficient stock for the order. The order row stores the chosen manufacturer and a `locationPricingSnapshot` so the checkout remains locked to the actual server-side decision rather than stale client pricing.
+
+A failed NCM courier-booking request must remain in a failed state (`submission_failed`, `failed_to_book_courier`, or equivalent) and must never be converted to a success label by the UI. The backend is the only component allowed to transition the delivery state to a successful carrier booking state.
 
 ## 6. Third-Party Integrations
 

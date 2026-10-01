@@ -45,6 +45,24 @@ const PlaceOrder = () => {
     getProductsData,
   } = useContext(ShopContext);
 
+  const [formData, setFormData] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    street: "",
+    landmark: "",
+    district: "Kathmandu",
+    city: "",
+    ncmBranch: "",
+    deliveryInstruction: "",
+    province: "Bagmati Province",
+    state: "Bagmati Province",
+    country: "Nepal",
+  });
+  const [locationPriceQuote, setLocationPriceQuote] = useState(null);
+  const [locationPriceStatus, setLocationPriceStatus] = useState("idle");
+
   const [comboBundlePurchase, setComboBundlePurchase] = useState(() => {
     if (location.state?.comboBundlePurchase) return location.state.comboBundlePurchase;
     try {
@@ -65,42 +83,73 @@ const PlaceOrder = () => {
     ? Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0) * Number(comboBundlePurchase?.quantity || 1)
     : getCartAmount();
 
+  const cartPricingItems = Object.entries(cartItems).flatMap(([productId, variants]) =>
+    Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
+      const [size, color] = variantKey.split("-");
+      return { productId, size, color: color || "", quantity: Number(quantity) };
+    })
+  );
+  const checkoutPriceKey = JSON.stringify({
+    province: formData.province,
+    district: formData.district,
+    items: cartPricingItems,
+  });
+  const hasCurrentLocationQuote = Boolean(
+    locationPriceQuote && locationPriceQuote.key === checkoutPriceKey && locationPriceStatus === "ready"
+  );
+  const locationPriceByVariant = new Map((hasCurrentLocationQuote ? locationPriceQuote.items : []).map((item) => [
+    `${item.productId}|${item.size}|${item.color}`,
+    item,
+  ]));
+
   const checkoutReviewItems = comboBundleData
     ? [{
         comboBundle: comboBundleData,
-        size: comboBundlePurchase?.size || "",
         color: comboBundlePurchase?.color || "",
         quantity: Number(comboBundlePurchase?.quantity || 1),
         unitPrice: Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0),
         lineTotal: orderSubtotal,
       }]
-    : Object.entries(cartItems).flatMap(([productId, variants]) => {
-        const product = products.find((entry) => entry._id === productId || entry.id === productId);
-        if (!product) return [];
-        return Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
-          const [size, color] = variantKey.split("-");
-          const unitPrice = Number(product.discount) > 0
-            ? Math.round(Number(product.price) * (1 - Number(product.discount) / 100))
-            : Number(product.price || 0);
-          return { product, size, color: color || "", quantity: Number(quantity), unitPrice, lineTotal: unitPrice * Number(quantity) };
+    : hasCurrentLocationQuote
+      ? locationPriceQuote.items
+          .map((item) => {
+            const product = products.find((entry) => entry._id === item.productId || entry.id === item.productId);
+            if (!product) return null;
+            return {
+              product,
+              size: item.size,
+              color: item.color || "",
+              quantity: Number(item.quantity || 0),
+              unitPrice: Number(item.effectiveUnitPrice || 0),
+              lineTotal: Number(item.lineTotal || 0),
+              locationDiscountPercentage: item.locationDiscountPercentage ?? null,
+              discountSource: item.discountSource || "LOCATION",
+            };
+          })
+          .filter(Boolean)
+      : Object.entries(cartItems).flatMap(([productId, variants]) => {
+          const product = products.find((entry) => entry._id === productId || entry.id === productId);
+          if (!product) return [];
+          return Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
+            const [size, color] = variantKey.split("-");
+            const locationLine = locationPriceByVariant.get(`${productId}|${size}|${color || ""}`);
+            const unitPrice = locationLine
+              ? Number(locationLine.effectiveUnitPrice)
+              : Number(product.discount) > 0
+                ? Math.round(Number(product.price) * (1 - Number(product.discount) / 100))
+                : Number(product.price || 0);
+            return {
+              product,
+              size,
+              color: color || "",
+              quantity: Number(quantity),
+              unitPrice,
+              lineTotal: unitPrice * Number(quantity),
+              locationDiscountPercentage: locationLine?.locationDiscountPercentage ?? null,
+              discountSource: locationLine?.discountSource || "PRODUCT",
+            };
+          });
         });
-      });
-
-  const [formData, setFormData] = useState({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    street: "",
-    landmark: "",
-    district: "Kathmandu",
-    city: "",
-    ncmBranch: "",
-    deliveryInstruction: "",
-    province: "Bagmati Province",
-    state: "Bagmati Province",
-    country: "Nepal",
-  });
 
   const [savedAddresses, setSavedAddresses] = useState([]);
   const [selectedSavedId, setSelectedSavedId] = useState(null);
@@ -270,6 +319,36 @@ const PlaceOrder = () => {
     };
     fetchCoveredAreas();
   }, [backendUrl, formData.city, formData.district, formData.province]);
+
+  useEffect(() => {
+    if (comboBundleData || cartPricingItems.length === 0 || !formData.province || !formData.district) {
+      setLocationPriceQuote(null);
+      setLocationPriceStatus(comboBundleData ? "idle" : cartPricingItems.length === 0 ? "idle" : "error");
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLocationPriceStatus("loading");
+    axios.post(`${backendUrl}/api/product/resolve-prices`, {
+      items: cartPricingItems,
+      province: formData.province,
+      district: formData.district,
+      eligibilityMode: "WHOLE_BASKET",
+    }).then((response) => {
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to resolve the delivery-location price");
+      if (!cancelled) {
+        setLocationPriceQuote({ key: checkoutPriceKey, ...response.data });
+        setLocationPriceStatus("ready");
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setLocationPriceQuote(null);
+        setLocationPriceStatus("error");
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [backendUrl, checkoutPriceKey, comboBundleData?.id]);
 
   // Recalculate fee & loyalty rewards whenever district, province, shippingConfig or loyalty changes
   useEffect(() => {
@@ -452,6 +531,13 @@ const PlaceOrder = () => {
     if (!token) {
       toast.error("Please login to place your order");
       navigate("/login");
+      return;
+    }
+
+    if (!comboBundleData && cartPricingItems.length > 0 && !hasCurrentLocationQuote) {
+      toast.error(locationPriceStatus === "error"
+        ? "Unable to verify the price for this delivery location. Please retry before confirming."
+        : "Verifying the delivery-location price. Please wait before confirming.");
       return;
     }
 
@@ -846,6 +932,15 @@ const PlaceOrder = () => {
 
               <section className="mb-4 border border-gray-200 bg-white p-4">
                 <h2 className="text-xs font-bold uppercase tracking-[0.12em] text-gray-900">Items in this order</h2>
+                {!comboBundleData && cartPricingItems.length > 0 && (
+                  <p className={`mt-2 text-[11px] ${locationPriceStatus === "error" ? "text-rose-700" : "text-slate-500"}`}>
+                    {locationPriceStatus === "loading" && "Verifying local stock and checkout prices…"}
+                    {locationPriceStatus === "error" && "Price verification failed. Retry before confirming your order."}
+                    {hasCurrentLocationQuote && (locationPriceQuote.locationDiscountManufacturerId
+                      ? "Local hub stock verified; qualifying location discounts are applied."
+                      : "No mapped local hub can fulfill the full cart; standard product pricing applies.")}
+                  </p>
+                )}
                 <div className="mt-3 divide-y divide-gray-100">
                   {comboBundleData ? (
                     <div className="flex justify-between gap-3 py-3 text-xs">
@@ -873,6 +968,7 @@ const PlaceOrder = () => {
                           <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{categoryNames || "Uncategorized"}</p>
                           {entry.product.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{entry.product.description}</p>}
                           <p className="mt-1 text-[10px] text-gray-600">Size {entry.size}{entry.color ? ` · ${entry.color}` : ""} · Qty {entry.quantity}</p>
+                          {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% location discount · price locked at checkout</p>}
                         </div>
                         <p className="shrink-0 font-bold text-gray-900">Rs. {entry.lineTotal.toLocaleString()}</p>
                       </div>

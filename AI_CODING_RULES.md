@@ -24,10 +24,15 @@ The backend is the real source of truth for:
 - order assignment, shipping, and handoff logic
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
+- location-based discount resolution and resolved manufacturer assignment for checkout
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
 
-### 1.2 Preserve the platform split
+### 1.2 Never infer successful courier creation from optimistic UI state
+
+A backend NCM booking attempt is only successful when the delivery state is explicitly transitioned to a successful carrier-created state. Failed attempts such as `submission_failed`, `failed_to_book_courier`, or `ncm_submission_failed` must remain failed and should never be displayed as "Courier Booked" in any portal. The UI is allowed to reflect the authoritative backend result, not guess it.
+
+### 1.3 Preserve the platform split
 
 This repo is intentionally split into multiple apps:
 
@@ -39,7 +44,7 @@ This repo is intentionally split into multiple apps:
 
 Changes should be implemented in the correct runtime boundary. Do not create cross-app logic that bypasses the backend API contract.
 
-### 1.3 Follow the existing route and permission conventions
+### 1.4 Follow the existing route and permission conventions
 
 The codebase consistently uses:
 
@@ -50,7 +55,7 @@ The codebase consistently uses:
 
 When adding a protected feature, add the route permission and ensure the backend permission exists before assuming the UI can access it.
 
-### 1.4 Respect existing domain boundaries
+### 1.5 Respect existing domain boundaries
 
 Examples:
 
@@ -59,7 +64,7 @@ Examples:
 - card assignment and redemption logic belongs in the marketing-card routes and service layer
 - return/exchange reconciliation belongs in the order exchange and delivery domain, not as isolated UI-only logic
 
-### 1.5 Match the repo’s naming and state conventions
+### 1.6 Match the repo’s naming and state conventions
 
 Use status strings and IDs consistent with Prisma and the current service layer. For example:
 

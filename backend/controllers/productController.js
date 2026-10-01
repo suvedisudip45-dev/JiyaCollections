@@ -5,6 +5,7 @@ import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
+import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -708,6 +709,24 @@ const listProducts = async (req, res) => {
       };
     });
 
+    const province = String(req.query.province || "").trim();
+    const district = String(req.query.district || "").trim();
+    if (!isAdmin && province && district && products.length) {
+      const locationPrices = await resolveLocationProductPrices({
+        items: products.map((product) => ({ productId: product.id, quantity: 1 })),
+        province,
+        district,
+        eligibilityMode: "PER_ITEM",
+      });
+      products = products.map((product, index) => ({
+        ...product,
+        globalDiscountPercentage: Number(product.discount || 0),
+        discount: locationPrices.items[index].effectiveDiscountPercentage,
+        locationDiscountPercentage: locationPrices.items[index].locationDiscountPercentage,
+        discountSource: locationPrices.items[index].discountSource,
+      }));
+    }
+
     if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
       products = products.filter((product) => {
         const matchesCategory = !requestedCategory || product.categories.some(
@@ -746,7 +765,7 @@ const removeProduct = async (req, res) => {
 // function for single product info
 const singleProduct = async (req, res) => {
   try {
-    const { productId } = req.body;
+    const { productId, province, district } = req.body;
     
     // Sync stock from manufacturer inventory first
     await syncProductStock(productId);
@@ -785,6 +804,18 @@ const singleProduct = async (req, res) => {
       rating: avgRating,
       reviewCount: productReviews.length,
     };
+    if (!isAdmin && province && district) {
+      const locationPrices = await resolveLocationProductPrices({
+        items: [{ productId, quantity: 1 }],
+        province,
+        district,
+        eligibilityMode: "PER_ITEM",
+      });
+      product.globalDiscountPercentage = Number(product.discount || 0);
+      product.discount = locationPrices.items[0].effectiveDiscountPercentage;
+      product.locationDiscountPercentage = locationPrices.items[0].locationDiscountPercentage;
+      product.discountSource = locationPrices.items[0].discountSource;
+    }
     res.json({ success: true, product });
   } catch (error) {
     console.log(error);

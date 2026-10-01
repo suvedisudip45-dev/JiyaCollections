@@ -22,6 +22,7 @@ import {
   getSharedComboBundleVariants,
 } from "../services/comboBundleRules.js";
 import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
+import { resolveLocationProductPrices, reserveLocationManufacturerInventory } from "../services/locationPricingService.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -371,16 +372,25 @@ const placeOrder = async (req, res) => {
       return res.json({ success: false, message: stockValidation.message });
     }
 
-    let frozenItemsSnapshot = items.map((cartItem) => {
-      const pId = cartItem._id || cartItem.id;
+    const locationPricing = comboBundleRecord ? null : await resolveLocationProductPrices({
+      items,
+      province: address?.province || address?.state,
+      district: address?.district,
+    });
+
+    let frozenItemsSnapshot = items.map((cartItem, itemIndex) => {
+      const pId = cartItem._id || cartItem.id || cartItem.productId;
       const matchedProduct = dbProducts.find((p) => p.id === pId);
-
       const originalUnitPrice = matchedProduct ? matchedProduct.price : Number(cartItem.price || 0);
-      const discountPercentage = matchedProduct ? (matchedProduct.discount || 0) : Number(cartItem.discount || 0);
-
-      const purchasedUnitPrice = discountPercentage > 0
-        ? Math.round(originalUnitPrice * (1 - discountPercentage / 100))
-        : originalUnitPrice;
+      const resolvedPrice = locationPricing?.items[itemIndex];
+      const discountPercentage = resolvedPrice
+        ? Number(resolvedPrice.effectiveDiscountPercentage || 0)
+        : matchedProduct ? Number(matchedProduct.discount || 0) : Number(cartItem.discount || 0);
+      const purchasedUnitPrice = resolvedPrice
+        ? Number(resolvedPrice.effectiveUnitPrice)
+        : discountPercentage > 0
+          ? Math.round(originalUnitPrice * (1 - discountPercentage / 100))
+          : originalUnitPrice;
 
       const qty = Number(cartItem.quantity || 1);
 
@@ -396,6 +406,10 @@ const placeOrder = async (req, res) => {
         quantity: qty,
         originalUnitPrice: originalUnitPrice,
         discountPercentage: discountPercentage,
+        globalProductDiscountPercentage: Number(matchedProduct?.discount || 0),
+        locationDiscountPercentage: resolvedPrice?.locationDiscountPercentage ?? null,
+        discountSource: resolvedPrice?.discountSource || (discountPercentage > 0 ? "PRODUCT" : "BASE"),
+        locationDiscountManufacturerId: resolvedPrice?.locationManufacturerId || null,
         offerTag: matchedProduct?.offerTag || cartItem.offerTag || "",
         offerTitle: matchedProduct?.offerTitle || cartItem.offerTitle || "",
         purchasedUnitPrice: purchasedUnitPrice, // Price snapshot frozen at purchase time
@@ -434,7 +448,20 @@ const placeOrder = async (req, res) => {
     }
 
     const itemsTotal = frozenItemsSnapshot.reduce((acc, item) => acc + item.lineTotal, 0);
-    const manufacturingPlan = resolveOrderManufacturingPlan(frozenItemsSnapshot, manufacturerInventory);
+    let manufacturingPlan = resolveOrderManufacturingPlan(frozenItemsSnapshot, manufacturerInventory);
+    const locationDiscountApplied = Boolean(
+      locationPricing?.locationDiscountManufacturerId &&
+      frozenItemsSnapshot.some((item) => item.discountSource === "LOCATION")
+    );
+    if (locationDiscountApplied) {
+      manufacturingPlan = {
+        ...manufacturingPlan,
+        primaryManufacturerId: locationPricing.locationDiscountManufacturerId,
+        specialOrder: false,
+        specialOrderManufacturerIds: [locationPricing.locationDiscountManufacturerId],
+        specialOrderReason: null,
+      };
+    }
 
     // Resolve dynamic shipping charge from ShippingConfig (authoritative backend calculation)
     let expectedFee = deliveryCharge;
@@ -501,6 +528,22 @@ const placeOrder = async (req, res) => {
       address,
       loyaltyDiscount,
       manufacturerId: manufacturingPlan.primaryManufacturerId || null,
+      locationDiscountManufacturerId: locationDiscountApplied ? locationPricing.locationDiscountManufacturerId : null,
+      locationDiscountProvince: locationDiscountApplied ? locationPricing.location.province : null,
+      locationDiscountDistrict: locationDiscountApplied ? locationPricing.location.district : null,
+      locationPricingSnapshot: locationDiscountApplied ? {
+        province: locationPricing.location.province,
+        district: locationPricing.location.district,
+        manufacturerId: locationPricing.locationDiscountManufacturerId,
+        items: frozenItemsSnapshot.filter((item) => item.discountSource === "LOCATION").map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+          originalUnitPrice: item.originalUnitPrice,
+          locationDiscountPercentage: item.locationDiscountPercentage,
+          purchasedUnitPrice: item.purchasedUnitPrice,
+          lineTotal: item.lineTotal,
+        })),
+      } : null,
       specialOrder: Boolean(manufacturingPlan.specialOrder),
       specialOrderReason: manufacturingPlan.specialOrderReason,
       specialOrderManufacturerIds: manufacturingPlan.specialOrderManufacturerIds,
@@ -508,7 +551,22 @@ const placeOrder = async (req, res) => {
     };
 
     const createdOrder = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({ data: orderData });
+      let order = await tx.order.create({ data: orderData });
+      if (locationDiscountApplied) {
+        await reserveLocationManufacturerInventory(tx, locationPricing.locationDiscountManufacturerId, frozenItemsSnapshot);
+        const assignment = await tx.orderAssignment.create({
+          data: {
+            orderId: order.id,
+            manufacturerId: locationPricing.locationDiscountManufacturerId,
+            status: "assigned",
+            notes: `Location-priced order: assigned to the mapped ${locationPricing.location.district} hub and reserved at checkout.`,
+          },
+        });
+        order = await tx.order.update({
+          where: { id: order.id },
+          data: { assignmentId: assignment.id, fulfillmentStatus: "assigned" },
+        });
+      }
       await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
       return order;
     });
@@ -654,7 +712,7 @@ const placeOrder = async (req, res) => {
     }
 
     // Trigger allocation engine asynchronously (non-blocking)
-    runAllocationEngine(createdOrder.id).then((result) => {
+    if (!createdOrder.assignmentId) runAllocationEngine(createdOrder.id).then((result) => {
       if (!result.success) {
         console.warn(`[Allocation] Order ${createdOrder.id} could not be auto-assigned: ${result.message}`);
       } else {
@@ -668,6 +726,13 @@ const placeOrder = async (req, res) => {
 
   } catch (error) {
     console.log(error);
+    if (error.status) {
+      return res.status(error.status).json({
+        success: false,
+        code: error.code || "ORDER_PLACEMENT_FAILED",
+        message: error.message,
+      });
+    }
     res.json({ success: false, message: error.message });
   }
 };

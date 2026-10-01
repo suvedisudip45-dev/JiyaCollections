@@ -14,6 +14,7 @@ const ShopContextProvider = (props) => {
   const [showSearch, setShowSearch] = useState(false);
   const [cartItems, setCartItems] = useState({});
   const [products, setProducts] = useState([]);
+  const [priceLocation, setPriceLocation] = useState(null);
   const [wishlist, setWishlist] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("wishlist") || "[]");
@@ -312,9 +313,13 @@ const ShopContextProvider = (props) => {
     return totalAmount;
   };
 
-  const getProductsData = async () => {
+  const getProductsData = async (locationOverride = priceLocation) => {
     try {
-      const response = await axios.get(backendUrl + "/api/product/list");
+      const response = await axios.get(backendUrl + "/api/product/list", {
+        params: locationOverride?.province && locationOverride?.district
+          ? { province: locationOverride.province, district: locationOverride.district }
+          : {},
+      });
       if (response.data.success) {
         setProducts(response.data.products);
       } else {
@@ -323,6 +328,44 @@ const ShopContextProvider = (props) => {
     } catch (error) {
       console.log(error);
       toast.error(error.message);
+    }
+  };
+
+  const resolveLocationPrices = async ({ items, province, district, eligibilityMode = "WHOLE_BASKET" }) => {
+    const response = await axios.post(backendUrl + "/api/product/resolve-prices", {
+      items,
+      province,
+      district,
+      eligibilityMode,
+    });
+    if (!response.data?.success) {
+      throw new Error(response.data?.message || "Unable to verify location pricing");
+    }
+    return response.data;
+  };
+
+  const fetchDefaultPriceLocation = async (userToken) => {
+    if (!userToken) {
+      setPriceLocation(null);
+      return;
+    }
+    try {
+      const response = await axios.get(`${backendUrl}/api/user/profile`, { headers: { token: userToken } });
+      const user = response.data?.user;
+      let addresses = user?.addresses || [];
+      if (typeof addresses === "string") {
+        try { addresses = JSON.parse(addresses); } catch { addresses = []; }
+      }
+      const address = Array.isArray(addresses) ? addresses[0] : null;
+      const province = address?.province || address?.state || "";
+      const district = address?.district || "";
+      if (province && district) {
+        setPriceLocation({ province, district });
+      } else {
+        setPriceLocation(null);
+      }
+    } catch {
+      setPriceLocation(null);
     }
   };
 
@@ -379,9 +422,12 @@ const ShopContextProvider = (props) => {
   };
 
   useEffect(() => {
-    getProductsData();
     fetchShippingConfig();
   }, []);
+
+  useEffect(() => {
+    getProductsData(priceLocation);
+  }, [priceLocation?.province, priceLocation?.district]);
 
   useEffect(() => {
     const storedToken = getAccessToken();
@@ -389,6 +435,7 @@ const ShopContextProvider = (props) => {
       setToken(storedToken);
       getUserCart(storedToken);
     } else {
+      setPriceLocation(null);
       const storedCart = localStorage.getItem("cartItems");
       if (storedCart) {
         try {
@@ -403,11 +450,17 @@ const ShopContextProvider = (props) => {
   useEffect(() => {
     if (token) {
       getUserCart(token);
+      fetchDefaultPriceLocation(token);
+    } else {
+      setPriceLocation(null);
     }
   }, [token]);
 
   const value = {
     products,
+    priceLocation,
+    setPriceLocation,
+    resolveLocationPrices,
     currency,
     delivery_fee,
     shippingConfig,

@@ -45,7 +45,7 @@ const getColorImage = (product, selectedColor) => {
 
 const Product = () => {
   const { productId } = useParams();
-  const { products, currency, addToCart, wishlist, toggleWishlist, navigate } =
+  const { products, currency, addToCart, wishlist, toggleWishlist, navigate, priceLocation, resolveLocationPrices } =
     useContext(ShopContext);
 
   const [productData, setProductData] = useState(false);
@@ -61,6 +61,8 @@ const Product = () => {
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [isAddedAnimation, setIsAddedAnimation] = useState(false);
   const [showStickyBar, setShowStickyBar] = useState(false);
+  const [variantPriceQuote, setVariantPriceQuote] = useState(null);
+  const [variantPriceStatus, setVariantPriceStatus] = useState("idle");
 
   // Zoom on hover state
   const [isZoomed, setIsZoomed] = useState(false);
@@ -116,6 +118,43 @@ const Product = () => {
     fetchProductData();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [productId, products]);
+
+  const locationPriceKey = JSON.stringify({
+    productId: productData?._id || productData?.id || "",
+    size,
+    color,
+    quantity,
+    province: priceLocation?.province || "",
+    district: priceLocation?.district || "",
+  });
+
+  useEffect(() => {
+    const currentProductId = productData?._id || productData?.id;
+    if (!currentProductId || !priceLocation?.province || !priceLocation?.district) {
+      setVariantPriceQuote(null);
+      setVariantPriceStatus("idle");
+      return undefined;
+    }
+    let active = true;
+    setVariantPriceStatus("loading");
+    resolveLocationPrices({
+      items: [{ productId: currentProductId, size, color, quantity }],
+      province: priceLocation.province,
+      district: priceLocation.district,
+      eligibilityMode: "PER_ITEM",
+    }).then((result) => {
+      if (active) {
+        setVariantPriceQuote({ key: locationPriceKey, ...result.items[0] });
+        setVariantPriceStatus("ready");
+      }
+    }).catch(() => {
+      if (active) {
+        setVariantPriceQuote(null);
+        setVariantPriceStatus("error");
+      }
+    });
+    return () => { active = false; };
+  }, [locationPriceKey, productData?._id, productData?.id, priceLocation?.province, priceLocation?.district]);
 
   // Observer for sticky bottom bar
   useEffect(() => {
@@ -368,12 +407,14 @@ const Product = () => {
   const imageList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
 
   const currentActiveImage = image || imageList[0];
-  const finalPrice =
-    productData.discount > 0
-      ? Math.round(productData.price * (1 - productData.discount / 100))
-      : productData.price;
-  const savings =
-    productData.discount > 0 ? productData.price - finalPrice : 0;
+  const currentVariantPrice = variantPriceQuote?.key === locationPriceKey ? variantPriceQuote : null;
+  const displayDiscount = currentVariantPrice?.effectiveDiscountPercentage ?? Number(productData.discount || 0);
+  const finalPrice = currentVariantPrice
+    ? Number(currentVariantPrice.effectiveUnitPrice)
+    : displayDiscount > 0
+      ? Math.round(Number(productData.price) * (1 - displayDiscount / 100))
+      : Number(productData.price || 0);
+  const savings = displayDiscount > 0 ? Number(productData.price) - finalPrice : 0;
   const isWishlisted = wishlist.includes(productData._id || productData.id);
 
   return (
@@ -517,7 +558,7 @@ const Product = () => {
 
             {/* Discount + Wishlist badges */}
             <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
-              {productData.discount > 0 && (
+              {displayDiscount > 0 && (
                 <span className="bg-[#d85b3f] text-white text-[11px] font-black uppercase tracking-wider px-3 py-1 rounded-full shadow-md">
                   -{productData.discount}% OFF
                 </span>
@@ -811,8 +852,7 @@ const Product = () => {
                     {productData.price.toLocaleString()}
                   </span>
                   <span className="text-xs font-bold text-[#d85b3f] bg-[#d85b3f]/10 border border-[#d85b3f]/20 px-2.5 py-1 rounded-full">
-                    Save {currency}
-                    {savings.toLocaleString()} ({productData.discount}% OFF)
+                    {currentVariantPrice?.discountSource === "LOCATION" ? `Local ${currentVariantPrice.locationDiscountPercentage}% OFF` : `Save ${currency}${savings.toLocaleString()} (${displayDiscount}% OFF)`}
                   </span>
                 </>
               )}
@@ -821,6 +861,7 @@ const Product = () => {
               <Check size={13} className="text-emerald-600" />
               <span>Inclusive of all taxes. Fast cash on delivery available.</span>
             </p>
+            {priceLocation && variantPriceStatus === "error" && <p className="mt-2 text-[11px] text-amber-700">Location price preview is unavailable; checkout will verify the final price.</p>}
           </div>
 
           {/* Short Bio */}

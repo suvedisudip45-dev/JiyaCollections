@@ -95,7 +95,26 @@ The auth layer is built around `AuthAccount` and related session tables.
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
-### 3.7 Marketing cards and campaigns
+### 3.7 Location-aware pricing and local manufacturer assignment
+
+The schema includes explicit coverage and pricing metadata for Nepal-specific local ordering rules:
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `LocationMapping` | `code`, `name`, `type`, `province` | canonical Nepal province/district code map used for normalization and matching |
+| `ManufacturerLocation` | `manufacturerId`, `province`, `district`, `isActive` | local dispatch coverage by manufacturer, keyed to deliverable province/district pairs |
+| `LocationProductDiscount` | `productId`, `province`, `district`, `discountPercentage`, `isActive` | per-product local discount overrides by geography |
+
+The `Order` row also captures the resolved local-pricing decision in:
+
+- `locationDiscountManufacturerId`
+- `locationDiscountProvince`
+- `locationDiscountDistrict`
+- `locationPricingSnapshot`
+
+These fields lock the order to the backend-resolved local discount and assigned manufacturer so checkout cannot drift to stale frontend pricing after a stock or assignment change.
+
+### 3.8 Marketing cards and campaigns
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
@@ -163,6 +182,7 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 - `User` is the customer profile record; `Manufacturer` and `MarketingPartner` are separate business profiles linked to the same auth system.
 - An `Order` can be associated with `DeliveryOrder`, `LetterDelivery`, and `MarketingCardOrder` records.
 - `ManufacturerInventory` is keyed by `(manufacturerId, productId)` and tracks both physical stock and reserved stock.
+- `LocationMapping`, `ManufacturerLocation`, and `LocationProductDiscount` create the authoritative local-discount and assignment map for Nepal geography.
 - `MarketingCampaign` → `MarketingCardBatch` → `MarketingCard` forms the card issuance chain.
 - `OrderExchangeRequest` is the main exchange transaction record and is accompanied by an audit event log (`OrderExchangeEvent`).
 
@@ -170,5 +190,6 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 
 - The schema is the canonical business model; future AI work should treat it as the source of truth before writing new endpoints or UI logic.
 - New features should preserve existing relationships and status semantics rather than inventing alternate tables for domain concepts already covered here.
+- Location-aware pricing and assignment rules are enforced server-side using the geography map, covered districts, and per-product discounts; they should not be reimplemented in the frontend as a trust boundary.
 - The repo uses a `db push` / `prisma db seed` workflow in local development, but production deployment guidance in the notifications docs warns against using `db push` in production and prefers staged migration review.
 - Apply `20261001193000_return_exchange_lifecycle_overhaul`, run the RBAC seed to register new return/exchange permissions, and regenerate Prisma Client before restarting the API. The migration is additive, preserves existing processed return data, and maps its composite attempt indexes to MySQL-safe names under the 64-character identifier limit.

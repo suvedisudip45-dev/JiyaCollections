@@ -98,6 +98,12 @@ The component tree includes:
 - `TermsAndConditionsModal`
 - `SponsorAdModal`
 
+### Checkout pricing and NCM status handling
+
+The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order.
+
+Carrier state labels are also intentionally strict. A failed NCM booking is presented as "Failed to Book Courier" or equivalent failure text instead of the optimistic "Courier Booked" state, and the manufacturer UI uses the same failed-state labels to prevent false-positive booking confirmations.
+
 ## 3. Admin Portal (`admin/`)
 
 ### App shell

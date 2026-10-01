@@ -25,6 +25,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/order-assignments": ["assignment:admin_list"],
   "/delivery-monitor": ["delivery:admin_list", "delivery:settlements_read", "delivery:logs_read", "delivery:ncm_handoff_recover"],
   "/manufacturers": ["manufacturer:admin_list"],
+  "/location-pricing": ["manufacturer:admin_update", "product:update"],
   "/manufacturer-inventory": ["inventory:admin_read_all", "inventory:admin_low_stock"],
   "/marketing-cards": ["marketing_card:admin_manage"],
   "/customers": ["customer:admin_list"],

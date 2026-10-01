@@ -13,6 +13,7 @@ import {
 } from "../controllers/productController.js";
 import upload from "../middleware/multer.js";
 import { authenticate, authorize, extractToken } from "../middleware/unifiedAuth.js";
+import { resolveProductPrices } from "../controllers/locationPricingController.js";
 
 const productRouter = express.Router();
 const authenticateProductList = (req, res, next) => {
@@ -45,6 +46,7 @@ productRouter.get("/subcategory-bestsellers", authenticateProductList, getSubcat
 productRouter.post("/remove", authenticate, authorize("product:delete"), removeProduct);
 productRouter.post("/single", authenticateProductList, singleProduct);
 productRouter.get("/list", authenticateProductList, listProducts);
+productRouter.post("/resolve-prices", resolveProductPrices);
 productRouter.post("/adjust-stock", authenticate, authorize("stock:adjust"), adjustStock);
 productRouter.get("/stock-logs", authenticate, authorize("stock:logs_read"), getStockLogs);
 
