@@ -23,7 +23,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
-| Inventory | `ManufacturerInventory`, `StockLog`, `InboundShipment` | manufacturer-level stock and movement history |
+| Inventory | `ManufacturerInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `StockLog`, `InboundShipment` | manufacturer-level product and promotion-gift stock with movement history |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, webhook handling |
@@ -68,7 +68,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `specialOrder*` | primary order transaction; the admin exchange-list API returns `date` as a decimal string for JSON safety |
+| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `assignedGiftId`, `assignedGiftInventoryId`, `giftStatus`, `specialOrder*` | primary order transaction; the admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, `manufacturerId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | allocation between order and manufacturer |
 | `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
@@ -146,6 +146,17 @@ The schema includes a full accounting engine with:
 - `SettlementReversion`
 
 This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
+
+### 3.9 Gift promotions and manufacturer gift stock
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `GiftCatalog` | `name`, `sku`, `priceValue`, `category`, `isActive` | Reusable physical gift assortment; catalog removal is a soft archive |
+| `LoyaltyTierConfig` | `tierName`, `triggerType`, `minSpendThreshold`, `giftTargetValue`, `isActive` | Configurable `ORDER_VALUE` trigger and gift-value ceiling; loyalty gifts are configured on `CustomerLevel` |
+| `ManufacturerGiftInventory` | `manufacturerId`, `giftId`, `quantityAvailable`, `quantityReserved`, `status` | Each distribution is its own `PENDING_ACCEPTANCE`, `ACCEPTED`, or `REJECTED` batch |
+| `GiftMovementLog` | `manufacturerId`, `giftId`, `orderId`, `movementType`, `quantity` | Operational audit records for allocation, reservation, deduction, restock, and loss |
+
+An order stores both its gift catalog reference and the exact manufacturer inventory batch reserved for it. Loyalty gift allowances are already represented by `CustomerLevel.giftAmount` and `giftDescription`; eligible rewards are snapshotted into `Order.rewardApplied`. `LoyaltyTierConfig` remains for order-value promotion rules. At final manufacturer checklist completion, the backend verifies eligibility, manufacturer ownership, accepted stock, and gift value, then reserves the selected batch atomically. `giftStatus` progresses through `NONE`, `PENDING_PACKING`, `RESERVED`, and `DELIVERED`, or to `RETURNED` / `LOST` when a protected return decision is recorded. Delivered stock is deducted through the NCM delivery transaction.
 
 ## 4. Data Dictionary: Key Enumerations and Status Values
 

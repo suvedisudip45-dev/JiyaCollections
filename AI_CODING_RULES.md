@@ -72,6 +72,14 @@ Use status strings and IDs consistent with Prisma and the current service layer.
 - many domain models use `status` and `state` strings rather than booleans for workflow progression
 - route and permission handling is exact; avoid introducing new permission names without updating both backend and admin permission maps
 
+### 1.7 Gift promotion and inventory rules
+
+- Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Keep trigger evaluation in backend services and do not treat UI-selected gifts as authoritative.
+- Each manufacturer distribution is an independently accepted inventory batch. The manufacturer chooses from their own accepted stock at final checklist completion; the backend must claim that exact batch atomically and store it on the order.
+- Manufacturer actions that change an order gift must verify manufacturer ownership. Pack, delivery, return, and loss transitions must be idempotent and must update movement logs with stock in the same transaction.
+- NCM delivery status is authoritative for delivered-gift deduction. Do not mark a gift delivered from optimistic frontend state.
+- Update this guide and the project overview, architecture, schema, and UI docs when gift routes, permissions, states, or lifecycle rules change.
+
 ## 2. Do’s and Don’ts
 
 ### Do

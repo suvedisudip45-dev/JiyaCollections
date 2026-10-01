@@ -4,6 +4,8 @@ import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
+import { onOrderPacked } from "../services/giftService.js";
+import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -81,7 +83,14 @@ const buildFulfillmentBenefits = (order, items = []) => {
     totalDiscount: Number((loyaltyDiscount + productDiscount).toFixed(2)),
     freeShipping: Boolean(reward.freeShipping),
     giftAmount: Number(reward.giftAmount || 0),
-    giftDescription: reward.giftDescription || "",
+    giftDescription: order?.assignedGift?.name || reward.giftDescription || "",
+    assignedGift: order?.assignedGift ? {
+      id: order.assignedGift.id,
+      name: order.assignedGift.name,
+      sku: order.assignedGift.sku,
+      priceValue: Number(order.assignedGift.priceValue || 0),
+      status: order.giftStatus,
+    } : null,
     handwrittenCard: Boolean(reward.letterIncluded),
     customPerk: reward.customPerk || "",
     offerItems,
@@ -438,6 +447,7 @@ const getMyAssignments = async (req, res) => {
     const [orders, deliveryOrders] = await Promise.all([
       prisma.order.findMany({
         where: { id: { in: orderIds } },
+        include: { assignedGift: true },
       }),
       prisma.deliveryOrder.findMany({
         where: { orderId: { in: orderIds } },
@@ -640,6 +650,7 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction,
       instruction,
       packagingChecklist,
+      giftInventoryId,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
@@ -654,6 +665,20 @@ const updateAssignmentStatus = async (req, res) => {
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
+
+    if (giftInventoryId && normalizedStatus !== "checklist_complete") {
+      return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
+    }
+    if (normalizedStatus === "checklist_complete") {
+      const giftOptions = await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
+      if (giftOptions.eligible && !giftOptions.alreadyAssigned && giftOptions.options.length > 0 && !giftInventoryId) {
+        return res.status(409).json({
+          success: false,
+          message: "This order has an active gift reward. Select one of the accepted gifts available at your hub before completing the checklist.",
+          code: "GIFT_SELECTION_REQUIRED",
+        });
+      }
+    }
 
     if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
       try {
@@ -706,11 +731,24 @@ const updateAssignmentStatus = async (req, res) => {
       updateData.notes = JSON.stringify(payload);
     }
 
-    await prisma.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
-    await prisma.order.update({
-      where: { id: assignment.orderId },
-      data: { fulfillmentStatus: normalizedStatus },
+    await prisma.$transaction(async (tx) => {
+      if (giftInventoryId) {
+        await assignGiftToOrder({
+          orderId: assignment.orderId,
+          manufacturerId,
+          inventoryId: giftInventoryId,
+          client: tx,
+        });
+      }
+      await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
+      await tx.order.update({
+        where: { id: assignment.orderId },
+        data: { fulfillmentStatus: normalizedStatus },
+      });
     });
+    if (normalizedStatus === "packed") {
+      await onOrderPacked(assignment.orderId, manufacturerId);
+    }
 
     res.json({ success: true, message: `Status updated to ${status}` });
   } catch (error) {
@@ -758,6 +796,7 @@ const getAllAssignments = async (req, res) => {
     const [orders, deliveryOrders] = await Promise.all([
       prisma.order.findMany({
         where: { id: { in: orderIds } },
+        include: { assignedGift: true },
       }),
       prisma.deliveryOrder.findMany({
         where: { orderId: { in: orderIds } },
@@ -863,7 +902,7 @@ const getAssignmentById = async (req, res) => {
     }
 
     const [order, delivery] = await Promise.all([
-      prisma.order.findUnique({ where: { id: assignment.orderId } }),
+      prisma.order.findUnique({ where: { id: assignment.orderId }, include: { assignedGift: true } }),
       prisma.deliveryOrder.findUnique({
         where: { orderId: assignment.orderId },
         include: {

@@ -29,6 +29,7 @@ The repository implements a distributed operating model where customer orders ar
 - Customer storefront browsing, cart, wishlist, product search, order placement, return/exchange flows, and marketing-card redemption UX.
 - Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
 - Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shipping config, access control, and exchange/return reconciliation.
+- Gift promotion operations across the admin and manufacturer portals: generated gift SKUs, controlled gift categories, configurable order-value rules, loyalty-tier gift allowances, per-hub stock acceptance, manufacturer-selected order gifts, packing verification, and delivery deduction.
 - Manufacturer portal with order acceptance, pickup profile, inventory management, performance, finance, and marketing card handling.
 - Location-aware assignment logic that maps qualifying local manufacturers to customer delivery districts, applies the product discount hierarchy, and reserves stock before final order confirmation.
 - Marketing partner portal with login, campaigns, campaign detail, card management, redemption validation, and reporting routes.
@@ -36,6 +37,7 @@ The repository implements a distributed operating model where customer orders ar
 - NCM create-booking flows now preserve explicit failure states such as `submission_failed` / `failed_to_book_courier`, and the frontend must not surface those cases as a successful courier booking.
 - RBAC and auth system with user, admin, manufacturer, and partner roles plus permission checks and session validation.
 - MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, delivery, and local pricing flows.
+- Gift inventory is batch-based and auditable: orders reserve one accepted manufacturer batch atomically, pack/delivery transitions update the gift state, and movement logs record allocation, reservation, deduction, restock, or loss.
 
 ### Partially implemented or intentionally gated
 
@@ -43,6 +45,7 @@ The repository implements a distributed operating model where customer orders ar
 - The marketing portal backend analysis document explicitly notes that some flows such as signup, password reset, and email verification are not implemented yet.
 - The accounting architecture docs call out a manufacturer payable trigger gap: the current sales posting logic recognizes cost and commission data, but a manufacturer-specific payable trigger and cost basis are not fully implemented.
 - Prisma generation in a local Windows environment may be blocked by a native query-engine DLL lock while the backend server is running; this is an environment issue, not a schema-level application bug.
+- Loyalty gifts trigger automatically when the backend applies an eligible loyalty reward to an order; order-value promotions use separate configurable thresholds. Campaign/product-category triggers and automatic return-inspection reconciliation remain follow-up work; returned/lost gift outcomes can currently be recorded through the protected lifecycle API.
 
 ## 4. High-Level Platform Map
 

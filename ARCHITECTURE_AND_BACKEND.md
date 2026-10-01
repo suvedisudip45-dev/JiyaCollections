@@ -49,6 +49,8 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/admin/access` | Access management and RBAC control |
 | `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local assignment logic |
 | `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
+| `/api/admin/gifts` | Gift catalog, spend-rule configuration, manufacturer distributions, and admin order allocation/lifecycle actions |
+| `/api/manufacturer/gifts` | Manufacturer gift-stock inbox and acceptance/rejection actions; manufacturer lifecycle actions are ownership-scoped |
 | `/api/notifications` | Notification service endpoints |
 | `/api/user` | User profile / account management |
 | `/api/product` | Product creation, listing, publish toggles, stock adjustments |
@@ -91,6 +93,13 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/delivery/admin/:id/resolve-ncm-handoff`
 - `GET /api/marketing-cards/admin/cards`
 - `POST /api/marketing-cards/customer/cards/scan`
+- `GET /api/admin/gifts/catalog`, `POST /api/admin/gifts/catalog`, `DELETE /api/admin/gifts/catalog/:id` (archive)
+- `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-manufacturer`
+- `GET /api/manufacturer/gifts/inbound` and `POST /api/manufacturer/gifts/:id/respond`
+- `GET /api/manufacturer/gifts/order-options/:orderId` returns eligible gifts only from the authenticated manufacturer's accepted, available inventory
+- Gift assignment is submitted with final checklist completion through the manufacturer order-assignment status endpoint; delivery deduction is driven by the NCM webhook, and `POST /api/manufacturer/gifts/returned/:orderId` records an explicit returned-or-lost decision
+
+Gift assignment is manufacturer-selected and backend-authoritative. Admins configure order-value gift ceilings separately and distribute catalog gifts to manufacturer hubs as pending-acceptance batches. Loyalty gift value and description are configured directly on `CustomerLevel`; the existing backend loyalty calculation places an active tier gift allowance in `rewardApplied` when the order is created. At the final checklist, eligible manufacturers see only accepted local stock whose catalog value is within the highest active reward ceiling. Checklist completion atomically decrements available quantity, increments reserved quantity, links the exact inventory batch to the order, and writes a movement log. NCM delivery consumes the reserved unit. Campaign/product triggers and automatic return-inspection reconciliation remain follow-up work.
 
 ## 4. Request / Response Lifecycle
 

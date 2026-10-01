@@ -109,6 +109,10 @@ const LoyaltyLevels = ({ token }) => {
       toast.error("Please fill in level name and reward title");
       return;
     }
+    if ((Number(form.giftAmount) > 0) !== Boolean(form.giftDescription.trim())) {
+      toast.error("Set both a gift product description and its maximum value, or leave both empty.");
+      return;
+    }
 
     try {
       setSaving(true);
@@ -432,7 +436,7 @@ const LoyaltyLevels = ({ token }) => {
                       <span>🎁</span> Custom Reward & Perk Combination Builder
                     </p>
                     <p className="text-[11px] text-amber-800">
-                      Configure your exact combination of discounts, free courier, gift vouchers & handwritten letters.
+                      Configure discounts, delivery, a physical gift allowance, and handwritten letters.
                     </p>
                   </div>
 
@@ -521,11 +525,11 @@ const LoyaltyLevels = ({ token }) => {
                             freeShipping: true,
                             discountAmount: 200,
                             giftAmount: 500,
-                            giftDescription: "Rs. 500 Gift Voucher",
+                            giftDescription: "Loyalty gift",
                             letterIncluded: true,
                             customPerk: "VIP Priority Dispatch",
-                            rewardTitle: "Free Delivery + Rs. 200 Off + Rs. 500 Gift Voucher",
-                            rewardDescription: "VIP combo with free delivery, Rs. 200 off, Rs. 500 gift voucher & letter.",
+                            rewardTitle: "Free Delivery + Rs. 200 Off + Gift up to Rs. 500",
+                            rewardDescription: "VIP combo with free delivery, Rs. 200 off, a physical hub gift up to Rs. 500, and a letter.",
                           }));
                         }
                       }}
@@ -539,7 +543,7 @@ const LoyaltyLevels = ({ token }) => {
                       <option value="DISCOUNT_150">4. Rs. 150 Off Only</option>
                       <option value="FREE_DELIVERY_AND_100">5. Free Delivery + Rs. 100 Off</option>
                       <option value="FREE_DELIVERY_AND_150">6. Free Delivery + Rs. 150 Off</option>
-                      <option value="FREE_DELIVERY_AND_200_GIFT">7. Free Delivery + Rs. 200 Off + Rs. 500 Gift Voucher</option>
+                      <option value="FREE_DELIVERY_AND_200_GIFT">7. Free Delivery + Rs. 200 Off + Gift up to Rs. 500</option>
                     </select>
                   </div>
                 </div>
@@ -623,31 +627,32 @@ const LoyaltyLevels = ({ token }) => {
                   </div>
                 </div>
 
-                {/* Perk 4: Gift Voucher / Gift Item */}
+                {/* Perk 4: Manufacturer-selected physical gift */}
                 <div className="p-3 bg-white rounded-xl border border-gray-200 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-gray-900 text-xs flex items-center gap-1">
-                      <span>🎁</span> Gift Voucher / Special Gift Item
+                      <span>🎁</span> Loyalty Gift Product
                     </span>
-                    <span className="text-[10px] text-gray-400">Optional extra gift</span>
+                    <span className="text-[10px] text-gray-400">Automatically offered on eligible orders</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <input
                       type="number"
-                      min="0"
+                      min="0.01"
                       value={form.giftAmount}
                       onChange={(e) => setForm({ ...form, giftAmount: Number(e.target.value) })}
-                      placeholder="Voucher amount (e.g. 200, 500)"
+                      placeholder="Maximum gift value (Rs)"
                       className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-indigo-600 focus:outline-none"
                     />
                     <input
                       type="text"
                       value={form.giftDescription}
                       onChange={(e) => setForm({ ...form, giftDescription: e.target.value })}
-                      placeholder="Gift item name (e.g. Free Scarf & Voucher code)"
+                      placeholder="Gift note or suggested item"
                       className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-indigo-600 focus:outline-none"
                     />
                   </div>
+                  <p className="text-[10px] text-gray-500">When this reward is active, the assigned manufacturer can select a product from accepted hub gift stock up to this value.</p>
                 </div>
 
                 {/* Perk 5: Custom Perk & Order Limit */}
@@ -695,7 +700,7 @@ const LoyaltyLevels = ({ token }) => {
                           const parts = [];
                           if (form.freeShipping) parts.push("Free Delivery");
                           if (form.discountAmount > 0) parts.push(`Rs. ${form.discountAmount} Off`);
-                          if (form.giftAmount > 0 || form.giftDescription) parts.push(form.giftDescription || `Rs. ${form.giftAmount} Gift Voucher`);
+                          if (form.giftAmount > 0 || form.giftDescription) parts.push(form.giftAmount > 0 ? `${form.giftDescription || "Gift"} up to Rs. ${form.giftAmount}` : form.giftDescription);
                           if (form.letterIncluded) parts.push("Handwritten Letter");
                           if (form.customPerk) parts.push(form.customPerk);
                           const generated = parts.length > 0 ? parts.join(" + ") : "Entry Level (No Perks)";

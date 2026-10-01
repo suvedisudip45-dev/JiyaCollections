@@ -14,6 +14,7 @@ import Inventory from "./pages/Inventory";
 import Performance from "./pages/Performance";
 import DirectOrders from "./pages/DirectOrders";
 import CustomerLoyalty from "./pages/CustomerLoyalty";
+import GiftInventory from "./pages/GiftInventory";
 import PickupProfile from "./pages/PickupProfile";
 import Finance from "./pages/Finance";
 import MarketingCards from "./pages/MarketingCards";
@@ -63,6 +64,7 @@ const MainLayout = () => {
               <Route path="/performance" element={<Performance />} />
               <Route path="/finance" element={<Finance />} />
               <Route path="/customer-loyalty" element={<CustomerLoyalty />} />
+              <Route path="/gift-inventory" element={<GiftInventory />} />
               <Route path="/marketing-cards" element={<MarketingCards />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

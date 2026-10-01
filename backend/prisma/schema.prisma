@@ -584,6 +584,9 @@ model Order {
   orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
   directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
   manufacturerId              String? // Fulfilled directly by manufacturer
+  assignedGiftId              String?
+  assignedGiftInventoryId     String?
+  giftStatus                  String              @default("NONE") // NONE | PENDING_PACKING | RESERVED | DELIVERED | RETURNED | LOST
   locationDiscountManufacturerId String?
   locationDiscountProvince    String?             @db.VarChar(120)
   locationDiscountDistrict    String?             @db.VarChar(120)
@@ -598,6 +601,8 @@ model Order {
   marketingCardOrder          MarketingCardOrder?
   exchangeRequests            OrderExchangeRequest[]
   collaborationSales          CollaborationSale[]
+  assignedGift                GiftCatalog?        @relation("GiftCatalogOrder", fields: [assignedGiftId], references: [id], onDelete: SetNull)
+  assignedGiftInventory       ManufacturerGiftInventory? @relation("GiftInventoryOrders", fields: [assignedGiftInventoryId], references: [id], onDelete: SetNull)
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -677,6 +682,69 @@ model CustomerLevel {
   customPerk        String?  @default("")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+model LoyaltyTierConfig {
+  id                 String   @id @default(uuid())
+  tierName           String   @unique
+  triggerType        String   @default("ORDER_VALUE") // ORDER_VALUE | LOYALTY_TIER
+  minSpendThreshold  Float    @default(0)
+  giftTargetValue    Float    @default(0)
+  isActive           Boolean  @default(true)
+  description        String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model GiftCatalog {
+  id          String                  @id @default(uuid())
+  name        String
+  sku         String                  @unique
+  priceValue  Float                   @default(0)
+  category    String                  @default("GENERAL")
+  description String?                 @db.Text
+  isActive    Boolean                 @default(true)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  inventory   ManufacturerGiftInventory[]
+  movements   GiftMovementLog[]
+  assignedOrders Order[]               @relation("GiftCatalogOrder")
+
+  @@index([isActive, category])
+}
+
+model ManufacturerGiftInventory {
+  id               String    @id @default(uuid())
+  manufacturerId   String
+  giftId           String
+  quantityAvailable Int      @default(0)
+  quantityReserved Int      @default(0)
+  status           String    @default("PENDING_ACCEPTANCE") // PENDING_ACCEPTANCE | ACCEPTED | REJECTED
+  notes            String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  manufacturer     Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  gift             GiftCatalog  @relation(fields: [giftId], references: [id], onDelete: Cascade)
+  assignedOrders   Order[]      @relation("GiftInventoryOrders")
+
+  @@index([manufacturerId, status])
+  @@index([giftId, status])
+}
+
+model GiftMovementLog {
+  id             String     @id @default(uuid())
+  manufacturerId String
+  giftId         String
+  orderId        String?
+  movementType   String     @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | DAMAGED | REJECTED
+  quantity       Int        @default(0)
+  notes          String?    @db.Text
+  createdAt      DateTime   @default(now())
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  gift           GiftCatalog  @relation(fields: [giftId], references: [id], onDelete: Cascade)
+
+  @@index([manufacturerId, createdAt])
+  @@index([giftId, createdAt])
 }
 
 model CustomerLetterImage {
@@ -1450,6 +1518,8 @@ model Manufacturer {
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   inventory                ManufacturerInventory[]
+  giftInventory            ManufacturerGiftInventory[]
+  giftMovements            GiftMovementLog[]
   locations                ManufacturerLocation[]
   assignments              OrderAssignment[]
   exchangeRequests         OrderExchangeRequest[]

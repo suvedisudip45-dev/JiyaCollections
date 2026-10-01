@@ -276,10 +276,11 @@ const Sidebar = () => {
           label="Customers & CRM"
           icon={Icon.crm}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.customers}
-          routes={["/customers", "/loyalty-levels", "/reviews", "/story-letter-library"]}
+          routes={["/customers", "/loyalty-levels", "/gift-promotions", "/reviews", "/story-letter-library"]}
         >
           <NavItem to="/customers"     icon={Icon.customers} label="Customer Profiles" />
           <NavItem to="/loyalty-levels" icon={Icon.loyalty}  label="VIP Loyalty Tiers" />
+          <NavItem to="/gift-promotions" icon={Icon.offers} label="Gift Promotions" />
           <NavItem to="/reviews"       icon={Icon.reviews}  label="Product Reviews" />
           <NavItem to="/story-letter-library" icon={Icon.letter} label="Story Letter Library" />
         </SectionGroup>

@@ -16,6 +16,7 @@ import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
 import Customers from "./pages/Customers";
 import LoyaltyLevels from "./pages/LoyaltyLevels";
+import GiftPromotions from "./pages/GiftPromotions";
 import CreateOrder from "./pages/CreateOrder";
 import SpecialOffers from "./pages/SpecialOffers";
 import Inventory from "./pages/Inventory";
@@ -207,6 +208,7 @@ const App = () => {
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />
+                  <Route path="/gift-promotions" element={withPermission("/gift-promotions", <GiftPromotions token={token} />)} />
                   <Route path="/categories" element={withPermission("/categories", <Categories token={token} />)} />
                   <Route path="/combo-bundles" element={withPermission("/combo-bundles", <ComboBundles token={token} />)} />
                   <Route path="/collaborations" element={withPermission("/collaborations", <Collaborations token={token} />)} />

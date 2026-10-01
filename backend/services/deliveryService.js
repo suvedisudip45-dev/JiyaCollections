@@ -21,6 +21,7 @@ import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } f
 import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
 import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
+import { applyGiftDeliveryTransition } from "./giftService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -912,6 +913,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
           data: orderUpdateData,
         });
         if (deliveryState === "DELIVERED") {
+          await applyGiftDeliveryTransition(tx, delivery.orderId);
           await accrueCollaborationSalesForOrder({ orderId: delivery.orderId, deliveredAt: new Date(), client: tx });
         }
       }

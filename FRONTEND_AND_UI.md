@@ -120,7 +120,7 @@ The application exposes modules such as:
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`
 - `/manufacturers`, `/manufacturer-inventory`, `/marketing-cards`
-- `/customers`, `/loyalty-levels`, `/categories`, `/combo-bundles`, `/collaborations`
+- `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 
@@ -130,6 +130,7 @@ The application exposes modules such as:
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
 - integrates `react-toastify` for action feedback
+- `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and manufacturer stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.
 - `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
 - the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
 
@@ -149,7 +150,10 @@ The manufacturer app is a separate React app with a protected main layout. Its r
 | `/performance` | Production/performance metrics |
 | `/finance` | Manufacturer finance data |
 | `/customer-loyalty` | Customer loyalty and promotion view |
+| `/gift-inventory` | Incoming gift stock acceptance/rejection and available/reserved quantities |
 | `/marketing-cards` | Card assignment and processing |
+
+Manufacturer order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action.
 
 ## 5. Marketing Portal (`marketing/`)
 

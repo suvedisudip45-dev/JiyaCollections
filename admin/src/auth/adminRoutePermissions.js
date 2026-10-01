@@ -30,6 +30,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/marketing-cards": ["marketing_card:admin_manage"],
   "/customers": ["customer:admin_list"],
   "/loyalty-levels": ["loyalty:level_manage"],
+  "/gift-promotions": ["loyalty:level_manage"],
   "/categories": ["category:create", "category:delete", "subcategory:create", "subcategory:update", "color:create"],
   "/combo-bundles": ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"],
   "/collaborations": ["collaboration:admin_manage", "collaboration:admin_reports_read"],

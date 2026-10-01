@@ -37,6 +37,7 @@ import authRouter from "./routes/authRoute.js";
 import accessManagementRouter from "./routes/accessManagementRoute.js";
 import locationPricingRouter from "./routes/locationPricingRoute.js";
 import notificationRouter from "./routes/notificationRoute.js";
+import { adminGiftRouter, manufacturerGiftRouter } from "./routes/giftRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 
@@ -98,7 +99,9 @@ app.options('*', cors(corsOptions));
 app.use("/api/auth", authRouter);
 app.use("/api/admin/access", accessManagementRouter);
 app.use("/api/admin", locationPricingRouter);
+app.use("/api/admin/gifts", adminGiftRouter);
 app.use("/api/notifications", notificationRouter);
+app.use("/api/manufacturer/gifts", manufacturerGiftRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/combo-bundles", comboBundleRouter);
