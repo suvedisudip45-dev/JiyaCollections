@@ -1,0 +1,168 @@
+# Database and Schemas
+
+## 1. Database Engine and ORM
+
+The project uses:
+
+- MySQL as the primary transactional database
+- Prisma ORM as the schema, migration, and query layer
+- `@prisma/client` for typed database access from the backend
+
+The primary schema definition is in:
+
+- `backend/prisma/schema.prisma`
+
+The schema currently contains a large multi-domain model set, including auth, product catalogs, finance, delivery, returns, marketing cards, manufacturer inventory, and access management. The schema includes 98 model definitions grouped by domain.
+
+## 2. Core Model Families
+
+| Domain | Representative models | Purpose |
+| --- | --- | --- |
+| Authentication | `AuthAccount`, `AuthSession`, `Role`, `Permission`, `OtpChallenge`, `AdminTwoFactorChallenge`, `AuthAuditLog` | identity, sessions, RBAC, MFA, audit |
+| Users & profiles | `User`, `Admin`, `Manufacturer`, `MarketingPartner` | customer and portal profiles |
+| Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
+| Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
+| Returns & exchanges | `CustomerReturn`, `OrderExchangeRequest`, `OrderExchangeEvent`, `DeliveryReturn` | customer returns, exchange approvals, inspections |
+| Inventory | `ManufacturerInventory`, `StockLog`, `InboundShipment` | manufacturer-level stock and movement history |
+| Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
+| Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
+| Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, webhook handling |
+| Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog` | paging, notifications, governance |
+
+## 3. Major Schemas
+
+### 3.1 Authentication and RBAC
+
+The auth layer is built around `AuthAccount` and related session tables.
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `AuthAccount` | `id`, `email`, `phone`, `passwordHash`, `role`, `status`, `failedLoginAttempts`, `lastLoginAt`, etc. | Base identity model |
+| `AuthSession` | `accountId`, `tokenFamilyId`, `jti`, `tokenType`, `expiresAt`, `revokedAt` | Tracks login sessions and JWT lifecycle |
+| `Role` | `code`, `name`, `portalScope`, `permissions` | Portal-specific role definitions |
+| `Permission` | `code`, `description`, `isActive` | Fine-grained permission values |
+| `AuthAuditLog` | `identifier`, `action`, `status`, `metadata` | Security/audit trail |
+
+### 3.2 Customer and profile models
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `User` | `name`, `email`, `phone`, `addresses`, `cartData`, `loyaltyTier` | Customer profile and shopping state |
+| `Admin` | `accountId`, `name`, `email`, `phone`, `role` | Admin account profile |
+| `Manufacturer` | `name`, `city`, `qualityRating`, `pickupBranch`, `commissionStatus`, `contractStatus` | manufacturing network partner |
+| `MarketingPartner` | `code`, `name`, `status`, `email`, `passwordHash` | partner for marketing card campaigns |
+
+### 3.3 Catalog and merchandising
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `Product` | `name`, `description`, `price`, `category`, `subCategory`, `sizes`, `colors`, `variants`, `stockQuantity`, `published` | Stores product catalog and variant inventory |
+| `Category` | `name` | root category |
+| `SubCategory` | `name`, `categoryId` | nested category structure |
+| `Color` | `name`, `nepaliName` | color catalog |
+| `ComboBundle` | `name`, `slug`, `sellingPrice`, `discountPercentage`, `status` | curated product bundles |
+| `Review` | `productId`, `userId`, `rating`, `comment`, `verified` | product reviews |
+| `SpecialOffer` | `title`, `startDate`, `endDate`, `discount`, `productIds` | time-bound offers |
+
+### 3.4 Orders, fulfillment, and delivery
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `Order` | `userId`, `items`, `amount`, `address`, `status`, `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `specialOrder*` | primary order transaction |
+| `OrderAssignment` | `orderId`, `manufacturerId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | allocation between order and manufacturer |
+| `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
+| `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
+| `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
+| `NcmRequestAttempt` | `deliveryOrderId`, `operation`, `requestUrl`, `result`, `httpStatus` | idempotent request tracking |
+| `NcmWebhookEvent` | `eventKey`, `event`, `orderId`, `status`, `payloadJson` | webhook ingestion |
+
+### 3.5 Returns and exchange management
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `CustomerReturn` | `orderId`, `items`, `totalRefundAmount`, `refundStatus`, `inventoryAction`, `reason` | refund operations |
+| `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, `cardId`, `reasonCode`, `status`, `ncmReturnOrderId`, `ncmReplacementOrderId` | exchange lifecycle |
+| `OrderExchangeEvent` | `exchangeRequestId`, `eventType`, `fromStatus`, `toStatus`, `metadata` | audit trail for exchange state transitions |
+| `DeliveryReturn` | `deliveryOrderId`, `orderId`, `manufacturerId`, `state`, `returnReason`, `inspectionResult` | return-inspection record |
+
+### 3.6 Inventory and manufacturer operations
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `ManufacturerInventory` | `manufacturerId`, `productId`, `quantity`, `reservedQty`, `variantsStock`, `agreedCostPrice` | warehouse stock by manufacturer |
+| `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
+| `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
+
+### 3.7 Marketing cards and campaigns
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `MarketingCampaign` | `marketingPartnerId`, `targetScopeType`, `benefitConfig`, `requestedQuantity`, `status` | campaign definition |
+| `MarketingCardBatch` | `campaignId`, `batchCode`, `quantity`, `status` | card batch control |
+| `MarketingCard` | `cardCode`, `qrTokenHash`, `partnerId`, `campaignId`, `batchId`, `exchangeLockRequestId`, `physicalStatus` | individual card instance |
+| `MarketingCardOrder` | `cardId`, `orderId`, `manufacturerId` | card-to-order association |
+| `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `activatedAt`, `otpExpiresAt` | customer card ownership |
+| `MarketingBenefit` | `campaignId`, `benefitType`, `value`, `percentage`, `quantity` | campaign benefit definitions |
+| `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status` | benefit redemption record |
+
+### 3.8 Finance, accounting, and tax
+
+The schema includes a full accounting engine with:
+
+- `Account`
+- `FinancialAccount`
+- `AccountPayable`
+- `AccountReceivable`
+- `JournalEntry`
+- `JournalLine`
+- `AccountingPeriod`
+- `FiscalYear`
+- `TaxConfiguration`
+- `TaxFilingRecord`
+- `OperatingExpense`
+- `DirectIncome`
+- `FinancialCategory`
+- `SettlementReversion`
+
+This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
+
+## 4. Data Dictionary: Key Enumerations and Status Values
+
+### Auth / user states
+
+- `AuthAccount.role`: `CUSTOMER`, `ADMIN`, `MANUFACTURER`, `MARKETING_PARTNER`
+- `AuthAccount.status`: `ACTIVE`, `PENDING_APPROVAL`, `SUSPENDED`, `REJECTED`, `INACTIVE`
+- `AuthSession.tokenType`: `ACCESS`, `REFRESH`
+
+### Product / order fields
+
+- `Order.status`: order state from the app, e.g. `Order Placed`, with fulfillment tracking in `fulfillmentStatus`
+- `Order.fulfillmentStatus`: `PENDING_ASSIGNMENT`, `ASSIGNED`, `ACCEPTED`, `MANUFACTURING`, `QUALITY_CHECK`, `PACKED`, `READY_FOR_PICKUP`, `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`, `FAILED`
+- `Order.orderType`: `ONLINE_STORE`, `DIRECT_MANUFACTURER`
+
+### Manufacturer / delivery state
+
+- `ManufacturerInventory.priceStatus`: `PENDING`, `APPROVED`, `REJECTED`
+- `OrderAssignment.status`: `PENDING_ACCEPTANCE`, `ACCEPTED`, `MANUFACTURING`, `QUALITY_CHECK`, `PACKED`, `READY_FOR_PICKUP`, `PICKED_UP`, `REJECTED`
+- `DeliveryOrder.state`: `READY_TO_DELIVER` and related lifecycle states
+
+### Returns / exchange state
+
+- `OrderExchangeRequest.status`: starts from `REQUESTED` and moves through review/reconciliation states defined in service logic
+- `MarketingCard.physicalStatus`: `GENERATED`, `ASSIGNED`, `RECEIVED`, `AVAILABLE`, `RESERVED`, `ATTACHED`, `CANCELLED`
+- `MarketingCardCustomer.status`: `LINKED`, `ACTIVE`, `CANCELLED`
+
+## 5. Relationship Notes
+
+- `AuthAccount` sits at the top of both access control and portal identity.
+- `User` is the customer profile record; `Manufacturer` and `MarketingPartner` are separate business profiles linked to the same auth system.
+- An `Order` can be associated with `DeliveryOrder`, `LetterDelivery`, and `MarketingCardOrder` records.
+- `ManufacturerInventory` is keyed by `(manufacturerId, productId)` and tracks both physical stock and reserved stock.
+- `MarketingCampaign` → `MarketingCardBatch` → `MarketingCard` forms the card issuance chain.
+- `OrderExchangeRequest` is the main exchange transaction record and is accompanied by an audit event log (`OrderExchangeEvent`).
+
+## 6. Operational Database Guidance
+
+- The schema is the canonical business model; future AI work should treat it as the source of truth before writing new endpoints or UI logic.
+- New features should preserve existing relationships and status semantics rather than inventing alternate tables for domain concepts already covered here.
+- The repo uses a `db push` / `prisma db seed` workflow in local development, but production deployment guidance in the notifications docs warns against using `db push` in production and prefers staged migration review.
