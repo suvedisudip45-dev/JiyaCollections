@@ -28,6 +28,8 @@ test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) =>
       priority: "MEDIUM"
     }
   });
+  const adjustmentPayables = [];
+  const adjustmentReceivables = [];
 
   // 1. Settle the payable
   let req = {
@@ -104,6 +106,94 @@ test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) =>
   assert.equal(resStatus, 409, "Double revert must fail with 409 Conflict");
   assert.match(resJson.message, /already been reverted/i);
 
+  // 4a. A discount clears the payable while only the actual cash leaves treasury.
+  const discountedPayable = await prisma.accountPayable.create({
+    data: {
+      title: `Discounted Payable ${timestamp}`,
+      payeeName: "Discount Supplier",
+      totalAmount: 2000,
+      paidAmount: 0,
+      remainingBalance: 2000,
+      status: "UNPAID",
+    },
+  });
+  adjustmentPayables.push(discountedPayable.id);
+  req = {
+    body: {
+      payableId: discountedPayable.id,
+      amount: 1800,
+      adjustmentType: "DISCOUNT",
+      adjustmentAmount: 200,
+      fromAccountId: testAccount.id,
+      idempotencyKey: `PAY-DISCOUNT-${timestamp}`,
+    },
+    user: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+    auth: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+  };
+  resStatus = 200;
+  resJson = null;
+  await financialController.settlePayable(req, res);
+  assert.equal(resJson.success, true, "Discounted payable settlement should succeed");
+  let adjustedPayableState = await prisma.accountPayable.findUnique({ where: { id: discountedPayable.id } });
+  assert.equal(adjustedPayableState.status, "SETTLED");
+  assert.equal(adjustedPayableState.paidAmount, 1800, "Paid amount tracks actual cash");
+  assert.equal(adjustedPayableState.remainingBalance, 0);
+  assert.equal(adjustedPayableState.settlementHistory[0].amount, 1800, "History records cash paid");
+  assert.equal(adjustedPayableState.settlementHistory[0].settlementAmount, 2000, "History records obligation cleared");
+  const discountedPayableJournal = await prisma.journalEntry.findUnique({
+    where: { idempotencyKey: `SUPPLIER_PAYMENT:PAY-DISCOUNT-${timestamp}` },
+    include: { lines: { include: { account: true } } },
+  });
+  assert.equal(Number(discountedPayableJournal.totalDebit), 2000);
+  assert.equal(Number(discountedPayableJournal.totalCredit), 2000);
+  assert.equal(Number(discountedPayableJournal.lines.find((line) => line.account.accountCode === "8100").credit), 200);
+  assert.equal(Number(discountedPayableJournal.lines.find((line) => line.account.accountCode === "1120").credit), 1800);
+  updatedAccount = await prisma.financialAccount.findUnique({ where: { id: testAccount.id } });
+  assert.equal(updatedAccount.currentBalance, 498200, "Treasury decreases by the actual Rs 1,800 payment");
+
+  // 4b. A fine increases the cash payment but still clears the original payable.
+  const finedPayable = await prisma.accountPayable.create({
+    data: {
+      title: `Fined Payable ${timestamp}`,
+      payeeName: "Penalty Supplier",
+      totalAmount: 2000,
+      paidAmount: 0,
+      remainingBalance: 2000,
+      status: "UNPAID",
+    },
+  });
+  adjustmentPayables.push(finedPayable.id);
+  req = {
+    body: {
+      payableId: finedPayable.id,
+      amount: 2100,
+      adjustmentType: "FINE",
+      adjustmentAmount: 100,
+      fromAccountId: testAccount.id,
+      idempotencyKey: `PAY-FINE-${timestamp}`,
+    },
+    user: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+    auth: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+  };
+  resStatus = 200;
+  resJson = null;
+  await financialController.settlePayable(req, res);
+  assert.equal(resJson.success, true, "Fined payable settlement should succeed");
+  adjustedPayableState = await prisma.accountPayable.findUnique({ where: { id: finedPayable.id } });
+  assert.equal(adjustedPayableState.status, "SETTLED");
+  assert.equal(adjustedPayableState.paidAmount, 2100, "Paid amount includes the actual cash fine");
+  assert.equal(adjustedPayableState.settlementHistory[0].amount, 2100, "History records cash including the fine");
+  const finedPayableJournal = await prisma.journalEntry.findUnique({
+    where: { idempotencyKey: `SUPPLIER_PAYMENT:PAY-FINE-${timestamp}` },
+    include: { lines: { include: { account: true } } },
+  });
+  assert.equal(Number(finedPayableJournal.totalDebit), 2100);
+  assert.equal(Number(finedPayableJournal.totalCredit), 2100);
+  assert.equal(Number(finedPayableJournal.lines.find((line) => line.account.accountCode === "6700").debit), 100);
+  assert.equal(Number(finedPayableJournal.lines.find((line) => line.account.accountCode === "1120").credit), 2100);
+  updatedAccount = await prisma.financialAccount.findUnique({ where: { id: testAccount.id } });
+  assert.equal(updatedAccount.currentBalance, 496100, "Treasury decreases by the actual Rs 2,100 payment");
+
   // 5. Test Receivable Settle + Duplicate Check + Revert
   const testReceivable = await prisma.accountReceivable.create({
     data: {
@@ -160,6 +250,94 @@ test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) =>
   await financialController.revertSettlement(revertRecReq, res);
   assert.equal(resStatus, 200, "Receivable revert should succeed");
   assert.equal(resJson.restoredStatus, "UNPAID");
+
+  // 5a. A discount given closes the receivable based on cash plus discount.
+  const discountedReceivable = await prisma.accountReceivable.create({
+    data: {
+      title: `Discounted Receivable ${timestamp}`,
+      payerName: "Discount Customer",
+      totalAmount: 2000,
+      receivedAmount: 0,
+      remainingBalance: 2000,
+      status: "UNPAID",
+    },
+  });
+  adjustmentReceivables.push(discountedReceivable.id);
+  req = {
+    body: {
+      receivableId: discountedReceivable.id,
+      amount: 1800,
+      adjustmentType: "DISCOUNT",
+      adjustmentAmount: 200,
+      toAccountId: testAccount.id,
+      idempotencyKey: `REC-DISCOUNT-${timestamp}`,
+    },
+    user: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+    auth: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+  };
+  resStatus = 200;
+  resJson = null;
+  await financialController.collectReceivable(req, res);
+  assert.equal(resJson.success, true, "Discounted receivable collection should succeed");
+  let adjustedReceivableState = await prisma.accountReceivable.findUnique({ where: { id: discountedReceivable.id } });
+  assert.equal(adjustedReceivableState.status, "SETTLED");
+  assert.equal(adjustedReceivableState.receivedAmount, 1800, "Received amount tracks actual cash");
+  assert.equal(adjustedReceivableState.remainingBalance, 0);
+  assert.equal(adjustedReceivableState.collectionHistory[0].amount, 1800, "History records cash received");
+  assert.equal(adjustedReceivableState.collectionHistory[0].settlementAmount, 2000);
+  const discountedReceivableJournal = await prisma.journalEntry.findUnique({
+    where: { idempotencyKey: `CUSTOMER_PAYMENT:REC-DISCOUNT-${timestamp}` },
+    include: { lines: { include: { account: true } } },
+  });
+  assert.equal(Number(discountedReceivableJournal.totalDebit), 2000);
+  assert.equal(Number(discountedReceivableJournal.totalCredit), 2000);
+  assert.equal(Number(discountedReceivableJournal.lines.find((line) => line.account.accountCode === "6700").debit), 200);
+  assert.equal(Number(discountedReceivableJournal.lines.find((line) => line.account.accountCode === "1120").debit), 1800);
+  updatedAccount = await prisma.financialAccount.findUnique({ where: { id: testAccount.id } });
+  assert.equal(updatedAccount.currentBalance, 497900, "Treasury increases by the actual Rs 1,800 receipt");
+
+  // 5b. A fine received adds to cash while clearing the original receivable.
+  const finedReceivable = await prisma.accountReceivable.create({
+    data: {
+      title: `Fined Receivable ${timestamp}`,
+      payerName: "Late Customer",
+      totalAmount: 2000,
+      receivedAmount: 0,
+      remainingBalance: 2000,
+      status: "UNPAID",
+    },
+  });
+  adjustmentReceivables.push(finedReceivable.id);
+  req = {
+    body: {
+      receivableId: finedReceivable.id,
+      amount: 2100,
+      adjustmentType: "FINE",
+      adjustmentAmount: 100,
+      toAccountId: testAccount.id,
+      idempotencyKey: `REC-FINE-${timestamp}`,
+    },
+    user: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+    auth: { id: "test-admin", role: "ADMIN", email: "admin@aama.com" },
+  };
+  resStatus = 200;
+  resJson = null;
+  await financialController.collectReceivable(req, res);
+  assert.equal(resJson.success, true, "Fined receivable collection should succeed");
+  adjustedReceivableState = await prisma.accountReceivable.findUnique({ where: { id: finedReceivable.id } });
+  assert.equal(adjustedReceivableState.status, "SETTLED");
+  assert.equal(adjustedReceivableState.receivedAmount, 2100, "Received amount includes the actual cash fine");
+  assert.equal(adjustedReceivableState.collectionHistory[0].amount, 2100, "History records cash including the fine");
+  const finedReceivableJournal = await prisma.journalEntry.findUnique({
+    where: { idempotencyKey: `CUSTOMER_PAYMENT:REC-FINE-${timestamp}` },
+    include: { lines: { include: { account: true } } },
+  });
+  assert.equal(Number(finedReceivableJournal.totalDebit), 2100);
+  assert.equal(Number(finedReceivableJournal.totalCredit), 2100);
+  assert.equal(Number(finedReceivableJournal.lines.find((line) => line.account.accountCode === "8100").credit), 100);
+  assert.equal(Number(finedReceivableJournal.lines.find((line) => line.account.accountCode === "1120").debit), 2100);
+  updatedAccount = await prisma.financialAccount.findUnique({ where: { id: testAccount.id } });
+  assert.equal(updatedAccount.currentBalance, 500000, "Treasury increases by the actual Rs 2,100 receipt");
 
   // 7. Test Multiple Partial Collections for Single Receivable + Duplicate Transaction Prevention
   const multiReceivable = await prisma.accountReceivable.create({
@@ -242,7 +420,7 @@ test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) =>
 
   // Cleanup test records
   await prisma.settlementReversion.deleteMany({
-    where: { originalRecordId: { in: [testPayable.id, testReceivable.id, multiReceivable.id] } }
+    where: { originalRecordId: { in: [testPayable.id, testReceivable.id, multiReceivable.id, ...adjustmentPayables, ...adjustmentReceivables] } }
   });
   await prisma.cashTransaction.deleteMany({
     where: {
@@ -253,8 +431,10 @@ test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) =>
     }
   });
   await prisma.accountPayable.delete({ where: { id: testPayable.id } });
+  await prisma.accountPayable.deleteMany({ where: { id: { in: adjustmentPayables } } });
   await prisma.accountReceivable.delete({ where: { id: testReceivable.id } });
   await prisma.accountReceivable.delete({ where: { id: multiReceivable.id } });
+  await prisma.accountReceivable.deleteMany({ where: { id: { in: adjustmentReceivables } } });
   await prisma.financialAccount.delete({ where: { id: testAccount.id } });
 
   console.log("ALL IDEMPOTENCY, MULTI-PARTIAL & REVERSION TESTS PASSED PERFECTLY!");

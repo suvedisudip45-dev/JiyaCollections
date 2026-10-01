@@ -1014,6 +1014,9 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
     const orderId = paramsOrOrder.orderId || paramsOrOrder.id;
     const customerName = paramsOrOrder.customerName || (paramsOrOrder.userId ? `Customer (${paramsOrOrder.userId.slice(-6)})` : "Customer");
     const amt = Number(paramsOrOrder.amount || 0);
+    const settlementAmount = Number(paramsOrOrder.settlementAmount ?? amt);
+    const discountAmount = Number(paramsOrOrder.discountAmount || 0);
+    const fineAmount = Number(paramsOrOrder.fineAmount || 0);
     const depositAccountType = paramsOrOrder.depositAccountType || "BANK";
     const depositAccountCode = paramsOrOrder.depositAccountCode || (depositAccountType === "CASH" ? "1110" : "1120");
     const referenceNumber = paramsOrOrder.referenceNumber;
@@ -1036,13 +1039,25 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
           credit: 0,
           description: `Cash/Bank receipt for Order #${orderId ? orderId.slice(-6) : ""}`,
         },
+        ...(discountAmount > 0 ? [{
+          accountCode: "6700",
+          debit: discountAmount,
+          credit: 0,
+          description: `Discount allowed on receivable from ${customerName}`,
+        }] : []),
         {
           accountCode: "1130",
           debit: 0,
-          credit: amt,
+          credit: settlementAmount,
           description: `Clear Accounts Receivable for Order #${orderId ? orderId.slice(-6) : ""}`,
           customerName,
         },
+        ...(fineAmount > 0 ? [{
+          accountCode: "8100",
+          debit: 0,
+          credit: fineAmount,
+          description: `Fine income on receivable from ${customerName}`,
+        }] : []),
       ],
       client,
     });
@@ -1147,6 +1162,9 @@ export const postSupplierPaymentAccounting = async ({
   payableId,
   payeeName,
   amount,
+  settlementAmount,
+  discountAmount = 0,
+  fineAmount = 0,
   fromAccountType = "BANK",
   referenceNumber,
   payableAccountCode = "2110",
@@ -1157,6 +1175,7 @@ export const postSupplierPaymentAccounting = async ({
   try {
     const amt = Number(amount || 0);
     if (amt <= 0) return null;
+    const settled = Number(settlementAmount ?? (amt + Number(discountAmount || 0) - Number(fineAmount || 0)));
 
     const cashBankCode = cashAccountCode || (fromAccountType === "CASH" ? "1110" : "1120");
 
@@ -1170,17 +1189,29 @@ export const postSupplierPaymentAccounting = async ({
       lines: [
         {
           accountCode: payableAccountCode,
-          debit: amt,
+          debit: settled,
           credit: 0,
           description: `Settle Accounts Payable for ${payeeName}`,
           supplierName: payeeName,
         },
+        ...(Number(fineAmount) > 0 ? [{
+          accountCode: "6700",
+          debit: Number(fineAmount),
+          credit: 0,
+          description: `Fine expense on payable to ${payeeName}`,
+        }] : []),
         {
           accountCode: cashBankCode,
           debit: 0,
           credit: amt,
           description: `Disbursed from liquid account to ${payeeName}`,
         },
+        ...(Number(discountAmount) > 0 ? [{
+          accountCode: "8100",
+          debit: 0,
+          credit: Number(discountAmount),
+          description: `Discount received on payable to ${payeeName}`,
+        }] : []),
       ],
       client,
     });
