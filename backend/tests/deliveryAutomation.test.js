@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createOrder, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createExchangeOrder, createOrder, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -176,6 +176,36 @@ test("shipping-rate client normalizes legacy delivery type values", async () => 
     const { getShippingRate } = await import("../services/ncmClient.js");
     await getShippingRate({ creation: "KATHMANDU", destination: "POKHARA", type: "Door2Door" });
     assert.equal(new URL(requestedUrl).searchParams.get("type"), "Pickup/Collect");
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
+
+test("NCM exchange client uses the documented vendor exchange endpoint and original order ID", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  let request;
+
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ message: "Exchange orders created", cust_order: 4567, ven_order: 4568 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await createExchangeOrder({ pk: 747 });
+    assert.equal(result.data.cust_order, 4567);
+    assert.equal(result.data.ven_order, 4568);
+    assert.equal(request.url, "https://ncm.test/api/v2/vendor/order/exchange-create");
+    assert.equal(request.options.headers.Authorization, "Token test-server-token");
+    assert.deepEqual(JSON.parse(request.options.body), { pk: 747 });
   } finally {
     global.fetch = originalFetch;
     restoreEnv("NCM_API_TOKEN", originalToken);

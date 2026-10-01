@@ -19,6 +19,7 @@ import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
 import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
 import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
+import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -450,7 +451,17 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
   }
 
   const existing = await prisma.deliveryOrder.findUnique({ where: { orderId } });
-  const submittedStates = ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"];
+  const latestCreateAttempt = existing
+    ? await prisma.ncmRequestAttempt.findFirst({
+        where: { deliveryOrderId: existing.id, operation: "CREATE_ORDER" },
+        orderBy: { attemptNumber: "desc" },
+      })
+    : null;
+  const handoffOutcomeUnknown = existing?.state === "NCM_SUBMISSION_STARTED" || ["STARTED", "UNKNOWN"].includes(latestCreateAttempt?.result);
+  if (existing && handoffOutcomeUnknown) {
+    return { delivery: existing, alreadySubmitted: true, recoveryRequired: true };
+  }
+  const submittedStates = ["NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"];
   if (existing && submittedStates.includes(existing.state)) {
     return { delivery: existing, alreadySubmitted: true };
   }
@@ -550,9 +561,19 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   const delivery = await prisma.deliveryOrder.findUnique({ where: { id: deliveryId } });
   if (!delivery) throw new Error("Delivery not found");
   if (delivery.ncmOrderId) return delivery;
+  if (delivery.state === "NCM_SUBMISSION_STARTED") {
+    const error = new Error("NCM order creation is already in progress or has an unknown result. Reconcile it before retrying.");
+    error.code = "NCM_SUBMISSION_UNKNOWN";
+    throw error;
+  }
   if (delivery.state !== "SUBMISSION_PENDING") throw new Error(`Delivery is not awaiting submission: ${delivery.state}`);
 
   const order = await prisma.order.findUnique({ where: { id: delivery.orderId } });
+  if (!order || order.status === "Cancelled") {
+    const error = new Error("Cancelled orders cannot be submitted to NCM.");
+    error.code = "ORDER_CANCELLED";
+    throw error;
+  }
   const manufacturer = await prisma.manufacturer.findUnique({ where: { id: delivery.manufacturerId } });
   const assignment = await prisma.orderAssignment.findUnique({ where: { orderId: delivery.orderId } });
   const assignmentNotes = parsePackagingMeta(assignment?.notes);
@@ -562,30 +583,22 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     manufacturer,
     packagingMeta: assignmentNotes,
   });
-  const attemptKey = `NCM_CREATE:${delivery.id}:${delivery.packageVersion}`;
-  const priorAttempt = await prisma.ncmRequestAttempt.findUnique({ where: { idempotencyKey: attemptKey } });
-  if (priorAttempt?.result === "SUCCESS") return prisma.deliveryOrder.findUnique({ where: { id: delivery.id } });
-
-  const attempt = priorAttempt || await prisma.ncmRequestAttempt.create({
-    data: {
-      deliveryOrderId: delivery.id,
-      operation: "CREATE_ORDER",
-      idempotencyKey: attemptKey,
-      attemptNumber: 1,
-      requestUrl: "/api/v1/order/create",
-      requestJson: {
-        name: input.name,
-        phone: input.phone,
-        customerAddress: input.customerAddress,
-        origin: input.origin,
-        destination: input.destination,
-        deliveryType: input.deliveryType,
-        vendorReference: input.vendorReference,
-        codAmount: input.codAmount,
-      },
-      result: "STARTED",
-    },
+  const priorAttempts = await prisma.ncmRequestAttempt.findMany({
+    where: { deliveryOrderId: delivery.id, operation: "CREATE_ORDER" },
+    orderBy: { attemptNumber: "desc" },
   });
+  const priorAttempt = priorAttempts[0] || null;
+  if (priorAttempt?.result === "SUCCESS") return prisma.deliveryOrder.findUnique({ where: { id: delivery.id } });
+  const explicitlyRejected = priorAttempt?.result === "RESOLVED_NOT_CREATED" ||
+    (priorAttempt?.result === "FAILED" && Number(priorAttempt.httpStatus) >= 400 && Number(priorAttempt.httpStatus) < 500);
+  if (priorAttempt && !explicitlyRejected) {
+    const error = new Error("An NCM create attempt already exists and may have reached the carrier. Reconcile it before retrying.");
+    error.code = "NCM_SUBMISSION_UNKNOWN";
+    throw error;
+  }
+  const attemptNumber = Number(priorAttempt?.attemptNumber || 0) + 1;
+  const attemptKey = `NCM_CREATE:${delivery.id}:${delivery.packageVersion}:${attemptNumber}`;
+  let attempt = null;
 
   try {
     let rate;
@@ -654,6 +667,38 @@ export const submitDeliveryToNcm = async (deliveryId) => {
       instruction: "[REDACTED]",
     });
 
+    attempt = await prisma.$transaction(async (tx) => {
+      const orderClaim = await tx.order.updateMany({
+        where: { id: delivery.orderId, status: { not: "Cancelled" } },
+        data: { fulfillmentStatus: "ncm_submission_started" },
+      });
+      if (orderClaim.count !== 1) {
+        const error = new Error("The order was cancelled before NCM handoff.");
+        error.code = "ORDER_CANCELLED";
+        throw error;
+      }
+      const deliveryClaim = await tx.deliveryOrder.updateMany({
+        where: { id: delivery.id, state: "SUBMISSION_PENDING", ncmOrderId: null },
+        data: { state: "NCM_SUBMISSION_STARTED" },
+      });
+      if (deliveryClaim.count !== 1) {
+        const error = new Error("The delivery changed before NCM handoff. Reconcile before retrying.");
+        error.code = "NCM_SUBMISSION_UNKNOWN";
+        throw error;
+      }
+      return tx.ncmRequestAttempt.create({
+        data: {
+          deliveryOrderId: delivery.id,
+          operation: "CREATE_ORDER",
+          idempotencyKey: attemptKey,
+          attemptNumber,
+          requestUrl: "/api/v1/order/create",
+          requestJson: ncmPayload,
+          result: "STARTED",
+        },
+      });
+    }, { isolationLevel: "Serializable" });
+
     const response = await createNcmOrder(ncmPayload);
     const ncmOrderId = Number(response.data?.orderid);
     if (!Number.isInteger(ncmOrderId)) throw new Error("NCM did not return a valid order ID");
@@ -685,7 +730,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
         orderId: delivery.orderId,
         source: "SYSTEM",
         eventType: "NCM_ORDER_CREATED",
-        fromState: "SUBMISSION_PENDING",
+        fromState: "NCM_SUBMISSION_STARTED",
         toState: "NCM_CREATED",
         ncmStatus: "Pickup Order Created",
         payloadJson: { orderid: ncmOrderId },
@@ -695,18 +740,30 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     });
     return updated;
   } catch (error) {
-    await prisma.ncmRequestAttempt.update({
-      where: { id: attempt.id },
-      data: {
-        result: "FAILED",
-        httpStatus: error.httpStatus || null,
-        responseJson: error.response || null,
-        errorCode: error.code || "NCM_REQUEST_FAILED",
-        errorMessage: error.message,
-        finishedAt: new Date(),
-      },
-    }).catch(() => {});
-    await prisma.deliveryOrder.update({ where: { id: delivery.id }, data: { state: "SUBMISSION_FAILED", lastSyncError: error.message, syncFailureCount: { increment: 1 } } });
+    if (attempt) {
+      const unknownOutcome = !error.httpStatus || Number(error.httpStatus) >= 500 || error.code === "NCM_TIMEOUT";
+      await prisma.ncmRequestAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          result: unknownOutcome ? "UNKNOWN" : "FAILED",
+          httpStatus: error.httpStatus || null,
+          responseJson: error.response || null,
+          errorCode: error.code || "NCM_REQUEST_FAILED",
+          errorMessage: error.message,
+          finishedAt: new Date(),
+        },
+      }).catch(() => {});
+      if (!unknownOutcome && Number(error.httpStatus) >= 400 && Number(error.httpStatus) < 500) {
+        await prisma.order.updateMany({
+          where: { id: delivery.orderId, fulfillmentStatus: "ncm_submission_started" },
+          data: { fulfillmentStatus: "ready_for_pickup" },
+        });
+      }
+    }
+    await prisma.deliveryOrder.updateMany({
+      where: { id: delivery.id, state: { not: "CANCELLED" } },
+      data: { state: "SUBMISSION_FAILED", lastSyncError: error.message, syncFailureCount: { increment: 1 } },
+    });
     throw error;
   }
 };
@@ -718,7 +775,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
     const trimmedId = String(ncmId || "").trim();
     if (!trimmedId) continue;
 
-    // Resolve delivery order by ncmOrderId (numeric), vendorReference, orderId, or deliveryOrder id
+    // Resolve delivery order by NCM ID, vendor reference, order ID, or delivery ID.
     let delivery = null;
     const numericId = Number(trimmedId);
     if (Number.isInteger(numericId) && numericId > 0) {
@@ -741,6 +798,19 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
     }
 
     if (!delivery) {
+      if (Number.isInteger(numericId) && numericId > 0) {
+        const matchedExchange = await applyExchangeNcmStatus({
+          ncmOrderId: numericId,
+          status: payload.status,
+          event: payload.event,
+          timestamp: payload.timestamp,
+          source,
+        });
+        if (matchedExchange) {
+          results.push({ ncmId: trimmedId, exchange: true });
+          continue;
+        }
+      }
       logger.warn("Delivery order not found for NCM webhook ID", { ncmId: trimmedId, payload });
       continue;
     }

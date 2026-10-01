@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { campaignMatchesOrder, cardTokenHash } from "../services/marketingCardService.js";
+import { assertCardCanBeScanned } from "../services/marketingCardCustomerService.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 
 const responseDouble = () => {
@@ -30,6 +31,14 @@ test("card token hashing is deterministic and one-way shaped", () => {
   assert.equal(hash, cardTokenHash(token));
   assert.match(hash, /^[a-f0-9]{64}$/);
   assert.notEqual(hash, token);
+});
+
+test("customer scans are blocked while an exchange locks the card", () => {
+  assert.doesNotThrow(() => assertCardCanBeScanned({ exchangeLockRequestId: null }));
+  assert.throws(() => assertCardCanBeScanned({ exchangeLockRequestId: "exchange-1" }), (error) => {
+    assert.equal(error.code, "MARKETING_CARD_EXCHANGE_LOCKED");
+    return true;
+  });
 });
 
 test("customer card rate limit returns 429 after the operation quota", () => {

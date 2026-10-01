@@ -122,6 +122,7 @@ const DeliveryMonitor = ({ token }) => {
   const [settlementForm, setSettlementForm] = useState({ bankName: "", bankAccountName: "", bankAccountNumber: "" });
   const [confirmForm, setConfirmForm] = useState({ financialAccountId: "", notes: "" });
   const [settlementSubmitting, setSettlementSubmitting] = useState(false);
+  const [handoffResolutionForms, setHandoffResolutionForms] = useState({});
 
   const fetchData = useCallback(async () => {
     if (!token) return;
@@ -207,6 +208,21 @@ const DeliveryMonitor = ({ token }) => {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || "Confirmation failed");
+    } finally {
+      setSettlementSubmitting(false);
+    }
+  };
+
+  const resolveNcmHandoff = async (deliveryId, form) => {
+    if (settlementSubmitting) return;
+    setSettlementSubmitting(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/delivery/admin/${deliveryId}/resolve-ncm-handoff`, form, { headers: { token } });
+      if (!response.data.success) throw new Error(response.data.message || "NCM handoff resolution failed");
+      toast.success("Verified NCM handoff outcome recorded.");
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "NCM handoff resolution failed");
     } finally {
       setSettlementSubmitting(false);
     }
@@ -409,6 +425,10 @@ const DeliveryMonitor = ({ token }) => {
                   const hasNcm = !!(delivery.ncmOrderId || delivery.state);
                   const isDelivered = (row.status || "").toLowerCase() === "delivered";
                   const isActive = ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery"].includes((row.status || "").toLowerCase());
+                  const latestCreateAttempt = delivery.ncmRequestAttempts?.[0];
+                  const needsHandoffResolution = ["NCM_SUBMISSION_STARTED", "SUBMISSION_FAILED"].includes(delivery.state) &&
+                    latestCreateAttempt && ["STARTED", "UNKNOWN"].includes(latestCreateAttempt.result);
+                  const handoffForm = handoffResolutionForms[delivery.id] || { outcome: "CREATED", ncmOrderId: "", reason: "" };
 
                   return (
                     <tr key={row.id} className={`hover:bg-slate-50/80 transition-colors ${isDelivered ? "bg-emerald-50/20" : isActive ? "bg-sky-50/20" : ""}`}>
@@ -444,6 +464,23 @@ const DeliveryMonitor = ({ token }) => {
                             )}
                             {delivery.state && !delivery.ncmStatus && (
                               <span className="text-[10px] text-slate-500 font-mono">{delivery.state}</span>
+                            )}
+                            {needsHandoffResolution && (
+                              <div className="mt-2 space-y-1.5 rounded-md border border-amber-200 bg-amber-50 p-2">
+                                <p className="text-[10px] font-semibold text-amber-900">NCM attempt {latestCreateAttempt.attemptNumber}: {latestCreateAttempt.result}</p>
+                                {latestCreateAttempt.result === "STARTED" && <p className="text-[10px] text-amber-800">Wait two minutes before resolving a still-running request.</p>}
+                                <select value={handoffForm.outcome} onChange={(event) => setHandoffResolutionForms({ ...handoffResolutionForms, [delivery.id]: { ...handoffForm, outcome: event.target.value } })} className="w-full border border-amber-300 rounded px-2 py-1 text-[10px]">
+                                  <option value="CREATED">NCM order exists</option><option value="NOT_CREATED">NCM confirms no order</option>
+                                </select>
+                                {handoffForm.outcome === "CREATED" && <input type="number" min="1" value={handoffForm.ncmOrderId} onChange={(event) => setHandoffResolutionForms({ ...handoffResolutionForms, [delivery.id]: { ...handoffForm, ncmOrderId: event.target.value } })} className="w-full border border-amber-300 rounded px-2 py-1 text-[10px]" placeholder="Verified NCM order ID" />}
+                                <input value={handoffForm.reason} onChange={(event) => setHandoffResolutionForms({ ...handoffResolutionForms, [delivery.id]: { ...handoffForm, reason: event.target.value } })} className="w-full border border-amber-300 rounded px-2 py-1 text-[10px]" placeholder="NCM verification notes" />
+                                <button
+                                  type="button"
+                                  disabled={settlementSubmitting || handoffForm.reason.trim().length < 5 || (handoffForm.outcome === "CREATED" && !handoffForm.ncmOrderId) || (latestCreateAttempt.result === "STARTED" && Date.now() - new Date(latestCreateAttempt.startedAt).getTime() < 120000)}
+                                  onClick={() => resolveNcmHandoff(delivery.id, handoffForm)}
+                                  className="w-full rounded bg-amber-800 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                >Resolve verified outcome</button>
+                              </div>
                             )}
                           </div>
                         ) : (

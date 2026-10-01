@@ -356,6 +356,7 @@ model User {
   letterDeliveries            LetterDelivery[]             @relation("CustomerLetterDeliveryCustomer")
   marketingCardLinks          MarketingCardCustomer[]      @relation("MarketingCardCustomerUser")
   marketingBenefitRedemptions MarketingBenefitRedemption[]
+  orderExchangeRequests       OrderExchangeRequest[]
 }
 
 model Story {
@@ -583,10 +584,14 @@ model Order {
   directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
   manufacturerId              String? // Fulfilled directly by manufacturer
   directNotes                 String?             @db.Text
+  cancelledAt                 DateTime?
+  cancellationReason          String?             @db.Text
+  cancelledByUserId           String?
   marketingCardRequired       Boolean             @default(true)
   deliveryOrder               DeliveryOrder?
   letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
   marketingCardOrder          MarketingCardOrder?
+  exchangeRequests            OrderExchangeRequest[]
   collaborationSales          CollaborationSale[]
 
   @@index([fulfillmentStatus])
@@ -955,6 +960,69 @@ model CustomerReturn {
   updatedAt         DateTime @updatedAt
 }
 
+model OrderExchangeRequest {
+  id                        String                    @id @default(uuid())
+  requestKey                String                    @unique @db.VarChar(128)
+  requestHash               String                    @db.Char(64)
+  orderId                   String
+  customerId                String
+  customerName              String
+  customerPhone             String?                   @default("")
+  manufacturerId            String?
+  manufacturerName          String?
+  cardId                    String?
+  reasonCode                String                    @db.VarChar(64)
+  reasonDetails             String?                   @db.Text
+  items                     Json
+  status                    String                    @default("REQUESTED")
+  decisionActorId           String?
+  decisionReason            String?                   @db.Text
+  decidedAt                 DateTime?
+  ncmReturnOrderId          Int?                      @unique
+  ncmReplacementOrderId     Int?                      @unique
+  ncmSubmissionAttemptedAt  DateTime?
+  ncmSubmissionError        String?                   @db.Text
+  returnPickupStatus        String?                   @db.VarChar(64)
+  returnPickupCompletedAt   DateTime?
+  replacementStatus         String?                   @db.VarChar(64)
+  replacementDeliveredAt    DateTime?
+  manufacturerReceivedAt    DateTime?
+  inspectedAt               DateTime?
+  inspectionResult          String?                   @db.VarChar(64)
+  inspectionNotes           String?                   @db.Text
+  completedAt               DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  order                     Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer                  User                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  manufacturer              Manufacturer?             @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
+  card                      MarketingCard?            @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  events                    OrderExchangeEvent[]
+
+  @@index([customerId, createdAt])
+  @@index([orderId, status])
+  @@index([status, createdAt])
+  @@index([cardId, status])
+}
+
+model OrderExchangeEvent {
+  id                   String               @id @default(uuid())
+  exchangeRequestId    String
+  eventType            String               @db.VarChar(64)
+  fromStatus           String?              @db.VarChar(64)
+  toStatus             String?              @db.VarChar(64)
+  actorId              String?
+  actorRole            String?              @db.VarChar(32)
+  reason               String?              @db.Text
+  metadata             Json?
+  idempotencyKey       String               @unique @db.VarChar(191)
+  occurredAt           DateTime             @default(now())
+  exchangeRequest      OrderExchangeRequest @relation(fields: [exchangeRequestId], references: [id], onDelete: Cascade)
+
+  @@index([exchangeRequestId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
 model SupplierReturn {
   id               String   @id @default(uuid())
   shipmentBatchId  String?
@@ -1301,6 +1369,7 @@ model Manufacturer {
   updatedAt                DateTime                  @updatedAt
   inventory                ManufacturerInventory[]
   assignments              OrderAssignment[]
+  exchangeRequests         OrderExchangeRequest[]
   marketingCardAssignments MarketingCardAssignment[]
   marketingCards           MarketingCard[]           @relation("MarketingCardManufacturer")
   marketingCardOrders      MarketingCardOrder[]
@@ -1398,6 +1467,7 @@ model MarketingCard {
   assignedManufacturerId String?
   hasBenefit             Boolean                      @default(false)
   benefitId              String?
+  exchangeLockRequestId  String?                      @db.VarChar(191)
   physicalStatus         String                       @default("GENERATED") // GENERATED | ASSIGNED | RECEIVED | AVAILABLE | RESERVED | ATTACHED | CANCELLED
   assignedAt             DateTime?
   receivedAt             DateTime?
@@ -1412,6 +1482,7 @@ model MarketingCard {
   assignedManufacturer   Manufacturer?                @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
   assignments            MarketingCardAssignment[]
   orderLink              MarketingCardOrder?
+  exchangeRequests       OrderExchangeRequest[]
   customerLinks          MarketingCardCustomer[]
   events                 MarketingCardEvent[]
   benefitRedemptions     MarketingBenefitRedemption[]
@@ -1420,6 +1491,7 @@ model MarketingCard {
   @@index([assignedManufacturerId, physicalStatus])
   @@index([batchId, physicalStatus])
   @@index([benefitId])
+  @@index([exchangeLockRequestId])
 }
 
 model MarketingCardAssignment {

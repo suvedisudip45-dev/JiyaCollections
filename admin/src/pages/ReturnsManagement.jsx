@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import ExchangeRequestsPanel from "../components/ExchangeRequestsPanel";
 
 const ReturnsManagement = ({ token }) => {
   const [activeTab, setActiveTab] = useState("CUSTOMER"); // CUSTOMER or SUPPLIER
@@ -290,9 +291,21 @@ const ReturnsManagement = ({ token }) => {
           >
             Supplier Returns &amp; Debit Notes ({supplierReturns.length})
           </button>
+          <button
+            onClick={() => setActiveTab("EXCHANGE")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+              activeTab === "EXCHANGE"
+                ? "bg-blue-700 text-white shadow-xs"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            Customer Exchanges
+          </button>
         </div>
 
-        {activeTab === "CUSTOMER" ? (
+        {activeTab === "EXCHANGE" ? (
+          <ExchangeRequestsPanel token={token} />
+        ) : activeTab === "CUSTOMER" ? (
           /* CUSTOMER RETURNS TABLE */
           <div className="overflow-x-auto mt-4">
             <table className="w-full text-left text-xs">
