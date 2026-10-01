@@ -7,6 +7,7 @@ import {
   buildDeliveryInput,
   deliveryTypeForNcm,
   generateVendorReference,
+  getCarrierBookingAssignmentStatus,
   normalizeDeliveryStatus,
   parseBoolean,
   webhookIdentifiers,
@@ -158,6 +159,12 @@ test("NCM shipping-rate types use documented values", () => {
   assert.equal(shippingRateTypeForNcm("Branch2Door"), "Send Branch2Door");
   assert.equal(shippingRateTypeForNcm("Door2Branch"), "D2B");
   assert.equal(shippingRateTypeForNcm("Branch2Branch"), "B2B");
+});
+
+test("carrier booking failures do not advance assignment to ready_for_pickup", () => {
+  assert.equal(getCarrierBookingAssignmentStatus({ success: true, currentStatus: "package_details_complete" }), "ready_for_pickup");
+  assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "package_details_complete" }), "package_details_complete");
+  assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "ready_for_pickup" }), "ready_for_pickup");
 });
 
 test("shipping-rate client normalizes legacy delivery type values", async () => {

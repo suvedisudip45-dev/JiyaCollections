@@ -91,6 +91,11 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 - **Doorstep COD Handover**: Driver marks cash collected, logs recipient relation/name, and uploads proof of delivery photos.
 - **Driver Earnings & Treasury Ledger**: Real-time tracking of cash-on-hand and commission earnings per completed delivery.
 
+### Operational Delivery Guardrail
+- The carrier booking step is now treated as a real external handoff: an assignment only advances to `ready_for_pickup` after the NCM create request succeeds.
+- If the delivery partner API fails, the system surfaces a clear manufacturer message such as "Failed to book courier" and keeps the order retryable without falsely marking it as booked.
+- The manufacturer can retry the courier booking flow after the external partner issue is resolved without reworking the order status manually.
+
 ### 4. 📊 Multi-Hub Aggregate Inventory Monitoring
 - **Admin Central Visibility**: View total stock across Nepal and breakdown per manufacturer warehouse.
 - **Quantity-Aware Stock Reservation**: Inventory is automatically reserved upon order assignment and finalized upon delivery.

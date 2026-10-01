@@ -63,6 +63,22 @@ export const StatusBadge = ({ status, deliveryStatus }) => {
           dot: "bg-orange-500 animate-pulse",
           label: "Courier Booked (Awaiting Pickup)",
         };
+      case "submission_failed":
+      case "ncm_submission_failed":
+      case "failed_to_book_courier":
+      case "failed to book courier":
+        return {
+          bg: "bg-rose-50 text-rose-700 border-rose-200",
+          dot: "bg-rose-500 animate-pulse",
+          label: "Failed to Book Courier",
+        };
+      case "ncm_submission_unknown":
+      case "submission_pending":
+        return {
+          bg: "bg-amber-50 text-amber-700 border-amber-200",
+          dot: "bg-amber-500 animate-pulse",
+          label: "Courier Booking Pending / Retry Required",
+        };
       case "ready_for_pickup":
       case "sent for pickup":
         return {

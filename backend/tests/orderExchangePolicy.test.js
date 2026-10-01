@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isBeforeNcmHandoff } from "../services/orderCancellationService.js";
-import { mapExchangeNcmStatus, requestHashFor } from "../services/orderExchangeService.js";
+import { mapExchangeNcmStatus, requestHashFor, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
 
 test("customer cancellation is allowed only before any NCM handoff attempt", () => {
   assert.equal(isBeforeNcmHandoff({
@@ -68,4 +68,15 @@ test("exchange request fingerprint is stable regardless of item order", () => {
     reasonDetails: "Different cause",
     items: [{ productId: "p1", size: "M", color: "White", quantity: 2 }],
   }));
+});
+
+test("admin exchange DTO serializes BigInt order timestamps as strings", () => {
+  const dto = toAdminExchangeRequestDto({
+    id: "exchange-1",
+    order: { id: "order-1", date: 1790863117000n },
+  }, 2);
+
+  assert.equal(dto.order.date, "1790863117000");
+  assert.equal(dto.lifetimeReturnedUnits, 2);
+  assert.doesNotThrow(() => JSON.stringify(dto));
 });

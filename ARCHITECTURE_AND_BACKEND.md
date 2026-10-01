@@ -74,6 +74,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/order/place`
 - `POST /api/order/:orderId/cancel`
 - `POST /api/returns/exchange/customer`
+- `GET /api/returns/exchange/admin` (admin exchange list; serializes the related order's `BigInt` date as a decimal string for JSON clients)
 - `GET /api/delivery/admin`
 - `POST /api/delivery/admin/:id/resolve-ncm-handoff`
 - `GET /api/marketing-cards/admin/cards`

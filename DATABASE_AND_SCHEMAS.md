@@ -68,7 +68,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Order` | `userId`, `items`, `amount`, `address`, `status`, `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `specialOrder*` | primary order transaction |
+| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `specialOrder*` | primary order transaction; the admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, `manufacturerId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | allocation between order and manufacturer |
 | `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |

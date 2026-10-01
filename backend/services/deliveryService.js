@@ -291,6 +291,14 @@ const syncSummary = (state) => {
   return summary[state] || null;
 };
 
+export const getCarrierBookingAssignmentStatus = ({ success, currentStatus, previousStatus }) => {
+  if (success) {
+    return "ready_for_pickup";
+  }
+
+  return previousStatus || currentStatus || "package_details_complete";
+};
+
 export const assignmentStatusFromNcmStatus = (status) => {
   return normalizeDeliveryStatus(status).assignmentStatus;
 };
@@ -532,8 +540,6 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     await tx.orderAssignment.update({
       where: { id: assignment.id },
       data: {
-        status: "ready_for_pickup",
-        readyAt: new Date(),
         notes: JSON.stringify({
           ...existingNotes,
           ...packagingMeta,
@@ -725,6 +731,13 @@ export const submitDeliveryToNcm = async (deliveryId) => {
         data: { result: "SUCCESS", httpStatus: response.httpStatus, responseJson: response.data, finishedAt: new Date() },
       });
       await tx.order.update({ where: { id: delivery.orderId }, data: { fulfillmentStatus: "ncm_created", deliveryJobId: delivery.id } });
+      await tx.orderAssignment.updateMany({
+        where: { orderId: delivery.orderId },
+        data: {
+          status: getCarrierBookingAssignmentStatus({ success: true, currentStatus: assignment?.status || "package_details_complete" }),
+          readyAt: new Date(),
+        },
+      });
       await createEvent(tx, {
         deliveryOrderId: delivery.id,
         orderId: delivery.orderId,
@@ -763,6 +776,16 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     await prisma.deliveryOrder.updateMany({
       where: { id: delivery.id, state: { not: "CANCELLED" } },
       data: { state: "SUBMISSION_FAILED", lastSyncError: error.message, syncFailureCount: { increment: 1 } },
+    });
+    await prisma.orderAssignment.updateMany({
+      where: { orderId: delivery.orderId },
+      data: {
+        status: getCarrierBookingAssignmentStatus({
+          success: false,
+          currentStatus: assignment?.status || "package_details_complete",
+          previousStatus: assignment?.status || "package_details_complete",
+        }),
+      },
     });
     throw error;
   }

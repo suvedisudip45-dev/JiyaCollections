@@ -264,6 +264,14 @@ export const listCustomerExchangeRequests = ({ customerId, orderId }) => prisma.
   orderBy: { createdAt: "desc" },
 });
 
+export const toAdminExchangeRequestDto = (request, lifetimeReturnedUnits = 0) => ({
+  ...request,
+  order: request.order
+    ? { ...request.order, date: request.order.date == null ? request.order.date : String(request.order.date) }
+    : request.order,
+  lifetimeReturnedUnits,
+});
+
 export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 }) => {
   const where = status ? { status } : {};
   const [requests, total] = await prisma.$transaction([
@@ -304,10 +312,10 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
 
   return {
     total,
-    requests: requests.map((request) => ({
-      ...request,
-      lifetimeReturnedUnits: returnedUnitsByCustomer.get(request.customerId) || 0,
-    })),
+    requests: requests.map((request) => toAdminExchangeRequestDto(
+      request,
+      returnedUnitsByCustomer.get(request.customerId) || 0,
+    )),
   };
 };
 

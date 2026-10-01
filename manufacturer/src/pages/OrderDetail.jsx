@@ -279,11 +279,12 @@ const OrderDetail = () => {
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success("Ready for pickup! Delivery partner notified.");
+        toast.success("Courier booking submitted successfully.");
         fetchAssignment();
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to set ready for pickup");
+      const fallbackMessage = err.response?.data?.message || "Failed to book courier with delivery partner.";
+      toast.error(fallbackMessage);
     } finally {
       setActionLoading(false);
     }

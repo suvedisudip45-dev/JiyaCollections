@@ -71,7 +71,10 @@ export const readyForDelivery = async (req, res) => {
     res.status(202).json({ success: true, delivery });
   } catch (error) {
     const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code) ? 404 : 400;
-    res.status(status).json({ success: false, message: error.message, code: error.code || "DELIVERY_FAILED" });
+    const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
+      ? `Failed to book courier. ${error.message}`
+      : error.message;
+    res.status(status).json({ success: false, message: userMessage, code: error.code || "DELIVERY_FAILED" });
   }
 };
 
