@@ -19,6 +19,7 @@ import {
   Navigation,
 } from "lucide-react";
 import { backendUrl, currency } from "../App";
+import NcmWebhookMockPanel from "../components/NcmWebhookMockPanel";
 
 const statusColors = {
   assigned: "bg-amber-50 text-amber-700 border-amber-200",
@@ -311,6 +312,8 @@ const DeliveryMonitor = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <NcmWebhookMockPanel />
 
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
