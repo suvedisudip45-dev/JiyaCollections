@@ -40,13 +40,15 @@ test("login response is an explicit allow-list", () => {
       phone: "9846008536",
       role: "ADMIN",
       status: "ACTIVE",
+      mustChangePassword: true,
       passwordHash: "must-not-leak",
     },
     profile: { password: "must-not-leak" },
   });
 
   assert.deepEqual(Object.keys(response).sort(), ["accessToken", "account", "message", "refreshTokenExpiresAt", "success", "token"]);
-  assert.deepEqual(Object.keys(response.account).sort(), ["email", "id", "phone", "role", "status"]);
+  assert.deepEqual(Object.keys(response.account).sort(), ["email", "id", "mustChangePassword", "phone", "role", "status"]);
+  assert.equal(response.account.mustChangePassword, true);
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);
   assert.equal(JSON.stringify(response).includes("iv"), false);

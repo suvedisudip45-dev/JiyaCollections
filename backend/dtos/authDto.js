@@ -10,6 +10,7 @@ export const serializeLoginResponse = ({ token, accessToken, refreshTokenExpires
     phone: account.phone,
     role: account.role,
     status: account.status,
+    mustChangePassword: Boolean(account.mustChangePassword),
   },
 });
 
@@ -20,6 +21,7 @@ export const serializeSessionProfile = (account) => {
     phone: account.phone,
     role: account.role,
     status: account.status,
+    mustChangePassword: Boolean(account.mustChangePassword),
   };
   const sourceProfile = account.role === "ADMIN"
     ? account.adminProfile
@@ -29,7 +31,7 @@ export const serializeSessionProfile = (account) => {
         ? account.marketingPartnerProfile
         : account.customerProfile;
   const profileFields = account.role === "ADMIN"
-    ? ["id", "email", "phone"]
+    ? ["id", "email", "phone", "displayName", "firstName", "lastName"]
     : account.role === "MANUFACTURER"
       ? ["id", "email", "phone", "name", "pickupAddress", "pickupContactName", "pickupContactPhone", "pickupWindow", "returnInstructions"]
       : account.role === "MARKETING_PARTNER"

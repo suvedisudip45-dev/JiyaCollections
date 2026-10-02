@@ -12,7 +12,7 @@ import {
   activateSocialCustomerProfile,
 } from "../controllers/userController.js";
 import { adminChangePassword } from "../controllers/adminController.js";
-import { authenticate, authorize } from "../middleware/unifiedAuth.js";
+import { authenticate, authorize, requireRole } from "../middleware/unifiedAuth.js";
 import { loginRateLimitForPortal, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
 const userRouter = express.Router();
@@ -24,7 +24,7 @@ userRouter.post("/social/activate", activateSocialCustomerProfile);
 userRouter.post("/admin", loginRateLimitForPortal("ADMIN"), resetLoginRateLimitOnSuccess, adminLogin);
 
 // Admin Authenticated Routes
-userRouter.post("/admin/change-password", authenticate, authorize("admin:change_password"), adminChangePassword);
+userRouter.post("/admin/change-password", authenticate, requireRole("ADMIN"), adminChangePassword);
 
 // Customer Authenticated Routes
 userRouter.get("/profile", authenticate, authorize("customer:profile_read"), getUserProfile);

@@ -8,7 +8,7 @@ import { createAuthenticate } from "../middleware/unifiedAuth.js";
 import { authenticateAccount } from "../services/authService.js";
 import { generateAccessToken } from "../services/tokenService.js";
 
-const invokeAuthenticate = async (token, account) => {
+const invokeAuthenticate = async (token, account, path = "/api/order/list") => {
   const claims = jwt.decode(token);
   const client = {
     authSession: {
@@ -26,6 +26,7 @@ const invokeAuthenticate = async (token, account) => {
   const request = {
     headers: { authorization: `Bearer ${token}` },
     body: {},
+    originalUrl: path,
   };
   let response;
   let nextCalled = false;
@@ -125,6 +126,39 @@ test("inactive accounts are rejected", async () => {
   assert.equal(result.nextCalled, false);
   assert.equal(result.response.code, 401);
   assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
+});
+
+test("forced Admin password rotation blocks APIs except session inspection and password change", async () => {
+  const account = {
+    id: "admin-account",
+    role: "ADMIN",
+    status: "ACTIVE",
+    mustChangePassword: true,
+    customerProfile: null,
+    adminProfile: { id: "admin-profile" },
+    manufacturerProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({
+    accountId: account.id,
+    profileId: "admin-profile",
+    role: "ADMIN",
+    mfaVerified: true,
+    authMethods: ["pwd", "otp"],
+  });
+
+  const blocked = await invokeAuthenticate(token, account, "/api/order/list");
+  assert.equal(blocked.nextCalled, false);
+  assert.equal(blocked.response.code, 403);
+  assert.equal(blocked.response.body.code, "PASSWORD_CHANGE_REQUIRED");
+
+  const session = await invokeAuthenticate(token, account, "/api/auth/me");
+  assert.equal(session.nextCalled, true);
+  assert.equal(session.request.auth.mustChangePassword, true);
+
+  const passwordChange = await invokeAuthenticate(token, account, "/api/user/admin/change-password");
+  assert.equal(passwordChange.nextCalled, true);
 });
 
 test("approved marketing partner login requires MFA when profile is active even if auth account was left pending", async () => {

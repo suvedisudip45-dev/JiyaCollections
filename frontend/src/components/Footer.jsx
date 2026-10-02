@@ -9,7 +9,7 @@ const Footer = () => {
         <div>
           <img className="mb-5 w-32" src={assets.logo} alt="Aama Collections" />
           <p className="w-full max-w-md leading-7 text-[#77776e]">
-          At Aama Collections, we redefine fashion with an emphasis on grace, poise, and enduring style. Each piece in our collection is thoughtfully crafted to exude sophistication, blending classic aesthetics with modern trends. Whether you’re dressing for a special occasion or elevating your everyday look, Aama Collections promises designs that make you feel confident, refined, and truly unforgettable.
+          At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.
           </p>
         </div>
         <div>

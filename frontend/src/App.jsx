@@ -3,6 +3,9 @@ import React, { useContext } from "react";
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import Home from "./pages/Home";
 import Collection from "./pages/Collection";
+import ComboBundle from "./pages/ComboBundle";
+import ComboBundleDirectory from "./components/ComboBundleDirectory";
+import CollaborationDirectory from "./components/CollaborationDirectory";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
 import Product from "./pages/Product";
@@ -38,7 +41,11 @@ const App = () => {
       <main className="storefront-main px-3 sm:px-5 lg:px-8">
         <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/collection" element={<Collection />} />
+        <Route path="/shop" element={<Collection />} />
+        <Route path="/collection" element={<Navigate to="/shop" replace />} />
+        <Route path="/combo-bundles" element={<ComboBundleDirectory />} />
+        <Route path="/combo-bundles/:slug" element={<ComboBundle />} />
+        <Route path="/collaborations" element={<CollaborationDirectory />} />
         <Route path="/about" element={<About />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/product/:productId" element={<Product />} />

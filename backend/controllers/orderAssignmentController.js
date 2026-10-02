@@ -4,6 +4,8 @@ import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
+import { onOrderPacked } from "../services/giftService.js";
+import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -81,7 +83,14 @@ const buildFulfillmentBenefits = (order, items = []) => {
     totalDiscount: Number((loyaltyDiscount + productDiscount).toFixed(2)),
     freeShipping: Boolean(reward.freeShipping),
     giftAmount: Number(reward.giftAmount || 0),
-    giftDescription: reward.giftDescription || "",
+    giftDescription: order?.assignedGift?.name || reward.giftDescription || "",
+    assignedGift: order?.assignedGift ? {
+      id: order.assignedGift.id,
+      name: order.assignedGift.name,
+      sku: order.assignedGift.sku,
+      priceValue: Number(order.assignedGift.priceValue || 0),
+      status: order.giftStatus,
+    } : null,
     handwrittenCard: Boolean(reward.letterIncluded),
     customPerk: reward.customPerk || "",
     offerItems,
@@ -129,8 +138,54 @@ export const runAllocationEngine = async (orderId) => {
   try {
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return { success: false, message: "Order not found" };
+    if (String(order.status || "").toLowerCase() === "cancelled") {
+      return { success: false, message: "Cancelled orders cannot be assigned to a manufacturer." };
+    }
 
     if (order.assignmentId) return { success: false, message: "Order already assigned" };
+
+    if (order.specialOrder) {
+      const fallbackManufacturerId = order.manufacturerId || (parseJSON(order.specialOrderManufacturerIds, [])[0] ?? null);
+      if (!fallbackManufacturerId) {
+        return {
+          success: false,
+          message: "Order is marked as a special order and requires manual assignment because no fallback manufacturer is available.",
+        };
+      }
+
+      const [manufacturer, assignment] = await Promise.all([
+        prisma.manufacturer.findUnique({ where: { id: fallbackManufacturerId } }),
+        prisma.$transaction(async (tx) => {
+          const claimed = await tx.order.updateMany({
+            where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
+            data: { fulfillmentStatus: "assigned", manufacturerId: fallbackManufacturerId },
+          });
+          if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
+          const assignment = await tx.orderAssignment.create({
+            data: {
+              orderId,
+              manufacturerId: fallbackManufacturerId,
+              status: "assigned",
+              notes: `Special order fallback assignment: ${order.specialOrderReason || "Mixed manufacturer fulfillment requires manual oversight."}`,
+            },
+          });
+          await tx.order.update({ where: { id: orderId }, data: { assignmentId: assignment.id } });
+          return assignment;
+        }, { isolationLevel: "Serializable" }),
+      ]);
+
+      return {
+        success: true,
+        assignment,
+        manufacturer,
+        scoreDetails: {
+          totalScore: 0,
+          locationTier: "Special Order Fallback",
+          qualityRating: 0,
+          hasAllItemsInStock: false,
+        },
+      };
+    }
 
     const address = parseJSON(order.address, {});
     const customerCity = normalize(address?.city);
@@ -281,84 +336,46 @@ export const runAllocationEngine = async (orderId) => {
 
     const assignedManufacturer = bestCandidate.manufacturer;
 
-    // ─── RESERVE VARIANT INVENTORY IN WINNING HUB ─────────────────────────────
-    for (const req of itemRequirements) {
-      const inv = await prisma.manufacturerInventory.findUnique({
-        where: {
-          manufacturerId_productId: {
-            manufacturerId: assignedManufacturer.id,
-            productId: req.productId,
-          },
-        },
-      });
-
-      if (inv) {
-        const variantsStock = parseJSON(inv.variantsStock, []);
-        let updatedVariants = [];
-
-        if (variantsStock.length > 0) {
-          updatedVariants = variantsStock.map((v) => {
-            if (
-              (v.size || "Standard") === req.size &&
-              (v.color || "Standard") === req.color
-            ) {
-              return {
-                ...v,
-                reservedQty: (v.reservedQty || 0) + req.qty,
-              };
-            }
-            return v;
-          });
-        } else {
-          updatedVariants = [
-            {
-              size: req.size,
-              color: req.color,
-              quantity: inv.quantity,
-              reservedQty: (inv.reservedQty || 0) + req.qty,
-            },
-          ];
-        }
-
-        const newReservedTotal = (inv.reservedQty || 0) + req.qty;
-
-        await prisma.manufacturerInventory.update({
-          where: {
-            manufacturerId_productId: {
-              manufacturerId: assignedManufacturer.id,
-              productId: req.productId,
-            },
-          },
-          data: {
-            reservedQty: newReservedTotal,
-            variantsStock: updatedVariants,
-          },
-        });
-
-        await syncProductStock(req.productId);
-      }
-    }
-
     // Create OrderAssignment record
     const assignmentNote = `Auto-allocated by smart engine: Location [${bestCandidate.locationTier} +${bestCandidate.locationScore}pts], Customer Rating [${bestCandidate.qualityRating}★ +${bestCandidate.ratingScore}pts], Stock Status [${bestCandidate.hasAllItemsInStock ? "100% In Stock" : "Production Required"} +${bestCandidate.stockScore}pts]. Total Score: ${bestCandidate.totalScore}.`;
 
-    const assignment = await prisma.orderAssignment.create({
-      data: {
-        orderId,
-        manufacturerId: assignedManufacturer.id,
-        status: "assigned",
-        notes: assignmentNote,
-      },
-    });
+    const assignment = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
+        data: { fulfillmentStatus: "assigned", manufacturerId: assignedManufacturer.id },
+      });
+      if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        fulfillmentStatus: "assigned",
-        assignmentId: assignment.id,
-        manufacturerId: assignedManufacturer.id,
-      },
-    });
+      for (const requirement of itemRequirements) {
+        const inventory = await tx.manufacturerInventory.findUnique({
+          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
+        });
+        if (!inventory) continue;
+        const variantsStock = parseJSON(inventory.variantsStock, []);
+        const updatedVariants = variantsStock.length > 0
+          ? variantsStock.map((variant) => (
+              (variant.size || "Standard") === requirement.size && (variant.color || "Standard") === requirement.color
+                ? { ...variant, reservedQty: Number(variant.reservedQty || 0) + requirement.qty }
+                : variant
+            ))
+          : [{ size: requirement.size, color: requirement.color, quantity: inventory.quantity, reservedQty: Number(inventory.reservedQty || 0) + requirement.qty }];
+
+        await tx.manufacturerInventory.update({
+          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
+          data: {
+            reservedQty: Number(inventory.reservedQty || 0) + requirement.qty,
+            variantsStock: updatedVariants,
+          },
+        });
+        await syncProductStock(requirement.productId, { client: tx, throwOnError: true });
+      }
+
+      const createdAssignment = await tx.orderAssignment.create({
+        data: { orderId, manufacturerId: assignedManufacturer.id, status: "assigned", notes: assignmentNote },
+      });
+      await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
+      return createdAssignment;
+    }, { isolationLevel: "Serializable" });
 
     return {
       success: true,
@@ -430,6 +447,7 @@ const getMyAssignments = async (req, res) => {
     const [orders, deliveryOrders] = await Promise.all([
       prisma.order.findMany({
         where: { id: { in: orderIds } },
+        include: { assignedGift: true },
       }),
       prisma.deliveryOrder.findMany({
         where: { orderId: { in: orderIds } },
@@ -452,6 +470,17 @@ const getMyAssignments = async (req, res) => {
     ]);
 
     const deliveryIds = deliveryOrders.map((delivery) => delivery.id);
+    const ncmAttempts = deliveryIds.length
+      ? await prisma.ncmRequestAttempt.findMany({
+          where: { deliveryOrderId: { in: deliveryIds }, operation: "CREATE_ORDER" },
+          orderBy: { attemptNumber: "desc" },
+          select: { deliveryOrderId: true, attemptNumber: true, result: true, errorCode: true, errorMessage: true, startedAt: true, finishedAt: true },
+        })
+      : [];
+    const ncmAttemptsByDelivery = {};
+    ncmAttempts.forEach((attempt) => {
+      (ncmAttemptsByDelivery[attempt.deliveryOrderId] ||= []).push(attempt);
+    });
     const deliveryComments = deliveryIds.length
       ? await prisma.deliveryComment.findMany({
           where: { deliveryOrderId: { in: deliveryIds } },
@@ -479,7 +508,10 @@ const getMyAssignments = async (req, res) => {
 
     const deliveryMap = {};
     deliveryOrders.forEach((d) => {
-      deliveryMap[d.orderId] = d;
+      deliveryMap[d.orderId] = {
+        ...d,
+        ncmRequestAttempts: ncmAttemptsByDelivery[d.id] || [],
+      };
     });
 
     const enriched = assignments.map((a) => ({
@@ -618,6 +650,7 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction,
       instruction,
       packagingChecklist,
+      giftInventoryId,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
@@ -632,6 +665,20 @@ const updateAssignmentStatus = async (req, res) => {
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
     if (!assignment || assignment.manufacturerId !== manufacturerId)
       return res.json({ success: false, message: "Assignment not found" });
+
+    if (giftInventoryId && normalizedStatus !== "checklist_complete") {
+      return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
+    }
+    if (normalizedStatus === "checklist_complete") {
+      const giftOptions = await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
+      if (giftOptions.eligible && !giftOptions.alreadyAssigned && giftOptions.options.length > 0 && !giftInventoryId) {
+        return res.status(409).json({
+          success: false,
+          message: "This order has an active gift reward. Select one of the accepted gifts available at your hub before completing the checklist.",
+          code: "GIFT_SELECTION_REQUIRED",
+        });
+      }
+    }
 
     if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
       try {
@@ -684,11 +731,24 @@ const updateAssignmentStatus = async (req, res) => {
       updateData.notes = JSON.stringify(payload);
     }
 
-    await prisma.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
-    await prisma.order.update({
-      where: { id: assignment.orderId },
-      data: { fulfillmentStatus: normalizedStatus },
+    await prisma.$transaction(async (tx) => {
+      if (giftInventoryId) {
+        await assignGiftToOrder({
+          orderId: assignment.orderId,
+          manufacturerId,
+          inventoryId: giftInventoryId,
+          client: tx,
+        });
+      }
+      await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
+      await tx.order.update({
+        where: { id: assignment.orderId },
+        data: { fulfillmentStatus: normalizedStatus },
+      });
     });
+    if (normalizedStatus === "packed") {
+      await onOrderPacked(assignment.orderId, manufacturerId);
+    }
 
     res.json({ success: true, message: `Status updated to ${status}` });
   } catch (error) {
@@ -736,6 +796,7 @@ const getAllAssignments = async (req, res) => {
     const [orders, deliveryOrders] = await Promise.all([
       prisma.order.findMany({
         where: { id: { in: orderIds } },
+        include: { assignedGift: true },
       }),
       prisma.deliveryOrder.findMany({
         where: { orderId: { in: orderIds } },
@@ -841,7 +902,7 @@ const getAssignmentById = async (req, res) => {
     }
 
     const [order, delivery] = await Promise.all([
-      prisma.order.findUnique({ where: { id: assignment.orderId } }),
+      prisma.order.findUnique({ where: { id: assignment.orderId }, include: { assignedGift: true } }),
       prisma.deliveryOrder.findUnique({
         where: { orderId: assignment.orderId },
         include: {

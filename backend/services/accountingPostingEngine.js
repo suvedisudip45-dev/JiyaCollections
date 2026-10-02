@@ -53,6 +53,8 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "4000", accountName: "Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: null },
   { accountCode: "4100", accountName: "Gross Sales Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4200", accountName: "Delivery & Shipping Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
+  { accountCode: "4300", accountName: "Collaboration Selling Fee Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
+  { accountCode: "4300", accountName: "Collaboration Selling Fee Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4500", accountName: "Sales Returns & Allowances", accountType: "REVENUE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4600", accountName: "Customer Discounts & Loyalty Rewards", accountType: "REVENUE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "4000" },
 
@@ -99,6 +101,8 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "NCM_CARRIER_PAYABLE", accountCode: "2180" },
   { mappingKey: "PRODUCT_SALES_REVENUE", accountCode: "4100" },
   { mappingKey: "DELIVERY_REVENUE", accountCode: "4200" },
+  { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
+  { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
   { mappingKey: "SALES_RETURNS", accountCode: "4500" },
   { mappingKey: "SALES_DISCOUNTS", accountCode: "4600" },
   { mappingKey: "COGS", accountCode: "5100" },
@@ -803,6 +807,52 @@ export const postMarketingCpaRedemptionAccounting = async ({ redemption, campaig
   });
 };
 
+export const postCollaborationFeeInvoiceAccounting = async ({ invoice, partner, client = prisma }) => {
+  if (!invoice?.id || !partner?.id) return null;
+  const totalAmount = new Prisma.Decimal(String(invoice.totalAmount || 0));
+  if (totalAmount.lessThanOrEqualTo(0)) return null;
+
+  const partnerParty = await ensureAccountingParty({
+    partyType: "MARKETING_PARTNER",
+    sourceEntityId: partner.id,
+    displayName: partner.name || `Marketing Partner (${partner.id.slice(-6)})`,
+  }, { client });
+  const netAmount = new Prisma.Decimal(String(invoice.netAmount || 0));
+  const vatAmount = new Prisma.Decimal(String(invoice.vatAmount || 0));
+  const lines = [{
+    mappingKey: "CUSTOMER_RECEIVABLE_CONTROL",
+    debit: totalAmount,
+    credit: 0,
+    description: `Collaboration fee receivable for ${invoice.invoiceNumber}`,
+    accountingPartyId: partnerParty.id,
+  }];
+
+  for (const [mappingKey, amount, description] of [
+    ["COLLABORATION_FEE_REVENUE", netAmount, `Collaboration selling fee revenue for ${invoice.invoiceNumber}`],
+    ["OUTPUT_VAT_PAYABLE", vatAmount, `Output VAT on collaboration fees for ${invoice.invoiceNumber}`],
+  ]) {
+    if (amount.isZero()) continue;
+    lines.push({
+      mappingKey,
+      debit: amount.isNegative() ? amount.abs() : 0,
+      credit: amount.isPositive() ? amount : 0,
+      description,
+      accountingPartyId: partnerParty.id,
+    });
+  }
+
+  return postJournalEntry({
+    transactionDate: invoice.issuedAt || new Date(),
+    sourceType: "COLLABORATION_FEE_INVOICE",
+    sourceId: invoice.id,
+    idempotencyKey: `COLLABORATION_FEE_INVOICE:${invoice.id}`,
+    referenceNumber: invoice.invoiceNumber,
+    description: `Monthly collaboration fee invoice for ${partner.name}`,
+    lines,
+    client,
+  });
+};
+
 /**
  * NCM Carrier Settlement Posting
  * Bank remittance clears COD receivable and recognizes carrier fee expense.
@@ -964,6 +1014,9 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
     const orderId = paramsOrOrder.orderId || paramsOrOrder.id;
     const customerName = paramsOrOrder.customerName || (paramsOrOrder.userId ? `Customer (${paramsOrOrder.userId.slice(-6)})` : "Customer");
     const amt = Number(paramsOrOrder.amount || 0);
+    const settlementAmount = Number(paramsOrOrder.settlementAmount ?? amt);
+    const discountAmount = Number(paramsOrOrder.discountAmount || 0);
+    const fineAmount = Number(paramsOrOrder.fineAmount || 0);
     const depositAccountType = paramsOrOrder.depositAccountType || "BANK";
     const depositAccountCode = paramsOrOrder.depositAccountCode || (depositAccountType === "CASH" ? "1110" : "1120");
     const referenceNumber = paramsOrOrder.referenceNumber;
@@ -986,13 +1039,25 @@ export const postCustomerPaymentAccounting = async (paramsOrOrder) => {
           credit: 0,
           description: `Cash/Bank receipt for Order #${orderId ? orderId.slice(-6) : ""}`,
         },
+        ...(discountAmount > 0 ? [{
+          accountCode: "6700",
+          debit: discountAmount,
+          credit: 0,
+          description: `Discount allowed on receivable from ${customerName}`,
+        }] : []),
         {
           accountCode: "1130",
           debit: 0,
-          credit: amt,
+          credit: settlementAmount,
           description: `Clear Accounts Receivable for Order #${orderId ? orderId.slice(-6) : ""}`,
           customerName,
         },
+        ...(fineAmount > 0 ? [{
+          accountCode: "8100",
+          debit: 0,
+          credit: fineAmount,
+          description: `Fine income on receivable from ${customerName}`,
+        }] : []),
       ],
       client,
     });
@@ -1097,6 +1162,9 @@ export const postSupplierPaymentAccounting = async ({
   payableId,
   payeeName,
   amount,
+  settlementAmount,
+  discountAmount = 0,
+  fineAmount = 0,
   fromAccountType = "BANK",
   referenceNumber,
   payableAccountCode = "2110",
@@ -1107,6 +1175,7 @@ export const postSupplierPaymentAccounting = async ({
   try {
     const amt = Number(amount || 0);
     if (amt <= 0) return null;
+    const settled = Number(settlementAmount ?? (amt + Number(discountAmount || 0) - Number(fineAmount || 0)));
 
     const cashBankCode = cashAccountCode || (fromAccountType === "CASH" ? "1110" : "1120");
 
@@ -1120,17 +1189,29 @@ export const postSupplierPaymentAccounting = async ({
       lines: [
         {
           accountCode: payableAccountCode,
-          debit: amt,
+          debit: settled,
           credit: 0,
           description: `Settle Accounts Payable for ${payeeName}`,
           supplierName: payeeName,
         },
+        ...(Number(fineAmount) > 0 ? [{
+          accountCode: "6700",
+          debit: Number(fineAmount),
+          credit: 0,
+          description: `Fine expense on payable to ${payeeName}`,
+        }] : []),
         {
           accountCode: cashBankCode,
           debit: 0,
           credit: amt,
           description: `Disbursed from liquid account to ${payeeName}`,
         },
+        ...(Number(discountAmount) > 0 ? [{
+          accountCode: "8100",
+          debit: 0,
+          credit: Number(discountAmount),
+          description: `Discount received on payable to ${payeeName}`,
+        }] : []),
       ],
       client,
     });

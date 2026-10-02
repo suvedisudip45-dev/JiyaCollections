@@ -91,10 +91,28 @@ A production-grade distributed e-commerce network built with Node.js, Express, P
 - **Doorstep COD Handover**: Driver marks cash collected, logs recipient relation/name, and uploads proof of delivery photos.
 - **Driver Earnings & Treasury Ledger**: Real-time tracking of cash-on-hand and commission earnings per completed delivery.
 
-### 4. 📊 Multi-Hub Aggregate Inventory Monitoring
+### Operational Delivery Guardrail
+- The carrier booking step is now treated as a real external handoff: an assignment only advances to `ready_for_pickup` after the NCM create request succeeds.
+- If the delivery partner API fails, the system surfaces a clear manufacturer message such as "Failed to book courier" and keeps the order retryable without falsely marking it as booked.
+- The manufacturer can retry the courier booking flow after the external partner issue is resolved without reworking the order status manually.
+
+### 4. 🎁 Gift & Retention Promotions
+- Admin gift entries generate their SKU from the gift name and use General, Partner Product, or Other categories.
+- Loyalty tier gift description/value are configured on the tier itself and automatically become active when the backend applies that tier reward to an order. Separate order-value promotions remain configurable.
+- Admin distributions are pending until the manufacturer accepts the batch. At final checklist completion, the manufacturer selects only from their own accepted stock within the eligible value limit.
+- The backend atomically reserves the selected batch, audits movements, and deducts reserved stock on confirmed NCM delivery.
+
+### 5. 📊 Multi-Hub Aggregate Inventory Monitoring
 - **Admin Central Visibility**: View total stock across Nepal and breakdown per manufacturer warehouse.
 - **Quantity-Aware Stock Reservation**: Inventory is automatically reserved upon order assignment and finalized upon delivery.
 - **Low-Stock Alerts**: Automatic warnings when hub stock falls below safety thresholds.
+
+### 6. ↩️ Audited Customer Return & Exchange Lifecycle
+- Customers can request a return or exchange from delivered-order history; admins can also create cases on a customer's behalf.
+- Every request records its cause, selected items, requester, timestamps, and idempotency key. Admin approval is required before NCM is called.
+- NCM request/response attempts, rejection details, available charges, and charge payer are stored. Failed and unknown handoffs remain distinct from successful bookings.
+- Return refunds and inventory changes wait for manufacturer receipt and inspection. Exchange replacement stock is reserved at approval and consumed on confirmed replacement delivery.
+- The current NCM exchange-create API accepts only the original order ID; admins must verify the replacement waybill against the internally reserved replacement variant.
 
 ---
 
@@ -166,6 +184,15 @@ ADMIN_PASSWORD="adminpassword"
 ```env
 VITE_BACKEND_URL=http://localhost:4000
 ```
+
+### Return and exchange schema rollout
+From `backend/`, apply the additive migration, seed the new RBAC permissions, and regenerate Prisma Client before starting the API:
+```bash
+npx prisma migrate deploy
+npm run seed
+npx prisma generate
+```
+On Windows, stop the running backend before `prisma generate` if its native query-engine DLL is locked.
 
 ---
 

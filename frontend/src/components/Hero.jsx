@@ -88,7 +88,7 @@ const Hero = () => {
               </Link>
             ) : null}
             <Link
-              to="/collection"
+              to="/shop"
               className="flex-1 inline-flex items-center justify-center bg-white/15 backdrop-blur-md border border-white/30 text-white py-3.5 px-5 rounded-md text-xs font-bold uppercase tracking-wider hover:bg-white/25 transition-colors"
             >
               <span>Explore</span>
@@ -158,10 +158,10 @@ const Hero = () => {
               </Link>
             )}
             <Link
-              to="/collection"
+              to="/shop"
               className="inline-flex items-center gap-2 border border-white/30 bg-transparent px-7 py-4 rounded-md text-xs font-bold uppercase tracking-widest text-white hover:bg-white/10 hover:border-white transition-all"
             >
-              <span>Explore Collection</span>
+              <span>Explore Shop</span>
             </Link>
           </div>
 

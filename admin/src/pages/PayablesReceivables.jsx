@@ -5,6 +5,7 @@ import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
 const fmt = (n) => `${currency}${Number(n || 0).toLocaleString("en-NP", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const adjustedCashDue = (balance, type, amount) => Number(balance || 0) + (type === "FINE" ? Number(amount || 0) : 0) - (type === "DISCOUNT" ? Number(amount || 0) : 0);
 const formatDate = (d) => { if (!d) return "—"; return new Date(d).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }); };
 const isOverdue = (dueDate) => { if (!dueDate) return false; return new Date(dueDate) < new Date(); };
 const getStableIdempotencyKey = (ref, prefix, request) => {
@@ -73,7 +74,7 @@ const SettlementHistory = ({ history, label="History" }) => {
       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
       {rows.map(h=>(
         <div key={h.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5 text-[11px] mb-0.5">
-          <span className="text-slate-600"><b>{h.accountName}</b><span className="text-slate-400 ml-1">{formatDate(h.date)}</span>{h.notes?<span className="text-slate-400 ml-1">• {h.notes}</span>:null}</span>
+          <span className="text-slate-600"><b>{h.accountName}</b><span className="text-slate-400 ml-1">{formatDate(h.date)}</span>{h.adjustmentAmount>0?<span className="text-slate-500 ml-1">• {h.adjustmentType?.toLowerCase()} {fmt(h.adjustmentAmount)}</span>:null}{h.notes?<span className="text-slate-400 ml-1">• {h.notes}</span>:null}</span>
           <span className="font-bold text-slate-900">{fmt(h.amount)}</span>
         </div>
       ))}
@@ -144,8 +145,8 @@ const PayablesReceivables = ({ token }) => {
   const emptyR = { title:"",payerName:"",category:"CUSTOMER_RECEIVABLE",totalAmount:"",dueDate:"",invoiceNumber:"",notes:"" };
   const [pForm, setPForm] = useState(emptyP);
   const [rForm, setRForm] = useState(emptyR);
-  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false });
-  const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false });
+  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
+  const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
   const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false });
   const payableRequestRef = useRef(null);
   const receivableRequestRef = useRef(null);
@@ -201,7 +202,9 @@ const PayablesReceivables = ({ token }) => {
     if (sLoading) return;
     const amt=Number(sForm.amount);
     if (!sForm.fromAccountId||!amt) return toast.warn("Amount and account required");
-    if (amt>showSettle.remainingBalance) return toast.warn("Exceeds remaining balance");
+    const adjustmentAmount=Number(sForm.adjustmentAmount||0);
+    const netSettlement=amt+(sForm.adjustmentType==="DISCOUNT"?adjustmentAmount:0)-(sForm.adjustmentType==="FINE"?adjustmentAmount:0);
+    if (netSettlement<=0||netSettlement>showSettle.remainingBalance) return toast.warn("Cash amount and adjustment must settle a positive amount without exceeding the remaining balance");
     const acc=accounts.find(a=>a.id===sForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient balance in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
@@ -209,12 +212,16 @@ const PayablesReceivables = ({ token }) => {
     const idempotencyKey = getStableIdempotencyKey(payableRequestRef, "PAY", {
       payableId: showSettle.id,
       amount: amt,
+      adjustmentType: sForm.adjustmentType,
+      adjustmentAmount,
       fromAccountId: sForm.fromAccountId,
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{
         payableId: showSettle.id,
         amount: amt,
+        adjustmentType: sForm.adjustmentType,
+        adjustmentAmount,
         fromAccountId: sForm.fromAccountId,
         notes: sForm.notes,
         idempotencyKey,
@@ -223,7 +230,7 @@ const PayablesReceivables = ({ token }) => {
         payableRequestRef.current = null;
         toast.success(res.data.message);
         setShowSettle(null);
-        setSForm({amount:"",fromAccountId:"",notes:"",partial:false});
+        setSForm({amount:"",fromAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
         fetchData();
         fetchMfg(range,selectedMfgId);
       } else {
@@ -240,18 +247,24 @@ const PayablesReceivables = ({ token }) => {
     if (cLoading) return;
     const amt=Number(cForm.amount);
     if (!cForm.toAccountId||!amt) return toast.warn("Amount and account required");
-    if (amt>showCollect.remainingBalance) return toast.warn("Exceeds remaining balance");
+    const adjustmentAmount=Number(cForm.adjustmentAmount||0);
+    const netSettlement=amt+(cForm.adjustmentType==="DISCOUNT"?adjustmentAmount:0)-(cForm.adjustmentType==="FINE"?adjustmentAmount:0);
+    if (netSettlement<=0||netSettlement>showCollect.remainingBalance) return toast.warn("Cash amount and adjustment must settle a positive amount without exceeding the remaining balance");
     
     setCLoading(true);
     const idempotencyKey = getStableIdempotencyKey(receivableRequestRef, "COLL", {
       receivableId: showCollect.id,
       amount: amt,
+      adjustmentType: cForm.adjustmentType,
+      adjustmentAmount,
       toAccountId: cForm.toAccountId,
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/collect-receivable`,{
         receivableId: showCollect.id,
         amount: amt,
+        adjustmentType: cForm.adjustmentType,
+        adjustmentAmount,
         toAccountId: cForm.toAccountId,
         notes: cForm.notes,
         idempotencyKey,
@@ -260,7 +273,7 @@ const PayablesReceivables = ({ token }) => {
         receivableRequestRef.current = null;
         toast.success(res.data.message);
         setShowCollect(null);
-        setCForm({amount:"",toAccountId:"",notes:"",partial:false});
+        setCForm({amount:"",toAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
         fetchData();
         fetchMfg(range,selectedMfgId);
       } else {
@@ -836,7 +849,7 @@ const PayablesReceivables = ({ token }) => {
                             </div>
                             <div className="flex items-center gap-3 shrink-0 sm:flex-col sm:items-end">
                               <div className="text-right"><p className="text-base font-black text-red-700">{fmt(p.remainingBalance)}</p>{p.totalAmount!==p.remainingBalance&&<p className="text-[10px] text-slate-400">of {fmt(p.totalAmount)}</p>}</div>
-                              <button onClick={()=>{setShowSettle(p);setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",partial:false});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
+                              <button onClick={()=>{setShowSettle(p);setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
                             </div>
                           </div>
                         </div>
@@ -858,10 +871,11 @@ const PayablesReceivables = ({ token }) => {
                             <p className="text-xs font-medium text-slate-700 truncate">{p.title}</p>
                             <p className="text-[10px] text-slate-400">{p.payeeName} • {LABEL_MAP[p.category]||p.category} • {formatDate(p.updatedAt)}</p>
                             {rev&&<p className="text-[10px] text-amber-600 mt-0.5">↩ Reverted {formatDate(rev.revertedAt)} by {rev.revertedByEmail} — {rev.revertReason}</p>}
+                            {!rev&&<SettlementHistory history={p.settlementHistory} label="Settlement details"/>}
                           </div>
                           <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
                             {rev ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">REVERTED</span> : <StatusBadge status="SETTLED"/>}
-                            <p className="text-xs font-semibold text-slate-600">{fmt(p.totalAmount)}</p>
+                            <p className="text-xs font-semibold text-slate-600">{fmt(p.paidAmount||p.totalAmount)}</p>
                             {!rev&&<button onClick={()=>{setShowRevert({type:"PAYABLE",recordId:p.id,title:p.title,amount:p.paidAmount||p.totalAmount,partyName:p.payeeName});setRevertReason("");}} className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 border border-amber-300 whitespace-nowrap">↩ Revert</button>}
                           </div>
                         </div>
@@ -919,7 +933,7 @@ const PayablesReceivables = ({ token }) => {
                             </div>
                             <div className="flex items-center gap-3 shrink-0 sm:flex-col sm:items-end">
                               <div className="text-right"><p className="text-base font-black text-emerald-700">{fmt(r.remainingBalance)}</p>{r.totalAmount!==r.remainingBalance&&<p className="text-[10px] text-slate-400">of {fmt(r.totalAmount)}</p>}</div>
-                              <button onClick={()=>{setShowCollect(r);setCForm({amount:String(r.remainingBalance),toAccountId:accounts[0]?.id||"",notes:"",partial:false});}} className="px-3.5 py-2 bg-emerald-700 text-white text-[11px] font-bold rounded-xl hover:bg-emerald-600 whitespace-nowrap shadow-sm">✅ Collect</button>
+                              <button onClick={()=>{setShowCollect(r);setCForm({amount:String(r.remainingBalance),toAccountId:accounts[0]?.id||"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-emerald-700 text-white text-[11px] font-bold rounded-xl hover:bg-emerald-600 whitespace-nowrap shadow-sm">✅ Collect</button>
                             </div>
                           </div>
                         </div>
@@ -941,10 +955,11 @@ const PayablesReceivables = ({ token }) => {
                             <p className="text-xs font-medium text-slate-700 truncate">{r.title}</p>
                             <p className="text-[10px] text-slate-400">{r.payerName} • {LABEL_MAP[r.category]||r.category} • {formatDate(r.updatedAt)}</p>
                             {rev&&<p className="text-[10px] text-amber-600 mt-0.5">↩ Reverted {formatDate(rev.revertedAt)} by {rev.revertedByEmail} — {rev.revertReason}</p>}
+                            {!rev&&<SettlementHistory history={r.collectionHistory} label="Settlement details"/>}
                           </div>
                           <div className="text-right shrink-0 flex flex-col items-end gap-1.5">
                             {rev ? <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">REVERTED</span> : <StatusBadge status="SETTLED"/>}
-                            <p className="text-xs font-semibold text-slate-600">{fmt(r.totalAmount)}</p>
+                            <p className="text-xs font-semibold text-slate-600">{fmt(r.receivedAmount||r.totalAmount)}</p>
                             {!rev&&<button onClick={()=>{setShowRevert({type:"RECEIVABLE",recordId:r.id,title:r.title,amount:r.receivedAmount,partyName:r.payerName});setRevertReason("");}} className="px-2.5 py-1 bg-amber-100 text-amber-700 text-[10px] font-bold rounded-lg hover:bg-amber-200 border border-amber-300 whitespace-nowrap">↩ Revert</button>}
                           </div>
                         </div>
@@ -1171,14 +1186,18 @@ const PayablesReceivables = ({ token }) => {
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-2">Payment Type</label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={()=>setSForm({...sForm,partial:false,amount:String(showSettle.remainingBalance)})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${!sForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>💳 Full Payment</button>
+                  <button type="button" onClick={()=>setSForm({...sForm,partial:false,amount:String(adjustedCashDue(showSettle.remainingBalance,sForm.adjustmentType,sForm.adjustmentAmount))})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${!sForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>💳 Full Settlement</button>
                   <button type="button" onClick={()=>setSForm({...sForm,partial:true,amount:""})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${sForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>📝 Partial Payment</button>
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Amount (Rs) *</label>
-                <input type="number" min="1" max={showSettle.remainingBalance} value={sForm.amount} onChange={e=>setSForm({...sForm,amount:e.target.value})} readOnly={!sForm.partial} className={`w-full px-3 py-2.5 text-sm border rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold ${sForm.partial?"border-slate-300":"border-slate-200 bg-slate-50"}`}/>
-                {sForm.partial&&<p className="text-[10px] text-slate-400 mt-0.5">Max: {fmt(showSettle.remainingBalance)}</p>}
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Cash Paid (Rs) *</label>
+                <input type="number" min="0.01" step="0.01" value={sForm.amount} onChange={e=>setSForm({...sForm,amount:e.target.value})} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold"/>
+                <p className="text-[10px] text-slate-500 mt-1">Net settled: {fmt(Number(sForm.amount||0)+(sForm.adjustmentType==="DISCOUNT"?Number(sForm.adjustmentAmount||0):0)-(sForm.adjustmentType==="FINE"?Number(sForm.adjustmentAmount||0):0))} of {fmt(showSettle.remainingBalance)}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment</label><select value={sForm.adjustmentType} onChange={e=>{const adjustmentType=e.target.value;setSForm({...sForm,adjustmentType,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,adjustmentType,sForm.adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"><option value="NONE">No adjustment</option><option value="DISCOUNT">Discount received</option><option value="FINE">Fine paid</option></select></div>
+                {sForm.adjustmentType!=="NONE"&&<div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment Amount (Rs)</label><input type="number" min="0.01" step="0.01" value={sForm.adjustmentAmount} onChange={e=>{const adjustmentAmount=e.target.value;setSForm({...sForm,adjustmentAmount,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,sForm.adjustmentType,adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"/></div>}
               </div>
               <AccountSelector accounts={accounts} value={sForm.fromAccountId} onChange={id=>setSForm({...sForm,fromAccountId:id})} label="Pay From Account *" helpText="Select the cash drawer or bank account to pay from" forPayment={true}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Notes</label><input value={sForm.notes} onChange={e=>setSForm({...sForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Bank transfer, Cheque #1234"/></div>
@@ -1208,15 +1227,23 @@ const PayablesReceivables = ({ token }) => {
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-2">Collection Type</label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button type="button" onClick={()=>setCForm({...cForm,partial:false,amount:String(showCollect.remainingBalance)})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${!cForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>✅ Full Collection</button>
+                  <button type="button" onClick={()=>setCForm({...cForm,partial:false,amount:String(adjustedCashDue(showCollect.remainingBalance,cForm.adjustmentType,cForm.adjustmentAmount))})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${!cForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>✅ Full Settlement</button>
                   <button type="button" onClick={()=>setCForm({...cForm,partial:true,amount:""})} className={`py-2 rounded-xl text-xs font-semibold border transition-all ${cForm.partial?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>📝 Partial Collection</button>
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Collection Amount (Rs) *</label>
-                <input type="number" min="1" max={showCollect.remainingBalance} value={cForm.amount} onChange={e=>setCForm({...cForm,amount:e.target.value})} readOnly={!cForm.partial} className={`w-full px-3 py-2.5 text-sm border rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold ${cForm.partial?"border-slate-300":"border-slate-200 bg-slate-50"}`}/>
-                {cForm.partial&&<p className="text-[10px] text-slate-400 mt-0.5">Max: {fmt(showCollect.remainingBalance)}</p>}
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Cash Received (Rs) *</label>
+                <input type="number" min="0.01" step="0.01" value={cForm.amount} onChange={e=>setCForm({...cForm,amount:e.target.value})} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold"/>
+                <p className="text-[10px] text-slate-500 mt-1">Net settled: {fmt(Number(cForm.amount||0)+(cForm.adjustmentType==="DISCOUNT"?Number(cForm.adjustmentAmount||0):0)-(cForm.adjustmentType==="FINE"?Number(cForm.adjustmentAmount||0):0))} of {fmt(showCollect.remainingBalance)}</p>
               </div>
+              {["DELIVERY_SETTLEMENT","MANUFACTURER_DIRECT"].includes(showCollect.referenceType) ? (
+                <p className="text-[10px] text-slate-500">This receivable uses a dedicated settlement flow; additional adjustments are not available here.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment</label><select value={cForm.adjustmentType} onChange={e=>{const adjustmentType=e.target.value;setCForm({...cForm,adjustmentType,amount:cForm.partial?cForm.amount:String(adjustedCashDue(showCollect.remainingBalance,adjustmentType,cForm.adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"><option value="NONE">No adjustment</option><option value="DISCOUNT">Discount given</option><option value="FINE">Fine received</option></select></div>
+                  {cForm.adjustmentType!=="NONE"&&<div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment Amount (Rs)</label><input type="number" min="0.01" step="0.01" value={cForm.adjustmentAmount} onChange={e=>{const adjustmentAmount=e.target.value;setCForm({...cForm,adjustmentAmount,amount:cForm.partial?cForm.amount:String(adjustedCashDue(showCollect.remainingBalance,cForm.adjustmentType,adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"/></div>}
+                </div>
+              )}
               <AccountSelector accounts={accounts} value={cForm.toAccountId} onChange={id=>setCForm({...cForm,toAccountId:id})} label="Deposit Into Account *" helpText="Select where to receive the collected amount" forPayment={false}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Collection Notes</label><input value={cForm.notes} onChange={e=>setCForm({...cForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Cash received, eSewa transfer ref #"/></div>
               <div className="flex gap-2 pt-1">

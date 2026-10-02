@@ -3,6 +3,8 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import ExchangeRequestsPanel from "../components/ExchangeRequestsPanel";
+import CustomerReturnRequestsPanel from "../components/CustomerReturnRequestsPanel";
 
 const ReturnsManagement = ({ token }) => {
   const [activeTab, setActiveTab] = useState("CUSTOMER"); // CUSTOMER or SUPPLIER
@@ -102,7 +104,7 @@ const ReturnsManagement = ({ token }) => {
 
   const handleSubmitCustomerReturn = async (e) => {
     e.preventDefault();
-    if (!customerForm.customerName) return toast.warn("Customer name is required");
+    if (!customerForm.orderId) return toast.warn("Order ID is required to create a return request");
     if (!customerForm.items[0].productId) return toast.warn("Please select at least one product");
 
     try {
@@ -110,7 +112,7 @@ const ReturnsManagement = ({ token }) => {
         headers: { token },
       });
       if (res.data.success) {
-        toast.success(res.data.message);
+        toast.success("Return request created. Review and approve it to submit to NCM.");
         setShowCustomerModal(false);
         setCustomerForm({
           orderId: "",
@@ -194,7 +196,9 @@ const ReturnsManagement = ({ token }) => {
     }
   };
 
-  const totalCustomerRefunds = customerReturns.reduce((acc, r) => acc + Number(r.totalRefundAmount || 0), 0);
+  const totalCustomerRefunds = customerReturns
+    .filter((record) => record.refundStatus === "COMPLETED")
+    .reduce((acc, record) => acc + Number(record.totalRefundAmount || 0), 0);
   const totalSupplierDebits = supplierReturns.reduce((acc, r) => acc + Number(r.totalDebitAmount || 0), 0);
 
   return (
@@ -290,9 +294,23 @@ const ReturnsManagement = ({ token }) => {
           >
             Supplier Returns &amp; Debit Notes ({supplierReturns.length})
           </button>
+          <button
+            onClick={() => setActiveTab("EXCHANGE")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-colors ${
+              activeTab === "EXCHANGE"
+                ? "bg-blue-700 text-white shadow-xs"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            Customer Exchanges
+          </button>
         </div>
 
-        {activeTab === "CUSTOMER" ? (
+        {activeTab === "CUSTOMER" && <CustomerReturnRequestsPanel token={token} />}
+
+        {activeTab === "EXCHANGE" ? (
+          <ExchangeRequestsPanel token={token} />
+        ) : activeTab === "CUSTOMER" ? (
           /* CUSTOMER RETURNS TABLE */
           <div className="overflow-x-auto mt-4">
             <table className="w-full text-left text-xs">
@@ -447,62 +465,15 @@ const ReturnsManagement = ({ token }) => {
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-xl border border-slate-200 my-8">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <h3 className="text-base font-bold text-slate-900">Process Customer Return (RMA)</h3>
+              <h3 className="text-base font-bold text-slate-900">Create Customer Return Request</h3>
               <button onClick={() => setShowCustomerModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
 
             <form onSubmit={handleSubmitCustomerReturn} className="space-y-4 mt-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Customer Full Name *</label>
-                  <input
-                    type="text"
-                    placeholder="Customer Name"
-                    value={customerForm.customerName}
-                    onChange={(e) => setCustomerForm({ ...customerForm, customerName: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Customer Phone Number</label>
-                  <input
-                    type="text"
-                    placeholder="98XXXXXXXX"
-                    value={customerForm.customerPhone}
-                    onChange={(e) => setCustomerForm({ ...customerForm, customerPhone: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Inventory Action &amp; Condition</label>
-                  <select
-                    value={customerForm.inventoryAction}
-                    onChange={(e) => setCustomerForm({ ...customerForm, inventoryAction: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-bold"
-                  >
-                    <option value="RESTOCKED">📦 Restock to Available Inventory</option>
-                    <option value="WRITTEN_OFF_DAMAGED">🔥 Damaged / Scrap Loss Write-Off</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Refund Method</label>
-                  <select
-                    value={customerForm.refundMethod}
-                    onChange={(e) => setCustomerForm({ ...customerForm, refundMethod: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                  >
-                    <option value="CASH">Cash Refund</option>
-                    <option value="BANK_TRANSFER">Bank Transfer (eSewa / Fonepay)</option>
-                    <option value="STORE_CREDIT">Store Credit Voucher</option>
-                  </select>
-                </div>
-              </div>
+              <label className="block font-semibold text-slate-700">Delivered order ID *
+                <input type="text" required value={customerForm.orderId} onChange={(event) => setCustomerForm({ ...customerForm, orderId: event.target.value })} className="mt-1 w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900" placeholder="Paste the customer's delivered order ID" />
+              </label>
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Creating this RMA does not refund the customer or change inventory. Admin approval, NCM return handoff, parcel receipt, and inspection are required first.</p>
 
               {/* Items Section */}
               <div className="space-y-3 pt-2">

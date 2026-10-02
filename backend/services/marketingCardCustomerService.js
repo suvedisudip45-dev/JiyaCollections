@@ -21,6 +21,13 @@ const campaignWindowIsValid = (campaign, now = new Date()) => {
   return true;
 };
 
+export const assertCardCanBeScanned = (card) => {
+  if (!card.exchangeLockRequestId) return;
+  const error = new Error("This card is temporarily locked while an exchange is in progress.");
+  error.code = "MARKETING_CARD_EXCHANGE_LOCKED";
+  throw error;
+};
+
 /** Returns true if card expiry date has not passed (customers can still activate / partners can still redeem). */
 const cardExpiryIsValid = (campaign, now = new Date()) => {
   if (!campaign) return false;
@@ -139,6 +146,7 @@ export const verifyCustomerCardCode = async ({ customerId, cardCode }) => {
   if (!card || card.physicalStatus === "CANCELLED") {
     throw new Error("Card not found or has been cancelled.");
   }
+  assertCardCanBeScanned(card);
 
   // Enforce order delivery and customer ownership
   if (card.orderLink?.order?.userId && card.orderLink.order.userId !== customerId) {
@@ -216,6 +224,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
   if (!card || card.physicalStatus === "CANCELLED") {
     throw new Error("Card not found or has been cancelled.");
   }
+  assertCardCanBeScanned(card);
 
   // Validate QR hash match
   const expectedHash = hashToken(rawToken);
@@ -237,22 +246,37 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
   // Link card to customer if not yet linked
   let link = card.customerLinks[0];
   if (!link) {
-    link = await prisma.marketingCardCustomer.create({
-      data: {
-        cardId: card.id,
-        customerId,
-        status: "LINKED",
-      },
-    });
-    await prisma.marketingCardEvent.create({
-      data: {
-        cardId: card.id,
-        eventType: "CARD_SCANNED_BY_CUSTOMER",
-        actorId: customerId,
-        actorRole: "CUSTOMER",
-        referenceId: link.id,
-      },
-    });
+    link = await prisma.$transaction(async (tx) => {
+      const latestCard = await tx.marketingCard.findUnique({ where: { id: card.id } });
+      if (!latestCard || latestCard.physicalStatus === "CANCELLED") {
+        throw new Error("Card not found or has been cancelled.");
+      }
+      assertCardCanBeScanned(latestCard);
+      const existingLink = await tx.marketingCardCustomer.findFirst({
+        where: { cardId: card.id, customerId, status: { not: "CANCELLED" } },
+      });
+      if (existingLink) return existingLink;
+
+      const scanClaim = await tx.marketingCard.updateMany({
+        where: { id: card.id, exchangeLockRequestId: null },
+        data: { updatedAt: new Date() },
+      });
+      if (scanClaim.count !== 1) assertCardCanBeScanned({ exchangeLockRequestId: "locked" });
+
+      const createdLink = await tx.marketingCardCustomer.create({
+        data: { cardId: card.id, customerId, status: "LINKED" },
+      });
+      await tx.marketingCardEvent.create({
+        data: {
+          cardId: card.id,
+          eventType: "CARD_SCANNED_BY_CUSTOMER",
+          actorId: customerId,
+          actorRole: "CUSTOMER",
+          referenceId: createdLink.id,
+        },
+      });
+      return createdLink;
+    }, { isolationLevel: "Serializable" });
   }
 
   const hasBenefit = Boolean(card.hasBenefit && card.benefit);
@@ -362,6 +386,7 @@ export const resolveCustomerQr = async ({ customerId, token }) => {
     },
   });
   if (!card) throw new Error("QR token is invalid.");
+    assertCardCanBeScanned(card);
   if (!card.customerLinks.length) {
     throw new Error("Please enter your card code first to verify ownership.");
   }

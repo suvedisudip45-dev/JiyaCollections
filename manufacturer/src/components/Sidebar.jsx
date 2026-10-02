@@ -10,6 +10,8 @@ import {
   MapPin,
   Wallet,
   CreditCard,
+  Handshake,
+  Gift,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 
@@ -64,6 +66,13 @@ const Sidebar = () => {
               </div>
             </NavLink>
 
+            <NavLink to="/collaborations" className={navLinkStyle}>
+              <div className="flex items-center gap-3">
+                <Handshake className="w-4 h-4" />
+                <span>Collaboration Sales</span>
+              </div>
+            </NavLink>
+
             <NavLink to="/marketing-cards" className={navLinkStyle}>
               <div className="flex items-center gap-3">
                 <CreditCard className="w-4 h-4" />
@@ -110,6 +119,12 @@ const Sidebar = () => {
               <div className="flex items-center gap-3">
                 <Crown className="w-4 h-4" />
                 <span>Customer Loyalty</span>
+              </div>
+            </NavLink>
+            <NavLink to="/gift-inventory" className={navLinkStyle}>
+              <div className="flex items-center gap-3">
+                <Gift className="w-4 h-4" />
+                <span>Gift Stock</span>
               </div>
             </NavLink>
           </nav>

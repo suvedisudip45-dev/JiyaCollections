@@ -157,7 +157,7 @@ const FestiveOfferSection = () => {
 
         <div className="text-center mt-9">
           <Link
-            to="/collection"
+            to="/shop"
             className="inline-flex items-center gap-2 bg-white hover:bg-rose-50 text-red-600 font-bold px-8 py-3.5 rounded-full text-sm transition-all shadow-lg hover:shadow-xl transform hover:scale-105"
           >
             <span>Explore All Festive Deals</span>

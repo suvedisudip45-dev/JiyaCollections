@@ -5,6 +5,7 @@ import { prisma } from "../config/db.js";
 import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
+import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -94,6 +95,7 @@ const addProduct = async (req, res) => {
       bestseller,
       newInStore,
       showInNavigation,
+      isUnisex,
       discount,
       costPrice,
       stockQuantity,
@@ -198,6 +200,7 @@ const addProduct = async (req, res) => {
     }
     const categoriesArray = normalizeCategories(category);
     const isNewInStore = newInStore === "true" || newInStore === true;
+    const isProductUnisex = isUnisex === "true" || isUnisex === true;
 
     const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
     const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
@@ -239,6 +242,7 @@ const addProduct = async (req, res) => {
       bestseller: bestseller === "true" || bestseller === true ? true : false,
       newInStore: isNewInStore,
       showInNavigation: showInNavigation === "true" || showInNavigation === true,
+      isUnisex: isProductUnisex,
       discount: numDiscount,
       costPrice: numCostPrice,
       stockQuantity: Math.max(0, qty),
@@ -291,6 +295,7 @@ const updateProduct = async (req, res) => {
       bestseller,
       newInStore,
       showInNavigation,
+      isUnisex,
       discount,
       costPrice,
       stockQuantity,
@@ -304,9 +309,21 @@ const updateProduct = async (req, res) => {
       existingImages,
     } = req.body;
 
-    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    const existingProduct = await prisma.product.findUnique({
+      where: { id },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true, pendingTermsVersion: true } } },
+    });
     if (!existingProduct) {
       return res.json({ success: false, message: "Product not found" });
+    }
+    if ((published === "true" || published === true) && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
+      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
+    }
+    const hasCollaborationPriceTerms = Boolean(existingProduct.collaborationLink?.activeTermsVersion || existingProduct.collaborationLink?.pendingTermsVersion);
+    const collaborationPriceChanged = (price !== undefined && Number(price) !== Number(existingProduct.price))
+      || (discount !== undefined && Number(discount) !== Number(existingProduct.discount));
+    if (hasCollaborationPriceTerms && collaborationPriceChanged) {
+      return res.status(409).json({ success: false, message: "Propose a new collaboration terms version to change the agreed retail price or discount." });
     }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
@@ -431,6 +448,7 @@ const updateProduct = async (req, res) => {
     const isShownInNavigation = showInNavigation !== undefined
       ? showInNavigation === "true" || showInNavigation === true
       : undefined;
+    const isProductUnisex = isUnisex !== undefined ? isUnisex === "true" || isUnisex === true : undefined;
 
     const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
     const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
@@ -476,6 +494,7 @@ const updateProduct = async (req, res) => {
       ...(bestseller !== undefined && { bestseller: bestseller === "true" || bestseller === true }),
       ...(isNewInStore !== undefined && { newInStore: isNewInStore }),
       ...(isShownInNavigation !== undefined && { showInNavigation: isShownInNavigation }),
+      ...(isProductUnisex !== undefined && { isUnisex: isProductUnisex }),
       ...(validatedDiscount !== undefined && { discount: validatedDiscount }),
       ...(validatedCostPrice !== undefined && { costPrice: validatedCostPrice }),
       stockQuantity: Math.max(0, newQty),
@@ -491,6 +510,21 @@ const updateProduct = async (req, res) => {
       data: updateData,
     });
 
+    const productCategories = normalizeCategories(categoryStorage ?? existingProduct.category)
+      .map((name) => name.toLowerCase());
+    const bundleMemberships = await prisma.comboBundleProduct.findMany({
+      where: { productId: id },
+      include: { comboBundle: { include: { category: { select: { name: true } } } } },
+    });
+    const invalidComboBundleIds = bundleMemberships
+      .filter((membership) => !productCategories.includes(membership.comboBundle.category.name.toLowerCase()))
+      .map((membership) => membership.comboBundleId);
+    if (invalidComboBundleIds.length > 0) {
+      await prisma.comboBundleProduct.deleteMany({
+        where: { productId: id, comboBundleId: { in: invalidComboBundleIds } },
+      });
+    }
+
     res.json({ success: true, message: "Product and Varieties Updated Successfully" });
   } catch (error) {
     console.log(error);
@@ -502,9 +536,15 @@ const updateProduct = async (req, res) => {
 const togglePublish = async (req, res) => {
   try {
     const { id } = req.body;
-    const existingProduct = await prisma.product.findUnique({ where: { id } });
+    const existingProduct = await prisma.product.findUnique({
+      where: { id },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+    });
     if (!existingProduct) {
       return res.json({ success: false, message: "Product not found" });
+    }
+    if (!existingProduct.published && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
+      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
     }
 
     const updatedProduct = await prisma.product.update({
@@ -550,7 +590,14 @@ const toggleBestseller = async (req, res) => {
 const getSubcategoryBestsellers = async (req, res) => {
   try {
     const { category, subcategory } = req.query;
-    const whereCondition = { published: true, bestseller: true };
+    const whereCondition = {
+      published: true,
+      bestseller: true,
+      OR: [
+        { collaborationLink: null },
+        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
+      ],
+    };
     if (category) {
       whereCondition.category = { contains: category.replace(/"/g, "") };
     }
@@ -581,7 +628,7 @@ const getSubcategoryBestsellers = async (req, res) => {
 // function for list products
 const listProducts = async (req, res) => {
   try {
-    const isAdmin = req.headers.token || req.query.admin === "true";
+    const isAdmin = req.auth?.role === "ADMIN";
     const pagination = getPagination(req.query);
     const requestedCategoryValue = String(req.query.category || "").trim();
     const requestedCategory = requestedCategoryValue.toLowerCase();
@@ -593,7 +640,13 @@ const listProducts = async (req, res) => {
     await syncAllProductsStock();
 
     // Admin sees all products; Public customers see only published products
-    const whereCondition = { ...(isAdmin ? {} : { published: true }) };
+    const whereCondition = isAdmin ? {} : {
+      published: true,
+      OR: [
+        { collaborationLink: null },
+        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
+      ],
+    };
     if (hasPublicFilters) {
       if (requestedCategory) {
         const categoryValue = requestedCategoryValue.replace(/"/g, "");
@@ -656,6 +709,24 @@ const listProducts = async (req, res) => {
       };
     });
 
+    const province = String(req.query.province || "").trim();
+    const district = String(req.query.district || "").trim();
+    if (!isAdmin && province && district && products.length) {
+      const locationPrices = await resolveLocationProductPrices({
+        items: products.map((product) => ({ productId: product.id, quantity: 1 })),
+        province,
+        district,
+        eligibilityMode: "PER_ITEM",
+      });
+      products = products.map((product, index) => ({
+        ...product,
+        globalDiscountPercentage: Number(product.discount || 0),
+        discount: locationPrices.items[index].effectiveDiscountPercentage,
+        locationDiscountPercentage: locationPrices.items[index].locationDiscountPercentage,
+        discountSource: locationPrices.items[index].discountSource,
+      }));
+    }
+
     if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
       products = products.filter((product) => {
         const matchesCategory = !requestedCategory || product.categories.some(
@@ -694,15 +765,17 @@ const removeProduct = async (req, res) => {
 // function for single product info
 const singleProduct = async (req, res) => {
   try {
-    const { productId } = req.body;
+    const { productId, province, district } = req.body;
     
     // Sync stock from manufacturer inventory first
     await syncProductStock(productId);
 
     const rawProduct = await prisma.product.findUnique({
       where: { id: productId },
+      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
     });
-    if (!rawProduct) {
+    const isAdmin = req.auth?.role === "ADMIN";
+    if (!rawProduct || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -731,6 +804,18 @@ const singleProduct = async (req, res) => {
       rating: avgRating,
       reviewCount: productReviews.length,
     };
+    if (!isAdmin && province && district) {
+      const locationPrices = await resolveLocationProductPrices({
+        items: [{ productId, quantity: 1 }],
+        province,
+        district,
+        eligibilityMode: "PER_ITEM",
+      });
+      product.globalDiscountPercentage = Number(product.discount || 0);
+      product.discount = locationPrices.items[0].effectiveDiscountPercentage;
+      product.locationDiscountPercentage = locationPrices.items[0].locationDiscountPercentage;
+      product.discountSource = locationPrices.items[0].discountSource;
+    }
     res.json({ success: true, product });
   } catch (error) {
     console.log(error);

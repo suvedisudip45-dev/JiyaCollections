@@ -54,6 +54,9 @@ const OrderDetail = () => {
   const [marketingCard, setMarketingCard] = useState(null);
   const [marketingCardLoading, setMarketingCardLoading] = useState(false);
   const [checklistModalOpen, setChecklistModalOpen] = useState(false);
+  const [giftOptions, setGiftOptions] = useState(null);
+  const [giftOptionsLoading, setGiftOptionsLoading] = useState(false);
+  const [giftOptionsError, setGiftOptionsError] = useState("");
 
   // Pre-Dispatch Packaging Checklist State
   const [checklist, setChecklist] = useState({
@@ -66,6 +69,7 @@ const OrderDetail = () => {
     addressVerified: false,
     packagingMaterialsVerified: false,
     loyaltyGift: false,
+    catalogGiftIncluded: false,
     thankYouLetter: false,
     additionalLetter: false,
     marketingCard: false,
@@ -122,6 +126,7 @@ const OrderDetail = () => {
               addressVerified: Boolean(notes.packagingChecklist.addressVerified),
               packagingMaterialsVerified: Boolean(notes.packagingChecklist.packagingMaterialsVerified),
               loyaltyGift: Boolean(notes.packagingChecklist.loyaltyGift),
+              catalogGiftIncluded: Boolean(notes.packagingChecklist.catalogGiftIncluded),
               thankYouLetter: Boolean(notes.packagingChecklist.thankYouLetter),
               additionalLetter: Boolean(notes.packagingChecklist.additionalLetter),
               marketingCard: Boolean(notes.packagingChecklist.marketingCard),
@@ -164,6 +169,24 @@ const OrderDetail = () => {
     }
   }, [assignment?.order?.id, backendUrl, token]);
 
+  const fetchGiftOptions = useCallback(async () => {
+    const orderId = assignment?.order?.id;
+    if (!token || !orderId) return;
+    setGiftOptionsLoading(true);
+    setGiftOptionsError("");
+    try {
+      const response = await axios.get(`${backendUrl}/api/manufacturer/gifts/order-options/${orderId}`, { headers: { token } });
+      if (!response.data.success) throw new Error(response.data.message || "Unable to load eligible gifts.");
+      setGiftOptions(response.data);
+    } catch (error) {
+      setGiftOptions(null);
+      setGiftOptionsError(error.response?.data?.message || error.message || "Unable to load eligible gifts.");
+      toast.error(error.response?.data?.message || error.message || "Unable to load eligible gifts.");
+    } finally {
+      setGiftOptionsLoading(false);
+    }
+  }, [assignment?.order?.id, backendUrl, token]);
+
   useEffect(() => {
     fetchAssignment();
     fetchStoryLetterStatus();
@@ -175,11 +198,10 @@ const OrderDetail = () => {
 
   const validateChecklist = () => {
     const benefits = assignment?.order?.fulfillmentBenefits || {};
-    const hasLoyaltyGift = Boolean(benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0));
     const hasHandwrittenLetter = Boolean(benefits.handwrittenCard);
 
-    if (hasLoyaltyGift && !checklist.loyaltyGift) {
-      toast.warning(`Please verify that the Loyalty Card Gift (${benefits.giftDescription || "Gift Item"}) is included.`);
+    if (assignment?.order?.assignedGift && !checklist.catalogGiftIncluded) {
+      toast.warning(`Please verify the assigned gift (${assignment.order.assignedGift.name}) is packed.`);
       return false;
     }
     if (hasHandwrittenLetter && !checklist.thankYouLetter) {
@@ -279,11 +301,12 @@ const OrderDetail = () => {
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success("Ready for pickup! Delivery partner notified.");
+        toast.success("Courier booking submitted successfully.");
         fetchAssignment();
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to set ready for pickup");
+      const fallbackMessage = err.response?.data?.message || "Failed to book courier with delivery partner.";
+      toast.error(fallbackMessage);
     } finally {
       setActionLoading(false);
     }
@@ -451,6 +474,8 @@ const OrderDetail = () => {
       return handleStatusChange("letter_ready", { packagingChecklist: { ...checklist, customerLetterIncluded: true, thankYouLetter: true } });
     }
     if (workflowStatus === "letter_ready") {
+      setGiftOptions(null);
+      fetchGiftOptions();
       setChecklistModalOpen(true);
       return;
     }
@@ -465,9 +490,14 @@ const OrderDetail = () => {
   };
 
   const handleChecklistConfirm = async (confirmedChecklist) => {
-    setChecklist(confirmedChecklist);
+    const { giftInventoryId, ...checklistData } = confirmedChecklist;
+    if (giftInventoryId) checklistData.catalogGiftIncluded = true;
+    setChecklist(checklistData);
     setChecklistModalOpen(false);
-    await handleStatusChange("checklist_complete", { packagingChecklist: confirmedChecklist });
+    await handleStatusChange("checklist_complete", {
+      giftInventoryId,
+      packagingChecklist: checklistData,
+    });
   };
 
   return (
@@ -1339,6 +1369,11 @@ const OrderDetail = () => {
         assignment={assignment}
         checklist={checklist}
         benefits={benefits}
+        giftOptions={giftOptions}
+        giftOptionsLoading={giftOptionsLoading}
+        giftOptionsError={giftOptionsError}
+        onRetryGiftOptions={fetchGiftOptions}
+        currency={currency}
         busy={actionLoading}
         onClose={() => setChecklistModalOpen(false)}
         onConfirm={handleChecklistConfirm}

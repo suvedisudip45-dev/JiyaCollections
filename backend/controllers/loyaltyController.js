@@ -68,13 +68,13 @@ const DEFAULT_LEVELS = [
     minOrders: 8,
     rewardType: "COMBO",
     rewardValue: 250,
-    rewardTitle: "Free Delivery + Rs. 250 Off + Rs. 500 Gift Card",
-    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus Rs. 500 gift voucher & luxury packaging.",
+    rewardTitle: "Free Delivery + Rs. 250 Off + Gift up to Rs. 500",
+    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus a physical hub gift up to Rs. 500.",
     rewardOrderLimit: 3,
     freeShipping: true,
     discountAmount: 250,
     giftAmount: 500,
-    giftDescription: "Exclusive Rs. 500 Gift Voucher",
+    giftDescription: "Exclusive loyalty gift",
     letterIncluded: true,
     customPerk: "Exclusive VIP Luxury Packaging",
   },
@@ -251,7 +251,7 @@ export const calculateUserLoyalty = async (userId) => {
   const perkTags = [];
   if (isFreeShipping) perkTags.push("Free Delivery");
   if (discountAmount > 0) perkTags.push(`Rs. ${discountAmount} Off`);
-  if (giftAmount > 0 || giftDescription) perkTags.push(giftDescription || `Rs. ${giftAmount} Gift Voucher`);
+  if (giftAmount > 0 || giftDescription) perkTags.push(giftAmount > 0 ? `${giftDescription || "Loyalty gift"} up to Rs. ${giftAmount}` : giftDescription);
   if (letterIncluded) perkTags.push("Handwritten Letter");
   if (customPerk) perkTags.push(customPerk);
 
@@ -333,6 +333,9 @@ export const createOrUpdateLevel = async (req, res) => {
     const discAmt = Math.max(0, Number(discountAmount !== undefined ? discountAmount : (rewardValue || 0)));
     const giftAmt = Math.max(0, Number(giftAmount || 0));
     const giftDesc = (giftDescription || "").trim();
+    if ((giftAmt > 0) !== Boolean(giftDesc)) {
+      return res.status(400).json({ success: false, message: "Set both a loyalty gift description and its maximum value, or leave both empty." });
+    }
     const isLetter = Boolean(letterIncluded);
     const cPerk = (customPerk || "").trim();
 
@@ -342,7 +345,7 @@ export const createOrUpdateLevel = async (req, res) => {
       const parts = [];
       if (isFreeShipping) parts.push("Free Delivery");
       if (discAmt > 0) parts.push(`Rs. ${discAmt} Off`);
-      if (giftAmt > 0 || giftDesc) parts.push(giftDesc || `Rs. ${giftAmt} Gift Voucher`);
+      if (giftAmt > 0 || giftDesc) parts.push(giftAmt > 0 ? `${giftDesc || "Gift"} up to Rs. ${giftAmt}` : giftDesc);
       if (isLetter) parts.push("Handwritten Letter");
       if (cPerk) parts.push(cPerk);
       title = parts.length > 0 ? parts.join(" + ") : "Entry Level";

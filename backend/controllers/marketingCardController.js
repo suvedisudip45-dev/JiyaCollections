@@ -27,7 +27,7 @@ import {
 } from "../services/marketingCardCustomerService.js";
 
 const sendError = (res, error) => {
-  const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403 : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" ? 409 : 400;
+  const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403 : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" || error.code === "MARKETING_CARD_EXCHANGE_LOCKED" ? 409 : 400;
   return res.status(status).json({ success: false, message: error.message || "Marketing card operation failed.", code: error.code || "MARKETING_CARD_ERROR" });
 };
 

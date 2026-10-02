@@ -8,6 +8,7 @@ import {
   verifyAdminOrderCustomer,
   adminCreateOrder,
 } from "../controllers/orderController.js";
+import { customerCancelOrder } from "../controllers/orderCancellationController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const orderRouter = express.Router();
@@ -23,6 +24,7 @@ orderRouter.post("/admin-create", authenticate, authorize("order:admin_create"),
 
 // Payment Features
 orderRouter.post("/place", authenticate, authorize("customer:order_place"), placeOrder);
+orderRouter.post("/:orderId/cancel", authenticate, authorize("order:customer_cancel"), customerCancelOrder);
 
 // User Features
 orderRouter.post("/userorders", authenticate, authorize("customer:order_read"), userOrders);

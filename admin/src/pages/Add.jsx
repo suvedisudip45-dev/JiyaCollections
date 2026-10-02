@@ -27,6 +27,7 @@ const Add = ({ token }) => {
   const [bestseller, setBestSeller] = useState(false);
   const [newInStore, setNewInStore] = useState(false);
   const [showInNavigation, setShowInNavigation] = useState(false);
+  const [isUnisex, setIsUnisex] = useState(false);
 
   // Variety builder state
   const [variants, setVariants] = useState([]); // [{ size, color, quantity: 0 }]
@@ -222,6 +223,7 @@ const Add = ({ token }) => {
         formData.append("bestseller", bestseller);
         formData.append("newInStore", newInStore);
         formData.append("showInNavigation", showInNavigation);
+        formData.append("isUnisex", isUnisex);
 
         const computedStockQuantity = variants.reduce((sum, v) => sum + (Number(v.quantity) || 0), 0);
         formData.append("stockQuantity", computedStockQuantity);
@@ -279,6 +281,7 @@ const Add = ({ token }) => {
           setBestSeller(false);
           setNewInStore(false);
           setShowInNavigation(false);
+          setIsUnisex(false);
           setVariants([]);
           setColorImageFiles({});
           setVariantSize("S");
@@ -472,6 +475,19 @@ const Add = ({ token }) => {
 
           {/* Subcategory & Pricing */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={isUnisex}
+                  onChange={(e) => setIsUnisex(e.target.checked)}
+                  className="w-4 h-4 accent-indigo-600 rounded"
+                />
+                <span>Unisex product</span>
+              </label>
+              <p className="text-[10px] text-slate-500">Use this when the item is marketed to any gender.</p>
+            </div>
+
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">Subcategory (Type)</label>
               <select

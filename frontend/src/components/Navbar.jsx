@@ -36,7 +36,10 @@ const Navbar = () => {
     fetchNavigationOptions();
   }, [backendUrl]);
 
-  const categoryLinks = navigationGroups.slice(0, 3);
+  const categoryLinks = navigationGroups;
+
+  const collectionDirectoryUrl = (group) =>
+    `/combo-bundles?category=${encodeURIComponent(group.name)}&categoryId=${encodeURIComponent(group.id)}`;
 
   useEffect(() => {
     if (categoryLinks.length && !categoryLinks.some((group) => group.name === activeMobileCategory)) {
@@ -48,8 +51,8 @@ const Navbar = () => {
 
   const handleSearchClick = () => {
     setShowSearch(true);
-    if (!location.pathname.includes("collection")) {
-      navigate("/collection");
+    if (!location.pathname.includes("shop") && !location.pathname.includes("collection")) {
+      navigate("/shop");
     }
   };
 
@@ -87,32 +90,33 @@ const Navbar = () => {
         {categoryLinks.map((group) => (
           <li key={group.name} className="group relative">
             <NavLink
-              to={`/collection?category=${encodeURIComponent(group.name)}`}
+              to={`/shop?category=${encodeURIComponent(group.name)}`}
               className="block py-2 transition-colors hover:text-[var(--ink)] focus:text-[var(--ink)]"
             >
               {group.name.toUpperCase()}
             </NavLink>
             <div className="invisible absolute left-1/2 top-full z-50 w-64 -translate-x-1/2 border border-[var(--line)] bg-[var(--white)] p-5 opacity-0 shadow-xl transition-all duration-200 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
-              <Link to={`/collection?category=${encodeURIComponent(group.name)}`} className="mb-4 block border-b border-[var(--line)] pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--ink)] hover:text-[var(--accent)]">
+              <Link to={`/shop?category=${encodeURIComponent(group.name)}`} className="mb-4 block border-b border-[var(--line)] pb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--ink)] hover:text-[var(--accent)]">
                 Shop {group.name}
               </Link>
-              {group.newArrivalCount > 0 && (
-                <Link to={`/collection?category=${encodeURIComponent(group.name)}&featured=new`} className="mb-3 block text-xs font-bold uppercase tracking-[0.08em] text-[var(--accent)] hover:text-[var(--ink)]">
-                  New arrivals
-                </Link>
-              )}
               <div className="flex flex-col gap-2">
                 {group.subcategories.map((subcategory) => (
-                  <Link key={`${group.name}-${subcategory}`} to={`/collection?category=${encodeURIComponent(group.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="text-xs uppercase tracking-[0.06em] text-[var(--muted)] hover:text-[var(--ink)]">
+                  <Link key={`${group.name}-${subcategory}`} to={`/shop?category=${encodeURIComponent(group.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="text-xs uppercase tracking-[0.06em] text-[var(--muted)] hover:text-[var(--ink)]">
                     {subcategory}
                   </Link>
                 ))}
               </div>
+              <Link to={collectionDirectoryUrl(group)} className="mt-4 block border-t border-[var(--line)] pt-4 text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
+                Combo Bundles <span aria-hidden="true">→</span>
+              </Link>
+              <Link to="/collaborations" className="mt-3 block text-xs font-bold uppercase tracking-[0.1em] text-[var(--ink)] hover:text-[var(--accent)]">
+                Collaboration <span aria-hidden="true">→</span>
+              </Link>
             </div>
           </li>
         ))}
-        <NavLink to="/collection?featured=new" className="transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
-        <NavLink to="/collection?featured=bestseller" className="transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
+        <NavLink to="/shop?featured=new" className="transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
+        <NavLink to="/shop?featured=bestseller" className="transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
         <NavLink to="/about" className="transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
       </ul>
 
@@ -176,19 +180,20 @@ const Navbar = () => {
         <div className="flex flex-col">
           {activeMobileGroup && (
             <div className="border-b border-[var(--line)]">
-              {activeMobileGroup.newArrivalCount > 0 && (
-                <Link onClick={() => setVisible(false)} to={`/collection?category=${encodeURIComponent(activeMobileGroup.name)}&featured=new`} className="flex items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
-                  {activeMobileGroup.name} new arrivals <span className="text-xl">→</span>
-                </Link>
-              )}
               {activeMobileGroup.subcategories.map((subcategory) => (
-                <Link key={`${activeMobileGroup.name}-${subcategory}`} onClick={() => setVisible(false)} to={`/collection?category=${encodeURIComponent(activeMobileGroup.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="block border-b border-[var(--line)] px-5 py-5 text-sm uppercase tracking-[0.08em] text-[var(--muted)] hover:text-[var(--ink)]">
+                <Link key={`${activeMobileGroup.name}-${subcategory}`} onClick={() => setVisible(false)} to={`/shop?category=${encodeURIComponent(activeMobileGroup.name)}&subcategory=${encodeURIComponent(subcategory)}`} className="block border-b border-[var(--line)] px-5 py-5 text-sm uppercase tracking-[0.08em] text-[var(--muted)] hover:text-[var(--ink)]">
                   {subcategory}
                 </Link>
               ))}
+              <Link onClick={() => setVisible(false)} to={collectionDirectoryUrl(activeMobileGroup)} className="flex items-center justify-between border-b border-[var(--line)] px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
+                Combo Bundles <span className="text-xl">→</span>
+              </Link>
+              <Link onClick={() => setVisible(false)} to="/collaborations" className="flex items-center justify-between px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-[var(--ink)]">
+                Collaboration <span className="text-xl">→</span>
+              </Link>
             </div>
           )}
-          <Link onClick={() => setVisible(false)} to="/collection?featured=bestseller" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+          <Link onClick={() => setVisible(false)} to="/shop?featured=bestseller" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
             Best sellers
           </Link>
           <Link onClick={() => setVisible(false)} to="/contact" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
@@ -196,7 +201,7 @@ const Navbar = () => {
           </Link>
         </div>
 
-        <Link onClick={() => setVisible(false)} to="/collection" className="group relative block aspect-[4/5] overflow-hidden bg-[var(--stone)]">
+        <Link onClick={() => setVisible(false)} to="/shop" className="group relative block aspect-[4/5] overflow-hidden bg-[var(--stone)]">
           <img src={assets.hero_img} alt="Explore the collection" className="h-full w-full object-cover transition duration-700 group-hover:scale-105" />
           <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent" />
           <div className="absolute bottom-7 left-6 text-white">

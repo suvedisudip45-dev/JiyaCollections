@@ -3089,6 +3089,12 @@ export const payManufacturer = async (req, res) => {
   try {
     const { manufacturerId, amount, fromAccountId, notes } = req.body;
     let payAmount = Number(amount || 0);
+    const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
+    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
+
+    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
+      return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
+    }
 
     if (!manufacturerId || !fromAccountId) {
       return res.status(400).json({
@@ -3194,18 +3200,23 @@ export const payManufacturer = async (req, res) => {
     const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer.name);
     remainingPayable = postedPayable.outstanding;
     if (payAmount <= 0) {
-      payAmount = postedPayable.outstanding;
+      payAmount = Math.max(0, postedPayable.outstanding + (adjustmentType === "FINE" ? adjustmentAmount : 0) - (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0));
     }
 
-    if (payAmount > postedPayable.outstanding) {
+    const settlementAmount = payAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
+    if (settlementAmount <= 0) {
+      return res.status(400).json({ success: false, message: "The cash payment and adjustment must settle a positive amount of the manufacturer payable." });
+    }
+
+    if (settlementAmount > postedPayable.outstanding) {
       return res.status(400).json({
         success: false,
-        message: `Payment exceeds posted manufacturer payable. Posted outstanding: Rs ${postedPayable.outstanding.toLocaleString()}; requested: Rs ${payAmount.toLocaleString()}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
+        message: `Net settlement exceeds posted manufacturer payable. Posted outstanding: Rs ${postedPayable.outstanding.toLocaleString()}; net settlement: Rs ${settlementAmount.toLocaleString()}. Complete delivery/accounting posting first or record the excess as an approved manufacturer advance.`,
         postedPayable,
       });
     }
 
-    if (payAmount <= 0 && remainingPayable === 0) {
+    if (settlementAmount <= 0 && remainingPayable === 0) {
       return res.status(400).json({
         success: false,
         message: `No outstanding net payable for ${manufacturer.name}. (Approved COGS: Rs ${totalCogs.toLocaleString()}, Paid: Rs ${prevPaid.toLocaleString()}, Direct Margin Offset: Rs ${remainingReceivable.toLocaleString()})`,
@@ -3275,6 +3286,9 @@ export const payManufacturer = async (req, res) => {
       idempotencyKey,
       date: new Date().toISOString(),
       amount: payAmount,
+      settlementAmount,
+      adjustmentType,
+      adjustmentAmount,
       offsetAmount: offsetApplied,
       grossPayable: remainingPayable,
       grossReceivable: remainingReceivable,
@@ -3284,7 +3298,7 @@ export const payManufacturer = async (req, res) => {
     };
     history.push(settlementEntry);
 
-    const newTotalPaid = postedPayable.paid + payAmount;
+    const newTotalPaid = postedPayable.paid + settlementAmount;
     const finalRemainingPayable = Math.max(0, postedPayable.recognized - newTotalPaid);
     const newStatus = finalRemainingPayable === 0 ? "SETTLED" : "PARTIALLY_PAID";
 
@@ -3341,6 +3355,9 @@ export const payManufacturer = async (req, res) => {
         payableId: payable?.id || `MFG-COGS-${manufacturer.id}`,
         payeeName: manufacturer.name,
         amount: payAmount,
+        settlementAmount,
+        discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
+        fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
         fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2160",
         idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
@@ -3368,9 +3385,18 @@ export const settlePayable = async (req, res) => {
   try {
     const { payableId, amount, fromAccountId, notes } = req.body;
     const settleAmount = Number(amount || 0);
+    const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
+    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
 
-    if (!payableId || settleAmount <= 0 || !fromAccountId) {
+    if (!payableId || !Number.isFinite(settleAmount) || settleAmount <= 0 || !fromAccountId) {
       return res.json({ success: false, message: "Payable ID, positive payment amount, and source account are required" });
+    }
+    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
+      return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
+    }
+    const settlementAmount = settleAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
+    if (settlementAmount <= 0) {
+      return res.status(400).json({ success: false, message: "The cash payment and adjustment must settle a positive amount of the payable." });
     }
 
     // Check if this is a synthesized or direct manufacturer payable
@@ -3402,10 +3428,10 @@ export const settlePayable = async (req, res) => {
       });
     }
 
-    if (settleAmount > payable.remainingBalance) {
+    if (settlementAmount > payable.remainingBalance) {
       return res.json({
         success: false,
-        message: `Settlement amount (Rs ${settleAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${payable.remainingBalance.toLocaleString()})`,
+        message: `Net settlement (Rs ${settlementAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${payable.remainingBalance.toLocaleString()}). Check the cash amount and adjustment.`,
       });
     }
 
@@ -3455,8 +3481,8 @@ export const settlePayable = async (req, res) => {
       });
     }
 
+    const newRemaining = Math.max(0, Number(payable.remainingBalance) - settlementAmount);
     const newPaid = Number(payable.paidAmount) + settleAmount;
-    const newRemaining = Math.max(0, Number(payable.totalAmount) - newPaid);
     const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_PAID";
 
     let history = [];
@@ -3471,6 +3497,9 @@ export const settlePayable = async (req, res) => {
       idempotencyKey,
       date: new Date().toISOString(),
       amount: settleAmount,
+      settlementAmount,
+      adjustmentType,
+      adjustmentAmount,
       fromAccountId,
       accountName: fromAccount.accountName,
       notes: notes || "Payable settlement",
@@ -3525,16 +3554,22 @@ export const settlePayable = async (req, res) => {
     }
 
     // Post Supplier / Accounts Payable settlement to Double-Entry General Ledger
-    postSupplierPaymentAccounting(payable, {
+    await postSupplierPaymentAccounting({
+      payableId: payable.id,
+      payeeName: payable.payeeName,
       amount: settleAmount,
-      fromAccountId,
+      settlementAmount,
+      discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
+      fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
+      fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
+      idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
     }).catch((glErr) => {
       console.error("General Ledger AP settlement posting error:", glErr);
     });
 
     res.json({
       success: true,
-      message: `Successfully paid Rs ${settleAmount.toLocaleString()} to ${payable.payeeName}. Remaining balance: Rs ${newRemaining.toLocaleString()}`,
+      message: `Successfully paid Rs ${settleAmount.toLocaleString()} to ${payable.payeeName}${adjustmentAmount > 0 ? ` with Rs ${adjustmentAmount.toLocaleString()} ${adjustmentType.toLowerCase()}` : ""}. Remaining balance: Rs ${newRemaining.toLocaleString()}`,
     });
   } catch (error) {
     console.error("Settle Payable Error:", error);
@@ -3546,9 +3581,18 @@ export const collectReceivable = async (req, res) => {
   try {
     const { receivableId, amount, toAccountId, notes } = req.body;
     const collectAmount = Number(amount || 0);
+    const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
+    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
 
-    if (!receivableId || collectAmount <= 0 || !toAccountId) {
+    if (!receivableId || !Number.isFinite(collectAmount) || collectAmount <= 0 || !toAccountId) {
       return res.json({ success: false, message: "Receivable ID, positive amount, and deposit account are required" });
+    }
+    if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
+      return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
+    }
+    const settlementAmount = collectAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
+    if (settlementAmount <= 0) {
+      return res.status(400).json({ success: false, message: "The collection and adjustment must settle a positive amount of the receivable." });
     }
 
     const toAccount = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
@@ -3595,6 +3639,9 @@ export const collectReceivable = async (req, res) => {
     });
 
     if (ncmSettlement) {
+      if (adjustmentType !== "NONE") {
+        return res.status(400).json({ success: false, message: "NCM COD settlements already account for courier fees and do not support an additional discount or fine." });
+      }
       if (ncmSettlement.settlementState === "SETTLED") {
         return res.status(409).json({
           success: false,
@@ -3652,6 +3699,9 @@ export const collectReceivable = async (req, res) => {
 
     // Check if direct manufacturer sales receivable
     if (String(receivableId).startsWith("AR-MFG-DIRECT-")) {
+      if (adjustmentType !== "NONE") {
+        return res.status(400).json({ success: false, message: "Direct manufacturer margin collections do not support adjustments in this settlement flow." });
+      }
       const manufacturerId = receivableId.replace("AR-MFG-DIRECT-", "");
       const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
 
@@ -3697,15 +3747,15 @@ export const collectReceivable = async (req, res) => {
       });
     }
 
-    if (collectAmount > receivable.remainingBalance) {
+    if (settlementAmount > receivable.remainingBalance) {
       return res.json({
         success: false,
-        message: `Collection amount (Rs ${collectAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${receivable.remainingBalance.toLocaleString()})`,
+        message: `Net settlement (Rs ${settlementAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${receivable.remainingBalance.toLocaleString()}). Check the cash amount and adjustment.`,
       });
     }
 
+    const newRemaining = Math.max(0, Number(receivable.remainingBalance) - settlementAmount);
     const newReceived = Number(receivable.receivedAmount) + collectAmount;
-    const newRemaining = Math.max(0, Number(receivable.totalAmount) - newReceived);
     const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_RECEIVED";
 
     let history = [];
@@ -3720,6 +3770,9 @@ export const collectReceivable = async (req, res) => {
       idempotencyKey,
       date: new Date().toISOString(),
       amount: collectAmount,
+      settlementAmount,
+      adjustmentType,
+      adjustmentAmount,
       toAccountId,
       accountName: toAccount.accountName,
       notes: notes || "Receivable collection",
@@ -3754,20 +3807,24 @@ export const collectReceivable = async (req, res) => {
     ]);
 
     // Post to Double-Entry General Ledger
-    postCustomerPaymentAccounting({
+    await postCustomerPaymentAccounting({
       id: receivable.id,
       orderId: receivable.referenceId || receivable.id,
       customerName: receivable.payerName,
       amount: collectAmount,
+      settlementAmount,
+      discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
+      fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
       depositAccountType: toAccount.accountType === "CASH" ? "CASH" : "BANK",
       referenceNumber: `REC-COLL-${Date.now()}`,
+      idempotencyKey: `CUSTOMER_PAYMENT:${idempotencyKey}`,
     }).catch((glErr) => {
       console.error("General Ledger AR collection posting error:", glErr);
     });
 
     res.json({
       success: true,
-      message: `Successfully collected Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}. Remaining: Rs ${newRemaining.toLocaleString()}`,
+      message: `Successfully collected Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}${adjustmentAmount > 0 ? ` with Rs ${adjustmentAmount.toLocaleString()} ${adjustmentType.toLowerCase()}` : ""}. Remaining: Rs ${newRemaining.toLocaleString()}`,
     });
   } catch (error) {
     console.error("Collect Receivable Error:", error);
@@ -3847,20 +3904,20 @@ export const revertSettlement = async (req, res) => {
       const priorPaid = Number(payable.paidAmount);
       const priorRemaining = Number(payable.remainingBalance);
 
-      const newPaid = Math.max(0, priorPaid - revertAmount);
-      const newRemaining = Number(payable.totalAmount) - newPaid;
-      const restoredStatus = newPaid <= 0 ? "UNPAID" : "PARTIALLY_PAID";
-
       // Restore settlement history
       let history = [];
       try { history = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []); } catch { history = []; }
-      // Remove last settlement entry matching the reverted cash tx
-      if (cashTx && history.length > 0) {
-        const idx = history.findLastIndex(h => Math.abs(Number(h.amount) - revertAmount) < 0.01);
-        if (idx !== -1) history.splice(idx, 1);
-      } else {
-        history = [];
-      }
+      const historyIndex = cashTx && history.length > 0
+        ? history.findLastIndex((entry) => cashTx.idempotencyKey && entry.idempotencyKey
+          ? entry.idempotencyKey === cashTx.idempotencyKey
+          : Math.abs(Number(entry.amount) - revertAmount) < 0.01)
+        : -1;
+      const revertedSettlementAmount = Number(historyIndex >= 0 ? history[historyIndex].settlementAmount ?? revertAmount : revertAmount);
+      const newPaid = Math.max(0, priorPaid - revertAmount);
+      const newRemaining = Math.min(Number(payable.totalAmount), priorRemaining + revertedSettlementAmount);
+      const restoredStatus = newRemaining >= Number(payable.totalAmount) ? "UNPAID" : "PARTIALLY_PAID";
+      if (historyIndex >= 0) history.splice(historyIndex, 1);
+      else if (!cashTx) history = [];
 
       // Compensation transaction (money flows BACK into the treasury account)
       let reversalTxId = null;
@@ -3953,18 +4010,19 @@ export const revertSettlement = async (req, res) => {
       const priorReceived = Number(receivable.receivedAmount);
       const priorRemaining = Number(receivable.remainingBalance);
 
-      const newReceived = Math.max(0, priorReceived - revertAmount);
-      const newRemaining = Number(receivable.totalAmount) - newReceived;
-      const restoredStatus = newReceived <= 0 ? "UNPAID" : "PARTIALLY_RECEIVED";
-
       let history = [];
       try { history = typeof receivable.collectionHistory === "string" ? JSON.parse(receivable.collectionHistory) : (receivable.collectionHistory || []); } catch { history = []; }
-      if (cashTx && history.length > 0) {
-        const idx = history.findLastIndex(h => Math.abs(Number(h.amount) - revertAmount) < 0.01);
-        if (idx !== -1) history.splice(idx, 1);
-      } else {
-        history = [];
-      }
+      const historyIndex = cashTx && history.length > 0
+        ? history.findLastIndex((entry) => cashTx.idempotencyKey && entry.idempotencyKey
+          ? entry.idempotencyKey === cashTx.idempotencyKey
+          : Math.abs(Number(entry.amount) - revertAmount) < 0.01)
+        : -1;
+      const revertedSettlementAmount = Number(historyIndex >= 0 ? history[historyIndex].settlementAmount ?? revertAmount : revertAmount);
+      const newReceived = Math.max(0, priorReceived - revertAmount);
+      const newRemaining = Math.min(Number(receivable.totalAmount), priorRemaining + revertedSettlementAmount);
+      const restoredStatus = newRemaining >= Number(receivable.totalAmount) ? "UNPAID" : "PARTIALLY_RECEIVED";
+      if (historyIndex >= 0) history.splice(historyIndex, 1);
+      else if (!cashTx) history = [];
 
       let reversalTxId = null;
       await prisma.$transaction(async (tx) => {

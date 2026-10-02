@@ -15,18 +15,18 @@ const parseJSON = (val, fallback = []) => {
  * all manufacturer hubs for a given product, and sync the aggregate numbers
  * to the main Product record in DB.
  */
-export const syncProductStock = async (productId) => {
+export const syncProductStock = async (productId, { client = prisma, throwOnError = false } = {}) => {
   if (!productId) return null;
 
   try {
-    const product = await prisma.product.findUnique({
+    const product = await client.product.findUnique({
       where: { id: productId },
     });
 
     if (!product) return null;
 
     // Fetch all manufacturer inventories for this product
-    const allHubs = await prisma.manufacturerInventory.findMany({
+    const allHubs = await client.manufacturerInventory.findMany({
       where: { productId },
     });
 
@@ -78,7 +78,7 @@ export const syncProductStock = async (productId) => {
     }
 
     // Persist updated product stock & variants
-    const updatedProduct = await prisma.product.update({
+    const updatedProduct = await client.product.update({
       where: { id: productId },
       data: {
         stockQuantity: grandTotalAvailable,
@@ -89,6 +89,7 @@ export const syncProductStock = async (productId) => {
     return updatedProduct;
   } catch (err) {
     console.error(`syncProductStock error for ${productId}:`, err);
+    if (throwOnError) throw err;
     return null;
   }
 };

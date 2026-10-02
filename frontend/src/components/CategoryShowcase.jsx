@@ -243,7 +243,7 @@ const CategoryShowcase = () => {
             {/* Explore All In Category Link */}
             <div className="text-center mt-8">
               <Link
-                to="/collection"
+                to="/shop"
                 className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-gray-700 hover:text-black transition-colors"
               >
                 <span>View all {allCategoryProductsCount} items in {catName}</span>

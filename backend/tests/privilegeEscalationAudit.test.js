@@ -6,6 +6,9 @@ import path from "node:path";
 const backendRoot = path.resolve(".");
 const excluded = new Set([
   "prisma/seed.js",
+  "services/rbacService.js",
+  "services/accessManagementService.js",
+  "controllers/accessManagementController.js",
   "tests/privilegeEscalationAudit.test.js",
   "tests/rbacAuthorization.test.js",
   "tests/authHardening.test.js",
@@ -41,7 +44,7 @@ const mutationSurfacePatterns = [
   /\bSUPER_ADMIN\b/i,
 ];
 
-test("backend exposes no API mutation surface for role or permission assignment", () => {
+test("RBAC mutations are confined to the audited access-management service", () => {
   const files = collectJsFiles(backendRoot);
   const findings = [];
 
@@ -59,4 +62,16 @@ test("backend exposes no API mutation surface for role or permission assignment"
   }
 
   assert.deepEqual(findings, [], `Unexpected privilege mutation surface in: ${findings.join(", ") || "none"}`);
+});
+
+test("every Admin access-management route requires authentication, Admin role, and granular permission", () => {
+  const routePath = path.join(backendRoot, "routes", "accessManagementRoute.js");
+  const source = fs.readFileSync(routePath, "utf8");
+  const routeLines = source.split(/\r?\n/).filter((line) => /accessManagementRouter\.(get|post|put|patch|delete)\(/.test(line));
+
+  assert.ok(routeLines.length > 0);
+  assert.ok(source.includes("[authenticate, requireRole(\"ADMIN\"), authorize(permissions)]"));
+  assert.ok(routeLines.every((line) => line.includes("...protectedBy(\"access:")));
+  assert.equal(routeLines.some((line) => /accessManagementRouter\.delete\(/.test(line)), false);
+  assert.ok(source.includes("protectedBy(\"access:admin_users_create\", \"access:admin_users_assign_roles\")"));
 });

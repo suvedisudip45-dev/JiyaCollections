@@ -16,6 +16,7 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
     where: {
       role: {
         isActive: true,
+        ...(normalizedPrincipalRole ? { portalScope: normalizedPrincipalRole } : {}),
         ...(normalizedPrincipalRole && normalizedPrincipalRole !== "ADMIN" ? { code: { not: "ADMIN" } } : {}),
         accounts: {
           some: {

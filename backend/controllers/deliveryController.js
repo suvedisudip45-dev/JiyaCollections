@@ -71,7 +71,10 @@ export const readyForDelivery = async (req, res) => {
     res.status(202).json({ success: true, delivery });
   } catch (error) {
     const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code) ? 404 : 400;
-    res.status(status).json({ success: false, message: error.message, code: error.code || "DELIVERY_FAILED" });
+    const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
+      ? `Failed to book courier. ${error.message}`
+      : error.message;
+    res.status(status).json({ success: false, message: userMessage, code: error.code || "DELIVERY_FAILED" });
   }
 };
 
@@ -181,6 +184,104 @@ export const adminReconcileActive = async (_req, res) => {
     res.json({ success: true, count: deliveries.length });
   } catch (error) {
     res.status(502).json({ success: false, message: error.message });
+  }
+};
+
+export const adminResolveNcmHandoff = async (req, res) => {
+  const { outcome, ncmOrderId, reason } = req.body || {};
+  const normalizedOutcome = String(outcome || "").trim().toUpperCase();
+  const resolutionReason = String(reason || "").trim();
+  const numericNcmOrderId = Number(ncmOrderId);
+  if (!["CREATED", "NOT_CREATED"].includes(normalizedOutcome) || resolutionReason.length < 5 ||
+    (normalizedOutcome === "CREATED" && (!Number.isInteger(numericNcmOrderId) || numericNcmOrderId <= 0))) {
+    return res.status(400).json({ success: false, message: "Choose a verified NCM outcome and provide investigation notes." });
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const delivery = await tx.deliveryOrder.findUnique({ where: { id: req.params.id } });
+      if (!delivery) return { error: "Delivery not found", status: 404 };
+      if (!["NCM_SUBMISSION_STARTED", "SUBMISSION_FAILED"].includes(delivery.state) || delivery.ncmOrderId) {
+        return { error: "This delivery is not awaiting an NCM handoff resolution", status: 409 };
+      }
+      const attempt = await tx.ncmRequestAttempt.findFirst({
+        where: { deliveryOrderId: delivery.id, operation: "CREATE_ORDER" },
+        orderBy: { attemptNumber: "desc" },
+      });
+      if (!attempt || !["STARTED", "UNKNOWN", "FAILED"].includes(attempt.result)) {
+        return { error: "No unresolved NCM create attempt exists for this delivery", status: 409 };
+      }
+      if (attempt.result === "STARTED" && Date.now() - attempt.startedAt.getTime() < 120000) {
+        return { error: "The NCM create request may still be in progress. Wait two minutes before resolving it manually.", status: 409 };
+      }
+
+      if (normalizedOutcome === "CREATED") {
+        const claim = await tx.deliveryOrder.updateMany({
+          where: { id: delivery.id, state: delivery.state, ncmOrderId: null },
+          data: {
+            state: "NCM_CREATED",
+            ncmOrderId: numericNcmOrderId,
+            ncmStatus: "Pickup Order Created",
+            ncmCreatedAt: new Date(),
+            lastSyncError: null,
+          },
+        });
+        if (claim.count !== 1) return { error: "Delivery changed during resolution", status: 409 };
+        await tx.order.update({
+          where: { id: delivery.orderId },
+          data: { fulfillmentStatus: "ncm_created", deliveryJobId: delivery.id },
+        });
+        await tx.ncmRequestAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            result: "SUCCESS",
+            httpStatus: 200,
+            responseJson: { orderid: numericNcmOrderId, resolvedByAdminId: req.adminId, resolutionReason },
+            errorCode: null,
+            errorMessage: null,
+            finishedAt: new Date(),
+          },
+        });
+      } else {
+        const claim = await tx.deliveryOrder.updateMany({
+          where: { id: delivery.id, state: delivery.state, ncmOrderId: null },
+          data: { state: "SUBMISSION_FAILED", lastSyncError: resolutionReason },
+        });
+        if (claim.count !== 1) return { error: "Delivery changed during resolution", status: 409 };
+        await tx.order.update({ where: { id: delivery.orderId }, data: { fulfillmentStatus: "ready_for_pickup" } });
+        await tx.ncmRequestAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            result: "RESOLVED_NOT_CREATED",
+            httpStatus: 400,
+            errorCode: "ADMIN_CONFIRMED_NCM_NOT_CREATED",
+            errorMessage: resolutionReason,
+            finishedAt: new Date(),
+          },
+        });
+      }
+
+      await tx.deliveryEvent.create({
+        data: {
+          deliveryOrderId: delivery.id,
+          orderId: delivery.orderId,
+          source: "ADMIN",
+          eventType: normalizedOutcome === "CREATED" ? "NCM_HANDOFF_CONFIRMED_CREATED" : "NCM_HANDOFF_CONFIRMED_NOT_CREATED",
+          fromState: delivery.state,
+          toState: normalizedOutcome === "CREATED" ? "NCM_CREATED" : "SUBMISSION_FAILED",
+          payloadJson: { ncmOrderId: normalizedOutcome === "CREATED" ? numericNcmOrderId : null, reason: resolutionReason },
+          actorId: req.adminId,
+          idempotencyKey: `NCM_HANDOFF_RESOLUTION:${delivery.id}:${attempt.attemptNumber}:${normalizedOutcome}`,
+        },
+      });
+      return { success: true, deliveryId: delivery.id, outcome: normalizedOutcome };
+    }, { isolationLevel: "Serializable" });
+
+    if (result.error) return res.status(result.status).json({ success: false, message: result.error });
+    return res.json({ success: true, message: "NCM handoff resolution recorded.", ...result });
+  } catch (error) {
+    const status = error.code === "P2002" ? 409 : 500;
+    return res.status(status).json({ success: false, message: error.code === "P2002" ? "This NCM order ID is already linked to another delivery." : error.message });
   }
 };
 

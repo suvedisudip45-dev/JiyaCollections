@@ -80,7 +80,7 @@ const Home = () => {
           {categoryTiles.map((tile) => (
             <Link
               key={tile.label}
-              to={tile.query ? `/collection?category=${tile.query}` : "/collection"}
+              to={tile.query ? `/shop?category=${tile.query}` : "/shop"}
               className="group relative flex h-[280px] sm:h-[340px] md:h-[400px] flex-col justify-between overflow-hidden rounded-2xl p-6 shadow-md transition-all duration-300 hover:shadow-2xl"
             >
               {/* Background Image with Zoom */}

@@ -20,6 +20,12 @@ export const createAuthorize = (permissionResolver = resolveAccountPermissions) 
           code: "AUTHENTICATION_REQUIRED",
         });
       }
+      if (
+        req.auth.mustChangePassword &&
+        requiredPermissions.every((permission) => permission === "admin:change_password")
+      ) {
+        return next();
+      }
 
       try {
         const cache = req.rbac?.permissionCache || new Map();

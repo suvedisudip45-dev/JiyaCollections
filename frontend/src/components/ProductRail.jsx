@@ -23,7 +23,7 @@ const ProductRail = ({ eyebrow, title, description, products = [], actionLabel =
         <div className="hidden items-center gap-3 sm:flex">
           <button onClick={() => moveRail(-1)} className="icon-button h-10 w-10 border border-[var(--line)]" aria-label="Previous products"><ChevronLeft size={18} /></button>
           <button onClick={() => moveRail(1)} className="icon-button h-10 w-10 border border-[var(--line)]" aria-label="Next products"><ChevronRight size={18} /></button>
-          <Link to="/collection" className="ml-3 hidden items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] lg:flex">{actionLabel} <ArrowRight size={15} /></Link>
+          <Link to="/shop" className="ml-3 hidden items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] lg:flex">{actionLabel} <ArrowRight size={15} /></Link>
         </div>
       </div>
       <div ref={railRef} className="flex snap-x gap-4 overflow-x-auto pb-2 sm:gap-5">
@@ -33,7 +33,7 @@ const ProductRail = ({ eyebrow, title, description, products = [], actionLabel =
           </div>
         ))}
       </div>
-      <Link to="/collection" className="mt-5 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] sm:hidden">{actionLabel} <ArrowRight size={15} /></Link>
+      <Link to="/shop" className="mt-5 inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] sm:hidden">{actionLabel} <ArrowRight size={15} /></Link>
     </section>
   );
 };

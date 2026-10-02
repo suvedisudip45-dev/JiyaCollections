@@ -23,6 +23,7 @@ model AuthAccount {
 
   isEmailVerified Boolean @default(false)
   isPhoneVerified Boolean @default(false)
+  mustChangePassword Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -37,6 +38,8 @@ model AuthAccount {
   auditLogs     AuthAuditLog[]
   sessions      AuthSession[]
   roleMappings  AuthAccountRoleMapping[]
+  accessManagementEvents  AccessManagementAuditLog[] @relation("AccessManagementActor")
+  accessManagementTargets AccessManagementAuditLog[] @relation("AccessManagementTarget")
 
   @@index([email])
   @@index([phone])
@@ -48,6 +51,7 @@ model Role {
   code        String                   @unique @db.VarChar(64)
   name        String                   @db.VarChar(120)
   description String?                  @db.Text
+  portalScope String                   @default("ADMIN") @db.VarChar(32)
   isActive    Boolean                  @default(true)
   createdAt   DateTime                 @default(now())
   updatedAt   DateTime                 @updatedAt
@@ -190,6 +194,21 @@ model AuthAuditLog {
   @@index([identifier, createdAt])
   @@index([action, createdAt])
   @@index([accountId])
+}
+
+model AccessManagementAuditLog {
+  id             String       @id @default(uuid())
+  actorAccountId String?
+  targetAccountId String?
+  action         String       @db.VarChar(80)
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  actor          AuthAccount? @relation("AccessManagementActor", fields: [actorAccountId], references: [id], onDelete: SetNull)
+  target         AuthAccount? @relation("AccessManagementTarget", fields: [targetAccountId], references: [id], onDelete: SetNull)
+
+  @@index([actorAccountId, createdAt])
+  @@index([targetAccountId, createdAt])
+  @@index([action, createdAt])
 }
 
 model Notification {
@@ -337,6 +356,7 @@ model User {
   letterDeliveries            LetterDelivery[]             @relation("CustomerLetterDeliveryCustomer")
   marketingCardLinks          MarketingCardCustomer[]      @relation("MarketingCardCustomerUser")
   marketingBenefitRedemptions MarketingBenefitRedemption[]
+  orderExchangeRequests       OrderExchangeRequest[]
 }
 
 model Story {
@@ -478,6 +498,7 @@ model Product {
   bestseller        Boolean   @default(false)
   newInStore        Boolean   @default(false)
   showInNavigation  Boolean   @default(false)
+  isUnisex          Boolean   @default(false)
   isSpecialOffer    Boolean   @default(false)
   offerTag          String?   @default("")
   offerEndDate      DateTime?
@@ -487,38 +508,101 @@ model Product {
   lowStockThreshold Int       @default(5)
   published         Boolean   @default(true)
   date              BigInt
+  locationDiscounts LocationProductDiscount[]
+  comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
+  collaborationLink CollaborationProduct?
+  collaborationSales CollaborationSale[]
 
   @@index([published])
   @@index([category])
   @@index([bestseller])
 }
 
+model ComboBundle {
+  id                  String    @id @default(uuid())
+  categoryId          String
+  name                String
+  slug                String    @unique
+  description         String?   @db.Text
+  status              String    @default("ACTIVE") // ACTIVE | INACTIVE
+  color               String?   @default("")
+  image               String?   @db.Text
+  bannerImage         String?   @db.Text
+  calculatedPrice     Float     @default(0)
+  sellingPrice        Float     @default(0)
+  discountPercentage  Float     @default(0)
+  manualPriceOverride Boolean   @default(false)
+  priceReviewRequired Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  category            Category  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  products            ComboBundleProduct[]
+
+  @@index([status])
+  @@index([slug])
+  @@index([categoryId, status])
+}
+
+model ComboBundleProduct {
+  id            String     @id @default(uuid())
+  comboBundleId String
+  productId     String
+  selectedColor String?    @db.VarChar(100)
+  sortOrder     Int        @default(0)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  comboBundle ComboBundle @relation(fields: [comboBundleId], references: [id], onDelete: Cascade)
+  product     Product     @relation("ComboBundleProductProduct", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([comboBundleId, productId])
+  @@index([comboBundleId])
+  @@index([productId])
+}
+
 model Order {
-  id                    String              @id @default(uuid())
-  userId                String
-  items                 Json
-  amount                Float
-  deliveryFee           Float               @default(0)
-  address               Json
-  status                String              @default("Order Placed")
-  paymentMethod         String
-  payment               Boolean             @default(false)
-  date                  BigInt
-  loyaltyDiscount       Float?              @default(0)
-  rewardApplied         Json?
+  id                          String              @id @default(uuid())
+  userId                      String
+  items                       Json
+  amount                      Float
+  deliveryFee                 Float               @default(0)
+  address                     Json
+  status                      String              @default("Order Placed")
+  paymentMethod               String
+  payment                     Boolean             @default(false)
+  date                        BigInt
+  loyaltyDiscount             Float?              @default(0)
+  rewardApplied               Json?
+  specialOrder                Boolean             @default(false)
+  specialOrderReason          String?             @db.Text
+  specialOrderManufacturerIds Json?               @default("[]")
   // Fulfillment tracking
-  fulfillmentStatus     String              @default("PENDING_ASSIGNMENT")
+  fulfillmentStatus           String              @default("PENDING_ASSIGNMENT")
   // PENDING_ASSIGNMENT | ASSIGNED | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | IN_TRANSIT | DELIVERED | FAILED
-  assignmentId          String?
-  deliveryJobId         String?
-  orderType             String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
-  directOrderType       String?             @default("") // HUB_VISIT | PHONE_ORDER
-  manufacturerId        String? // Fulfilled directly by manufacturer
-  directNotes           String?             @db.Text
-  marketingCardRequired Boolean             @default(true)
-  deliveryOrder         DeliveryOrder?
-  letterDeliveries      LetterDelivery[]    @relation("OrderLetterDelivery")
-  marketingCardOrder    MarketingCardOrder?
+  assignmentId                String?
+  deliveryJobId               String?
+  orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
+  directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
+  manufacturerId              String? // Fulfilled directly by manufacturer
+  assignedGiftId              String?
+  assignedGiftInventoryId     String?
+  giftStatus                  String              @default("NONE") // NONE | PENDING_PACKING | RESERVED | DELIVERED | RETURNED | LOST
+  locationDiscountManufacturerId String?
+  locationDiscountProvince    String?             @db.VarChar(120)
+  locationDiscountDistrict    String?             @db.VarChar(120)
+  locationPricingSnapshot     Json?
+  directNotes                 String?             @db.Text
+  cancelledAt                 DateTime?
+  cancellationReason          String?             @db.Text
+  cancelledByUserId           String?
+  marketingCardRequired       Boolean             @default(true)
+  deliveryOrder               DeliveryOrder?
+  letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
+  marketingCardOrder          MarketingCardOrder?
+  exchangeRequests            OrderExchangeRequest[]
+  collaborationSales          CollaborationSale[]
+  assignedGift                GiftCatalog?        @relation("GiftCatalogOrder", fields: [assignedGiftId], references: [id], onDelete: SetNull)
+  assignedGiftInventory       ManufacturerGiftInventory? @relation("GiftInventoryOrders", fields: [assignedGiftInventoryId], references: [id], onDelete: SetNull)
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -533,6 +617,7 @@ model Category {
   id            String        @id @default(uuid())
   name          String        @unique
   subCategories SubCategory[]
+  comboBundles  ComboBundle[]
 }
 
 model SubCategory {
@@ -597,6 +682,69 @@ model CustomerLevel {
   customPerk        String?  @default("")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+model LoyaltyTierConfig {
+  id                 String   @id @default(uuid())
+  tierName           String   @unique
+  triggerType        String   @default("ORDER_VALUE") // ORDER_VALUE | LOYALTY_TIER
+  minSpendThreshold  Float    @default(0)
+  giftTargetValue    Float    @default(0)
+  isActive           Boolean  @default(true)
+  description        String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model GiftCatalog {
+  id          String                  @id @default(uuid())
+  name        String
+  sku         String                  @unique
+  priceValue  Float                   @default(0)
+  category    String                  @default("GENERAL")
+  description String?                 @db.Text
+  isActive    Boolean                 @default(true)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+  inventory   ManufacturerGiftInventory[]
+  movements   GiftMovementLog[]
+  assignedOrders Order[]               @relation("GiftCatalogOrder")
+
+  @@index([isActive, category])
+}
+
+model ManufacturerGiftInventory {
+  id               String    @id @default(uuid())
+  manufacturerId   String
+  giftId           String
+  quantityAvailable Int      @default(0)
+  quantityReserved Int      @default(0)
+  status           String    @default("PENDING_ACCEPTANCE") // PENDING_ACCEPTANCE | ACCEPTED | REJECTED
+  notes            String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  manufacturer     Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  gift             GiftCatalog  @relation(fields: [giftId], references: [id], onDelete: Cascade)
+  assignedOrders   Order[]      @relation("GiftInventoryOrders")
+
+  @@index([manufacturerId, status])
+  @@index([giftId, status])
+}
+
+model GiftMovementLog {
+  id             String     @id @default(uuid())
+  manufacturerId String
+  giftId         String
+  orderId        String?
+  movementType   String     @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | DAMAGED | REJECTED
+  quantity       Int        @default(0)
+  notes          String?    @db.Text
+  createdAt      DateTime   @default(now())
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+  gift           GiftCatalog  @relation(fields: [giftId], references: [id], onDelete: Cascade)
+
+  @@index([manufacturerId, createdAt])
+  @@index([giftId, createdAt])
 }
 
 model CustomerLetterImage {
@@ -682,6 +830,9 @@ model Admin {
   id        String       @id @default(uuid())
   accountId String?      @unique
   account   AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  displayName String     @default("") @db.VarChar(160)
+  firstName String?      @db.VarChar(80)
+  lastName  String?      @db.VarChar(80)
   email     String       @unique
   password  String?      @default("") // bcrypt-hashed
   phone     String?      @default("9846008536")
@@ -865,8 +1016,11 @@ model InvestorLiability {
 
 model CustomerReturn {
   id                String   @id @default(uuid())
+  requestKey        String?  @unique @db.VarChar(128)
+  requestHash       String?  @db.Char(64)
   orderId           String?
   userId            String?
+  manufacturerId    String?
   customerName      String
   customerPhone     String?  @default("")
   returnDate        DateTime @default(now())
@@ -874,12 +1028,149 @@ model CustomerReturn {
   totalRefundAmount Float    @default(0)
   vatRefunded       Float    @default(0) // 13% VAT portion reversed
   refundMethod      String   @default("CASH") // CASH, BANK_TRANSFER, WALLET, STORE_CREDIT
-  refundStatus      String   @default("COMPLETED") // PENDING, COMPLETED, REJECTED
+  refundStatus      String   @default("COMPLETED") // PENDING, PROCESSING, COMPLETED, REJECTED
   inventoryAction   String   @default("RESTOCKED") // RESTOCKED, WRITTEN_OFF_DAMAGED, PARTIAL
-  reason            String // e.g. "Size mismatch", "Defective/Damaged", "Customer changed mind"
+  reason            String   @db.Text
   notes             String?  @db.Text
+  lifecycleStatus   String   @default("LEGACY_PROCESSED")
+  adminReviewerId   String?
+  adminNotes        String?  @db.Text
+  approvedAt        DateTime?
+  originalNcmOrderId Int?
+  ncmReturnOrderId  Int?
+  ncmDeliveryCharge Float?
+  ncmChargeSource   String?  @db.VarChar(32)
+  ncmChargePayer    String   @default("MERCHANT") @db.VarChar(16)
+  ncmSubmissionAttemptedAt DateTime?
+  ncmSubmissionError String? @db.Text
+  returnPickupStatus String? @db.VarChar(64)
+  returnPickupCompletedAt DateTime?
+  manufacturerReceivedAt DateTime?
+  inspectedAt       DateTime?
+  inspectionResult  String?  @db.VarChar(64)
+  completedAt       DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+  events            CustomerReturnEvent[]
+  ncmAttempts       ReturnExchangeNcmAttempt[]
+
+  @@index([lifecycleStatus, createdAt])
+  @@index([orderId, lifecycleStatus])
+}
+
+model OrderExchangeRequest {
+  id                        String                    @id @default(uuid())
+  requestKey                String                    @unique @db.VarChar(128)
+  requestHash               String                    @db.Char(64)
+  orderId                   String
+  customerId                String
+  customerName              String
+  customerPhone             String?                   @default("")
+  manufacturerId            String?
+  manufacturerName          String?
+  cardId                    String?
+  reasonCode                String                    @db.VarChar(64)
+  reasonDetails             String?                   @db.Text
+  items                     Json
+  replacementItems          Json?
+  priceDifference            Float                     @default(0)
+  status                    String                    @default("REQUESTED")
+  decisionActorId           String?
+  decisionReason            String?                   @db.Text
+  decidedAt                 DateTime?
+  ncmReturnOrderId          Int?                      @unique
+  ncmReplacementOrderId     Int?                      @unique
+  ncmReturnCharge           Float?
+  ncmReplacementCharge      Float?
+  ncmTotalCharge            Float?
+  ncmChargePayer            String                    @default("MERCHANT") @db.VarChar(16)
+  replacementStockReservedAt DateTime?
+  replacementStockReleasedAt DateTime?
+  replacementStockConsumedAt DateTime?
+  ncmSubmissionAttemptedAt  DateTime?
+  ncmSubmissionError        String?                   @db.Text
+  returnPickupStatus        String?                   @db.VarChar(64)
+  returnPickupCompletedAt   DateTime?
+  replacementStatus         String?                   @db.VarChar(64)
+  replacementDeliveredAt    DateTime?
+  manufacturerReceivedAt    DateTime?
+  inspectedAt               DateTime?
+  inspectionResult          String?                   @db.VarChar(64)
+  inspectionNotes           String?                   @db.Text
+  completedAt               DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  order                     Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customer                  User                      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  manufacturer              Manufacturer?             @relation(fields: [manufacturerId], references: [id], onDelete: SetNull)
+  card                      MarketingCard?            @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  events                    OrderExchangeEvent[]
+  ncmAttempts               ReturnExchangeNcmAttempt[]
+
+  @@index([customerId, createdAt])
+  @@index([orderId, status])
+  @@index([status, createdAt])
+  @@index([cardId, status])
+}
+
+model OrderExchangeEvent {
+  id                   String               @id @default(uuid())
+  exchangeRequestId    String
+  eventType            String               @db.VarChar(64)
+  fromStatus           String?              @db.VarChar(64)
+  toStatus             String?              @db.VarChar(64)
+  actorId              String?
+  actorRole            String?              @db.VarChar(32)
+  reason               String?              @db.Text
+  metadata             Json?
+  idempotencyKey       String               @unique @db.VarChar(191)
+  occurredAt           DateTime             @default(now())
+  exchangeRequest      OrderExchangeRequest @relation(fields: [exchangeRequestId], references: [id], onDelete: Cascade)
+
+  @@index([exchangeRequestId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
+model CustomerReturnEvent {
+  id              String        @id @default(uuid())
+  customerReturnId String
+  eventType       String        @db.VarChar(64)
+  fromStatus      String?       @db.VarChar(64)
+  toStatus        String?       @db.VarChar(64)
+  actorId         String?
+  actorRole       String?       @db.VarChar(32)
+  reason          String?       @db.Text
+  metadata        Json?
+  idempotencyKey  String        @unique @db.VarChar(191)
+  occurredAt      DateTime      @default(now())
+  customerReturn CustomerReturn @relation(fields: [customerReturnId], references: [id], onDelete: Cascade)
+
+  @@index([customerReturnId, occurredAt])
+  @@index([eventType, occurredAt])
+}
+
+model ReturnExchangeNcmAttempt {
+  id                String              @id @default(uuid())
+  customerReturnId  String?
+  exchangeRequestId String?
+  operation         String              @db.VarChar(64)
+  idempotencyKey    String              @unique @db.VarChar(191)
+  attemptNumber     Int
+  requestUrl        String
+  requestJson       Json?
+  responseJson      Json?
+  httpStatus        Int?
+  result            String              @db.VarChar(32)
+  errorCode         String?
+  errorMessage      String?             @db.Text
+  startedAt         DateTime            @default(now())
+  finishedAt        DateTime?
+  customerReturn    CustomerReturn?     @relation(fields: [customerReturnId], references: [id], onDelete: Cascade)
+  exchangeRequest   OrderExchangeRequest? @relation(fields: [exchangeRequestId], references: [id], onDelete: Cascade)
+
+  @@index([customerReturnId, operation, attemptNumber], map: "RtnExNcmAttempt_return_op_num_idx")
+  @@index([exchangeRequestId, operation, attemptNumber], map: "RtnExNcmAttempt_exchange_op_num_idx")
+  @@index([result, startedAt])
 }
 
 model SupplierReturn {
@@ -1227,7 +1518,11 @@ model Manufacturer {
   createdAt                DateTime                  @default(now())
   updatedAt                DateTime                  @updatedAt
   inventory                ManufacturerInventory[]
+  giftInventory            ManufacturerGiftInventory[]
+  giftMovements            GiftMovementLog[]
+  locations                ManufacturerLocation[]
   assignments              OrderAssignment[]
+  exchangeRequests         OrderExchangeRequest[]
   marketingCardAssignments MarketingCardAssignment[]
   marketingCards           MarketingCard[]           @relation("MarketingCardManufacturer")
   marketingCardOrders      MarketingCardOrder[]
@@ -1258,6 +1553,9 @@ model MarketingPartner {
   campaigns    MarketingCampaign[]
   cards        MarketingCard[]
   settlements  MarketingPartnerSettlement[]
+  collaborationProducts CollaborationProduct[]
+  collaborationSales CollaborationSale[]
+  collaborationFeeInvoices CollaborationFeeInvoice[]
 
   @@index([status])
   @@index([email])
@@ -1322,6 +1620,7 @@ model MarketingCard {
   assignedManufacturerId String?
   hasBenefit             Boolean                      @default(false)
   benefitId              String?
+  exchangeLockRequestId  String?                      @db.VarChar(191)
   physicalStatus         String                       @default("GENERATED") // GENERATED | ASSIGNED | RECEIVED | AVAILABLE | RESERVED | ATTACHED | CANCELLED
   assignedAt             DateTime?
   receivedAt             DateTime?
@@ -1336,6 +1635,7 @@ model MarketingCard {
   assignedManufacturer   Manufacturer?                @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
   assignments            MarketingCardAssignment[]
   orderLink              MarketingCardOrder?
+  exchangeRequests       OrderExchangeRequest[]
   customerLinks          MarketingCardCustomer[]
   events                 MarketingCardEvent[]
   benefitRedemptions     MarketingBenefitRedemption[]
@@ -1344,6 +1644,7 @@ model MarketingCard {
   @@index([assignedManufacturerId, physicalStatus])
   @@index([batchId, physicalStatus])
   @@index([benefitId])
+  @@index([exchangeLockRequestId])
 }
 
 model MarketingCardAssignment {
@@ -1477,6 +1778,124 @@ model MarketingPartnerSettlement {
   @@index([createdAt])
 }
 
+model CollaborationProduct {
+  id                   String   @id @default(uuid())
+  productId            String   @unique
+  partnerId            String
+  listingStatus        String   @default("DRAFT") // DRAFT | ACTIVE | PAUSED | ENDED
+  activeTermsVersion   Int?
+  pendingTermsVersion  Int?
+  publishedAt          DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  product              Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  partner              MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  termsVersions        CollaborationTermsVersion[]
+  sales                CollaborationSale[]
+
+  @@index([partnerId, listingStatus])
+  @@index([listingStatus, publishedAt])
+}
+
+model CollaborationTermsVersion {
+  id                   String   @id @default(uuid())
+  collaborationProductId String
+  version              Int
+  proposedByRole       String   @db.VarChar(24) // ADMIN | MARKETING_PARTNER
+  proposedById         String
+  status               String   @default("PENDING_PARTNER") // PENDING_ADMIN | PENDING_PARTNER | ACCEPTED | REJECTED | SUPERSEDED
+  fixedFeePerUnit      Decimal  @default(0) @db.Decimal(20, 2)
+  retailPrice          Decimal  @db.Decimal(20, 2)
+  discountPercentage   Decimal  @default(0) @db.Decimal(5, 2)
+  vatTreatment         String   @default("VAT_EXCLUSIVE") @db.VarChar(24) // VAT_EXCLUSIVE | VAT_INCLUSIVE | EXEMPT
+  notes                String?  @db.Text
+  respondedByRole      String?  @db.VarChar(24)
+  respondedById        String?
+  proposedAt           DateTime @default(now())
+  respondedAt          DateTime?
+  createdAt            DateTime @default(now())
+  collaborationProduct CollaborationProduct @relation(fields: [collaborationProductId], references: [id], onDelete: Cascade)
+  sales                CollaborationSale[]
+
+  @@unique([collaborationProductId, version])
+  @@index([collaborationProductId, status])
+}
+
+model CollaborationSale {
+  id                     String   @id @default(uuid())
+  orderId                String
+  orderItemIndex         Int
+  productId              String
+  collaborationProductId String
+  partnerId              String
+  termsVersion           Int
+  quantity               Int
+  quantityReturned       Int      @default(0)
+  quantityInvoiced       Int      @default(0)
+  quantityCredited       Int      @default(0)
+  size                   String   @default("") @db.VarChar(64)
+  color                  String   @default("") @db.VarChar(100)
+  unitSellingPrice       Decimal  @db.Decimal(20, 2)
+  unitDiscount           Decimal  @default(0) @db.Decimal(20, 2)
+  partnerFeePerUnit      Decimal  @db.Decimal(20, 2)
+  vatTreatment           String   @default("VAT_EXCLUSIVE") @db.VarChar(24)
+  status                 String   @default("PENDING_DELIVERY") // PENDING_DELIVERY | ACCRUED | PARTIALLY_REVERSED | INVOICED | REVERSED
+  deliveredAt            DateTime?
+  accruedAt              DateTime?
+  lastReturnAt           DateTime?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  order                  Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product                Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  collaborationProduct   CollaborationProduct @relation(fields: [collaborationProductId], references: [id], onDelete: Restrict)
+  partner                MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  terms                  CollaborationTermsVersion @relation(fields: [collaborationProductId, termsVersion], references: [collaborationProductId, version], onDelete: Restrict)
+  invoiceLines           CollaborationFeeInvoiceLine[]
+
+  @@unique([orderId, orderItemIndex])
+  @@index([partnerId, status, deliveredAt])
+  @@index([collaborationProductId, status])
+}
+
+model CollaborationFeeInvoice {
+  id                String   @id @default(uuid())
+  invoiceNumber     String   @unique @db.VarChar(64)
+  partnerId         String
+  periodStart       DateTime
+  periodEnd         DateTime
+  totalUnits        Int      @default(0)
+  netAmount         Decimal  @default(0) @db.Decimal(20, 2)
+  vatAmount         Decimal  @default(0) @db.Decimal(20, 2)
+  totalAmount       Decimal  @default(0) @db.Decimal(20, 2)
+  accountingDocumentId String? @unique
+  status            String   @default("ISSUED") // ISSUED | PAID | VOID
+  issuedAt          DateTime @default(now())
+  createdAt         DateTime @default(now())
+  partner           MarketingPartner @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  lines             CollaborationFeeInvoiceLine[]
+
+  @@unique([partnerId, periodStart])
+  @@index([partnerId, issuedAt])
+}
+
+model CollaborationFeeInvoiceLine {
+  id             String   @id @default(uuid())
+  invoiceId      String
+  saleId         String
+  entryType      String   @default("FEE") // FEE | RETURN_CREDIT
+  quantity       Int
+  unitFee        Decimal  @db.Decimal(20, 2)
+  netAmount      Decimal  @db.Decimal(20, 2)
+  vatAmount      Decimal  @db.Decimal(20, 2)
+  totalAmount    Decimal  @db.Decimal(20, 2)
+  createdAt      DateTime @default(now())
+  invoice        CollaborationFeeInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  sale           CollaborationSale @relation(fields: [saleId], references: [id], onDelete: Restrict)
+
+  @@unique([invoiceId, saleId, entryType])
+  @@index([saleId, createdAt])
+}
+
 model NcmBranch {
   id           String   @id @default(uuid())
   ncmPk        Int      @unique
@@ -1497,6 +1916,37 @@ model NcmBranch {
 
   @@index([isActive, districtName])
   @@index([isActive, provinceName])
+}
+
+model ManufacturerLocation {
+  id             String       @id @default(uuid())
+  manufacturerId String
+  province       String       @db.VarChar(120)
+  district       String       @db.VarChar(120)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
+
+  @@unique([manufacturerId, province, district])
+  @@index([province, district, isActive])
+  @@index([manufacturerId, isActive])
+}
+
+model LocationProductDiscount {
+  id                 String   @id @default(uuid())
+  productId          String
+  province           String   @db.VarChar(120)
+  district           String   @db.VarChar(120)
+  discountPercentage Decimal  @default(0) @db.Decimal(5, 2)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, province, district])
+  @@index([province, district, isActive])
+  @@index([productId, isActive])
 }
 
 // Per-manufacturer inventory for each product

@@ -21,6 +21,7 @@ const List = ({ token }) => {
   const [editSubCategory, setEditSubCategory] = useState("");
   const [editBestseller, setEditBestseller] = useState(false);
   const [editNewInStore, setEditNewInStore] = useState(false);
+  const [editIsUnisex, setEditIsUnisex] = useState(false);
   const [editPublished, setEditPublished] = useState(true);
   
   // Varieties in edit modal: stock records remain size + color; photos are color-owned.
@@ -154,6 +155,7 @@ const List = ({ token }) => {
     setEditSubCategory(product.subCategory || "");
     setEditBestseller(product.bestseller || false);
     setEditNewInStore(product.newInStore || false);
+    setEditIsUnisex(Boolean(product.isUnisex || product.unisex || false));
     setEditPublished(product.published !== undefined ? product.published : true);
 
     // Parse existing variants
@@ -276,6 +278,7 @@ const List = ({ token }) => {
       formData.append("subCategory", editSubCategory);
       formData.append("bestseller", editBestseller);
       formData.append("newInStore", editNewInStore);
+      formData.append("isUnisex", editIsUnisex);
       formData.append("published", editPublished);
 
       const allSizes = [...new Set(editVariants.map((v) => v.size))];
@@ -497,7 +500,7 @@ const List = ({ token }) => {
                         <div>
                           <p className="font-bold text-slate-900">{item.name}</p>
                           <span className="text-[10px] text-slate-400">Sub: {item.subCategory || "General"}</span>
-                          <div className="flex gap-1 mt-0.5">
+                          <div className="flex gap-1 mt-0.5 flex-wrap">
                             {item.newInStore && (
                               <span className="text-[9px] bg-amber-100 text-amber-900 px-1 py-0.2 rounded font-bold">
                                 New In Store
@@ -506,6 +509,11 @@ const List = ({ token }) => {
                             {item.bestseller && (
                               <span className="text-[9px] bg-yellow-100 text-yellow-800 px-1 py-0.2 rounded font-bold">
                                 Best Seller ⭐
+                              </span>
+                            )}
+                            {Boolean(item.isUnisex || item.unisex) && (
+                              <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1 py-0.2 rounded font-bold">
+                                Unisex
                               </span>
                             )}
                           </div>
@@ -934,6 +942,19 @@ const List = ({ token }) => {
                   />
                   <label htmlFor="editNewInStore" className="cursor-pointer font-bold text-amber-800">
                     New in Store Flag
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="editIsUnisex"
+                    checked={editIsUnisex}
+                    onChange={(e) => setEditIsUnisex(e.target.checked)}
+                    className="cursor-pointer accent-indigo-600"
+                  />
+                  <label htmlFor="editIsUnisex" className="cursor-pointer font-bold text-indigo-800">
+                    Unisex product
                   </label>
                 </div>
               </div>

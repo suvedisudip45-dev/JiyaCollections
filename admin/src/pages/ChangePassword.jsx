@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import React, { useState } from "react";
+import { useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
@@ -21,7 +21,7 @@ const encryptPassword = (plaintext) => {
   };
 };
 
-const ChangePassword = ({ token }) => {
+const ChangePassword = ({ token, forced = false, onPasswordChanged }) => {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -92,12 +92,12 @@ const ChangePassword = ({ token }) => {
         setCurrentPassword("");
         setNewPassword("");
         setConfirmPassword("");
+        onPasswordChanged?.();
       } else {
         toast.error(response.data.message);
       }
     } catch (error) {
-      console.log(error);
-      toast.error(error.message);
+      toast.error(error.response?.data?.message || "Password could not be changed.");
     } finally {
       setLoading(false);
     }
@@ -131,10 +131,10 @@ const ChangePassword = ({ token }) => {
           <svg className="w-5 h-5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
-          Change Admin Password
+          {forced ? "Set your Admin password" : "Change Admin Password"}
         </h2>
         <p className="text-sm text-slate-500 mt-1">
-          Update your admin panel password. All passwords are AES-256 encrypted in transit.
+          {forced ? "Change the initial password before continuing to the Admin Portal." : "Update your admin panel password. All passwords are AES-256 encrypted in transit."}
         </p>
       </div>
 

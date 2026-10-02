@@ -1,11 +1,18 @@
 import { prisma } from "../config/db.js";
 import { postCustomerReturnAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { applyCollaborationReturnAdjustments } from "../services/collaborationSalesService.js";
 
 // ==========================================
 // 1. CUSTOMER RETURNS (RMA & REFUNDS)
 // ==========================================
 export const createCustomerReturn = async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    code: "RETURN_WORKFLOW_REQUIRED",
+    message: "Direct return processing is disabled. Create a return request and complete admin approval, NCM handoff, receipt, and inspection first.",
+  });
+
   try {
     const {
       orderId,
@@ -64,8 +71,9 @@ export const createCustomerReturn = async (req, res) => {
     }
 
     // 1. Create Return Record
-    const returnRecord = await prisma.customerReturn.create({
-      data: {
+    const returnRecord = await prisma.$transaction(async (tx) => {
+      const createdReturn = await tx.customerReturn.create({
+        data: {
         orderId: orderId || null,
         userId: userId || null,
         customerName: customerName.trim(),
@@ -78,7 +86,15 @@ export const createCustomerReturn = async (req, res) => {
         inventoryAction,
         reason: reason || "Customer Return",
         notes: notes || null,
-      },
+        },
+      });
+      await applyCollaborationReturnAdjustments({
+        orderId,
+        items: processedItems,
+        returnedAt: createdReturn.returnDate,
+        client: tx,
+      });
+      return createdReturn;
     });
 
     // 2. Adjust Inventory based on item condition / action
@@ -219,6 +235,12 @@ export const getCustomerReturns = async (req, res) => {
 };
 
 export const updateCustomerReturnStatus = async (req, res) => {
+  return res.status(409).json({
+    success: false,
+    code: "RETURN_WORKFLOW_REQUIRED",
+    message: "Return status changes must use the reviewed return lifecycle endpoints.",
+  });
+
   try {
     const { id, refundStatus } = req.body;
     const updated = await prisma.customerReturn.update({

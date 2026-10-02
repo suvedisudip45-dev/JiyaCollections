@@ -6,10 +6,12 @@ import CartTotal from "../components/CartTotal";
 import { toast } from "react-toastify";
 
 const Cart = () => {
-  const { products, currency, cartItems, updateQuantity, navigate, getMaxStock, token } =
+  const { products, currency, cartItems, updateQuantity, navigate, getMaxStock, token, priceLocation, resolveLocationPrices, getCartAmount } =
     useContext(ShopContext);
 
   const [cartData, setCartData] = useState([]);
+  const [locationQuote, setLocationQuote] = useState(null);
+  const [locationQuoteStatus, setLocationQuoteStatus] = useState("idle");
 
   useEffect(() => {
     if (products.length > 0) {
@@ -31,6 +33,48 @@ const Cart = () => {
     }
   }, [cartItems, products]);
 
+  const cartPriceKey = JSON.stringify({
+    province: priceLocation?.province || "",
+    district: priceLocation?.district || "",
+    items: cartData.map(({ _id, size, color, quantity }) => ({ productId: _id, size, color, quantity })),
+  });
+
+  useEffect(() => {
+    if (!priceLocation?.province || !priceLocation?.district || cartData.length === 0) {
+      setLocationQuote(null);
+      setLocationQuoteStatus("idle");
+      return undefined;
+    }
+    let active = true;
+    setLocationQuoteStatus("loading");
+    resolveLocationPrices({
+      province: priceLocation.province,
+      district: priceLocation.district,
+      eligibilityMode: "WHOLE_BASKET",
+      items: cartData.map(({ _id, size, color, quantity }) => ({ productId: _id, size, color, quantity })),
+    }).then((result) => {
+      if (active) {
+        setLocationQuote({ key: cartPriceKey, ...result });
+        setLocationQuoteStatus("ready");
+      }
+    }).catch(() => {
+      if (active) {
+        setLocationQuote(null);
+        setLocationQuoteStatus("error");
+      }
+    });
+    return () => { active = false; };
+  }, [cartPriceKey, cartData.length, priceLocation?.province, priceLocation?.district]);
+
+  const hasCurrentQuote = locationQuote?.key === cartPriceKey && locationQuoteStatus === "ready";
+  const quotedPriceByVariant = new Map((hasCurrentQuote ? locationQuote.items : []).map((item) => [
+    `${item.productId}|${item.size}|${item.color}`,
+    item,
+  ]));
+  const quotedSubtotal = hasCurrentQuote
+    ? locationQuote.items.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0)
+    : getCartAmount();
+
   return (
     <div className="border-t pt-14">
       <div className="text-2xl mb-3">
@@ -41,7 +85,7 @@ const Cart = () => {
           <div className="text-center py-16 text-gray-500">
             <p className="text-lg">Your cart is currently empty.</p>
             <button
-              onClick={() => navigate("/collection")}
+              onClick={() => navigate("/shop")}
               className="mt-4 bg-black text-white px-6 py-2 text-sm rounded hover:bg-gray-800 cursor-pointer"
             >
               Shop Now
@@ -54,6 +98,8 @@ const Cart = () => {
             );
             if (!productData) return null;
             const maxStock = getMaxStock(productData, item.size, item.color);
+            const quotedItem = quotedPriceByVariant.get(`${item._id}|${item.size}|${item.color}`);
+            const unitPrice = quotedItem ? Number(quotedItem.effectiveUnitPrice) : Math.round(Number(productData.price) * (1 - Number(productData.discount || 0) / 100));
             const isOutOfStock = maxStock <= 0;
             const isOverStock = !isOutOfStock && item.quantity > maxStock;
 
@@ -93,8 +139,18 @@ const Cart = () => {
                     <p className="text-xs sm:text-lg font-medium">
                       {productData.name}
                     </p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                      {Array.isArray(productData.categories) ? productData.categories.join(", ") : productData.category || "Uncategorized"}
+                    </p>
+                    {productData.description && <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-gray-500 line-clamp-2">{productData.description}</p>}
                     <div className="flex items-center gap-3 sm:gap-5 mt-2 flex-wrap">
-                      {productData.discount > 0 ? (
+                      {quotedItem?.discountSource === "LOCATION" ? (
+                        <p className="flex items-center gap-2">
+                          <span className="font-semibold text-red-600">{currency}{unitPrice.toLocaleString()}</span>
+                          <span className="text-xs text-gray-400 line-through">{currency}{Number(productData.price).toLocaleString()}</span>
+                          <span className="text-[10px] font-semibold text-emerald-700">Local {quotedItem.locationDiscountPercentage}%</span>
+                        </p>
+                      ) : productData.discount > 0 ? (
                         <p className="flex items-center gap-2">
                           <span className="font-semibold text-red-600">
                             {currency}{Math.round(productData.price * (1 - productData.discount / 100))}
@@ -108,6 +164,9 @@ const Cart = () => {
                           {currency} {productData.price}
                         </p>
                       )}
+                      <p className="text-xs font-semibold text-gray-700">
+                        Line total: {currency}{(unitPrice * item.quantity).toLocaleString()}
+                      </p>
                       <p className="px-2 sm:px-3 sm:py-1 border bg-slate-50 text-xs sm:text-sm font-semibold">
                         Size: {item.size}
                       </p>
@@ -175,7 +234,9 @@ const Cart = () => {
       </div>
       <div className="flex justify-end my-20">
         <div className="w-full sm:w-[450px]">
-          <CartTotal isCartPage={true} />
+          <CartTotal isCartPage={true} subtotalOverride={quotedSubtotal} />
+          {priceLocation && locationQuoteStatus === "loading" && <p className="text-right text-xs text-slate-500">Checking hub stock and locality prices…</p>}
+          {priceLocation && locationQuoteStatus === "error" && <p role="alert" className="text-right text-xs text-rose-700">Local price check unavailable. Checkout will require a fresh verified quote.</p>}
           <div className="w-full text-end">
             <button
               onClick={() => {
@@ -198,6 +259,7 @@ const Cart = () => {
                   }
                 }
 
+                sessionStorage.removeItem("pendingComboBundlePurchase");
                 if (!token) {
                   toast.info("Please sign in or create an account to proceed with checkout");
                   navigate("/login", { state: { from: "/place-order" } });
