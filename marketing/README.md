@@ -25,7 +25,7 @@ npm run lint
 Create a `.env` file in this folder with the backend origin used by the app:
 
 ```env
-VITE_BACKEND_URL=http://localhost:4000
+VITE_BACKEND_URL=<backend-origin>
 ```
 
 ## Notes

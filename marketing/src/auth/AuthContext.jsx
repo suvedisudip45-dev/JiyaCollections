@@ -116,7 +116,7 @@ export const AuthProvider = ({ children }) => {
 
   // ── Logout ─────────────────────────────────────────────
   const logout = async () => {
-    await revokeAuthSession(import.meta.env.VITE_BACKEND_URL || "http://localhost:4000");
+    await revokeAuthSession(import.meta.env.VITE_BACKEND_URL);
     setToken(null);
     setPartner(null);
     clearAuthTokens();
