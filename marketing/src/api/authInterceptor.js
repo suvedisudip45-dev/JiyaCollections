@@ -8,7 +8,7 @@ import {
   storeAuthTokens,
 } from "../auth/tokenStorage";
 
-const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
+const backendUrl = import.meta.env.VITE_BACKEND_URL;
 const installedClients = new WeakSet();
 let refreshPromise = null;
 let expiryTimer = null;
