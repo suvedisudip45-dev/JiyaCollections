@@ -168,6 +168,16 @@ const PlaceOrder = () => {
   const [loyaltyDiscountAmount, setLoyaltyDiscountAmount] = useState(0);
   const [loyaltyDiscountLabel, setLoyaltyDiscountLabel] = useState("");
   const [loyaltyGiftInfo, setLoyaltyGiftInfo] = useState(null); // { amount, description, letterIncluded, customPerk }
+  const [claimedCardRewards, setClaimedCardRewards] = useState([]);
+  const [selectedCardRewardId, setSelectedCardRewardId] = useState("");
+  const [rewardChoice, setRewardChoice] = useState("");
+  const [rewardsInitialized, setRewardsInitialized] = useState(false);
+
+  const checkoutCardRewards = claimedCardRewards.filter((reward) => reward.benefit?.benefitType === "DISCOUNT");
+  const selectedCardReward = checkoutCardRewards.find((reward) => reward.cardId === selectedCardRewardId) || null;
+  const cardRewardDiscountAmount = rewardChoice === "CARD" && selectedCardReward
+    ? Math.min(orderSubtotal, Math.round(orderSubtotal * Number(selectedCardReward.benefit.value) / 100))
+    : 0;
 
   // Fetch logged-in user profile & saved addresses & loyalty status
   const fetchUserProfile = async () => {
@@ -230,10 +240,19 @@ const PlaceOrder = () => {
       if (loyRes.data.success && loyRes.data.loyalty) {
         setLoyaltyData(loyRes.data.loyalty);
       }
+      const rewardsRes = await axios.get(`${backendUrl}/api/marketing-cards/customer/rewards`, { headers: { token } });
+      if (rewardsRes.data.success) {
+        const rewards = rewardsRes.data.rewards || [];
+        setClaimedCardRewards(rewards);
+        setSelectedCardRewardId((currentId) => currentId || rewards.find(
+          (reward) => reward.benefit?.benefitType === "DISCOUNT"
+        )?.cardId || "");
+      }
     } catch (err) {
       console.error("Error fetching user profile & loyalty:", err);
     } finally {
       setLoadingProfile(false);
+      setRewardsInitialized(true);
     }
   };
 
@@ -277,6 +296,12 @@ const PlaceOrder = () => {
     fetchUserProfile();
   }, [token]);
 
+  useEffect(() => {
+    if (!rewardsInitialized || rewardChoice) return;
+    const hasCardReward = claimedCardRewards.some((reward) => reward.benefit?.benefitType === "DISCOUNT");
+    const hasLoyaltyReward = Boolean(loyaltyData?.activeReward?.isEligible);
+    setRewardChoice(hasCardReward ? "CARD" : hasLoyaltyReward ? "LOYALTY" : "NONE");
+  }, [claimedCardRewards, loyaltyData, rewardChoice, rewardsInitialized]);
 
   useEffect(() => {
     const fetchDistrictBranches = async () => {
@@ -382,7 +407,7 @@ const PlaceOrder = () => {
       let discLabel = "";
       let giftInfo = null;
 
-      if (loyaltyData?.activeReward?.isEligible) {
+      if (rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible) {
         const act = loyaltyData.activeReward;
         const lvl = loyaltyData.currentLevel;
         const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
@@ -428,7 +453,7 @@ const PlaceOrder = () => {
     return () => {
       isCancelled = true;
     };
-  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData, orderSubtotal]);
+  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData, orderSubtotal, rewardChoice]);
 
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
@@ -574,6 +599,10 @@ const PlaceOrder = () => {
       toast.error("Please select a covered area provided by NCM");
       return;
     }
+    if (rewardChoice === "CARD" && !selectedCardReward) {
+      toast.error("Select an available card reward or choose another reward option.");
+      return;
+    }
 
     try {
       setSubmitting(true);
@@ -642,7 +671,9 @@ const PlaceOrder = () => {
           },
         }),
         deliveryFee: dynamicDeliveryFee,
-        amount: orderSubtotal + dynamicDeliveryFee,
+        amount: orderSubtotal + dynamicDeliveryFee - loyaltyDiscountAmount - cardRewardDiscountAmount,
+        rewardChoice: rewardChoice || "NONE",
+        ...(rewardChoice === "CARD" && { marketingCardId: selectedCardReward.cardId }),
       };
 
       switch (method) {
@@ -977,8 +1008,88 @@ const PlaceOrder = () => {
                 </div>
               </section>
 
+              {(checkoutCardRewards.length > 0 || loyaltyData?.activeReward?.isEligible) && (
+                <section className="mb-4 rounded-2xl border border-orange-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-bold text-gray-900">Offers Available</h3>
+                    <p className="mt-1 text-xs text-gray-500">Choose one offer for this order. Card and VIP rewards cannot be combined.</p>
+                  </div>
+                  <div className="space-y-2">
+                    {checkoutCardRewards.length > 0 && (
+                      <label className={`block rounded-xl border p-3 cursor-pointer transition-colors ${rewardChoice === "CARD" ? "border-orange-500 bg-orange-50" : "border-gray-200 hover:border-orange-300"}`}>
+                        <span className="flex items-start gap-2.5">
+                          <input
+                            type="radio"
+                            name="checkoutReward"
+                            value="CARD"
+                            checked={rewardChoice === "CARD"}
+                            onChange={() => setRewardChoice("CARD")}
+                            className="mt-0.5 accent-orange-600"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-bold text-gray-900">Marketing Card Reward</span>
+                            <span className="mt-0.5 block text-[11px] text-gray-600">
+                              {selectedCardReward?.benefit?.name || "Select a claimed reward"} · {selectedCardReward?.benefit?.value}% off
+                            </span>
+                          </span>
+                          {rewardChoice === "CARD" && <span className="text-xs font-bold text-orange-700">Selected</span>}
+                        </span>
+                        {checkoutCardRewards.length > 1 && (
+                          <select
+                            value={selectedCardRewardId}
+                            onChange={(event) => {
+                              setSelectedCardRewardId(event.target.value);
+                              setRewardChoice("CARD");
+                            }}
+                            onClick={(event) => event.stopPropagation()}
+                            className="ml-6 mt-2 w-[calc(100%-1.5rem)] rounded-lg border border-gray-300 bg-white px-2.5 py-2 text-xs"
+                            aria-label="Choose a marketing card reward"
+                          >
+                            {checkoutCardRewards.map((reward) => (
+                              <option key={reward.cardId} value={reward.cardId}>
+                                {reward.benefit.name} — {reward.benefit.value}% off
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </label>
+                    )}
+                    {loyaltyData?.activeReward?.isEligible && (
+                      <label className={`flex items-start gap-2.5 rounded-xl border p-3 cursor-pointer transition-colors ${rewardChoice === "LOYALTY" ? "border-amber-500 bg-amber-50" : "border-gray-200 hover:border-amber-300"}`}>
+                        <input
+                          type="radio"
+                          name="checkoutReward"
+                          value="LOYALTY"
+                          checked={rewardChoice === "LOYALTY"}
+                          onChange={() => setRewardChoice("LOYALTY")}
+                          className="mt-0.5 accent-amber-600"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-bold text-gray-900">VIP Loyalty Reward</span>
+                          <span className="mt-0.5 block text-[11px] text-gray-600">
+                            {loyaltyData.activeReward.title} · {loyaltyData.currentLevel?.name}
+                          </span>
+                        </span>
+                        {rewardChoice === "LOYALTY" && <span className="text-xs font-bold text-amber-700">Selected</span>}
+                      </label>
+                    )}
+                    <label className={`flex items-start gap-2.5 rounded-xl border p-3 cursor-pointer transition-colors ${rewardChoice === "NONE" ? "border-gray-500 bg-gray-50" : "border-gray-200 hover:border-gray-400"}`}>
+                      <input
+                        type="radio"
+                        name="checkoutReward"
+                        value="NONE"
+                        checked={rewardChoice === "NONE"}
+                        onChange={() => setRewardChoice("NONE")}
+                        className="mt-0.5 accent-gray-700"
+                      />
+                      <span className="text-xs font-bold text-gray-900">No reward</span>
+                    </label>
+                  </div>
+                </section>
+              )}
+
               {/* ===== VIP LOYALTY REWARD BANNER ===== */}
-              {loyaltyData?.activeReward?.isEligible && (
+              {rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible && (
                 <div className="mb-4 rounded-2xl overflow-hidden border border-amber-300 shadow-sm">
                   {/* Banner Header */}
                   <div
@@ -1081,7 +1192,7 @@ const PlaceOrder = () => {
               {/* ===== END VIP BANNER ===== */}
 
               {/* Dynamic Shipping Rate Badge (only shown when NOT a loyalty free delivery) */}
-              {shippingTierLabel && !loyaltyData?.activeReward?.isEligible && (
+              {shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
                 <div className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${
                   dynamicDeliveryFee === 0
                     ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
@@ -1099,9 +1210,11 @@ const PlaceOrder = () => {
                 subtotalOverride={orderSubtotal}
                 deliveryFee={dynamicDeliveryFee}
                 shippingLabel={shippingTierLabel}
-                loyaltyDiscount={loyaltyDiscountAmount}
+                loyaltyDiscount={rewardChoice === "LOYALTY" ? loyaltyDiscountAmount : 0}
                 loyaltyLabel={loyaltyDiscountLabel}
-                loyaltyGift={loyaltyGiftInfo}
+                loyaltyGift={rewardChoice === "LOYALTY" ? loyaltyGiftInfo : null}
+                cardDiscount={cardRewardDiscountAmount}
+                cardRewardLabel={selectedCardReward?.benefit?.name}
               />
             </div>
 

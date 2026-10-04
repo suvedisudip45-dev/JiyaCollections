@@ -118,13 +118,15 @@ These fields lock the order to the backend-resolved local discount and assigned 
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `MarketingCampaign` | `marketingPartnerId`, `targetScopeType`, `benefitConfig`, `requestedQuantity`, `status` | campaign definition |
+| `MarketingCampaign` | `marketingPartnerId`, `isOwnStore`, `maxScansPerCustomer`, `targetScopeType`, `benefitConfig`, `requestedQuantity`, `status` | partner or in-house campaign definition; public card scan cap defaults to one |
 | `MarketingCardBatch` | `campaignId`, `batchCode`, `quantity`, `status` | card batch control |
-| `MarketingCard` | `cardCode`, `qrTokenHash`, `partnerId`, `campaignId`, `batchId`, `exchangeLockRequestId`, `physicalStatus` | individual card instance |
+| `MarketingCard` | `cardCode`, `qrTokenHash`, `partnerId`, `assignedPartnerId`, `assignedOrganization`, `isPublic`, `campaignId`, `batchId`, `exchangeLockRequestId`, `physicalStatus` | individual card instance and optional public/Own Store destination |
 | `MarketingCardOrder` | `cardId`, `orderId`, `manufacturerId` | card-to-order association |
-| `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `activatedAt`, `otpExpiresAt` | customer card ownership |
+| `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `scannedAt`, `assignedOrganization`, `scanWeekIndex`, `activatedAt`, `otpExpiresAt` | customer card ownership and indexed scan-limit data |
 | `MarketingBenefit` | `campaignId`, `benefitType`, `value`, `percentage`, `quantity` | campaign benefit definitions |
-| `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status` | benefit redemption record |
+| `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status`, `claimedAt`, `redeemedAt` | claim and redemption lifecycle |
+
+Own Store campaigns may have no marketing partner. Their cards can be tracked as public-to-everyone, assigned to an existing partner, or assigned to a custom organization name without replacing manufacturer distribution. All Own Store cards are free for any logged-in customer to scan without an attached/delivered order; card-code entry and QR scan attempts are recorded in `MarketingCardEvent`. A card is consumed by its first successful QR scan and cannot be scanned again by that account or any other account. The campaign's configurable `maxScansPerCustomer` cap (default one per account for the campaign lifetime) applies across its Own Store cards, in addition to the five-per-campaign weekly cap. Organization-assigned cards also retain a two-per-campaign, per-organization lifetime cap. Customer scans snapshot the assigned organization and a Nepal-time Monday-based calendar-week index. Claimed Own Store discount rewards are stored as `CLAIMED` until checkout atomically changes the redemption to `REDEEMED`.
 
 ### 3.8 Finance, accounting, and tax
 

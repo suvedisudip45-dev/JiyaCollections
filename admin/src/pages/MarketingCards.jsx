@@ -71,12 +71,15 @@ const createDefaultOffer = (overrides = {}) => ({
 const emptyPartner = { code: "", name: "", description: "", email: "", password: "" };
 
 const createInitialCampaign = () => ({
+  isOwnStore: false,
   marketingPartnerId: "",
   name: "",
   targetScopeType: "NATIONWIDE",
   targetProvince: "",
   targetDistrict: "",
   requestedQuantity: 0,
+  maxScansPerCustomer: 1,
+  startsAt: "",
   endsAt: "",
   cardExpiresAt: "",
   adMediaType: "NONE",
@@ -168,6 +171,13 @@ const MarketingCards = ({ token }) => {
   const [campaign, setCampaign] = useState(createInitialCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
   const [assignment, setAssignment] = useState({ campaignId: "", manufacturerId: "", quantity: 1 });
+  const [organizationAssignment, setOrganizationAssignment] = useState({
+    campaignId: "",
+    destinationType: "CUSTOM",
+    marketingPartnerId: "",
+    assignedOrganization: "",
+    quantity: 1,
+  });
 
   // Print Sheet Modal state
   const [printModalData, setPrintModalData] = useState({
@@ -830,7 +840,7 @@ const MarketingCards = ({ token }) => {
                     <label className="text-[11px] font-bold uppercase text-slate-500">Select Campaign</label>
                     <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={batch.campaignId} onChange={(e) => setBatch({ ...batch, campaignId: e.target.value })}>
                       <option value="">-- Choose Campaign --</option>
-                      {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Partner"})</option>)}
+                      {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Aama Own Store"})</option>)}
                     </select>
                   </div>
                   {selectedCampaignForBatch && (
@@ -859,7 +869,7 @@ const MarketingCards = ({ token }) => {
                       setPrintModalData({
                         isOpen: true,
                         batchCode: r.batch.batchCode,
-                        partnerName: selCampaign?.marketingPartner?.name || "Brand Partner",
+                        partnerName: selCampaign?.marketingPartner?.name || "Aama Own Store",
                         campaignName: selCampaign?.name || "Marketing Campaign",
                         campaignScope: selCampaign?.targetScopeType || "Nationwide",
                         cardExpiresAt: selCampaign?.cardExpiresAt || null,
@@ -873,7 +883,97 @@ const MarketingCards = ({ token }) => {
                 </div>
               </section>
 
-              {/* 4. Assign to Manufacturer */}
+              {/* 4. Assign Own Store cards publicly, to a partner, or to a custom organization */}
+              <section className="rounded-2xl border border-[#e6c5ba] bg-[#f8f7f4] p-5 shadow-sm">
+                <h2 className="text-sm font-black text-[#171717]">4. Assign Own Store Cards</h2>
+                <p className="mt-0.5 text-xs text-slate-600">Track cards as public, assigned to a Marketing Partner, or assigned to a custom organization. All Own Store cards can be scanned by any signed-in customer. Manufacturer distribution remains separate.</p>
+                <div className="mt-4 space-y-3">
+                  <select
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    value={organizationAssignment.campaignId}
+                    onChange={(event) => setOrganizationAssignment({ ...organizationAssignment, campaignId: event.target.value })}
+                  >
+                    <option value="">Select Own Store campaign</option>
+                    {campaigns.filter((c) => c.isOwnStore).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId)?.maxScansPerCustomer && (
+                      <p className="rounded-lg bg-orange-50 px-3 py-2 text-[11px] text-orange-900">
+                        Own Store campaign cap: {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId).maxScansPerCustomer} scan(s) per account.
+                    </p>
+                  )}
+                  <select
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    value={organizationAssignment.destinationType}
+                    onChange={(event) => setOrganizationAssignment({
+                      ...organizationAssignment,
+                      destinationType: event.target.value,
+                      marketingPartnerId: "",
+                      assignedOrganization: "",
+                    })}
+                  >
+                    <option value="EVERYONE">Everyone (publicly available)</option>
+                    <option value="PARTNER">Marketing Partner</option>
+                    <option value="CUSTOM">Custom organization</option>
+                  </select>
+                  {organizationAssignment.destinationType === "PARTNER" && (
+                    <select
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                      value={organizationAssignment.marketingPartnerId}
+                      onChange={(event) => setOrganizationAssignment({
+                        ...organizationAssignment,
+                        marketingPartnerId: event.target.value,
+                      })}
+                    >
+                      <option value="">Select active Marketing Partner</option>
+                      {partners.filter((partner) => partner.status === "ACTIVE").map((partner) => (
+                        <option key={partner.id} value={partner.id}>{partner.name} ({partner.code})</option>
+                      ))}
+                    </select>
+                  )}
+                  {organizationAssignment.destinationType === "CUSTOM" && (
+                    <input
+                      type="text"
+                      maxLength={191}
+                      placeholder="Non-partner organization name"
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                      value={organizationAssignment.assignedOrganization}
+                      onChange={(event) => setOrganizationAssignment({
+                        ...organizationAssignment,
+                        assignedOrganization: event.target.value,
+                      })}
+                    />
+                  )}
+                  <input
+                    type="number"
+                    min="1"
+                    max="5000"
+                    required
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-mono"
+                    value={organizationAssignment.quantity}
+                    onChange={(event) => setOrganizationAssignment({ ...organizationAssignment, quantity: Number(event.target.value) })}
+                  />
+                  <button
+                    disabled={working || !organizationAssignment.campaignId
+                      || (organizationAssignment.destinationType === "PARTNER" && !organizationAssignment.marketingPartnerId)
+                      || (organizationAssignment.destinationType === "CUSTOM" && !organizationAssignment.assignedOrganization.trim())}
+                    onClick={async () => {
+                      const { destinationType, ...assignmentData } = organizationAssignment;
+                      const payload = destinationType === "EVERYONE"
+                        ? { ...assignmentData, isPublic: true, assignedOrganization: "", marketingPartnerId: "" }
+                        : destinationType === "PARTNER"
+                        ? { ...assignmentData, assignedOrganization: "" }
+                        : { ...assignmentData, marketingPartnerId: "" };
+                      const r = await submit("/api/marketing-cards/admin/own-store/assignments", payload, "Own Store cards assigned.");
+                      if (r) setOrganizationAssignment((current) => ({ ...current, quantity: 1 }));
+                    }}
+                    className="w-full rounded-lg bg-[#d85b3f] px-3 py-2 text-sm font-bold text-white hover:bg-[#bd4c34] disabled:opacity-50"
+                  >
+                    Assign cards
+                  </button>
+                </div>
+              </section>
+
+              {/* 5. Assign to Manufacturer */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-black text-slate-900">4. Assign Cards to Manufacturer</h2>
                 <p className="mt-0.5 text-xs text-slate-500">Allocate generated cards to manufacturing hubs.</p>
@@ -907,12 +1007,24 @@ const MarketingCards = ({ token }) => {
 
                 <div className="mt-4 space-y-4">
                   {/* Basic info */}
+                  <label className="flex items-start gap-3 rounded-xl border border-[#e6c5ba] bg-[#f8f7f4] p-3">
+                    <input
+                      type="checkbox"
+                      checked={campaign.isOwnStore}
+                      onChange={(event) => setCampaign({ ...campaign, isOwnStore: event.target.checked })}
+                      className="mt-0.5 accent-[#d85b3f]"
+                    />
+                    <span>
+                      <span className="block text-xs font-black text-[#171717]">Own Store Campaign</span>
+                      <span className="mt-0.5 block text-[11px] text-slate-600">Create an in-house campaign. Signed-in customers can scan these cards without an order; distribution tracking and geographic targeting are configured separately.</span>
+                    </span>
+                  </label>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="text-[11px] font-bold uppercase text-slate-500">Partner</label>
+                      <label className="text-[11px] font-bold uppercase text-slate-500">{campaign.isOwnStore ? "Campaign partner (optional)" : "Partner"}</label>
                       <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={campaign.marketingPartnerId} onChange={(e) => setCampaign({ ...campaign, marketingPartnerId: e.target.value })}>
-                        <option value="">Select partner</option>
-                        {partners.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
+                        <option value="">{campaign.isOwnStore ? "No campaign partner" : "Select partner"}</option>
+                        {partners.filter((p) => p.status === "ACTIVE").map((p) => <option key={p.id} value={p.id}>{p.name} ({p.code})</option>)}
                       </select>
                     </div>
                     <div>
@@ -920,6 +1032,27 @@ const MarketingCards = ({ token }) => {
                       <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Dashain Mega Offer 2083" value={campaign.name} onChange={(e) => setCampaign({ ...campaign, name: e.target.value })} />
                     </div>
                   </div>
+
+                  {campaign.isOwnStore && (
+                    <div className="max-w-sm rounded-xl border border-orange-200 bg-orange-50 p-3">
+                      <label className="block text-[11px] font-bold uppercase text-orange-900" htmlFor="maxScansPerCustomer">
+                        Own Store campaign cap per account
+                      </label>
+                      <p className="mt-1 text-[10px] text-orange-800">
+                        Maximum Own Store cards one customer can scan during this campaign, regardless of distribution. Defaults to one.
+                      </p>
+                      <input
+                        id="maxScansPerCustomer"
+                        type="number"
+                        min="1"
+                        max="5000"
+                        required
+                        className="mt-2 w-full rounded-lg border border-orange-200 bg-white px-3 py-2 text-sm"
+                        value={campaign.maxScansPerCustomer}
+                        onChange={(event) => setCampaign({ ...campaign, maxScansPerCustomer: Number(event.target.value) })}
+                      />
+                    </div>
+                  )}
 
                   {/* Geographic targeting */}
                   <div className="rounded-xl bg-slate-50 p-4 border border-slate-200 space-y-3">
@@ -1056,13 +1189,25 @@ const MarketingCards = ({ token }) => {
                   {/* Campaign dates */}
                   <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 space-y-3">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Campaign &amp; Card Dates</p>
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="text-[11px] font-bold uppercase text-slate-500">Campaign Start Date</label>
+                        <p className="text-[10px] text-slate-400 mb-1">Optional. Cards cannot be used before this date.</p>
+                        <input
+                          type="date"
+                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                          max={campaign.endsAt || ""}
+                          value={campaign.startsAt}
+                          onChange={(e) => setCampaign({ ...campaign, startsAt: e.target.value })}
+                        />
+                      </div>
                       <div>
                         <label className="text-[11px] font-bold uppercase text-slate-500">Campaign End Date</label>
                         <p className="text-[10px] text-slate-400 mb-1">After this date, no new cards can be attached to orders.</p>
                         <input
                           type="date"
                           className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                          min={campaign.startsAt || ""}
                           value={campaign.endsAt}
                           onChange={(e) => setCampaign({ ...campaign, endsAt: e.target.value })}
                         />
@@ -1182,13 +1327,15 @@ const MarketingCards = ({ token }) => {
                   {/* Submit campaign */}
                   <button disabled={working || adMediaUploading}
                     onClick={async () => {
-                      if (!campaign.marketingPartnerId) return toast.error("Please select a partner.");
+                      if (!campaign.isOwnStore && !campaign.marketingPartnerId) return toast.error("Please select a partner.");
                       if (!campaign.name.trim()) return toast.error("Please enter a campaign name.");
                       if (campaign.targetScopeType === "PROVINCE" && !campaign.targetProvince) return toast.error("Please select a target province.");
                       if (campaign.targetScopeType === "DISTRICT" && !campaign.targetDistrict) return toast.error("Please select a target district.");
                       if (campaign.offers.length === 0 || campaign.offers.some((o) => !o.name.trim())) return toast.error("Please name all offers.");
                       if (campaign.adMediaType !== "NONE" && !campaign.adMediaUrl) return toast.error("Please upload the selected promo media.");
                       if (totalPct > 100) return toast.error("Total percentage cannot exceed 100%.");
+                      if (campaign.isOwnStore && (!Number.isInteger(Number(campaign.maxScansPerCustomer)) || Number(campaign.maxScansPerCustomer) < 1 || Number(campaign.maxScansPerCustomer) > 5000)) return toast.error("Own Store campaign cap must be an integer between 1 and 5000.");
+                      if (campaign.startsAt && campaign.endsAt && campaign.startsAt > campaign.endsAt) return toast.error("Campaign start date cannot be after its end date.");
                       // Date validation
                       if (campaign.endsAt && campaign.cardExpiresAt) {
                         const end = new Date(campaign.endsAt);
@@ -1198,11 +1345,14 @@ const MarketingCards = ({ token }) => {
                       }
                       const formattedBenefits = campaign.offers.map((o) => ({ name: o.name.trim(), description: o.description || null, benefitType: o.benefitType, value: Number(o.value || 0), percentage: o.allocationMode === "PERCENTAGE" ? Number(o.percentage || 0) : 0, quantity: o.allocationMode === "QUANTITY" ? Number(o.quantity || 0) : 0, terms: o.terms || null, expiresAt: o.expiresAt || null }));
                       const payload = {
+                        isOwnStore: campaign.isOwnStore,
+                        maxScansPerCustomer: campaign.isOwnStore ? Number(campaign.maxScansPerCustomer) : 1,
                         marketingPartnerId: campaign.marketingPartnerId,
                         name: campaign.name.trim(),
                         targetScopeType: campaign.targetScopeType,
                         targetProvince: campaign.targetScopeType === "NATIONWIDE" ? null : campaign.targetProvince,
                         targetDistrict: campaign.targetScopeType === "DISTRICT" ? campaign.targetDistrict : null,
+                        startsAt: campaign.startsAt || null,
                         endsAt: campaign.endsAt || null,
                         cardExpiresAt: campaign.cardExpiresAt || null,
                         adMediaType: campaign.adMediaType || "NONE",
@@ -1212,7 +1362,10 @@ const MarketingCards = ({ token }) => {
                         adExternalLink: campaign.adExternalLink || null,
                         benefits: formattedBenefits,
                       };
-                      const r = await submit("/api/marketing-cards/admin/campaigns", payload, `Campaign created with ${formattedBenefits.length} offer(s).`);
+                      const endpoint = campaign.isOwnStore
+                        ? "/api/marketing-cards/admin/own-store/campaigns"
+                        : "/api/marketing-cards/admin/campaigns";
+                      const r = await submit(endpoint, payload, `Campaign created with ${formattedBenefits.length} offer(s).`);
                       if (r) setCampaign(createInitialCampaign());
                     }}
                     className="w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50">

@@ -38,6 +38,9 @@ const MarketingCards = () => {
   const [verifiedCardInfo, setVerifiedCardInfo] = useState(null); // { cardId, cardCode, partner, campaign, ad }
   const [qrToken, setQrToken] = useState("");
   const [scannedOfferResult, setScannedOfferResult] = useState(null); // { hasBenefit, benefit, partner, message }
+  const canClaimScannedReward = Boolean(
+    scannedOfferResult?.campaign?.isOwnStore && scannedOfferResult?.benefit?.benefitType === "DISCOUNT"
+  );
   const [sponsorAdOpen, setSponsorAdOpen] = useState(false);
   const [isScratchRevealed, setIsScratchRevealed] = useState(false);
 
@@ -116,6 +119,7 @@ const MarketingCards = () => {
         if (!response.data.success) throw new Error(response.data.message);
 
         setScannedOfferResult(response.data);
+        setIsScratchRevealed(false);
         setStep(3);
         setScannerOpen(false);
         toast.success(response.data.message || "QR code verified!");
@@ -155,6 +159,25 @@ const MarketingCards = () => {
       await loadCards();
     } catch (error) {
       notifyRequestError(error, "Unable to activate card.");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleClaimReward = async (cardId) => {
+    setWorking(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/marketing-cards/customer/claim-reward`,
+        { cardId },
+        { headers: { token } }
+      );
+      if (!response.data.success) throw new Error(response.data.message);
+      toast.success(response.data.message || "Reward claimed and ready to use at checkout.");
+      if (scannedOfferResult?.cardId === cardId) handleResetVerification();
+      await loadCards();
+    } catch (error) {
+      notifyRequestError(error, "Unable to claim this reward.");
     } finally {
       setWorking(false);
     }
@@ -240,7 +263,7 @@ const MarketingCards = () => {
           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Private customer area</p>
           <h1 className="mt-2 text-3xl font-black tracking-tight text-[var(--ink)]">Marketing Cards &amp; Offers</h1>
           <p className="mt-2 max-w-xl text-sm text-[var(--muted)]">
-            Verify cards received with your delivered orders, unlock exclusive partner rewards, and activate them for in-store shopping.
+            Scan free Own Store cards shared with all customers, or verify partner cards attached to your delivered orders.
           </p>
         </div>
         <button
@@ -310,7 +333,7 @@ const MarketingCards = () => {
               <div>
                 <h2 className="text-sm font-black uppercase tracking-wider text-[var(--ink)]">Step 1: Enter Card Code</h2>
                 <p className="text-xs text-[var(--muted)]">
-                  Enter the card code printed on the physical card attached to your delivered order.
+                  Own Store cards are available to any signed-in customer. Partner campaign cards must be attached to your delivered order.
                 </p>
               </div>
             </div>
@@ -471,7 +494,7 @@ const MarketingCards = () => {
               />
             </div>
 
-            {scannedOfferResult.hasBenefit && scannedOfferResult.benefit ? (
+            {isScratchRevealed && (scannedOfferResult.hasBenefit && scannedOfferResult.benefit ? (
               <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/70 p-6 sm:p-8 text-center space-y-4 shadow-sm">
                 <div>
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-200/80 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-amber-900">
@@ -503,13 +526,19 @@ const MarketingCards = () => {
                   <button
                     type="button"
                     disabled={working}
-                    onClick={handleActivateCard}
+                    onClick={() => canClaimScannedReward
+                      ? handleClaimReward(scannedOfferResult.cardId)
+                      : handleActivateCard()}
                     className="w-full max-w-sm rounded-xl bg-slate-900 py-3.5 text-sm font-bold uppercase tracking-wider text-white shadow-md hover:bg-slate-800 disabled:opacity-50 transition"
                   >
-                    {working ? "Activating Card..." : "✨ Activate Card Now"}
+                    {working
+                      ? (canClaimScannedReward ? "Claiming Reward..." : "Activating Card...")
+                      : (canClaimScannedReward ? "✨ Claim Reward" : "✨ Activate Card Now")}
                   </button>
                   <p className="mt-2 text-[11px] text-slate-500">
-                    Once activated, take your physical card to {scannedOfferResult.partner?.name}&apos;s shopping store to claim!
+                    {canClaimScannedReward
+                      ? "Claim this reward now to make it available as an offer at checkout."
+                      : `Once activated, take your physical card to ${scannedOfferResult.partner?.name}'s shopping store to claim!`}
                   </p>
                 </div>
               </div>
@@ -529,6 +558,24 @@ const MarketingCards = () => {
                 >
                   Verify Another Card
                 </button>
+              </div>
+            ))}
+            {step === 3 && scannedOfferResult?.scanLimits && (
+              <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 text-xs text-[var(--ink)]">
+                <p className="font-bold">Own Store scan limits for this campaign</p>
+                <p className="mt-1">
+                  This week: {scannedOfferResult.scanLimits.weekly.used}/{scannedOfferResult.scanLimits.weekly.limit} cards · {scannedOfferResult.scanLimits.weekly.remaining} remaining
+                </p>
+                {scannedOfferResult.scanLimits.campaign && (
+                  <p>
+                    Campaign account limit: {scannedOfferResult.scanLimits.campaign.used}/{scannedOfferResult.scanLimits.campaign.limit} scans · {scannedOfferResult.scanLimits.campaign.remaining} remaining
+                  </p>
+                )}
+                {scannedOfferResult.scanLimits.organization && (
+                  <p>
+                    {scannedOfferResult.assignedOrganization || scannedOfferResult.partner?.name}, campaign limit: {scannedOfferResult.scanLimits.organization.used}/{scannedOfferResult.scanLimits.organization.limit} cards · {scannedOfferResult.scanLimits.organization.remaining} remaining
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -571,7 +618,7 @@ const MarketingCards = () => {
             <CreditCard className="mx-auto mb-3 text-[var(--muted)]" size={28} />
             <p className="text-sm font-bold text-[var(--ink)]">No activated cards yet</p>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Cards delivered with your orders can be verified and activated using the form above.
+              Enter the printed card code above. Own Store cards do not require a delivered order.
             </p>
           </div>
         ) : (
@@ -603,6 +650,7 @@ const MarketingCards = () => {
                   <div className="space-y-3">
                     {card.benefits.map((benefit) => {
                       const isRedeemed = benefit.status === "REDEEMED";
+                      const isClaimed = benefit.status === "CLAIMED";
                       return (
                         <div key={benefit.id} className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-2">
                           <div className="flex items-start justify-between gap-2">
@@ -624,6 +672,24 @@ const MarketingCards = () => {
                               <p className="text-[11px] font-bold uppercase text-emerald-700 flex items-center gap-1">
                                 <CheckCircle2 size={13} /> Redeemed in store on {benefit.redeemedAt ? new Date(benefit.redeemedAt).toLocaleDateString() : ""}
                               </p>
+                            ) : card.campaign.isOwnStore ? (
+                              <div className="space-y-2">
+                                <p className="text-[11px] text-slate-600">
+                                  {isClaimed
+                                    ? "Claimed. Choose this card reward during checkout."
+                                    : "Claim this reward when you are ready to apply it during checkout."}
+                                </p>
+                                {!isClaimed && (
+                                  <button
+                                    type="button"
+                                    disabled={working}
+                                    onClick={() => handleClaimReward(card.id)}
+                                    className="w-full rounded-lg bg-[#d85b3f] px-3 py-2 text-xs font-bold text-white hover:bg-[#bd4c34] disabled:opacity-50"
+                                  >
+                                    {working ? "Claiming..." : "Apply / Claim Reward"}
+                                  </button>
+                                )}
+                              </div>
                             ) : (
                               <div className="rounded-lg bg-white p-3 border border-amber-200/70 text-[11px] text-slate-700 space-y-1">
                                 <div className="flex items-center gap-1.5 font-bold text-slate-900">

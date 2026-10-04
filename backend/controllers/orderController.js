@@ -23,6 +23,7 @@ import {
 } from "../services/comboBundleRules.js";
 import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { resolveLocationProductPrices, reserveLocationManufacturerInventory } from "../services/locationPricingService.js";
+import { campaignMatchesOrder } from "../services/marketingCardService.js";
 
 // global variables
 const deliveryCharge = 50;
@@ -290,7 +291,14 @@ const validateOrderStock = (items, dbProducts) => {
 // Placing orders using COD Method with Immutable Price Snapshot
 const placeOrder = async (req, res) => {
   try {
-    const { userId, address, comboBundle } = req.body;
+    const userId = req.userId || req.auth?.userId;
+    const { address, comboBundle } = req.body;
+    const rewardChoice = String(req.body.rewardChoice || "").trim().toUpperCase();
+    const selectedCardId = String(req.body.marketingCardId || "").trim();
+    if (!userId) return res.status(401).json({ success: false, message: "Authenticated customer is required." });
+    if (rewardChoice && !["CARD", "LOYALTY", "NONE"].includes(rewardChoice)) {
+      return res.status(400).json({ success: false, message: "Select either a card reward, a loyalty reward, or no reward." });
+    }
     let items = Array.isArray(req.body.items) ? req.body.items : [];
     let comboBundleRecord = null;
 
@@ -478,24 +486,71 @@ const placeOrder = async (req, res) => {
       console.error("Error calculating district shipping fee in placeOrder:", cfgErr);
     }
 
-    // Check user loyalty level and reward eligibility
+    // Rewards are selected explicitly at checkout. Older clients that omit a choice
+    // retain the prior loyalty-reward behavior.
     let loyaltyDiscount = 0;
+    let cardDiscount = 0;
     let rewardApplied = null;
-    try {
-      if (userId) {
+    let selectedRedemptionId = null;
+    if (rewardChoice === "CARD") {
+      if (!selectedCardId) {
+        return res.status(400).json({ success: false, message: "Choose an Own Store card reward to apply." });
+      }
+      const redemption = await prisma.marketingBenefitRedemption.findFirst({
+        where: { cardId: selectedCardId, customerId: userId, status: "CLAIMED" },
+        include: {
+          benefit: true,
+          card: {
+            include: {
+              customerLinks: { where: { customerId: userId, status: "ACTIVE" }, take: 1 },
+              campaign: true,
+            },
+          },
+        },
+      });
+      const now = new Date();
+      const campaign = redemption?.card?.campaign;
+      const benefit = redemption?.benefit;
+      if (
+        !redemption ||
+        !campaign?.isOwnStore ||
+        redemption.card.physicalStatus === "CANCELLED" ||
+        !redemption.card.customerLinks.length ||
+        benefit?.status !== "ACTIVE" ||
+        benefit.benefitType !== "DISCOUNT" ||
+        (benefit.startsAt && benefit.startsAt > now) ||
+        (benefit.expiresAt && benefit.expiresAt < now) ||
+        (campaign.cardExpiresAt && campaign.cardExpiresAt < now) ||
+        Number(itemsTotal) < Number(campaign.minOrderValue || 0) ||
+        !campaignMatchesOrder(campaign, { address })
+      ) {
+        return res.status(409).json({ success: false, message: "This Own Store reward is no longer eligible for this order." });
+      }
+      const discountPercentage = Number(benefit.value);
+      if (!Number.isFinite(discountPercentage) || discountPercentage <= 0 || discountPercentage > 100) {
+        return res.status(409).json({ success: false, message: "This card reward has an invalid discount configuration." });
+      }
+      cardDiscount = Math.min(itemsTotal, Math.round(itemsTotal * discountPercentage / 100));
+      selectedRedemptionId = redemption.id;
+      rewardApplied = {
+        source: "MARKETING_CARD",
+        cardId: redemption.card.id,
+        cardCode: redemption.card.cardCode,
+        campaignId: campaign.id,
+        benefitId: benefit.id,
+        benefitName: benefit.name,
+        discountPercentage,
+        discountAmount: cardDiscount,
+      };
+    } else if (rewardChoice !== "NONE" || !rewardChoice) {
+      try {
         const loyaltyStatus = await calculateUserLoyalty(userId);
         if (loyaltyStatus?.activeReward?.isEligible) {
           const act = loyaltyStatus.activeReward;
-
-          if (act.freeShipping) {
-            expectedFee = 0;
-          }
-
-          if (act.discountAmount > 0) {
-            loyaltyDiscount = Math.min(itemsTotal, Number(act.discountAmount));
-          }
-
+          if (act.freeShipping) expectedFee = 0;
+          if (act.discountAmount > 0) loyaltyDiscount = Math.min(itemsTotal, Number(act.discountAmount));
           rewardApplied = {
+            source: "LOYALTY",
             freeShipping: Boolean(act.freeShipping),
             discountAmount: loyaltyDiscount,
             giftAmount: act.giftAmount || 0,
@@ -507,15 +562,20 @@ const placeOrder = async (req, res) => {
             title: act.title || "VIP Reward",
             usage: `Use ${act.currentUseIndex} of ${act.orderLimit}`,
           };
+        } else if (rewardChoice === "LOYALTY") {
+          return res.status(409).json({ success: false, message: "Your loyalty reward is no longer eligible." });
+        }
+      } catch (loyErr) {
+        console.error("Error applying loyalty reward:", loyErr);
+        if (rewardChoice === "LOYALTY") {
+          return res.status(500).json({ success: false, message: "Unable to verify your loyalty reward. Please retry checkout." });
         }
       }
-    } catch (loyErr) {
-      console.error("Error applying loyalty reward:", loyErr);
     }
 
     // Price-lock: Backend authoritative fee is locked into order amount and deliveryFee
     const resolvedFee = expectedFee;
-    const finalAmount = Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount);
+    const finalAmount = Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount - cardDiscount);
 
     const orderData = {
       userId,
@@ -551,6 +611,18 @@ const placeOrder = async (req, res) => {
     };
 
     const createdOrder = await prisma.$transaction(async (tx) => {
+      if (selectedRedemptionId) {
+        const redeemed = await tx.marketingBenefitRedemption.updateMany({
+          where: { id: selectedRedemptionId, customerId: userId, status: "CLAIMED" },
+          data: { status: "REDEEMED", redeemedAt: new Date() },
+        });
+        if (redeemed.count !== 1) {
+          const error = new Error("This card reward has already been applied to another order.");
+          error.code = "MARKETING_CARD_REWARD_REDEEMED";
+          error.status = 409;
+          throw error;
+        }
+      }
       let order = await tx.order.create({ data: orderData });
       if (locationDiscountApplied) {
         await reserveLocationManufacturerInventory(tx, locationPricing.locationDiscountManufacturerId, frozenItemsSnapshot);

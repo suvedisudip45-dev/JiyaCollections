@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import { v2 as cloudinary } from "cloudinary";
 import {
   assignCards,
+  assignCardsToOrganization,
   approvePartner,
   attachRandomCardToOrder,
   adminInvalidateCards,
@@ -20,15 +21,25 @@ import {
   getLocationMappingsService,
 } from "../services/marketingCardService.js";
 import {
+  claimCustomerReward,
   linkCustomerCard,
+  listClaimedCustomerRewards,
   listCustomerCards,
   redeemCustomerBenefit,
   resolveCustomerQr,
 } from "../services/marketingCardCustomerService.js";
 
 const sendError = (res, error) => {
-  const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403 : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" || error.code === "MARKETING_CARD_EXCHANGE_LOCKED" ? 409 : 400;
-  return res.status(status).json({ success: false, message: error.message || "Marketing card operation failed.", code: error.code || "MARKETING_CARD_ERROR" });
+  const status = error.code === "MARKETING_CARD_FORBIDDEN" ? 403
+    : error.code === "MARKETING_CARD_SCAN_LIMIT" ? 429
+      : error.code === "MARKETING_CARD_REQUIRED" || error.code === "MARKETING_CARD_NOT_ELIGIBLE" || error.code === "MARKETING_CARD_ALREADY_SCANNED" || error.code === "MARKETING_CARD_EXCHANGE_LOCKED" || error.code === "MARKETING_CARD_REWARD_INVALID" || error.code === "MARKETING_CARD_REWARD_REDEEMED" ? 409
+        : 400;
+  return res.status(status).json({
+    success: false,
+    message: error.message || "Marketing card operation failed.",
+    code: error.code || "MARKETING_CARD_ERROR",
+    ...(error.details ? { details: error.details } : {}),
+  });
 };
 
 export const adminGetLocations = async (_req, res) => {
@@ -62,8 +73,21 @@ export const adminListCampaigns = async (_req, res) => {
 
 export const adminCreateCampaign = async (req, res) => {
   try {
+    if (req.body.isOwnStore === true || String(req.body.isOwnStore).toLowerCase() === "true") {
+      return res.status(403).json({ success: false, message: "Use the Own Store campaign permission to create this campaign.", code: "FORBIDDEN" });
+    }
     if (!req.body.name?.trim() || !req.body.marketingPartnerId) return res.status(400).json({ success: false, message: "Campaign name and marketing partner are required." });
     return res.status(201).json({ success: true, campaign: await createCampaign(req.body) });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminCreateOwnStoreCampaign = async (req, res) => {
+  try {
+    if (!req.body.name?.trim()) return res.status(400).json({ success: false, message: "Campaign name is required." });
+    return res.status(201).json({
+      success: true,
+      campaign: await createCampaign({ ...req.body, isOwnStore: true }),
+    });
   } catch (error) { return sendError(res, error); }
 };
 
@@ -107,6 +131,14 @@ export const adminAssignCards = async (req, res) => {
   try {
     const result = await assignCards({ ...req.body, actorId: req.adminId });
     return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the manufacturer.` });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const adminAssignCardsToOrganization = async (req, res) => {
+  try {
+    const result = await assignCardsToOrganization({ ...req.body, actorId: req.adminId });
+    const target = result.isPublic ? "Everyone" : result.assignedOrganization;
+    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to ${target}.` });
   } catch (error) { return sendError(res, error); }
 };
 
@@ -166,6 +198,17 @@ export const customerListCards = async (req, res) => {
   try { return res.json({ success: true, cards: await listCustomerCards(req.userId) }); } catch (error) { return sendError(res, error); }
 };
 
+export const customerListRewards = async (req, res) => {
+  try { return res.json({ success: true, rewards: await listClaimedCustomerRewards(req.userId) }); } catch (error) { return sendError(res, error); }
+};
+
+export const customerClaimReward = async (req, res) => {
+  try {
+    const reward = await claimCustomerReward({ customerId: req.userId, cardId: req.body.cardId });
+    return res.json({ success: true, reward, message: reward.alreadyClaimed ? "This reward is already claimed and ready to use." : "Reward claimed and ready to apply at checkout." });
+  } catch (error) { return sendError(res, error); }
+};
+
 export const customerVerifyCode = async (req, res) => {
   try {
     const { verifyCustomerCardCode } = await import("../services/marketingCardCustomerService.js");
@@ -201,4 +244,3 @@ export const customerScanCard = async (req, res) => {
 export const customerRedeemBenefit = async (req, res) => {
   try { return res.status(201).json({ success: true, redemption: await redeemCustomerBenefit({ customerId: req.userId, cardId: req.params.cardId, benefitId: req.params.benefitId }), message: "Benefit redeemed successfully." }); } catch (error) { return sendError(res, error); }
 };
-

@@ -233,9 +233,18 @@ export const approvePartner = async ({ partnerId, code }) => {
   });
 };
 
+export const normalizeMaxScansPerCustomer = (value = 1) => {
+  const parsed = value === null || value === "" ? 1 : Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_BATCH_SIZE) {
+    throw new Error(`Maximum scans per customer must be an integer between 1 and ${MAX_BATCH_SIZE}.`);
+  }
+  return parsed;
+};
 
 export const createCampaign = async ({
   marketingPartnerId,
+  isOwnStore = false,
+  maxScansPerCustomer = 1,
   name,
   description,
   targetScopeType,
@@ -256,8 +265,13 @@ export const createCampaign = async ({
   adDescription,
   adExternalLink,
 }) => {
-  const partner = await prisma.marketingPartner.findUnique({ where: { id: marketingPartnerId } });
-  if (!partner || partner.status !== "ACTIVE") throw new Error("Active marketing partner not found.");
+  const ownStore = isOwnStore === true || String(isOwnStore).toLowerCase() === "true";
+  const partner = marketingPartnerId
+    ? await prisma.marketingPartner.findUnique({ where: { id: marketingPartnerId } })
+    : null;
+  if ((!ownStore && !partner) || (marketingPartnerId && (!partner || partner.status !== "ACTIVE"))) {
+    throw new Error("Select an active marketing partner or create an Own Store campaign.");
+  }
   const scope = String(targetScopeType || "NATIONWIDE").toUpperCase();
   if (!["NATIONWIDE", "PROVINCE", "DISTRICT"].includes(scope)) throw new Error("Invalid campaign targeting scope.");
   if (scope === "PROVINCE" && !String(targetProvince || "").trim()) throw new Error("Province is required for province campaigns.");
@@ -266,10 +280,13 @@ export const createCampaign = async ({
   if (!Number.isInteger(requested) || requested < 0 || requested > MAX_BATCH_SIZE) throw new Error(`Requested quantity must be an integer between 0 and ${MAX_BATCH_SIZE}.`);
 
   // Validate dates: cardExpiresAt must be at least 1 day after endsAt
+  const parsedStartsAt = startsAt ? new Date(startsAt) : null;
   const parsedEndsAt = endsAt ? new Date(endsAt) : null;
   const parsedCardExpiresAt = cardExpiresAt ? new Date(cardExpiresAt) : null;
+  if (parsedStartsAt && isNaN(parsedStartsAt.getTime())) throw new Error("Invalid campaign start date.");
   if (parsedEndsAt && isNaN(parsedEndsAt.getTime())) throw new Error("Invalid campaign end date.");
   if (parsedCardExpiresAt && isNaN(parsedCardExpiresAt.getTime())) throw new Error("Invalid card expiry date.");
+  if (parsedStartsAt && parsedEndsAt && parsedStartsAt > parsedEndsAt) throw new Error("Campaign start date cannot be after its end date.");
   if (parsedEndsAt && parsedCardExpiresAt) {
     const minCardExpiry = new Date(parsedEndsAt.getTime() + 24 * 60 * 60 * 1000); // +1 day
     if (parsedCardExpiresAt < minCardExpiry) {
@@ -283,6 +300,7 @@ export const createCampaign = async ({
 
   const parsedMinOrderValue = Math.max(0, Number(minOrderValue || 0));
   const parsedCpaRate = Math.max(0, Number(cpaRate || 0));
+  const parsedMaxScansPerCustomer = ownStore ? normalizeMaxScansPerCustomer(maxScansPerCustomer) : 1;
 
   const campaignBenefits = (Array.isArray(benefits) ? benefits : []).filter((benefit) => String(benefit?.name || "").trim()).map((benefit) => ({
     name: String(benefit.name).trim(),
@@ -298,7 +316,9 @@ export const createCampaign = async ({
   if (campaignBenefits.some((benefit) => !Number.isFinite(benefit.value) || benefit.value < 0)) throw new Error("Benefit value must be a non-negative number.");
   return prisma.$transaction(async (tx) => {
     const campaignData = {
-      marketingPartnerId,
+      marketingPartnerId: partner?.id || null,
+      isOwnStore: ownStore,
+      maxScansPerCustomer: parsedMaxScansPerCustomer,
       name: String(name || "").trim(),
       description: description || null,
       targetScopeType: scope,
@@ -309,7 +329,7 @@ export const createCampaign = async ({
       cpaRate: parsedCpaRate,
       requestedQuantity: requested,
       benefitConfig: Array.isArray(benefitConfig) ? benefitConfig : campaignBenefits,
-      startsAt: startsAt ? new Date(startsAt) : null,
+      startsAt: parsedStartsAt,
       endsAt: parsedEndsAt,
       cardExpiresAt: parsedCardExpiresAt,
     };
@@ -356,7 +376,8 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
   if (!campaign) throw new Error("Campaign not found.");
   if (!ACTIVE_CAMPAIGN_STATUSES.has(campaign.status)) throw new Error("Only active campaigns can generate cards.");
 
-  const batchCode = `${normalizeCode(campaign.marketingPartner.code)}-${geographyCode(campaign)}-${Date.now()}-${randomBatchSuffix()}`;
+  const partnerCode = campaign.marketingPartner?.code || "OWN";
+  const batchCode = `${normalizeCode(partnerCode)}-${geographyCode(campaign)}-${Date.now()}-${randomBatchSuffix()}`;
   const batchSegment = randomBatchSuffix().slice(0, 4);
   const created = await prisma.$transaction(async (tx) => {
     const batch = await tx.marketingCardBatch.create({ data: { campaignId, batchCode, quantity: count } });
@@ -409,7 +430,7 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
     for (let index = 1; index <= count; index += 1) {
       const token = secureToken();
       const serial = String(campaign.generatedQuantity + index).padStart(5, "0");
-      const cardCode = `AAMA-${geographyCode(campaign)}-${normalizeCode(campaign.marketingPartner.code).slice(0, 3)}-${batchSegment}B${serial}`;
+      const cardCode = `AAMA-${geographyCode(campaign)}-${normalizeCode(partnerCode).slice(0, 3)}-${batchSegment}B${serial}`;
       const assignedBenefitId = benefitAssignments[index - 1] || null;
 
       const card = await tx.marketingCard.create({
@@ -632,6 +653,106 @@ export const assignCards = async ({ campaignId, manufacturerId, quantity, cardId
     }
     await tx.marketingCardBatch.updateMany({ where: { id: { in: cards.map((card) => card.batchId) } }, data: { status: "ASSIGNED" } });
     return { count: assignments.length, assignments };
+  }, { isolationLevel: "Serializable" });
+};
+
+export const assignCardsToOrganization = async ({
+  campaignId,
+  marketingPartnerId,
+  assignedOrganization,
+  isPublic = false,
+  quantity,
+  cardIds,
+  actorId,
+}) => {
+  const publicAssignment = isPublic === true || String(isPublic).toLowerCase() === "true";
+  const hasPartner = Boolean(String(marketingPartnerId || "").trim());
+  const organizationName = String(assignedOrganization || "").trim();
+  if ((publicAssignment && (hasPartner || organizationName)) || (!publicAssignment && hasPartner === Boolean(organizationName))) {
+    throw new Error(publicAssignment
+      ? "Public assignment cannot include a partner or custom organization."
+      : "Select either a marketing partner, a custom organization name, or everyone.");
+  }
+  if (organizationName.length > 191) throw new Error("Organization name must be 191 characters or fewer.");
+
+  if (!publicAssignment && !hasPartner && !organizationName) {
+    throw new Error("Select either a marketing partner or enter a custom organization name.");
+  }
+
+  const partner = hasPartner
+    ? await prisma.marketingPartner.findFirst({
+        where: { id: String(marketingPartnerId).trim(), status: "ACTIVE" },
+        select: { id: true, name: true },
+      })
+    : null;
+  if (hasPartner && !partner) throw new Error("Active marketing partner not found.");
+
+  const requestedIds = Array.isArray(cardIds) && cardIds.length ? cardIds : null;
+  const count = requestedIds ? requestedIds.length : assertQuantity(quantity);
+  const resolvedOrganization = publicAssignment ? null : partner?.name || organizationName;
+
+  return prisma.$transaction(async (tx) => {
+    const campaign = await tx.marketingCampaign.findUnique({
+      where: { id: campaignId },
+      select: { id: true, isOwnStore: true, status: true },
+    });
+    if (!campaign) throw new Error("Campaign not found.");
+    if (!campaign.isOwnStore) throw new Error("Organization assignment is only available for Own Store campaigns.");
+    if (!ACTIVE_CAMPAIGN_STATUSES.has(campaign.status)) throw new Error("Only active campaigns can be assigned.");
+
+    const cards = await tx.marketingCard.findMany({
+      where: {
+        campaignId,
+        physicalStatus: "GENERATED",
+        assignedOrganization: null,
+        assignedPartnerId: null,
+        isPublic: false,
+        ...(requestedIds ? { id: { in: requestedIds } } : {}),
+      },
+      orderBy: { createdAt: "asc" },
+      take: count,
+      select: { id: true, physicalStatus: true },
+    });
+    if (cards.length !== count) throw new Error("Not enough unassigned Own Store cards are available.");
+
+    const updated = await tx.marketingCard.updateMany({
+      where: {
+        id: { in: cards.map(({ id }) => id) },
+        physicalStatus: "GENERATED",
+        assignedOrganization: null,
+        assignedPartnerId: null,
+        isPublic: false,
+      },
+      data: {
+        assignedOrganization: resolvedOrganization,
+        assignedPartnerId: partner?.id || null,
+        isPublic: publicAssignment,
+      },
+    });
+    if (updated.count !== cards.length) throw new Error("Card inventory changed during organization assignment. Please retry.");
+
+    await tx.marketingCardEvent.createMany({
+      data: cards.map(({ id }) => ({
+        cardId: id,
+        eventType: publicAssignment ? "CARD_ASSIGNED_TO_PUBLIC" : "CARD_ASSIGNED_TO_ORGANIZATION",
+        actorId,
+        actorRole: "ADMIN",
+        fromStatus: "GENERATED",
+        toStatus: "GENERATED",
+        metadata: {
+          marketingPartnerId: partner?.id || null,
+          assignedOrganization: resolvedOrganization,
+          isPublic: publicAssignment,
+        },
+      })),
+    });
+
+    return {
+      count: cards.length,
+      assignedOrganization: resolvedOrganization,
+      isPublic: publicAssignment,
+      marketingPartner: partner,
+    };
   }, { isolationLevel: "Serializable" });
 };
 

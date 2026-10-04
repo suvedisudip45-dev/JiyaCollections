@@ -25,6 +25,7 @@ The backend is the real source of truth for:
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
 - location-based discount resolution and resolved manufacturer assignment for checkout
+- marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
 
@@ -138,6 +139,8 @@ Follow the repo’s current response style:
 - out-of-stock product or size-color combination
 - invalid or expired JWTs
 - repeated card scans, duplicate redemption attempts, and manual exchange locking
+- Own Store campaign limits are five scans per customer/campaign/calendar week and two per customer/campaign/assigned organization; count and insert must remain server-side and transactional
+- card-reward and loyalty-reward application are mutually exclusive; checkout must validate and consume a card claim atomically with order creation
 - NCM ambiguity where the platform cannot determine whether a create request succeeded
 - supplier and customer return outcomes that influence inventory and reconciliation
 - permission-denied or password-change-required states
