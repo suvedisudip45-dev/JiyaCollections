@@ -147,7 +147,7 @@ The manufacturer app is a separate React app with a protected main layout. Its r
 | `/orders` | Order queue |
 | `/orders/:id` | Detailed order workflow |
 | `/direct-orders` | Direct manufacturer orders |
-| `/inventory` | Stock and fulfillment inventory |
+| `/inventory` | Stock and fulfillment inventory, reasoned variant adjustments, and manufacturer-scoped stock movement history |
 | `/collaborations` | Collaboration items |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |

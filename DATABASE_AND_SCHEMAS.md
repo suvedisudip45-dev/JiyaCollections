@@ -23,7 +23,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
-| Inventory | `ManufacturerInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `StockLog`, `InboundShipment` | manufacturer-level product and promotion-gift stock with movement history |
+| Inventory | `ManufacturerInventory`, `ManufacturerInventoryMovement`, `ManufacturerGiftInventory`, `GiftMovementLog`, `StockLog`, `InboundShipment` | manufacturer-level product and promotion-gift stock with movement history |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, webhook handling |
@@ -92,6 +92,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `ManufacturerInventory` | `manufacturerId`, `productId`, `quantity`, `reservedQty`, `variantsStock`, `agreedCostPrice` | warehouse stock by manufacturer |
+| `ManufacturerInventoryMovement` | `manufacturerId`, `productId`, `variantLabel`, `previousQty`, `newQty`, signed `changeQty`, `movementType`, `reason`, `note`, `actorId`, `createdAt` | immutable, per-variant manufacturer stock adjustment history |
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
@@ -195,6 +196,7 @@ An order stores both its gift catalog reference and the exact manufacturer inven
 - `User` is the customer profile record; `Manufacturer` and `MarketingPartner` are separate business profiles linked to the same auth system.
 - An `Order` can be associated with `DeliveryOrder`, `LetterDelivery`, and `MarketingCardOrder` records.
 - `ManufacturerInventory` is keyed by `(manufacturerId, productId)` and tracks both physical stock and reserved stock.
+- Manufacturer portal stock adjustments write one `ManufacturerInventoryMovement` per changed variant in the same transaction as the inventory update. The movement captures prior/current quantities, signed delta, stock-in/out direction, reason, optional note, and actor; the manufacturer history endpoint is scoped to the authenticated manufacturer.
 - `LocationMapping`, `ManufacturerLocation`, and `LocationProductDiscount` create the authoritative local-discount and assignment map for Nepal geography.
 - `MarketingCampaign` → `MarketingCardBatch` → `MarketingCard` forms the card issuance chain.
 - `OrderExchangeRequest` is the main exchange transaction record and is accompanied by an audit event log (`OrderExchangeEvent`).

@@ -1,6 +1,10 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import {
+  buildManufacturerStockMovements,
+  normalizeStockAdjustmentReason,
+} from "../services/manufacturerInventoryAudit.js";
 
 // Helper to safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -169,17 +173,24 @@ const getMyInventory = async (req, res) => {
 // ─── MANUFACTURER: UPDATE VARIANT STOCK & PROPOSE SUPPLY PRICE ───────────────
 const updateStock = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const manufacturerId = req.manufacturerId;
     const {
       productId,
       variantsStock,
       proposedCostPrice,
       priceNote,
-      lowStockThreshold,
+      stockAdjustmentReason,
+      stockAdjustmentNote,
     } = req.body;
 
+    if (!manufacturerId) {
+      return res.status(403).json({ success: false, message: "Manufacturer context is required." });
+    }
     if (!productId) {
-      return res.json({ success: false, message: "productId is required" });
+      return res.status(400).json({ success: false, message: "productId is required" });
+    }
+    if (!Array.isArray(variantsStock)) {
+      return res.status(400).json({ success: false, message: "Variant stock quantities are required." });
     }
 
     const product = await prisma.product.findUnique({
@@ -194,87 +205,160 @@ const updateStock = async (req, res) => {
         variants: true,
       },
     });
-    if (!product) return res.json({ success: false, message: "Product not found" });
+    if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
-    // Existing inventory
-    const existing = await prisma.manufacturerInventory.findUnique({
-      where: { manufacturerId_productId: { manufacturerId, productId } },
-    });
-
-    const existingVariantsStock = existing ? parseJSON(existing.variantsStock, []) : [];
-
-    // Normalize variantsStock input
-    let cleanVariantsStock = [];
-    if (Array.isArray(variantsStock)) {
-      cleanVariantsStock = variantsStock.map((v) => {
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.manufacturerInventory.findUnique({
+        where: { manufacturerId_productId: { manufacturerId, productId } },
+      });
+      const existingVariantsStock = existing ? parseJSON(existing.variantsStock, []) : [];
+      const submittedVariantKeys = new Set();
+      const cleanVariantsStock = variantsStock.map((v) => {
+        if (!v || typeof v !== "object") {
+          throw new Error("Each variant stock entry must be an object.");
+        }
+        const size = String(v.size || "Standard").trim();
+        const color = String(v.color || "Standard").trim();
+        if (!size || !color) throw new Error("Variant size and color are required.");
+        const variantKey = JSON.stringify([size, color]);
+        if (submittedVariantKeys.has(variantKey)) {
+          throw new Error(`Duplicate stock entry for ${size} / ${color}.`);
+        }
+        submittedVariantKeys.add(variantKey);
         const matchingExisting = existingVariantsStock.find(
-          (ev) => ev.size === v.size && ev.color === v.color
+          (ev) => String(ev.size || "Standard").trim() === size
+            && String(ev.color || "Standard").trim() === color
         );
         const reservedQty = matchingExisting ? Number(matchingExisting.reservedQty || 0) : 0;
-        const inputQty = Math.max(0, Number(v.quantity || 0));
-        // Physical quantity cannot be less than already reserved quantity
-        const safeQty = Math.max(inputQty, reservedQty);
-
+        const inputQty = Number(v.quantity);
+        if (!Number.isInteger(inputQty) || inputQty < 0 || inputQty > 2147483647) {
+          throw new Error(`Quantity for ${size} / ${color} must be a whole number between 0 and 2147483647.`);
+        }
+        if (inputQty < reservedQty) {
+          throw new Error(`Quantity for ${size} / ${color} cannot be lower than its ${reservedQty} reserved unit(s).`);
+        }
         return {
-          size: v.size || "Standard",
-          color: v.color || "Standard",
-          quantity: safeQty,
+          size,
+          color,
+          quantity: inputQty,
           reservedQty,
         };
       });
-    }
 
-    const totalPhysicalQuantity = cleanVariantsStock.reduce((sum, v) => sum + v.quantity, 0);
-    const totalReservedQty = cleanVariantsStock.reduce((sum, v) => sum + v.reservedQty, 0);
-
-    // Handle Proposed Price
-    const updateData = {
-      productName: product.name,
-      quantity: totalPhysicalQuantity,
-      reservedQty: totalReservedQty,
-      variantsStock: cleanVariantsStock,
-    };
-
-    if (proposedCostPrice !== undefined && proposedCostPrice !== null && proposedCostPrice !== "") {
-      const numPrice = parseFloat(proposedCostPrice);
-      if (!isNaN(numPrice) && numPrice > 0) {
-        // If proposed price is different from currently agreed, put into PENDING status
-        if (numPrice !== existing?.agreedCostPrice) {
-          updateData.proposedCostPrice = numPrice;
-          updateData.priceStatus = "PENDING";
-          if (priceNote !== undefined) updateData.priceNote = priceNote;
-        }
+      const omittedReservedVariant = existingVariantsStock.find((variant) => (
+        !submittedVariantKeys.has(JSON.stringify([
+          String(variant.size || "Standard").trim(),
+          String(variant.color || "Standard").trim(),
+        ]))
+        && Number(variant.reservedQty || 0) > 0
+      ));
+      if (omittedReservedVariant) {
+        throw new Error("A variant with reserved stock cannot be removed from the stock update.");
       }
-    }
 
-    const inv = await prisma.manufacturerInventory.upsert({
-      where: { manufacturerId_productId: { manufacturerId, productId } },
-      create: {
-        manufacturerId,
+      const totalPhysicalQuantity = cleanVariantsStock.reduce((sum, variant) => sum + variant.quantity, 0);
+      const totalReservedQty = cleanVariantsStock.reduce((sum, variant) => sum + variant.reservedQty, 0);
+      const movements = buildManufacturerStockMovements({
+        previousVariants: existingVariantsStock,
+        nextVariants: cleanVariantsStock,
         productId,
+        productName: product.name,
+        manufacturerId,
+        actorId: req.auth?.profileId || req.auth?.accountId || null,
+      });
+      if (movements.length) {
+        const adjustment = normalizeStockAdjustmentReason(stockAdjustmentReason, stockAdjustmentNote);
+        movements.forEach((movement) => {
+          movement.reason = adjustment.reason;
+          movement.note = adjustment.note;
+        });
+      }
+
+      const updateData = {
         productName: product.name,
         quantity: totalPhysicalQuantity,
         reservedQty: totalReservedQty,
         variantsStock: cleanVariantsStock,
-        proposedCostPrice: updateData.proposedCostPrice || null,
-        agreedCostPrice: null,
-        priceStatus: "PENDING",
-        priceNote: priceNote || null,
-      },
-      update: updateData,
-    });
+      };
+
+      if (proposedCostPrice !== undefined && proposedCostPrice !== null && proposedCostPrice !== "") {
+        const numPrice = parseFloat(proposedCostPrice);
+        if (!isNaN(numPrice) && numPrice > 0) {
+          if (numPrice !== existing?.agreedCostPrice) {
+            updateData.proposedCostPrice = numPrice;
+            updateData.priceStatus = "PENDING";
+            if (priceNote !== undefined) updateData.priceNote = priceNote;
+          }
+        }
+      }
+
+      const inventory = await tx.manufacturerInventory.upsert({
+        where: { manufacturerId_productId: { manufacturerId, productId } },
+        create: {
+          manufacturerId,
+          productId,
+          productName: product.name,
+          quantity: totalPhysicalQuantity,
+          reservedQty: totalReservedQty,
+          variantsStock: cleanVariantsStock,
+          proposedCostPrice: updateData.proposedCostPrice || null,
+          agreedCostPrice: null,
+          priceStatus: "PENDING",
+          priceNote: priceNote || null,
+        },
+        update: updateData,
+      });
+      if (movements.length) {
+        await tx.manufacturerInventoryMovement.createMany({ data: movements });
+      }
+      return { inventory, movementCount: movements.length };
+    }, { isolationLevel: "Serializable" });
 
     // Sync aggregate product stock & variant quantities across all manufacturer hubs
     await syncProductStock(productId);
 
-    res.json({
+    return res.json({
       success: true,
       message: "Hub stock and price proposal saved successfully!",
-      inventory: inv,
+      inventory: result.inventory,
+      movementCount: result.movementCount,
     });
   } catch (error) {
     console.error("updateStock error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+const getMyInventoryMovements = async (req, res) => {
+  try {
+    const manufacturerId = req.manufacturerId;
+    const { productId } = req.params;
+    if (!manufacturerId) {
+      return res.status(403).json({ success: false, message: "Manufacturer context is required." });
+    }
+    const inventory = await prisma.manufacturerInventory.findUnique({
+      where: { manufacturerId_productId: { manufacturerId, productId } },
+      select: { id: true },
+    });
+    if (!inventory) {
+      return res.json(paginatedResponse("movements", [], getPagination(req.query), 0));
+    }
+
+    const pagination = getPagination(req.query);
+    const where = { manufacturerId, productId };
+    const [movements, total] = await prisma.$transaction([
+      prisma.manufacturerInventoryMovement.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.manufacturerInventoryMovement.count({ where }),
+    ]);
+    return res.json(paginatedResponse("movements", movements, pagination, total));
+  } catch (error) {
+    console.error("getMyInventoryMovements error:", error);
+    return res.status(500).json({ success: false, message: "Unable to load stock movement history." });
   }
 };
 
@@ -369,6 +453,7 @@ const getLowStockAlerts = async (req, res) => {
 
 export {
   getMyInventory,
+  getMyInventoryMovements,
   updateStock,
   getAllInventory,
   getLowStockAlerts,

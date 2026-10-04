@@ -94,9 +94,6 @@ const CartTotal = ({
             <div className="flex justify-between items-start text-indigo-600 font-semibold">
               <div>
                 <p className="flex items-center gap-1">Complimentary Gift</p>
-                {loyaltyGift.description && (
-                  <p className="text-[11px] text-indigo-500 font-normal">{loyaltyGift.description}</p>
-                )}
               </div>
               {loyaltyGift.amount > 0 && (
                 <p>Rs. {loyaltyGift.amount} value</p>

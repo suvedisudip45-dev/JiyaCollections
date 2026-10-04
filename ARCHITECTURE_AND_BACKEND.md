@@ -97,9 +97,12 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-manufacturer`
 - `GET /api/manufacturer/gifts/inbound` and `POST /api/manufacturer/gifts/:id/respond`
 - `GET /api/manufacturer/gifts/order-options/:orderId` returns eligible gifts only from the authenticated manufacturer's accepted, available inventory
+- `GET /api/manufacturer-inventory/my/:productId/movements` returns that manufacturer's paginated per-variant stock adjustment history; `POST /api/manufacturer-inventory/update` stores quantity changes and history rows atomically
 - Gift assignment is submitted with final checklist completion through the manufacturer order-assignment status endpoint; delivery deduction is driven by the NCM webhook, and `POST /api/manufacturer/gifts/returned/:orderId` records an explicit returned-or-lost decision
 
 Gift assignment is manufacturer-selected and backend-authoritative. Admins configure order-value gift ceilings separately and distribute catalog gifts to manufacturer hubs as pending-acceptance batches. Loyalty gift value and description are configured directly on `CustomerLevel`; the existing backend loyalty calculation places an active tier gift allowance in `rewardApplied` when the order is created. At the final checklist, eligible manufacturers see only accepted local stock whose catalog value is within the highest active reward ceiling. Checklist completion atomically decrements available quantity, increments reserved quantity, links the exact inventory batch to the order, and writes a movement log. NCM delivery consumes the reserved unit. Campaign/product triggers and automatic return-inspection reconciliation remain follow-up work.
+
+Manufacturer stock quantity edits are captured in the `ManufacturerInventoryMovement` ledger per size/color variant. Each stock-in or stock-out event retains before/after quantity, signed delta, required reason, optional note, authenticated actor, and timestamp in the same database transaction as the current inventory update. This follows established inventory audit practice of retaining adjustment history instead of relying on the latest on-hand balance alone.
 
 ## 4. Request / Response Lifecycle
 

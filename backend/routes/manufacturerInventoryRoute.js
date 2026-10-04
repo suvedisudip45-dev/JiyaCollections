@@ -1,6 +1,7 @@
 import express from "express";
 import {
   getMyInventory,
+  getMyInventoryMovements,
   updateStock,
   getAllInventory,
   getLowStockAlerts,
@@ -11,6 +12,7 @@ const manufacturerInventoryRouter = express.Router();
 
 // Manufacturer-authenticated
 manufacturerInventoryRouter.get("/my", authenticate, authorize("manufacturer:inventory_read"), setManufacturerContext, getMyInventory);
+manufacturerInventoryRouter.get("/my/:productId/movements", authenticate, authorize("manufacturer:inventory_read"), setManufacturerContext, getMyInventoryMovements);
 manufacturerInventoryRouter.post("/my", authenticate, authorize("manufacturer:inventory_read"), setManufacturerContext, getMyInventory);
 manufacturerInventoryRouter.post("/update", authenticate, authorize("manufacturer:inventory_update"), setManufacturerContext, updateStock);
 

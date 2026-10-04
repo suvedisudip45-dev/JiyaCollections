@@ -17,6 +17,7 @@ import {
   HelpCircle,
   Check,
   AlertCircle,
+  History,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
@@ -37,6 +38,12 @@ const Inventory = () => {
   const [proposedCost, setProposedCost] = useState("");
   const [quoteNote, setQuoteNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [stockAdjustmentReason, setStockAdjustmentReason] = useState("");
+  const [stockAdjustmentNote, setStockAdjustmentNote] = useState("");
+  const [historyItem, setHistoryItem] = useState(null);
+  const [movementHistory, setMovementHistory] = useState([]);
+  const [historyPagination, setHistoryPagination] = useState(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const fetchInventory = useCallback(async () => {
     if (!token) return;
@@ -80,6 +87,8 @@ const Inventory = () => {
         : ""
     );
     setQuoteNote(item.priceNote || "");
+    setStockAdjustmentReason("");
+    setStockAdjustmentNote("");
     setEditModalOpen(true);
   };
 
@@ -93,6 +102,20 @@ const Inventory = () => {
   const handleUpdateStockAndPricing = async (e) => {
     e.preventDefault();
     if (!selectedItem) return;
+    const stockChanged = variantsState.some((variant) => {
+      const previous = selectedItem.variantsStock?.find(
+        (entry) => entry.size === variant.size && entry.color === variant.color
+      );
+      return Number(previous?.quantity || 0) !== Number(variant.quantity || 0);
+    });
+    if (stockChanged && !stockAdjustmentReason) {
+      toast.error("Select a reason for the stock adjustment.");
+      return;
+    }
+    if (stockChanged && stockAdjustmentReason === "OTHER" && !stockAdjustmentNote.trim()) {
+      toast.error("Add a note when selecting Other as the adjustment reason.");
+      return;
+    }
 
     // Validate proposed cost if provided
     let costVal = null;
@@ -113,11 +136,13 @@ const Inventory = () => {
           variantsStock: variantsState,
           proposedCostPrice: costVal,
           priceNote: quoteNote,
+          stockAdjustmentReason,
+          stockAdjustmentNote,
         },
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success(res.data.message || "Stock & Price quotation saved!");
+        toast.success(`${res.data.message || "Stock & Price quotation saved!"} ${res.data.movementCount || 0} stock movement(s) recorded.`);
         setEditModalOpen(false);
         fetchInventory();
       } else {
@@ -127,6 +152,28 @@ const Inventory = () => {
       toast.error(err.response?.data?.message || "Failed to update stock");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const openStockHistory = async (item, requestedPage = 1) => {
+    setHistoryItem(item);
+    setMovementHistory([]);
+    setHistoryPagination(null);
+    setHistoryLoading(true);
+    try {
+      const res = await axios.get(
+        `${backendUrl}/api/manufacturer-inventory/my/${encodeURIComponent(item.productId)}/movements?page=${requestedPage}&limit=50`,
+        { headers: { token } }
+      );
+      if (res.data.success) {
+        setMovementHistory(res.data.movements || []);
+        setHistoryPagination(res.data.pagination || null);
+      }
+      else toast.error(res.data.message || "Failed to load stock history.");
+    } catch (err) {
+      toast.error(err.response?.data?.message || "Failed to load stock history.");
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -154,6 +201,16 @@ const Inventory = () => {
 
   const totalCalculatedModalQty = variantsState.reduce((sum, v) => sum + (v.quantity || 0), 0);
   const totalCalculatedModalReserved = variantsState.reduce((sum, v) => sum + (v.reservedQty || 0), 0);
+  const stockChanges = variantsState.map((variant) => {
+    const previous = selectedItem?.variantsStock?.find(
+      (entry) => entry.size === variant.size && entry.color === variant.color
+    );
+    return {
+      ...variant,
+      changeQty: Number(variant.quantity || 0) - Number(previous?.quantity || 0),
+    };
+  }).filter((variant) => variant.changeQty !== 0);
+  const hasStockQuantityChanges = stockChanges.length > 0;
 
   return (
     <div className="space-y-6">
@@ -390,13 +447,22 @@ const Inventory = () => {
 
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right align-top">
-                        <button
-                          onClick={() => openEditModal(item)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer shadow-xs transition-colors"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                          Update Stock &amp; Price
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            onClick={() => openStockHistory(item)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold cursor-pointer transition-colors"
+                          >
+                            <History className="w-3.5 h-3.5" />
+                            History
+                          </button>
+                          <button
+                            onClick={() => openEditModal(item)}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer shadow-xs transition-colors"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                            Update Stock &amp; Price
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -515,6 +581,56 @@ const Inventory = () => {
                 </div>
               </div>
 
+              {hasStockQuantityChanges && (
+                <div className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4">
+                  <div>
+                    <label htmlFor="stockAdjustmentReason" className="block text-xs font-bold text-slate-800">
+                      Stock adjustment reason <span className="text-rose-600">*</span>
+                    </label>
+                    <select
+                      id="stockAdjustmentReason"
+                      value={stockAdjustmentReason}
+                      onChange={(event) => setStockAdjustmentReason(event.target.value)}
+                      required
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="">Select a reason</option>
+                      <option value="RECEIVED">New stock received</option>
+                      <option value="COUNT_CORRECTION">Physical count correction</option>
+                      <option value="DAMAGED">Damaged stock</option>
+                      <option value="LOST">Lost or missing stock</option>
+                      <option value="CUSTOMER_RETURN">Customer return</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {stockChanges.map((variant) => (
+                      <span key={`${variant.size}-${variant.color}`} className={`rounded-lg px-2 py-1 text-[10px] font-bold ${variant.changeQty > 0 ? "bg-white text-emerald-700" : "bg-white text-rose-700"}`}>
+                        {variant.size}{variant.color !== "Standard" ? ` / ${variant.color}` : ""}: {variant.changeQty > 0 ? "+" : ""}{variant.changeQty}
+                      </span>
+                    ))}
+                  </div>
+                  <div>
+                    <label htmlFor="stockAdjustmentNote" className="block text-xs font-semibold text-slate-700 mb-1">
+                      Adjustment note {stockAdjustmentReason === "OTHER" ? <span className="text-rose-600">*</span> : "(Optional)"}
+                    </label>
+                    <textarea
+                      id="stockAdjustmentNote"
+                      maxLength={1000}
+                      rows={2}
+                      required={stockAdjustmentReason === "OTHER"}
+                      value={stockAdjustmentNote}
+                      onChange={(event) => setStockAdjustmentNote(event.target.value)}
+                      placeholder="Add details about this stock change"
+                      className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
+                    />
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Every changed size/color is recorded separately with its previous quantity and signed change.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               {/* Price Agreement & Quotation Section */}
               <div className="space-y-3 pt-2 border-t border-slate-100">
                 <div className="flex items-center justify-between">
@@ -586,6 +702,87 @@ const Inventory = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {historyItem && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Stock Movement History</h3>
+                <p className="text-xs text-slate-500">{historyItem.productName}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryItem(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer p-1 rounded-lg hover:bg-slate-100"
+                aria-label="Close stock movement history"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            {historyLoading ? (
+              <p className="py-8 text-center text-sm text-slate-500">Loading stock movements...</p>
+            ) : movementHistory.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-500">No stock quantity adjustments recorded yet.</p>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px] text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-3 py-2">Date</th>
+                        <th className="px-3 py-2">Variant</th>
+                        <th className="px-3 py-2">Movement</th>
+                        <th className="px-3 py-2">Before → After</th>
+                        <th className="px-3 py-2">Reason / Note</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {movementHistory.map((movement) => (
+                        <tr key={movement.id}>
+                          <td className="px-3 py-3 whitespace-nowrap text-slate-600">
+                            {new Date(movement.createdAt).toLocaleString()}
+                          </td>
+                          <td className="px-3 py-3 font-semibold text-slate-800">{movement.variantLabel}</td>
+                          <td className={`px-3 py-3 font-bold ${movement.changeQty > 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                            {movement.changeQty > 0 ? "+" : ""}{movement.changeQty} ({movement.movementType === "STOCK_IN" ? "Added" : "Removed"})
+                          </td>
+                          <td className="px-3 py-3 text-slate-700">{movement.previousQty} → {movement.newQty}</td>
+                          <td className="px-3 py-3 text-slate-700">
+                            <span className="font-semibold">{movement.reason.replaceAll("_", " ")}</span>
+                            {movement.note && <p className="mt-1 max-w-xs whitespace-normal text-[11px] text-slate-500">{movement.note}</p>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Page {historyPagination?.page || 1} of {historyPagination?.totalPages || 1} · {historyPagination?.total || movementHistory.length} movements</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={!historyPagination?.hasPreviousPage || historyLoading}
+                      onClick={() => openStockHistory(historyItem, (historyPagination?.page || 1) - 1)}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold text-slate-700 disabled:opacity-40"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!historyPagination?.hasNextPage || historyLoading}
+                      onClick={() => openStockHistory(historyItem, (historyPagination?.page || 1) + 1)}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold text-slate-700 disabled:opacity-40"
+                    >
+                      Older
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

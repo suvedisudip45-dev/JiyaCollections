@@ -1988,6 +1988,27 @@ model ManufacturerInventory {
   @@index([manufacturerId])
 }
 
+model ManufacturerInventoryMovement {
+  id             String   @id @default(uuid())
+  manufacturerId String
+  productId      String
+  productName    String
+  variantLabel   String
+  previousQty    Int
+  newQty         Int
+  changeQty      Int
+  movementType   String
+  reason         String
+  note           String?  @db.Text
+  actorId        String?
+  actorRole      String   @default("MANUFACTURER")
+  source         String   @default("MANUFACTURER_PORTAL")
+  createdAt      DateTime @default(now())
+
+  @@index([manufacturerId, productId, createdAt], map: "ManInvMove_manufacturer_product_created_idx")
+  @@index([productId, createdAt], map: "ManInvMove_product_created_idx")
+}
+
 // Order assignment from Allocation Engine to a Manufacturer
 model OrderAssignment {
   id              String    @id @default(uuid())
