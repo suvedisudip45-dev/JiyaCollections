@@ -102,6 +102,8 @@ The component tree includes:
 
 The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order.
 
+`PlaceOrder.jsx` loads the customer's claimed Own Store discount rewards and eligible VIP loyalty reward in the Offers Available section. The customer may select one reward or none; the total reflects only that selection, and the order request sends the choice and selected card ID for authoritative backend validation. The UI does not stack card and loyalty discounts.
+
 Carrier state labels are also intentionally strict. A failed NCM booking is presented as "Failed to Book Courier" or equivalent failure text instead of the optimistic "Courier Booked" state, and the manufacturer UI uses the same failed-state labels to prevent false-positive booking confirmations.
 
 ## 3. Admin Portal (`admin/`)
@@ -129,6 +131,7 @@ The application exposes modules such as:
 - requires a valid admin token and permission set before route access
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
+- `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; manufacturer assignment, batch generation, QR export, and print flows remain available
 - integrates `react-toastify` for action feedback
 - `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and manufacturer stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.
 - `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
@@ -184,9 +187,11 @@ This portal is clearly structured around the backend `marketing-cards` router an
 1. Product catalog loads from the backend.
 2. `ShopContext` handles cart state and local storage fallback.
 3. Checkout uses backend order creation plus shipping/config lookup.
-4. `Orders` page reads customer order history and supports cancellation, return requests, and exchange requests with replacement-variant selection.
-5. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
-6. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
+4. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account). Each card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Own Store code entries and QR scans are tracked, and eligible cards can be claimed on demand.
+5. Checkout offers a mutually exclusive selection between one claimed card reward, the active VIP loyalty reward, or no reward.
+6. `Orders` page reads customer order history and supports cancellation, return requests, and exchange requests with replacement-variant selection.
+7. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
+8. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 
 ### Admin flow
 

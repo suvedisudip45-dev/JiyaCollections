@@ -65,7 +65,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/manufacturer-inventory` | Manufacturer stock and inventory adjustments |
 | `/api/assignment` and `/api/order-assignment` | Assignment flow |
 | `/api/delivery` and `/api/delivery-job` | Delivery lifecycle, NCM webhooks, settlements |
-| `/api/marketing-cards` | Marketing card lifecycle and partner/customer operations |
+| `/api/marketing-cards` | Marketing card lifecycle, partner/customer operations, and Own Store campaigns |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
 
 ### Key route examples from the actual code
@@ -142,6 +142,10 @@ The schema includes:
 - `AuthAccountRoleMapping`
 
 Authorization is enforced through a centralized `authorize` middleware that resolves account permissions from the RBAC service and checks required permission strings such as `product:create`, `order:list_admin`, `delivery:admin_list`, `access:roles_read`, and `marketing_card:admin_manage`.
+
+Own Store campaign creation and public/organization card assignment use the additional `marketing_card:own_store_manage` and `marketing_card:custom_assign` permissions. All Own Store cards are available to any logged-in customer without a delivered-order ownership check; code entry, QR attempts, and successful scans are recorded as card events. The first successful QR scan consumes a card; the backend rejects subsequent scans by both the scanning account and other accounts. The campaign's `maxScansPerCustomer` setting (default one) limits each account across the campaign lifetime, in addition to the weekly campaign cap of five; organization-assigned cards also have a two-per-organization campaign lifetime cap. Manufacturer distribution remains a separate workflow. Customer scan quotas and reward eligibility are enforced in backend services; `POST /api/marketing-cards/customer/claim-reward` claims eligible discount rewards, and `GET /api/marketing-cards/customer/rewards` lists active claims for checkout.
+
+Checkout accepts a single explicit reward choice (`CARD`, `LOYALTY`, or `NONE`). Card discounts are recalculated and validated from the claimed reward on the server, while redemption is changed to `REDEEMED` in the same transaction as order creation. Card and loyalty benefits cannot be stacked; loyalty reward usage is not consumed by an order using a card reward.
 
 ### MFA / portal rules
 

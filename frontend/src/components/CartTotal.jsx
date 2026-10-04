@@ -10,6 +10,8 @@ import Title from "./Title";
  * @param {number} [loyaltyDiscount]  – active loyalty tier price discount
  * @param {string} [loyaltyLabel]     – badge/description for the loyalty reward
  * @param {object} [loyaltyGift]      – { amount, description, letterIncluded, customPerk }
+ * @param {number} [cardDiscount]     – selected marketing card discount
+ * @param {string} [cardRewardLabel]  – selected marketing card reward name
  * @param {boolean} [isCartPage]      – true when viewed from /cart before address selection
  */
 const CartTotal = ({
@@ -18,6 +20,10 @@ const CartTotal = ({
   loyaltyDiscount = 0,
   loyaltyLabel,
   loyaltyGift,
+  // eslint-disable-next-line react/prop-types
+  cardDiscount = 0,
+  // eslint-disable-next-line react/prop-types
+  cardRewardLabel,
   subtotalOverride,
   isCartPage = false,
 }) => {
@@ -37,7 +43,7 @@ const CartTotal = ({
     : delivery_fee;
 
   const numericShipping = resolvedFee !== undefined ? resolvedFee : 0;
-  const grandTotal = Math.max(0, subtotal === 0 ? 0 : subtotal + numericShipping - loyaltyDiscount);
+  const grandTotal = Math.max(0, subtotal === 0 ? 0 : subtotal + numericShipping - loyaltyDiscount - cardDiscount);
 
   return (
     <div className="w-full">
@@ -64,6 +70,19 @@ const CartTotal = ({
                 )}
               </div>
               <p>- {currency} {loyaltyDiscount}.00</p>
+            </div>
+            <hr />
+          </>
+        )}
+
+        {cardDiscount > 0 && (
+          <>
+            <div className="flex justify-between items-start text-orange-700 font-semibold">
+              <div>
+                <p>Marketing Card Discount</p>
+                {cardRewardLabel && <p className="text-[11px] text-orange-600 font-normal">{cardRewardLabel}</p>}
+              </div>
+              <p>- {currency} {cardDiscount}.00</p>
             </div>
             <hr />
           </>

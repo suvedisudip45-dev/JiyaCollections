@@ -1552,6 +1552,7 @@ model MarketingPartner {
   updatedAt    DateTime                     @updatedAt
   campaigns    MarketingCampaign[]
   cards        MarketingCard[]
+  assignedCards MarketingCard[]               @relation("MarketingCardAssignedPartner")
   settlements  MarketingPartnerSettlement[]
   collaborationProducts CollaborationProduct[]
   collaborationSales CollaborationSale[]
@@ -1563,7 +1564,9 @@ model MarketingPartner {
 
 model MarketingCampaign {
   id                 String                       @id @default(uuid())
-  marketingPartnerId String
+  marketingPartnerId String?
+  isOwnStore         Boolean                      @default(false)
+  maxScansPerCustomer Int                          @default(1)
   name               String
   description        String?                      @db.Text
   targetScopeType    String                       @default("NATIONWIDE") // NATIONWIDE | PROVINCE | DISTRICT
@@ -1586,7 +1589,7 @@ model MarketingCampaign {
   adExternalLink     String?                      @db.VarChar(255)
   createdAt          DateTime                     @default(now())
   updatedAt          DateTime                     @updatedAt
-  marketingPartner   MarketingPartner             @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
+  marketingPartner   MarketingPartner?            @relation(fields: [marketingPartnerId], references: [id], onDelete: Restrict)
   batches            MarketingCardBatch[]
   cards              MarketingCard[]
   benefits           MarketingBenefit[]
@@ -1614,7 +1617,10 @@ model MarketingCard {
   id                     String                       @id @default(uuid())
   cardCode               String                       @unique @db.VarChar(64)
   qrTokenHash            String                       @unique @db.Char(64)
-  partnerId              String
+  partnerId              String?
+  assignedPartnerId      String?
+  assignedOrganization   String?                      @db.VarChar(191)
+  isPublic               Boolean                      @default(false)
   campaignId             String
   batchId                String
   assignedManufacturerId String?
@@ -1628,7 +1634,8 @@ model MarketingCard {
   attachedAt             DateTime?
   createdAt              DateTime                     @default(now())
   updatedAt              DateTime                     @updatedAt
-  partner                MarketingPartner             @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  partner                MarketingPartner?            @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  assignedPartner        MarketingPartner?            @relation("MarketingCardAssignedPartner", fields: [assignedPartnerId], references: [id], onDelete: SetNull)
   campaign               MarketingCampaign            @relation(fields: [campaignId], references: [id], onDelete: Restrict)
   batch                  MarketingCardBatch           @relation(fields: [batchId], references: [id], onDelete: Restrict)
   benefit                MarketingBenefit?            @relation(fields: [benefitId], references: [id], onDelete: SetNull)
@@ -1645,6 +1652,9 @@ model MarketingCard {
   @@index([batchId, physicalStatus])
   @@index([benefitId])
   @@index([exchangeLockRequestId])
+  @@index([assignedPartnerId, physicalStatus])
+  @@index([assignedOrganization, physicalStatus])
+  @@index([campaignId, isPublic, physicalStatus])
 }
 
 model MarketingCardAssignment {
@@ -1691,6 +1701,9 @@ model MarketingCardCustomer {
   cardId               String
   customerId           String
   linkedAt             DateTime      @default(now())
+  scannedAt            DateTime      @default(now())
+  assignedOrganization String?       @db.VarChar(191)
+  scanWeekIndex        Int           @default(0)
   activatedAt          DateTime?
   status               String        @default("LINKED") // LINKED | ACTIVE | CANCELLED
   inStoreOtp           String?       @db.VarChar(6)
@@ -1701,6 +1714,8 @@ model MarketingCardCustomer {
 
   @@unique([cardId])
   @@index([customerId, status])
+  @@index([customerId, scanWeekIndex])
+  @@index([customerId, scanWeekIndex, assignedOrganization], map: "MCC_customer_week_org_idx")
 }
 
 model MarketingBenefit {
@@ -1730,7 +1745,8 @@ model MarketingBenefitRedemption {
   benefitId  String
   customerId String
   status     String           @default("REDEEMED") // REDEEMED | CANCELLED
-  redeemedAt DateTime         @default(now())
+  claimedAt  DateTime?
+  redeemedAt DateTime?        @default(now())
   card       MarketingCard    @relation(fields: [cardId], references: [id], onDelete: Restrict)
   benefit    MarketingBenefit @relation(fields: [benefitId], references: [id], onDelete: Restrict)
   customer   User             @relation(fields: [customerId], references: [id], onDelete: Restrict)

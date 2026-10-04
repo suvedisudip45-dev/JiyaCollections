@@ -5,7 +5,9 @@ import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 import {
   adminAssignCards,
+  adminAssignCardsToOrganization,
   adminCreateCampaign,
+  adminCreateOwnStoreCampaign,
   adminUploadCampaignMedia,
   adminDeactivateCampaign,
   adminCreatePartner,
@@ -23,6 +25,8 @@ import {
   manufacturerListCards,
   manufacturerReceiveCard,
   customerListCards,
+  customerListRewards,
+  customerClaimReward,
   customerVerifyCode,
   customerVerifyQr,
   customerActivateCard,
@@ -80,9 +84,11 @@ marketingCardRouter.patch("/admin/partners/:partnerId/approve", authenticate, au
 marketingCardRouter.get("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminListCampaigns);
 marketingCardRouter.post("/admin/campaign-media", authenticate, authorize("marketing_card:admin_manage"), handleCampaignMediaUpload, adminUploadCampaignMedia);
 marketingCardRouter.post("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminCreateCampaign);
+marketingCardRouter.post("/admin/own-store/campaigns", authenticate, authorize("marketing_card:own_store_manage"), adminCreateOwnStoreCampaign);
 marketingCardRouter.patch("/admin/campaigns/:campaignId/deactivate", authenticate, authorize("marketing_card:admin_manage"), adminDeactivateCampaign);
 marketingCardRouter.post("/admin/batches", authenticate, authorize("marketing_card:admin_manage"), adminGenerateBatch);
 marketingCardRouter.post("/admin/assignments", authenticate, authorize("marketing_card:admin_manage"), adminAssignCards);
+marketingCardRouter.post("/admin/own-store/assignments", authenticate, authorize("marketing_card:custom_assign"), adminAssignCardsToOrganization);
 marketingCardRouter.get("/admin/cards", authenticate, authorize("marketing_card:admin_manage"), adminListCards);
 marketingCardRouter.post("/admin/cards/invalidate", authenticate, authorize("marketing_card:admin_manage"), adminInvalidate);
 marketingCardRouter.get("/admin/metrics", authenticate, authorize("marketing_card:admin_manage"), adminCardMetrics);
@@ -96,6 +102,8 @@ marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authenticate, a
 
 // ── Customer routes ──────────────────────────────────────────
 marketingCardRouter.get("/customer/cards", authenticate, authorize("marketing_card:customer_manage"), customerListCards);
+marketingCardRouter.get("/customer/rewards", authenticate, authorize("marketing_card:customer_manage"), customerListRewards);
+marketingCardRouter.post("/customer/claim-reward", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("redeem"), customerClaimReward);
 marketingCardRouter.post("/customer/cards/verify-code", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("link"), customerVerifyCode);
 marketingCardRouter.post("/customer/cards/verify-qr", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("scan"), customerVerifyQr);
 marketingCardRouter.post("/customer/cards/:cardId/activate", authenticate, authorize("marketing_card:customer_manage"), marketingCardRateLimit("link"), customerActivateCard);
@@ -120,5 +128,4 @@ marketingCardRouter.post("/partner/redemptions/redeem", authenticate, authorize(
 marketingCardRouter.post("/partner/redemptions/reject", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, marketingCardRateLimit("redeem"), rejectCard);
 
 export default marketingCardRouter;
-
 

@@ -242,7 +242,15 @@ export const calculateUserLoyalty = async (userId) => {
   const hasPerks = isFreeShipping || discountAmount > 0 || giftAmount > 0 || giftDescription || letterIncluded || customPerk;
 
   const rewardOrderLimit = Number(currentLevel.rewardOrderLimit || 3);
-  const ordersSinceQualifying = Math.max(0, totalOrders - Number(currentLevel.minOrders));
+  const loyaltyRewardOrderCount = eligibleOrders.filter((order) => {
+    const rewardData = typeof order.rewardApplied === "string"
+      ? (() => {
+          try { return JSON.parse(order.rewardApplied); } catch { return {}; }
+        })()
+      : (order.rewardApplied || {});
+    return rewardData.source !== "MARKETING_CARD";
+  }).length;
+  const ordersSinceQualifying = Math.max(0, loyaltyRewardOrderCount - Number(currentLevel.minOrders));
   const remainingRewardUses = Math.max(0, rewardOrderLimit - ordersSinceQualifying);
   const currentUseIndex = Math.min(rewardOrderLimit, ordersSinceQualifying + 1);
   const isRewardEligible = hasPerks && remainingRewardUses > 0;
