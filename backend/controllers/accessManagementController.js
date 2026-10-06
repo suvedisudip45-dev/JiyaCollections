@@ -7,12 +7,23 @@ import {
   listAdminRoles,
   listPermissions,
   listPortalUsers,
+  listSystemAuditLogs,
+  exportSystemAuditLogs,
   replaceAdminRolePermissions,
   setAdminRoleStatus,
   setPortalUserStatus,
   updateAdminRole,
   updatePortalUser,
 } from "../services/accessManagementService.js";
+
+const actorContextFromRequest = (req) => ({
+  actorId: req.auth?.accountId,
+  actorRole: req.auth?.role,
+  portalSource: req.auth?.role || "ADMIN",
+  ipAddress: req.ip || null,
+  userAgent: req.headers["user-agent"] || null,
+  correlationId: req.correlationId || null,
+});
 
 const sendError = (res, error, fallback) => {
   const statusCode = error.statusCode || (error.code === "P2002" ? 409 : error.code === "P2025" ? 404 : 500);
@@ -55,6 +66,7 @@ const updateUser = (portal) => async (req, res) => {
   try {
     const user = await updatePortalUser({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       portal,
       accountId: req.params.accountId,
       input: req.body,
@@ -72,6 +84,7 @@ const setUserStatus = (portal) => async (req, res) => {
     }
     const user = await setPortalUserStatus({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       portal,
       accountId: req.params.accountId,
       active: req.body.active,
@@ -101,7 +114,11 @@ export const setMarketingPartnerUserStatus = setUserStatus("MARKETING_PARTNER");
 
 export const createAdmin = async (req, res) => {
   try {
-    const result = await createAdminUser({ actorAccountId: req.auth.accountId, input: req.body });
+    const result = await createAdminUser({
+      actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
+      input: req.body,
+    });
     return res.status(201).json({ success: true, ...result });
   } catch (error) {
     return sendError(res, error, "Unable to create the Admin account.");
@@ -115,6 +132,7 @@ export const assignRoles = async (req, res) => {
     }
     const user = await assignAdminUserRoles({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       accountId: req.params.accountId,
       roleIds: req.body.roleIds,
     });
@@ -146,6 +164,7 @@ export const createRole = async (req, res) => {
   try {
     const role = await createAdminRole({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       name: req.body?.name,
       description: req.body?.description,
     });
@@ -159,6 +178,7 @@ export const updateRole = async (req, res) => {
   try {
     const role = await updateAdminRole({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       roleId: req.params.roleId,
       name: req.body?.name,
       description: req.body?.description,
@@ -176,6 +196,7 @@ export const setRoleStatus = async (req, res) => {
     }
     const role = await setAdminRoleStatus({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       roleId: req.params.roleId,
       active: req.body.active,
     });
@@ -192,6 +213,7 @@ export const assignPermissions = async (req, res) => {
     }
     const role = await replaceAdminRolePermissions({
       actorAccountId: req.auth.accountId,
+      actorContext: actorContextFromRequest(req),
       roleId: req.params.roleId,
       permissionIds: req.body.permissionIds,
     });
@@ -207,5 +229,30 @@ export const getPermissions = async (req, res) => {
     return res.json({ success: true, ...result });
   } catch (error) {
     return sendError(res, error, "Unable to load permissions.");
+  }
+};
+
+export const getAuditLogs = async (req, res) => {
+  try {
+    const result = await listSystemAuditLogs(req.query);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return sendError(res, error, "Unable to load audit history.");
+  }
+};
+
+export const downloadAuditLogs = async (req, res) => {
+  try {
+    const result = await exportSystemAuditLogs(req.query);
+    if (result.format === "csv") {
+      res.type("text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="audit-history.csv"');
+      return res.send(result.content);
+    }
+    res.type("application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="audit-history.json"');
+    return res.send(result.content);
+  } catch (error) {
+    return sendError(res, error, "Unable to export audit history.");
   }
 };

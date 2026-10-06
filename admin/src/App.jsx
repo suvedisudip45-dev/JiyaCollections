@@ -5,7 +5,7 @@ import { clearAuthTokens } from "./auth/tokenStorage";
 import { PermissionsProvider, usePermissions } from "./auth/PermissionsContext";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
-import { Routes, Route, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Add from "./pages/Add";
 import List from "./pages/List";
 import Orders from "./pages/Orders";
@@ -48,6 +48,8 @@ import MarketingCards from "./pages/MarketingCards";
 import AccessUsers from "./pages/AccessUsers";
 import AccessRoles from "./pages/AccessRoles";
 import AccessPermissions from "./pages/AccessPermissions";
+import AuditHistory from "./pages/AuditHistory";
+import NotFound from "./pages/NotFound";
 import { ADMIN_ROUTE_PERMISSIONS } from "./auth/adminRoutePermissions";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
@@ -177,6 +179,7 @@ const App = () => {
               <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-[#f3f6f4] overflow-x-hidden min-w-0">
                 <div className="max-w-7xl mx-auto">
                   <Routes>
+                  <Route path="/" element={<Navigate to="/orders" replace />} />
                   <Route path="/finance" element={withPermission("/finance", <FinanceDashboard token={token} />)} />
                   <Route path="/treasury" element={withPermission("/treasury", <TreasuryCash token={token} />)} />
                   <Route path="/assets" element={withPermission("/assets", <AssetManagement token={token} />)} />
@@ -219,6 +222,8 @@ const App = () => {
                   <Route path="/access-control/users" element={withPermission("/access-control/users", <AccessUsers token={token} />)} />
                   <Route path="/access-control/roles" element={withPermission("/access-control/roles", <AccessRoles token={token} />)} />
                   <Route path="/access-control/permissions" element={withPermission("/access-control/permissions", <AccessPermissions token={token} />)} />
+                  <Route path="/audit-history" element={withPermission("/audit-history", <AuditHistory token={token} />)} />
+                  <Route path="*" element={<NotFound />} />
                   </Routes>
                 </div>
               </main>

@@ -125,12 +125,15 @@ The application exposes modules such as:
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
+- `/audit-history`
 
 ### Admin UX behavior
 
 - requires a valid admin token and permission set before route access
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
+- `/audit-history` requires `access:audit_read` and displays paginated actor/action/entity/date/result-filtered system audit records, including authentication and security signals, with before/after diffs and CSV export. Failed/blocked entries are visually distinguished and explicitly described as signals rather than confirmed breaches. Its in-memory query cache is bounded to 20 entries with a 15-second TTL; Refresh clears the cache and reloads the current query.
+- an authenticated visit to `/` redirects to `/orders`; unmatched admin paths render a 404 page with a return-to-orders link
 - `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; manufacturer assignment, batch generation, QR export, and print flows remain available
 - integrates `react-toastify` for action feedback
 - `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and manufacturer stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.

@@ -12,6 +12,8 @@ import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { normalizeRefreshPortal } from "../utils/refreshCookie.js";
 import { hasMfaEvidence, requiresMfa } from "../security/mfaPolicy.js";
+import { recordSystemAudit } from "./auditService.js";
+import { logger } from "../utils/logger.js";
 
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
@@ -154,7 +156,13 @@ const getAccountProfile = (account) => {
   return account.customerProfile || { id: account.id, email: account.email };
 };
 
-export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress = "", userAgent = "" }) => {
+export const rotateRefreshToken = async ({
+  refreshToken,
+  targetPortal,
+  ipAddress = "",
+  userAgent = "",
+  correlationId = null,
+}) => {
   const decoded = verifyRefreshToken(refreshToken);
   if (!decoded.jti || !decoded.token_family_id || !decoded.accountId) {
     throw new Error("Invalid refresh token claims.");
@@ -192,6 +200,7 @@ export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress
       role: decoded.role,
       ipAddress,
       userAgent,
+      correlationId,
     });
     throw createRefreshReuseError();
   }
@@ -294,6 +303,7 @@ export const rotateRefreshToken = async ({ refreshToken, targetPortal, ipAddress
       role: decoded.role,
       ipAddress,
       userAgent,
+      correlationId,
     });
     throw createRefreshReuseError();
   }
@@ -327,6 +337,7 @@ const invalidateRefreshFamilyOnReuse = async ({
   role,
   ipAddress,
   userAgent,
+  correlationId,
 }) => {
   const revokedAt = new Date();
   await prisma.authSession.updateMany({
@@ -350,6 +361,7 @@ const invalidateRefreshFamilyOnReuse = async ({
     role,
     ipAddress,
     userAgent,
+    correlationId,
     status: "BLOCKED",
     failureReason: "REVOKED_REFRESH_TOKEN_REUSED",
     metadata: {
@@ -401,6 +413,7 @@ export const logAuthEvent = async ({
   status = "SUCCESS",
   failureReason = null,
   metadata = {},
+  correlationId = null,
 }, { client = prisma } = {}) => {
   try {
     await client.authAuditLog.create({
@@ -417,8 +430,45 @@ export const logAuthEvent = async ({
         metadata: metadata || {},
       },
     });
+    const portalContext = String(portal || role || "").toUpperCase();
+    const privilegedPortal = ["ADMIN", "MANUFACTURER", "MARKETING_PARTNER"].includes(portalContext);
+    if (status !== "SUCCESS" || privilegedPortal) {
+      const auditWrite = recordSystemAudit({
+        actorId: status === "SUCCESS" ? accountId : null,
+        actorRole: status === "SUCCESS" ? role : null,
+        portalSource: portal || role,
+        ipAddress,
+        userAgent,
+        correlationId,
+      }, {
+        action,
+        entityType: status === "SUCCESS" ? "Authentication" : "SecurityEvent",
+        entityId: accountId,
+        status,
+        failureReason,
+        afterState: {
+          role: role || null,
+          portal: portal || role || null,
+          outcome: status,
+          reason: failureReason,
+          details: metadata,
+        },
+      }, { client });
+      if (client === prisma) {
+        void auditWrite.catch((error) => logger.error("Unable to enqueue authentication audit event.", {
+          action,
+          correlationId,
+          error: error.message || error,
+        }));
+      } else {
+        await auditWrite;
+      }
+    }
   } catch (err) {
-    console.error("Failed to write AuthAuditLog:", err);
+    logger.error("Failed to write authentication audit event.", {
+      correlationId,
+      error: err.message || err,
+    });
   }
 };
 
@@ -431,6 +481,7 @@ export const authenticateAccount = async ({
   targetPortal = null, // e.g. "CUSTOMER" | "ADMIN" | "MANUFACTURER" | "MARKETING_PARTNER"
   ipAddress = "",
   userAgent = "",
+  correlationId = null,
 }) => {
   const normalized = normalizeIdentifier(identifier);
   if (normalized.type === "UNKNOWN") {
@@ -440,6 +491,7 @@ export const authenticateAccount = async ({
       portal: targetPortal,
       ipAddress,
       userAgent,
+      correlationId,
       status: "FAILED",
       failureReason: "INVALID_IDENTIFIER_FORMAT",
     });
@@ -466,6 +518,7 @@ export const authenticateAccount = async ({
       portal: targetPortal,
       ipAddress,
       userAgent,
+      correlationId,
       status: "FAILED",
       failureReason: "ACCOUNT_NOT_FOUND",
     });
@@ -484,6 +537,7 @@ export const authenticateAccount = async ({
       portal: targetPortal,
       ipAddress,
       userAgent,
+      correlationId,
       status: "BLOCKED",
       failureReason: "ACCOUNT_LOCKED",
     });
@@ -513,6 +567,7 @@ export const authenticateAccount = async ({
       portal: targetPortal,
       ipAddress,
       userAgent,
+      correlationId,
       status: "FAILED",
       failureReason: shouldLock ? "MAX_ATTEMPTS_EXCEEDED" : "INVALID_PASSWORD",
     });
@@ -555,6 +610,7 @@ export const authenticateAccount = async ({
         portal: targetPortal,
         ipAddress,
         userAgent,
+        correlationId,
         status: "FAILED",
         failureReason: `STATUS_${account.status}`,
       });
@@ -574,6 +630,7 @@ export const authenticateAccount = async ({
       portal: targetPortal,
       ipAddress,
       userAgent,
+      correlationId,
       status: "FAILED",
       failureReason: "ROLE_PORTAL_MISMATCH",
     });
@@ -612,6 +669,7 @@ export const authenticateAccount = async ({
       portal: account.role,
       ipAddress,
       userAgent,
+      correlationId,
       status: "SUCCESS",
     });
     return { account: safeAccount, profile, requiresTwoFactor: true };
@@ -627,6 +685,7 @@ export const authenticateAccount = async ({
     portal: targetPortal || account.role,
     ipAddress,
     userAgent,
+    correlationId,
     status: "SUCCESS",
   });
 

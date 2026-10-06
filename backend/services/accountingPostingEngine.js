@@ -54,7 +54,6 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "4100", accountName: "Gross Sales Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4200", accountName: "Delivery & Shipping Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4300", accountName: "Collaboration Selling Fee Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
-  { accountCode: "4300", accountName: "Collaboration Selling Fee Revenue", accountType: "REVENUE", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4500", accountName: "Sales Returns & Allowances", accountType: "REVENUE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "4000" },
   { accountCode: "4600", accountName: "Customer Discounts & Loyalty Rewards", accountType: "REVENUE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "4000" },
 
@@ -101,7 +100,6 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "NCM_CARRIER_PAYABLE", accountCode: "2180" },
   { mappingKey: "PRODUCT_SALES_REVENUE", accountCode: "4100" },
   { mappingKey: "DELIVERY_REVENUE", accountCode: "4200" },
-  { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
   { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
   { mappingKey: "SALES_RETURNS", accountCode: "4500" },
   { mappingKey: "SALES_DISCOUNTS", accountCode: "4600" },
@@ -176,7 +174,7 @@ export const ensureStandardChartOfAccounts = async (client = prisma) => {
     return await client.account.findMany({ orderBy: { accountCode: "asc" } });
   } catch (error) {
     console.error("Error seeding Chart of Accounts:", error);
-    return [];
+    throw error;
   }
 };
 
@@ -1801,4 +1799,3 @@ export const postNcmRemittanceAccounting = async ({
     client,
   });
 };
-

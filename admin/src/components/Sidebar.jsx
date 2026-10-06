@@ -139,16 +139,17 @@ const Sidebar = () => {
       {/* Scrollable nav area */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#dfe7e3 transparent" }}>
 
-        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read"]) && (
+        {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
           <>
             <SectionGroup
               label="Access Control"
               icon={Icon.lock}
-              routes={["/access-control/users", "/access-control/roles", "/access-control/permissions"]}
+              routes={["/access-control/users", "/access-control/roles", "/access-control/permissions", "/audit-history"]}
             >
               {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"]) && <NavItem to="/access-control/users" icon={Icon.customers} label="Portal Users" />}
               {can("access:roles_read") && <NavItem to="/access-control/roles" icon={Icon.partners} label="Admin Roles" />}
               {can("access:permissions_read") && <NavItem to="/access-control/permissions" icon={Icon.lock} label="Permissions" />}
+              {can("access:audit_read") && <NavItem to="/audit-history" icon={Icon.lock} label="Audit History" />}
             </SectionGroup>
             <div className="h-px bg-slate-100 my-1" />
           </>

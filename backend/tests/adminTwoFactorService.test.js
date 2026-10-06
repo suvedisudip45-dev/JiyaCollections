@@ -52,6 +52,7 @@ const createHarness = (role = "ADMIN") => {
     events: [],
     outbox: [],
     audit: [],
+    systemAuditOutbox: [],
     sessions: [],
   };
 
@@ -116,13 +117,14 @@ const createHarness = (role = "ADMIN") => {
     notificationEvent: { create: async ({ data }) => { state.events.push(data); return data; } },
     notificationOutbox: { create: async ({ data }) => { state.outbox.push(data); return data; } },
     authAuditLog: { create: async ({ data }) => { state.audit.push(data); return data; } },
+    systemAuditOutbox: { create: async ({ data }) => { state.systemAuditOutbox.push(data); return { id: data.id }; } },
     authSession: { createMany: async ({ data }) => { state.sessions.push(...data); return { count: data.length }; } },
     $transaction: async (callback) => callback(client),
   };
   return { state, client };
 };
 
-const createChallengeAndSendCode = async (harness, now = new Date(), portal = "ADMIN") => {
+const createChallengeAndSendCode = async (harness, now = new Date(), portal = "ADMIN", env = environment) => {
   const createChallenge = portal === "ADMIN" ? createAdminTwoFactorChallenge : createPortalTwoFactorChallenge;
   const sendCode = portal === "ADMIN" ? sendAdminTwoFactorCode : sendPortalTwoFactorCode;
   const result = await createChallenge({
@@ -130,7 +132,7 @@ const createChallengeAndSendCode = async (harness, now = new Date(), portal = "A
     portal,
     ipAddress: "203.0.113.10",
     userAgent: "unit-test-agent",
-  }, { client: harness.client, notificationConfig, env: environment, now });
+  }, { client: harness.client, notificationConfig, env, now });
   assert.deepEqual(result.availableMethods, ["SMS", "EMAIL"]);
   assert.equal(result.maskedPhone.endsWith("0000"), true);
   assert.equal(result.maskedEmail, "a****@example.test");
@@ -138,7 +140,7 @@ const createChallengeAndSendCode = async (harness, now = new Date(), portal = "A
   const sent = await sendCode({ challengeId: result.challengeId, method: "EMAIL" }, {
     client: harness.client,
     notificationConfig,
-    env: environment,
+    env,
     now: new Date(now.getTime() + 1000),
   });
   assert.equal(sent.queued, true);
@@ -237,11 +239,62 @@ test("admin OTP is queued encrypted and verification creates MFA-marked sessions
   assert.equal(harness.state.sessions.length, 2);
   assert.equal(verifyAccessToken(result.tokenPair.accessToken).mfa_verified, true);
   assert.equal(verifyRefreshToken(result.tokenPair.refreshToken).amr.includes("otp"), true);
+  assert.deepEqual(
+    harness.state.systemAuditOutbox.map(({ event }) => event.action),
+    ["ADMIN_2FA_CHALLENGE_CREATED", "ADMIN_2FA_OTP_QUEUED", "ADMIN_2FA_VERIFIED"],
+  );
   await assert.rejects(() => verifyAdminTwoFactorCode(challenge, {
     client: harness.client,
     env: environment,
     now: challenge.now,
   }), /Invalid or expired/);
+});
+
+test("fixed OTP is available only through explicit development configuration", async () => {
+  const harness = createHarness();
+  const developmentEnvironment = {
+    ...environment,
+    NODE_ENV: "development",
+    ADMIN_2FA_DEVELOPMENT_OTP: "111111",
+  };
+  const challenge = await createChallengeAndSendCode(harness, new Date(), "ADMIN", developmentEnvironment);
+  assert.equal(challenge.otp, "111111");
+  const resent = await resendPortalTwoFactorCode({ challengeId: challenge.challengeId }, {
+    client: harness.client,
+    notificationConfig,
+    env: developmentEnvironment,
+    now: new Date(challenge.now.getTime() + 31_000),
+  });
+  assert.equal(resent.queued, true);
+  const resentMessage = decryptNotificationText(harness.state.notification.payload.secureContent, secret);
+  assert.equal(resentMessage.match(/code is (\d{6})/)?.[1], "111111");
+  const result = await verifyAdminTwoFactorCode(challenge, {
+    client: harness.client,
+    env: developmentEnvironment,
+    now: new Date(challenge.now.getTime() + 32_000),
+  });
+  assert.equal(result.account.role, "ADMIN");
+
+  const manufacturerHarness = createHarness("MANUFACTURER");
+  const manufacturerChallenge = await createChallengeAndSendCode(
+    manufacturerHarness,
+    new Date(),
+    "MANUFACTURER",
+    developmentEnvironment,
+  );
+  assert.notEqual(manufacturerChallenge.otp, "111111");
+
+  await assert.rejects(() => sendPortalTwoFactorCode({
+    challengeId: "123e4567-e89b-12d3-a456-426614174000",
+    method: "EMAIL",
+  }, {
+    env: {
+      ...environment,
+      NODE_ENV: "production",
+      ADMIN_2FA_DEVELOPMENT_OTP: "111111",
+    },
+    notificationConfig,
+  }), (error) => error.code === "ADMIN_2FA_CONFIG_INVALID");
 });
 
 test("invalid OTP attempts lock the challenge at the configured limit", async () => {
@@ -258,6 +311,9 @@ test("invalid OTP attempts lock the challenge at the configured limit", async ()
   assert.equal(harness.state.challenge.status, "LOCKED");
   assert.equal(harness.state.challenge.attemptCount, 5);
   assert.equal(harness.state.sessions.length, 0);
+  assert.equal(harness.state.systemAuditOutbox.at(-1).event.entityType, "SecurityEvent");
+  assert.equal(harness.state.systemAuditOutbox.at(-1).event.action, "ADMIN_2FA_LOCKED");
+  assert.equal(harness.state.systemAuditOutbox.at(-1).event.status, "FAILED");
 });
 
 test("concurrent valid OTP submissions can consume a challenge only once", async () => {

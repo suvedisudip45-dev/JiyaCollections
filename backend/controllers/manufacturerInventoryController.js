@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   buildManufacturerStockMovements,
@@ -311,6 +312,32 @@ const updateStock = async (req, res) => {
       if (movements.length) {
         await tx.manufacturerInventoryMovement.createMany({ data: movements });
       }
+      await recordSystemAudit({
+        actorId: req.auth?.accountId,
+        actorRole: req.auth?.role || "MANUFACTURER",
+        portalSource: req.auth?.role || "MANUFACTURER",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      }, {
+        action: "MANUFACTURER_INVENTORY_UPDATED",
+        entityType: "ManufacturerInventory",
+        entityId: inventory.id,
+        beforeState: {
+          quantity: existing?.quantity || 0,
+          reservedQty: existing?.reservedQty || 0,
+          variantsStock: existingVariantsStock,
+          agreedCostPrice: existing?.agreedCostPrice ?? null,
+          proposedCostPrice: existing?.proposedCostPrice ?? null,
+        },
+        afterState: {
+          quantity: inventory.quantity,
+          reservedQty: inventory.reservedQty,
+          variantsStock: cleanVariantsStock,
+          agreedCostPrice: inventory.agreedCostPrice ?? null,
+          proposedCostPrice: inventory.proposedCostPrice ?? null,
+        },
+      }, { client: tx });
       return { inventory, movementCount: movements.length };
     }, { isolationLevel: "Serializable" });
 

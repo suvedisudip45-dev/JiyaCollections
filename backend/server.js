@@ -1,9 +1,10 @@
 import express from "express";
 import cors from "cors";
+import { randomUUID } from "node:crypto";
 import "dotenv/config";
-import { logger } from "./utils/logger.js";
+import { flushLogs, logger } from "./utils/logger.js";
 import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
-import connectDB from "./config/db.js";
+import connectDB, { prisma } from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
 import { validateJwtConfig } from "./config/jwt.js";
 import userRouter from "./routes/userRoute.js";
@@ -40,6 +41,7 @@ import notificationRouter from "./routes/notificationRoute.js";
 import { adminGiftRouter, manufacturerGiftRouter } from "./routes/giftRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
+import { startSystemAuditOutboxWorker } from "./services/auditService.js";
 
 // App Config
 const app = express();
@@ -47,34 +49,32 @@ const port = process.env.PORT || 4000;
 
 const startServer = async () => {
   validateJwtConfig();
-  await connectDB();
-  connectCloudinary();
-  ensureStandardChartOfAccounts();
+  const connected = await connectDB();
+  if (!connected) throw new Error("Database connection is required before startup.");
+  await connectCloudinary();
+  await ensureStandardChartOfAccounts();
+  startSystemAuditOutboxWorker();
 
   app.listen(port, () => {
     logger.info("Server started", { port });
   });
 };
 
-startServer();
-
 // Middleware
 app.use(express.json({ limit: "10mb" }));
 app.use(sanitizeMiddleware);
+app.use((req, res, next) => {
+  const suppliedId = String(req.headers["x-correlation-id"] || "").trim();
+  req.correlationId = /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedId) ? suppliedId : randomUUID();
+  res.setHeader("X-Correlation-ID", req.correlationId);
+  next();
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
-  const originalJson = res.json.bind(res);
-  res.json = (body) => {
+  res.once("finish", () => {
     const durationMs = Date.now() - start;
     logger.request(req, res, durationMs);
-    return originalJson(body);
-  };
-  res.on("finish", () => {
-    const durationMs = Date.now() - start;
-    if (!res.headersSent) {
-      logger.request(req, res, durationMs);
-    }
   });
   next();
 });
@@ -88,7 +88,7 @@ const corsOptions = {
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'x-requested-with'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'x-requested-with', 'x-correlation-id'],
   credentials: true,
 };
 
@@ -139,3 +139,16 @@ app.get("/", (req, res) => {
   res.send("API Working");
 });
 
+startServer().catch(async (error) => {
+  logger.error("Server startup failed; the API will not listen.", {
+    error: error.message,
+    name: error.name,
+  });
+  await prisma.$disconnect().catch((disconnectError) => {
+    console.error("Database disconnect after startup failure failed:", disconnectError.message);
+  });
+  await flushLogs().catch((flushError) => {
+    console.error("Could not flush startup failure logs:", flushError.message);
+  });
+  process.exitCode = 1;
+});

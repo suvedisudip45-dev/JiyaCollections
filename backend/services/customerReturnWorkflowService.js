@@ -4,6 +4,7 @@ import { extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder
 import { syncProductStock } from "./stockSyncService.js";
 import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { applyCollaborationReturnAdjustments } from "./collaborationSalesService.js";
+import { recordSystemAudit } from "./auditService.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
@@ -434,7 +435,7 @@ export const resolveUnknownCustomerReturn = async ({ returnId, adminId, outcome,
   }, { isolationLevel: "Serializable" });
 };
 
-export const decideCustomerReturnRequest = async ({ returnId, adminId, decision, reason, chargePayer }) => {
+export const decideCustomerReturnRequest = async ({ returnId, adminId, actorContext, decision, reason, chargePayer }) => {
   const selected = String(decision || "").trim().toUpperCase();
   const decisionReason = String(reason || "").trim();
   if (!returnId || !["APPROVE", "REJECT"].includes(selected) || decisionReason.length < 3) {
@@ -465,6 +466,16 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, decision,
         reason: decisionReason,
         idempotencyKey: `RETURN:${returnId}:APPROVED_BY_ADMIN`,
       });
+      await recordSystemAudit(actorContext, {
+        action: "CUSTOMER_RETURN_APPROVED",
+        entityType: "CustomerReturn",
+        entityId: returnId,
+        beforeState: { lifecycleStatus: current.lifecycleStatus },
+        afterState: {
+          lifecycleStatus: "APPROVED_BY_ADMIN",
+          chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT",
+        },
+      }, { client: tx });
     }, { isolationLevel: "Serializable" });
     return submitApprovedCustomerReturn({ returnId, adminId, chargePayer });
   }
@@ -487,11 +498,18 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, decision,
       reason: decisionReason,
       idempotencyKey: `RETURN:${returnId}:REJECTED_BY_ADMIN`,
     });
+    await recordSystemAudit(actorContext, {
+      action: "CUSTOMER_RETURN_REJECTED",
+      entityType: "CustomerReturn",
+      entityId: returnId,
+      beforeState: { lifecycleStatus: current.lifecycleStatus, refundStatus: current.refundStatus },
+      afterState: { lifecycleStatus: "REJECTED_BY_ADMIN", refundStatus: "REJECTED" },
+    }, { client: tx });
     return tx.customerReturn.findUnique({ where: { id: returnId } });
   }, { isolationLevel: "Serializable" });
 };
 
-export const inspectCustomerReturn = async ({ returnId, adminId, result, notes }) => {
+export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, result, notes }) => {
   const inspection = String(result || "").trim().toUpperCase();
   const inspectionNotes = String(notes || "").trim();
   if (!returnId || !["RESTOCKABLE", "DAMAGED", "MISSING", "DISPUTED"].includes(inspection)) {
@@ -620,6 +638,21 @@ export const inspectCustomerReturn = async ({ returnId, adminId, result, notes }
       metadata: { result: inspection, refundAmount: current.totalRefundAmount, ncmDeliveryCharge: current.ncmDeliveryCharge },
       idempotencyKey: `RETURN:${current.id}:INSPECTED:${inspection}`,
     });
+    await recordSystemAudit(actorContext, {
+      action: "CUSTOMER_RETURN_INSPECTED",
+      entityType: "CustomerReturn",
+      entityId: current.id,
+      beforeState: {
+        lifecycleStatus: current.lifecycleStatus,
+        inspectionResult: current.inspectionResult,
+        refundStatus: current.refundStatus,
+      },
+      afterState: {
+        lifecycleStatus: nextStatus,
+        inspectionResult: inspection,
+        refundStatus: returnAccepted ? "PENDING" : "REJECTED",
+      },
+    }, { client: tx });
     return updated;
   }, { isolationLevel: "Serializable" });
 
@@ -735,7 +768,7 @@ export const recordLegacyReturn = async () => {
   throw fail("Directly completing customer returns is disabled. Create an RMA request, approve it, and complete inspection before refund or inventory changes.", "RETURN_WORKFLOW_REQUIRED", 409);
 };
 
-export const markCustomerReturnRefunded = async ({ returnId, adminId }) => {
+export const markCustomerReturnRefunded = async ({ returnId, adminId, actorContext }) => {
   const updated = await prisma.$transaction(async (tx) => {
     const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
     if (!current || current.lifecycleStatus !== "REFUND_PENDING") throw fail("Only an inspected return awaiting refund can be marked refunded.", "RETURN_REFUND_NOT_READY", 409);
@@ -758,6 +791,13 @@ export const markCustomerReturnRefunded = async ({ returnId, adminId }) => {
       actorRole: "ADMIN",
       idempotencyKey: `RETURN:${returnId}:REFUNDED`,
     });
+    await recordSystemAudit(actorContext, {
+      action: "CUSTOMER_RETURN_REFUND_COMPLETED",
+      entityType: "CustomerReturn",
+      entityId: returnId,
+      beforeState: { lifecycleStatus: current.lifecycleStatus, refundStatus: current.refundStatus },
+      afterState: { lifecycleStatus: "REFUNDED", refundStatus: "COMPLETED" },
+    }, { client: tx });
     return tx.customerReturn.findUnique({ where: { id: returnId } });
   });
   return updated;

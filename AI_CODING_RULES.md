@@ -10,6 +10,7 @@ All future project changes must be reflected in the documentation set in this re
 - [ARCHITECTURE_AND_BACKEND.md](ARCHITECTURE_AND_BACKEND.md)
 - [DATABASE_AND_SCHEMAS.md](DATABASE_AND_SCHEMAS.md)
 - [FRONTEND_AND_UI.md](FRONTEND_AND_UI.md)
+- [SECURITY_DATA_FLOW_AND_UI_AUDIT.md](SECURITY_DATA_FLOW_AND_UI_AUDIT.md)
 - [AI_CODING_RULES.md](AI_CODING_RULES.md)
 
 This is a hard operating rule. Do not merge or continue feature work without updating the relevant documentation sections for any route, model, permission, flow, environment variable, deployment detail, or UI change.

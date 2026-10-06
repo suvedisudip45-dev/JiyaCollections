@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import { normalizeIdentifier, resolveTargetPortal } from "../services/authService.js";
+import { recordSystemAudit } from "../services/auditService.js";
+import { logger } from "../utils/logger.js";
 
 const parsePositiveInteger = (env, name, fallback, maximum) => {
   const value = Number(env[name] || fallback);
@@ -50,12 +52,14 @@ export const createAuthRateLimiters = (options = {}) => {
     loginIpBucketSize = 30,
     publicRegisterIpBucketSize = 5,
     now = Date.now,
+    auditRecorder = recordSystemAudit,
   } = options;
   const buckets = {
     username: new Map(),
     loginIp: new Map(),
     registerIp: new Map(),
   };
+  const auditedBlocks = new Map();
   let nextCleanupAt = 0;
 
   const cleanupExpired = (currentTime) => {
@@ -64,6 +68,9 @@ export const createAuthRateLimiters = (options = {}) => {
       for (const [key, bucket] of bucketMap) {
         if (bucket.resetAt <= currentTime) bucketMap.delete(key);
       }
+    }
+    for (const [key, expiresAt] of auditedBlocks) {
+      if (expiresAt <= currentTime) auditedBlocks.delete(key);
     }
     nextCleanupAt = currentTime + Math.min(windowMs, 60_000);
   };
@@ -99,7 +106,30 @@ export const createAuthRateLimiters = (options = {}) => {
     }
   };
 
-  const reject = (res, code, retryAfter) => {
+  const reject = (req, res, code, retryAfter, portal = "UNKNOWN") => {
+    const ipAddress = getClientIp(req);
+    const identifier = getLoginIdentifier(req.body);
+    const dedupeKey = hashKey(`${code}:${portal}:${ipAddress}:${identifier}`);
+    if (!auditedBlocks.has(dedupeKey)) {
+      auditedBlocks.set(dedupeKey, now() + windowMs);
+      if (auditedBlocks.size > 10_000) auditedBlocks.delete(auditedBlocks.keys().next().value);
+      void Promise.resolve(auditRecorder({
+        portalSource: portal,
+        ipAddress,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      }, {
+        action: code,
+        entityType: "SecurityEvent",
+        status: "BLOCKED",
+        failureReason: code,
+        afterState: { portal, retryAfterSeconds: retryAfter },
+      })).catch((error) => logger.error("Unable to enqueue rate-limit audit event.", {
+        action: code,
+        correlationId: req.correlationId || null,
+        error: error.message || error,
+      }));
+    }
     res.set("Retry-After", String(retryAfter));
     return res.status(429).json({
       success: false,
@@ -130,7 +160,7 @@ export const createAuthRateLimiters = (options = {}) => {
 
     const blocked = results.filter(({ limited }) => limited);
     if (blocked.length) {
-      return reject(res, "LOGIN_RATE_LIMITED", Math.max(...blocked.map(({ retryAfter }) => retryAfter)));
+      return reject(req, res, "LOGIN_RATE_LIMITED", Math.max(...blocked.map(({ retryAfter }) => retryAfter)), portal);
     }
     return next();
   };
@@ -146,7 +176,7 @@ export const createAuthRateLimiters = (options = {}) => {
       publicRegisterIpBucketSize,
       currentTime,
     );
-    if (result.limited) return reject(res, "PUBLIC_REGISTRATION_RATE_LIMITED", result.retryAfter);
+    if (result.limited) return reject(req, res, "PUBLIC_REGISTRATION_RATE_LIMITED", result.retryAfter, "PUBLIC");
     return next();
   };
 

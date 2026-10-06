@@ -55,6 +55,7 @@ export const partnerLogin = async (req, res) => {
       targetPortal: "MARKETING_PARTNER",
       ipAddress,
       userAgent,
+      correlationId: req.correlationId || null,
     });
 
     setRefreshCookie(res, "MARKETING_PARTNER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
@@ -273,4 +274,3 @@ export const changePassword = async (req, res) => {
     return res.json({ success: true, message: "Password updated successfully." });
   } catch (error) { return sendError(res, error); }
 };
-

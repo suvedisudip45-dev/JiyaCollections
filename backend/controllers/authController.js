@@ -63,6 +63,7 @@ export const login = async (req, res) => {
       targetPortal: portalHint,
       ipAddress,
       userAgent,
+      correlationId: req.correlationId || null,
     });
     if (authResult.requiresTwoFactor) {
       const challenge = await createPortalTwoFactorChallenge({
@@ -70,6 +71,7 @@ export const login = async (req, res) => {
         portal: authResult.account.role,
         ipAddress,
         userAgent,
+        correlationId: req.correlationId || null,
       });
       return res.json({
         success: true,
@@ -94,7 +96,12 @@ const sendTwoFactorResponse = async (req, res, expectedPortal = null) => {
     const result = await sendPortalTwoFactorCode({
       challengeId: req.body?.challengeId,
       method: req.body?.method,
-    }, { expectedPortal });
+    }, {
+      expectedPortal,
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
+    });
     return res.status(202).json({
       success: true,
       message: "Verification code queued for delivery.",
@@ -116,7 +123,11 @@ export const sendAdminTwoFactor = (req, res) => sendTwoFactorResponse(req, res, 
 
 export const resendPortalTwoFactor = async (req, res) => {
   try {
-    const result = await resendPortalTwoFactorCode({ challengeId: req.body?.challengeId });
+    const result = await resendPortalTwoFactorCode({ challengeId: req.body?.challengeId }, {
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
+    });
     return res.status(202).json({
       success: true,
       message: "Verification code queued for delivery.",
@@ -142,6 +153,7 @@ const verifyTwoFactorResponse = async (req, res, expectedPortal = null) => {
       expectedPortal,
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
     });
     setRefreshCookie(res, result.account.role, result.tokenPair.refreshToken, result.tokenPair.refreshTokenExpiresAt);
     return res.json(serializeLoginResponse({ ...result.tokenPair, account: result.account }));
@@ -187,6 +199,7 @@ export const refresh = async (req, res) => {
       targetPortal: portal,
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
     });
     setRefreshCookie(res, tokenPair.role, tokenPair.refreshToken, tokenPair.refreshTokenExpiresAt);
 
@@ -275,6 +288,7 @@ export const logout = async (req, res) => {
       role: req.auth.role,
       ipAddress: req.ip || "",
       userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
       status: "SUCCESS",
     });
     clearRefreshCookie(res, req.auth.role);
@@ -341,6 +355,7 @@ export const changePassword = async (req, res) => {
       role: account.role,
       ipAddress: req.ip || "",
       userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
       status: "SUCCESS",
     });
 

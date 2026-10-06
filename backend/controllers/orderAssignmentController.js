@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
@@ -20,6 +21,15 @@ const parseJSON = (val, fallback = []) => {
   }
   return fallback;
 };
+
+const auditActorContext = (req, fallbackRole = "MANUFACTURER") => ({
+  actorId: req.auth?.accountId || null,
+  actorRole: req.auth?.role || fallbackRole,
+  portalSource: req.auth?.role || fallbackRole,
+  ipAddress: req.ip || null,
+  userAgent: req.headers["user-agent"] || null,
+  correlationId: req.correlationId || null,
+});
 
 export const canAdminReassignAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
   const normalized = String(status || "").toLowerCase();
@@ -134,8 +144,17 @@ const normalize = (city) => (city || "").toLowerCase().trim();
  * 3. Real-time Variant Stock Availability (Size & Color match in hub inventory)
  * 4. Reliability (On-time fulfillment history and defect rates)
  */
-export const runAllocationEngine = async (orderId) => {
+export const runAllocationEngine = async (orderId, actorContext = {}) => {
   try {
+    const allocationActor = {
+      actorId: null,
+      actorRole: "SYSTEM",
+      portalSource: "SYSTEM",
+      ipAddress: null,
+      userAgent: null,
+      correlationId: null,
+      ...actorContext,
+    };
     const order = await prisma.order.findUnique({ where: { id: orderId } });
     if (!order) return { success: false, message: "Order not found" };
     if (String(order.status || "").toLowerCase() === "cancelled") {
@@ -170,6 +189,22 @@ export const runAllocationEngine = async (orderId) => {
             },
           });
           await tx.order.update({ where: { id: orderId }, data: { assignmentId: assignment.id } });
+          await recordSystemAudit(allocationActor, {
+            action: "ORDER_AUTO_ASSIGNED",
+            entityType: "Order",
+            entityId: orderId,
+            beforeState: {
+              fulfillmentStatus: order.fulfillmentStatus,
+              manufacturerId: order.manufacturerId,
+              assignmentId: order.assignmentId,
+            },
+            afterState: {
+              fulfillmentStatus: "assigned",
+              manufacturerId: fallbackManufacturerId,
+              assignmentId: assignment.id,
+              allocationMode: "special_order_fallback",
+            },
+          }, { client: tx });
           return assignment;
         }, { isolationLevel: "Serializable" }),
       ]);
@@ -374,6 +409,22 @@ export const runAllocationEngine = async (orderId) => {
         data: { orderId, manufacturerId: assignedManufacturer.id, status: "assigned", notes: assignmentNote },
       });
       await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
+      await recordSystemAudit(allocationActor, {
+        action: "ORDER_AUTO_ASSIGNED",
+        entityType: "Order",
+        entityId: orderId,
+        beforeState: {
+          fulfillmentStatus: order.fulfillmentStatus,
+          manufacturerId: order.manufacturerId,
+          assignmentId: order.assignmentId,
+        },
+        afterState: {
+          fulfillmentStatus: "assigned",
+          manufacturerId: assignedManufacturer.id,
+          assignmentId: createdAssignment.id,
+          allocationMode: "smart_allocation",
+        },
+      }, { client: tx });
       return createdAssignment;
     }, { isolationLevel: "Serializable" });
 
@@ -400,7 +451,7 @@ const assignOrder = async (req, res) => {
     const { orderId } = req.body;
     if (!orderId) return res.json({ success: false, message: "orderId required" });
 
-    const result = await runAllocationEngine(orderId);
+    const result = await runAllocationEngine(orderId, auditActorContext(req, "ADMIN"));
     if (result.success) {
       res.json({
         success: true,
@@ -583,6 +634,19 @@ const acceptOrder = async (req, res) => {
         where: { id: assignment.orderId },
         data: { items: acceptedItems, fulfillmentStatus: "accepted", status: "In Production" },
       });
+      await recordSystemAudit(auditActorContext(req), {
+        action: "ORDER_ACCEPTED_FOR_PRODUCTION",
+        entityType: "Order",
+        entityId: assignment.orderId,
+        beforeState: {
+          fulfillmentStatus: order.fulfillmentStatus,
+          status: order.status,
+        },
+        afterState: {
+          fulfillmentStatus: "accepted",
+          status: "In Production",
+        },
+      }, { client: tx });
     });
 
     res.json({ success: true, message: "Order accepted for production!" });
@@ -611,19 +675,36 @@ const rejectOrder = async (req, res) => {
       });
     }
 
-    await prisma.manufacturer.update({
-      where: { id: manufacturerId },
-      data: { rejectionCount: { increment: 1 } },
-    });
-
-    await prisma.orderAssignment.update({
-      where: { id: assignmentId },
-      data: { status: "rejected", rejectionReason: reason || "No capacity" },
-    });
-
-    await prisma.order.update({
-      where: { id: assignment.orderId },
-      data: { fulfillmentStatus: "rejected", status: "Rejected by Manufacturer" },
+    await prisma.$transaction(async (tx) => {
+      const orderBefore = await tx.order.findUnique({
+        where: { id: assignment.orderId },
+        select: { fulfillmentStatus: true, status: true },
+      });
+      await tx.manufacturer.update({
+        where: { id: manufacturerId },
+        data: { rejectionCount: { increment: 1 } },
+      });
+      await tx.orderAssignment.update({
+        where: { id: assignmentId },
+        data: { status: "rejected", rejectionReason: reason || "No capacity" },
+      });
+      await tx.order.update({
+        where: { id: assignment.orderId },
+        data: { fulfillmentStatus: "rejected", status: "Rejected by Manufacturer" },
+      });
+      await recordSystemAudit(auditActorContext(req), {
+        action: "ORDER_REJECTED_BY_MANUFACTURER",
+        entityType: "Order",
+        entityId: assignment.orderId,
+        beforeState: {
+          fulfillmentStatus: orderBefore?.fulfillmentStatus || null,
+          status: orderBefore?.status || null,
+        },
+        afterState: {
+          fulfillmentStatus: "rejected",
+          status: "Rejected by Manufacturer",
+        },
+      }, { client: tx });
     });
 
     res.json({ success: true, message: "Order rejected. Only an admin can reassign this order to another manufacturer." });
@@ -732,6 +813,10 @@ const updateAssignmentStatus = async (req, res) => {
     }
 
     await prisma.$transaction(async (tx) => {
+      const orderBefore = await tx.order.findUnique({
+        where: { id: assignment.orderId },
+        select: { fulfillmentStatus: true },
+      });
       if (giftInventoryId) {
         await assignGiftToOrder({
           orderId: assignment.orderId,
@@ -745,6 +830,13 @@ const updateAssignmentStatus = async (req, res) => {
         where: { id: assignment.orderId },
         data: { fulfillmentStatus: normalizedStatus },
       });
+      await recordSystemAudit(auditActorContext(req), {
+        action: "ORDER_FULFILLMENT_STATUS_UPDATED",
+        entityType: "Order",
+        entityId: assignment.orderId,
+        beforeState: { fulfillmentStatus: orderBefore?.fulfillmentStatus || null },
+        afterState: { fulfillmentStatus: normalizedStatus },
+      }, { client: tx });
     });
     if (normalizedStatus === "packed") {
       await onOrderPacked(assignment.orderId, manufacturerId);
@@ -976,34 +1068,57 @@ const manualAssign = async (req, res) => {
       });
     }
 
-    let assignment;
-    if (existing) {
-      assignment = await prisma.orderAssignment.update({
-        where: { orderId },
-        data: {
-          manufacturerId,
-          status: "assigned",
-          notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-        },
+    const assignment = await prisma.$transaction(async (tx) => {
+      const orderBefore = await tx.order.findUnique({
+        where: { id: orderId },
+        select: { fulfillmentStatus: true, manufacturerId: true, assignmentId: true },
       });
-    } else {
-      assignment = await prisma.orderAssignment.create({
-        data: {
-          orderId,
-          manufacturerId,
-          status: "assigned",
-          notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-        },
-      });
-    }
+      let updatedAssignment;
+      if (existing) {
+        updatedAssignment = await tx.orderAssignment.update({
+          where: { orderId },
+          data: {
+            manufacturerId,
+            status: "assigned",
+            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
+          },
+        });
+      } else {
+        updatedAssignment = await tx.orderAssignment.create({
+          data: {
+            orderId,
+            manufacturerId,
+            status: "assigned",
+            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
+          },
+        });
+      }
 
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        fulfillmentStatus: "assigned",
-        assignmentId: assignment.id,
-        manufacturerId,
-      },
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          fulfillmentStatus: "assigned",
+          assignmentId: updatedAssignment.id,
+          manufacturerId,
+        },
+      });
+      await recordSystemAudit(auditActorContext(req, "ADMIN"), {
+        action: "ORDER_MANUALLY_ASSIGNED",
+        entityType: "Order",
+        entityId: orderId,
+        beforeState: {
+          fulfillmentStatus: orderBefore?.fulfillmentStatus || null,
+          manufacturerId: orderBefore?.manufacturerId || null,
+          assignmentId: orderBefore?.assignmentId || null,
+        },
+        afterState: {
+          fulfillmentStatus: "assigned",
+          manufacturerId,
+          assignmentId: updatedAssignment.id,
+          reason: reason || null,
+        },
+      }, { client: tx });
+      return updatedAssignment;
     });
 
     res.json({ success: true, message: "Order manually assigned to manufacturer", assignment });

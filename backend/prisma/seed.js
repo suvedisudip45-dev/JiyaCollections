@@ -12,6 +12,7 @@ const roleDefinitions = [
 ];
 
 const permissionDefinitions = [
+  ["access:audit_read", "Read and export system audit history."],
   ["all:function", "Full server-side authorization bypass for administrators."],
   ["access:admin_users_read", "List and view Admin portal accounts."], ["access:admin_users_create", "Create Admin portal accounts."], ["access:admin_users_update", "Update Admin portal account profiles."], ["access:admin_users_deactivate", "Activate or deactivate Admin portal accounts."], ["access:admin_users_assign_roles", "Assign Admin portal roles to Admin accounts."],
   ["access:marketing_users_read", "List and view Marketing Partner accounts."], ["access:marketing_users_update", "Update Marketing Partner account profiles."], ["access:marketing_users_deactivate", "Activate or deactivate Marketing Partner accounts."],
