@@ -94,7 +94,14 @@ const Inventory = () => {
 
   const handleVariantQtyChange = (index, value) => {
     const updated = [...variantsState];
-    const qty = Math.max(0, parseInt(value, 10) || 0);
+    const previous = selectedItem?.variantsStock?.find(
+      (entry) => entry.size === updated[index].size && entry.color === updated[index].color
+    );
+    const maxQuantity = Number(previous?.quantity ?? updated[index].quantity ?? 0);
+    const qty = Math.min(maxQuantity, Math.max(0, parseInt(value, 10) || 0));
+    if (Number(value) > maxQuantity) {
+      toast.info("New stock must be recorded through a completed production request.");
+    }
     updated[index].quantity = qty;
     setVariantsState(updated);
   };
@@ -491,7 +498,7 @@ const Inventory = () => {
                   Update Variant Stock &amp; Supply Quotation
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Enter physical units for admin-configured varieties and submit your manufacturing cost price.
+                  Review hub quantities, record permitted downward corrections, and submit your cost quotation.
                 </p>
               </div>
               <button
@@ -534,14 +541,14 @@ const Inventory = () => {
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                     <Layers className="w-3.5 h-3.5 text-indigo-600" />
-                    Physical Stock by Variant (Admin-Defined)
+                    Hub Stock by Variant
                   </label>
                   <span className="text-xs font-bold text-slate-600">
                     Total: <span className="text-emerald-600 font-black">{totalCalculatedModalQty}</span> units
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  You can update physical quantities for the sizes &amp; colors created by the admin.
+                  New stock is added only when an approved production request is completed.
                 </p>
 
                 <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2 max-h-48 overflow-y-auto">
@@ -571,6 +578,7 @@ const Inventory = () => {
                         <input
                           type="number"
                           min={v.reservedQty || 0}
+                          max={v.quantity}
                           value={v.quantity}
                           onChange={(e) => handleVariantQtyChange(index, e.target.value)}
                           className="w-20 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-900 font-bold text-center focus:outline-none focus:border-emerald-500"
@@ -595,11 +603,9 @@ const Inventory = () => {
                       className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
                     >
                       <option value="">Select a reason</option>
-                      <option value="RECEIVED">New stock received</option>
                       <option value="COUNT_CORRECTION">Physical count correction</option>
                       <option value="DAMAGED">Damaged stock</option>
                       <option value="LOST">Lost or missing stock</option>
-                      <option value="CUSTOMER_RETURN">Customer return</option>
                       <option value="OTHER">Other</option>
                     </select>
                   </div>

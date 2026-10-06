@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   Package,
   Boxes,
+  Factory,
   Award,
   ShoppingBag,
   Crown,
@@ -12,6 +13,7 @@ import {
   CreditCard,
   Handshake,
   Gift,
+  Truck,
 } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
 
@@ -63,6 +65,20 @@ const Sidebar = () => {
               <div className="flex items-center gap-3">
                 <Boxes className="w-4 h-4" />
                 <span>Hub Inventory</span>
+              </div>
+            </NavLink>
+
+            <NavLink to="/production" className={navLinkStyle}>
+              <div className="flex items-center gap-3">
+                <Factory className="w-4 h-4" />
+                <span>Production Requests</span>
+              </div>
+            </NavLink>
+
+            <NavLink to="/bulk-transfers" className={navLinkStyle}>
+              <div className="flex items-center gap-3">
+                <Truck className="w-4 h-4" />
+                <span>Bulk Dispatch</span>
               </div>
             </NavLink>
 

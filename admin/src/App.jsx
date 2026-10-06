@@ -43,6 +43,10 @@ import LocationPricing from "./pages/LocationPricing";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
+import ManufacturerProductionRequests from "./pages/ManufacturerProductionRequests";
+import DistributorApplications from "./pages/DistributorApplications";
+import InventoryLedgerAudit from "./pages/InventoryLedgerAudit";
+import StockTransfers from "./pages/StockTransfers";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
 import MarketingCards from "./pages/MarketingCards";
 import AccessUsers from "./pages/AccessUsers";
@@ -208,6 +212,10 @@ const App = () => {
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
                   <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />
                   <Route path="/manufacturer-inventory" element={withPermission("/manufacturer-inventory", <ManufacturerInventoryMonitor token={token} />)} />
+                  <Route path="/manufacturer-production" element={withPermission("/manufacturer-production", <ManufacturerProductionRequests token={token} />)} />
+                  <Route path="/distributor-applications" element={withPermission("/distributor-applications", <DistributorApplications token={token} />)} />
+                  <Route path="/inventory-ledger" element={withPermission("/inventory-ledger", <InventoryLedgerAudit token={token} />)} />
+                  <Route path="/stock-transfers" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />

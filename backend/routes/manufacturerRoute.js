@@ -18,6 +18,7 @@ import {
   getAvailableNcmBranches,
   syncNcmBranches,
 } from "../controllers/manufacturerController.js";
+import { requestManufacturerDistributorAccess } from "../controllers/distributorController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
@@ -29,6 +30,13 @@ manufacturerRouter.post("/login", loginRateLimitForPortal("MANUFACTURER"), reset
 manufacturerRouter.get("/branches", getAvailableNcmBranches);
 manufacturerRouter.post("/admin/branches/sync", authenticate, authorize("manufacturer:branches_sync"), syncNcmBranches);
 manufacturerRouter.post("/register", publicRegistrationRateLimit, upload.single("contractDoc"), registerManufacturerSelf);
+manufacturerRouter.post(
+  "/distributor-access-request",
+  authenticate,
+  authorize("manufacturer:distributor_request"),
+  setManufacturerContext,
+  requestManufacturerDistributorAccess,
+);
 
 // Manufacturer-authenticated
 manufacturerRouter.get("/profile", authenticate, authorize("manufacturer:profile_read"), setManufacturerContext, getProfile);

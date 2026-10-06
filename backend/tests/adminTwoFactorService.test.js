@@ -33,6 +33,15 @@ const notificationConfig = {
   retry: { maxAttempts: 5 },
 };
 
+const applySelect = (value, select) => {
+  if (Array.isArray(value)) return value.map((item) => applySelect(item, select));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(select).map(([key, selection]) => [
+    key,
+    selection === true ? value[key] : applySelect(value[key], selection.select || {}),
+  ]));
+};
+
 const createHarness = (role = "ADMIN") => {
   const state = {
     account: {
@@ -42,6 +51,7 @@ const createHarness = (role = "ADMIN") => {
       role,
       status: "ACTIVE",
       adminProfile: role === "ADMIN" ? { id: "admin-profile-1" } : null,
+      distributorProfile: role === "DISTRIBUTOR" ? { status: "ACTIVE", isActive: true } : null,
       marketingPartnerProfile: role === "MARKETING_PARTNER" ? { id: "marketing-profile-1" } : null,
       manufacturerProfile: role === "MANUFACTURER" ? { id: "manufacturer-profile-1" } : null,
     },
@@ -73,10 +83,15 @@ const createHarness = (role = "ADMIN") => {
 
   const client = {
     authAccount: {
-      findUnique: async () => state.account,
+      findUnique: async ({ select }) => applySelect(state.account, select),
     },
     adminTwoFactorChallenge: {
-      findUnique: async () => state.challenge && ({ ...state.challenge, account: state.account }),
+      findUnique: async ({ include }) => state.challenge && ({
+        ...state.challenge,
+        account: include.account.select
+          ? applySelect(state.account, include.account.select)
+          : state.account,
+      }),
       count: async () => 0,
       create: async ({ data }) => {
         state.challenge = {
@@ -155,6 +170,31 @@ const createChallengeAndSendCode = async (harness, now = new Date(), portal = "A
   assert.ok(otp);
   return { challengeId: result.challengeId, otp, now: new Date(now.getTime() + 2000) };
 };
+
+test("MFA challenge selects the profile needed to validate each privileged workspace", async () => {
+  const profileFields = {
+    ADMIN: "adminProfile",
+    MARKETING_PARTNER: "marketingPartnerProfile",
+    MANUFACTURER: "manufacturerProfile",
+    DISTRIBUTOR: "distributorProfile",
+  };
+
+  for (const [portal, profileField] of Object.entries(profileFields)) {
+    const harness = createHarness(portal);
+    let selectedAccountFields;
+    harness.client.authAccount.findUnique = async ({ select }) => {
+      selectedAccountFields = select;
+      return applySelect(harness.state.account, select);
+    };
+
+    await createPortalTwoFactorChallenge({
+      accountId: harness.state.account.id,
+      portal,
+    }, { client: harness.client, notificationConfig, env: environment });
+
+    assert.ok(selectedAccountFields[profileField], `${portal} profile must be selected`);
+  }
+});
 
 test("Marketing Partner and Manufacturer challenges issue only portal-bound MFA sessions", async () => {
   for (const portal of ["MARKETING_PARTNER", "MANUFACTURER"]) {

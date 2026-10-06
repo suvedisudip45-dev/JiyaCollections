@@ -18,6 +18,7 @@ import {
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
 import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
+import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
 import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
 import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
@@ -999,6 +1000,12 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
           ).catch((err) => {
             logger.error("Delivered order accounting posting notice", { error: err.message, orderId: fullOrder.id });
           });
+          await transitionOrderProductionAllocations({
+            tx,
+            orderId: fullOrder.id,
+            fromState: "RESERVED",
+            toState: "CONSUMED",
+          });
         }
       }
 
@@ -1251,4 +1258,3 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason
     return returned;
   });
 };
-

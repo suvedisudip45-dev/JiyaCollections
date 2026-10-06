@@ -7,6 +7,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 import { onOrderPacked } from "../services/giftService.js";
 import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
+import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -618,7 +619,23 @@ const acceptOrder = async (req, res) => {
       const inventoryRows = await tx.manufacturerInventory.findMany({
         where: { manufacturerId, productId: { in: productIds } },
       });
-      const acceptedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
+      const costSnapshottedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
+      const acceptedItems = [];
+      for (let index = 0; index < costSnapshottedItems.length; index += 1) {
+        const item = costSnapshottedItems[index];
+        const productionAllocation = await allocateProductionLayersForOrderItem({
+          tx,
+          orderId: order.id,
+          itemIndex: index,
+          manufacturerId,
+          item,
+        });
+        acceptedItems.push({
+          ...item,
+          legacyUnitCogsVatInclusiveAtAcceptance: item.agreedUnitCogsVatInclusiveAtAcceptance,
+          ...productionAllocation,
+        });
+      }
 
       const claimed = await tx.orderAssignment.updateMany({
         where: { id: assignmentId, manufacturerId, status: assignment.status },

@@ -54,7 +54,7 @@ export const resolvePassword = (body = {}) => {
 export const resolveTargetPortal = (rawTargetPortal) => {
   if (!rawTargetPortal) return null;
   const normalized = String(rawTargetPortal).trim().toUpperCase();
-  const knownPortals = new Set(["CUSTOMER", "ADMIN", "MANUFACTURER", "MARKETING_PARTNER"]);
+  const knownPortals = new Set(["CUSTOMER", "ADMIN", "MANUFACTURER", "DISTRIBUTOR", "MARKETING_PARTNER"]);
   if (knownPortals.has(normalized)) return normalized;
 
   try {
@@ -68,20 +68,67 @@ export const resolveTargetPortal = (rawTargetPortal) => {
 /**
  * Creates a standardized JWT token
  */
-export const generateAuthToken = (account, profile = {}) => {
+export const getAccountWorkspaceRoles = (account) => {
+  const roleMappings = Array.isArray(account?.roleMappings) ? account.roleMappings : [];
+  const mappedRoles = roleMappings
+    .filter(({ isActive, role }) => isActive !== false && role?.isActive !== false)
+    .map(({ role }) => String(role?.code || "").trim().toUpperCase())
+    .filter(Boolean);
+  const roles = mappedRoles.length || roleMappings.length
+    ? mappedRoles
+    : [String(account?.role || "CUSTOMER").toUpperCase()];
+  return [...new Set(roles)];
+};
+
+export const accountHasWorkspaceRole = (account, role) =>
+  getAccountWorkspaceRoles(account).includes(String(role || "").trim().toUpperCase());
+
+export const getAccountProfile = (account, activeRole = account.role) => {
+  if (activeRole === "ADMIN") {
+    return account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
+  }
+  if (activeRole === "MANUFACTURER") {
+    const profile = account.manufacturerProfile || { id: account.id, email: account.email };
+    profile.businessName = profile.name || "";
+    return profile;
+  }
+  if (activeRole === "DISTRIBUTOR") {
+    return account.distributorProfile || { id: account.id, email: account.email, phone: account.phone };
+  }
+  if (activeRole === "MARKETING_PARTNER") {
+    return account.marketingPartnerProfile || { id: account.id, email: account.email };
+  }
+  return account.customerProfile || { id: account.id, email: account.email };
+};
+
+export const isWorkspaceProfileActive = (account, role) => {
+  if (role === "DISTRIBUTOR") {
+    return account.distributorProfile?.status === "ACTIVE" && account.distributorProfile?.isActive === true;
+  }
+  const profileField = {
+    CUSTOMER: "customerProfile",
+    ADMIN: "adminProfile",
+    MANUFACTURER: "manufacturerProfile",
+    MARKETING_PARTNER: "marketingPartnerProfile",
+  }[role];
+  return profileField ? Boolean(account[profileField]?.id) : false;
+};
+
+export const generateAuthToken = (account, profile = {}, activeRole = account.role) => {
   return generateAccessToken({
     accountId: account.id,
-    role: account.role,
+    role: activeRole,
     email: account.email,
     phone: account.phone,
     profileId: profile.id || account.id,
-    portalAccess: [account.role],
+    portalAccess: getAccountWorkspaceRoles(account),
   });
 };
 
 export const createLoginTokenPair = async ({
   account,
   profile,
+  role = account.role,
   ipAddress,
   userAgent,
   mfaVerified = false,
@@ -91,11 +138,11 @@ export const createLoginTokenPair = async ({
   const tokenFamilyId = createTokenFamilyId();
   const tokenInput = {
     accountId: account.id,
-    role: account.role,
+    role,
     email: account.email,
     phone: account.phone,
     profileId: profile.id || account.id,
-    portalAccess: [account.role],
+    portalAccess: getAccountWorkspaceRoles(account),
     mfaVerified,
     authMethods,
   };
@@ -136,24 +183,10 @@ export const createLoginTokenPair = async ({
   return {
     accessToken,
     refreshToken,
+    role,
     tokenFamilyId,
     refreshTokenExpiresAt: refreshClaims.exp * 1000,
   };
-};
-
-const getAccountProfile = (account) => {
-  if (account.role === "ADMIN") {
-    return account.adminProfile || { id: account.id, email: account.email, phone: account.phone };
-  }
-  if (account.role === "MANUFACTURER") {
-    const profile = account.manufacturerProfile || { id: account.id, email: account.email };
-    profile.businessName = profile.name || "";
-    return profile;
-  }
-  if (account.role === "MARKETING_PARTNER") {
-    return account.marketingPartnerProfile || { id: account.id, email: account.email };
-  }
-  return account.customerProfile || { id: account.id, email: account.email };
 };
 
 export const rotateRefreshToken = async ({
@@ -215,24 +248,27 @@ export const rotateRefreshToken = async ({
       customerProfile: true,
       adminProfile: true,
       manufacturerProfile: true,
+      distributorProfile: true,
       marketingPartnerProfile: true,
+      roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
     },
   });
   if (!account || account.status !== "ACTIVE") {
     throw new Error("Account is not active.");
   }
-  if (String(account.role).toUpperCase() !== String(decoded.role).toUpperCase()) {
+  const activeRole = String(decoded.role || "").toUpperCase();
+  if (!accountHasWorkspaceRole(account, activeRole) || !isWorkspaceProfileActive(account, activeRole)) {
     throw new Error("Refresh token identity is invalid.");
   }
 
-  const profile = getAccountProfile(account);
+  const profile = getAccountProfile(account, activeRole);
   const tokenInput = {
     accountId: account.id,
-    role: account.role,
+    role: activeRole,
     email: account.email,
     phone: account.phone,
     profileId: profile.id || account.id,
-    portalAccess: [account.role],
+    portalAccess: getAccountWorkspaceRoles(account),
     mfaVerified: decoded.mfa_verified === true,
     authMethods: Array.isArray(decoded.amr) ? decoded.amr : [],
   };
@@ -312,8 +348,8 @@ export const rotateRefreshToken = async ({
     accessToken,
     refreshToken: nextRefreshToken,
     tokenFamilyId: currentSession.tokenFamilyId,
+    role: activeRole,
     refreshTokenExpiresAt: refreshClaims.exp * 1000,
-    role: account.role,
   };
 };
 
@@ -368,6 +404,111 @@ const invalidateRefreshFamilyOnReuse = async ({
       tokenFamilyId,
       replacedByTokenId: replacedByTokenId || null,
     },
+  });
+};
+
+export const switchAccountWorkspace = async ({
+  accountId,
+  currentTokenFamilyId,
+  targetRole,
+  mfaVerified = false,
+  authMethods = [],
+  ipAddress = "",
+  userAgent = "",
+  correlationId = null,
+}) => {
+  const role = String(targetRole || "").trim().toUpperCase();
+  if (!["MANUFACTURER", "DISTRIBUTOR"].includes(role)) {
+    const error = new Error("A valid manufacturer or distributor workspace is required.");
+    error.statusCode = 400;
+    error.code = "WORKSPACE_INVALID";
+    throw error;
+  }
+
+  const account = await prisma.authAccount.findUnique({
+    where: { id: accountId },
+    include: {
+      customerProfile: true,
+      adminProfile: true,
+      manufacturerProfile: true,
+      distributorProfile: true,
+      marketingPartnerProfile: true,
+      roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
+    },
+  });
+  if (
+    !account ||
+    account.status !== "ACTIVE" ||
+    !accountHasWorkspaceRole(account, role) ||
+    !isWorkspaceProfileActive(account, role)
+  ) {
+    const error = new Error("This workspace is not approved for the account.");
+    error.statusCode = 403;
+    error.code = "WORKSPACE_NOT_GRANTED";
+    throw error;
+  }
+  if (requiresMfa(role) && !mfaVerified) {
+    const error = new Error("Complete multi-factor verification before switching to this workspace.");
+    error.statusCode = 401;
+    error.code = `${role}_MFA_REQUIRED`;
+    throw error;
+  }
+
+  const profile = getAccountProfile(account, role);
+  return prisma.$transaction(async (tx) => {
+    const revoked = await tx.authSession.updateMany({
+      where: {
+        accountId,
+        tokenFamilyId: currentTokenFamilyId,
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+        lastUsedAt: new Date(),
+        lastUsedIp: String(ipAddress || "").slice(0, 64) || null,
+        revocationReason: "WORKSPACE_SWITCH",
+      },
+    });
+    if (revoked.count < 1) {
+      const error = new Error("The current session is no longer active.");
+      error.statusCode = 401;
+      error.code = "INVALID_SESSION";
+      throw error;
+    }
+
+    const tokenPair = await createLoginTokenPair({
+      account,
+      profile,
+      role,
+      ipAddress,
+      userAgent,
+      mfaVerified,
+      authMethods,
+      tx,
+    });
+    await logAuthEvent({
+      accountId,
+      identifier: account.email,
+      action: "WORKSPACE_SWITCHED",
+      role,
+      portal: role,
+      ipAddress,
+      userAgent,
+      status: "SUCCESS",
+      correlationId,
+      metadata: { tokenFamilyRotated: true },
+    }, { client: tx });
+    return {
+      ...tokenPair,
+      account: {
+        id: account.id,
+        email: account.email,
+        phone: account.phone,
+        role,
+        status: account.status,
+        mustChangePassword: Boolean(account.mustChangePassword),
+      },
+    };
   });
 };
 
@@ -478,7 +619,7 @@ export const logAuthEvent = async ({
 export const authenticateAccount = async ({
   identifier,
   password,
-  targetPortal = null, // e.g. "CUSTOMER" | "ADMIN" | "MANUFACTURER" | "MARKETING_PARTNER"
+  targetPortal = null, // Active workspace requested by the client.
   ipAddress = "",
   userAgent = "",
   correlationId = null,
@@ -507,7 +648,9 @@ export const authenticateAccount = async ({
       customerProfile: true,
       adminProfile: true,
       manufacturerProfile: true,
+      distributorProfile: true,
       marketingPartnerProfile: true,
+      roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
     },
   });
 
@@ -619,15 +762,14 @@ export const authenticateAccount = async ({
     }
   }
 
-  // Validate Target Portal Authorization if specified
-  if (targetPortal && String(account.role).toUpperCase() !== String(targetPortal).toUpperCase()) {
-    // Admin has access to admin portal, manufacturer to manufacturer portal, etc.
+  const activeRole = String(targetPortal || account.role).trim().toUpperCase();
+  if (!accountHasWorkspaceRole(account, activeRole) || !isWorkspaceProfileActive(account, activeRole)) {
     await logAuthEvent({
       accountId: account.id,
       identifier: normalized.value,
       action: "PORTAL_ACCESS_DENIED",
-      role: account.role,
-      portal: targetPortal,
+      role: activeRole,
+      portal: activeRole,
       ipAddress,
       userAgent,
       correlationId,
@@ -649,24 +791,27 @@ export const authenticateAccount = async ({
   });
 
   // Extract Profile
-  const profile = getAccountProfile(account);
+  const profile = getAccountProfile(account, activeRole);
 
   const safeAccount = {
     id: account.id,
     email: account.email,
     phone: account.phone,
-    role: account.role,
+    role: activeRole,
+    primaryRole: account.role,
+    availableWorkspaces: getAccountWorkspaceRoles(account)
+      .filter((role) => isWorkspaceProfileActive(account, role)),
     status: account.status,
     mustChangePassword: Boolean(account.mustChangePassword),
   };
 
-  if (requiresMfa(account.role)) {
+  if (requiresMfa(activeRole)) {
     await logAuthEvent({
       accountId: account.id,
       identifier: normalized.value,
-      action: `${account.role}_PASSWORD_VERIFIED`,
-      role: account.role,
-      portal: account.role,
+      action: `${activeRole}_PASSWORD_VERIFIED`,
+      role: activeRole,
+      portal: activeRole,
       ipAddress,
       userAgent,
       correlationId,
@@ -675,14 +820,14 @@ export const authenticateAccount = async ({
     return { account: safeAccount, profile, requiresTwoFactor: true };
   }
 
-  const tokenPair = await createLoginTokenPair({ account, profile, ipAddress, userAgent });
+  const tokenPair = await createLoginTokenPair({ account, profile, role: activeRole, ipAddress, userAgent });
 
   await logAuthEvent({
     accountId: account.id,
     identifier: normalized.value,
     action: "LOGIN_SUCCESS",
-    role: account.role,
-    portal: targetPortal || account.role,
+    role: activeRole,
+    portal: activeRole,
     ipAddress,
     userAgent,
     correlationId,

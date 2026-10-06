@@ -519,6 +519,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
     throw fail("Add inspection notes for damaged, missing, or disputed items.", "RETURN_INSPECTION_NOTES_REQUIRED");
   }
 
+  let restockedInventoryCost = 0;
   const record = await prisma.$transaction(async (tx) => {
     const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
     if (!current) throw fail("Return request not found.", "RETURN_NOT_FOUND", 404);
@@ -526,10 +527,52 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
     if (current.inspectedAt) throw fail("This return has already been inspected.", "RETURN_ALREADY_INSPECTED", 409);
 
     const items = parseArray(current.items);
-    let restockedInventoryCost = 0;
     if (inspection === "RESTOCKABLE") {
+      const originalOrder = await tx.order.findUnique({ where: { id: current.orderId }, select: { items: true } });
+      const orderItems = parseArray(originalOrder?.items);
+      const consumedAllocations = current.manufacturerId
+        ? await tx.manufacturerInventoryCostAllocation.findMany({
+          where: { orderId: current.orderId, state: "CONSUMED" },
+          include: { costLayer: true },
+          orderBy: [{ orderItemIndex: "asc" }, { createdAt: "asc" }],
+        })
+        : [];
       for (const item of items) {
-      restockedInventoryCost += Number(item.unitCostPrice || 0) * Number(item.quantity || 0);
+        let remainingReturnQuantity = Number(item.quantity || 0);
+        const matchingOrderItems = orderItems
+          .map((orderItem, orderItemIndex) => ({ orderItem, orderItemIndex }))
+          .filter(({ orderItem }) =>
+            String(orderItem.productId || orderItem._id || orderItem.id || "") === String(item.productId)
+            && normalize(orderItem.size || "Standard") === normalize(item.size || "Standard")
+            && normalize(orderItem.color || "Standard") === normalize(item.color || "Standard")
+          );
+        for (const { orderItem, orderItemIndex } of matchingOrderItems) {
+          for (const allocation of consumedAllocations.filter((entry) => entry.orderItemIndex === orderItemIndex)) {
+            if (!remainingReturnQuantity) break;
+            const restorableQuantity = allocation.quantity - allocation.returnedQuantity;
+            if (restorableQuantity <= 0) continue;
+            const quantity = Math.min(remainingReturnQuantity, restorableQuantity);
+            const claimed = await tx.manufacturerInventoryCostAllocation.updateMany({
+              where: {
+                id: allocation.id,
+                returnedQuantity: allocation.returnedQuantity,
+                state: "CONSUMED",
+              },
+              data: { returnedQuantity: { increment: quantity } },
+            });
+            if (claimed.count !== 1) throw fail("Production return allocation changed during inspection. Retry the return inspection.", "RETURN_ALLOCATION_CONFLICT", 409);
+            await tx.manufacturerInventoryCostLayer.update({
+              where: { id: allocation.costLayerId },
+              data: {
+                consumedQuantity: { decrement: quantity },
+                availableQuantity: { increment: quantity },
+              },
+            });
+            restockedInventoryCost += Number(allocation.costLayer.unitCogs) * quantity;
+            remainingReturnQuantity -= quantity;
+          }
+        }
+        restockedInventoryCost += Number(item.unitCostPrice || 0) * remainingReturnQuantity;
         const product = await tx.product.findUnique({ where: { id: item.productId } });
         if (!product) throw fail(`Product not found for returned item ${item.name || item.productId}.`, "RETURN_PRODUCT_NOT_FOUND", 409);
         const inventory = current.manufacturerId
@@ -659,9 +702,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
   if (record.lifecycleStatus === "REFUND_PENDING") {
     postCustomerReturnAccounting({
       ...record,
-      restockedInventoryCost: inspection === "RESTOCKABLE"
-        ? parseArray(record.items).reduce((sum, item) => sum + Number(item.unitCostPrice || 0) * Number(item.quantity || 0), 0)
-        : 0,
+      restockedInventoryCost: inspection === "RESTOCKABLE" ? restockedInventoryCost : 0,
     }, { recordAsPayable: true }).catch((error) => {
       console.error("Customer return accounting post failed", { returnId: record.id, error: error.message });
     });

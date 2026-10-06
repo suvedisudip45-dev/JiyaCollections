@@ -47,6 +47,8 @@ const buildJwtIdentity = ({
     payload.adminId = profileId || accountId || null;
   } else if (normalizedRole === "MANUFACTURER") {
     payload.manufacturerId = profileId || accountId || null;
+  } else if (normalizedRole === "DISTRIBUTOR") {
+    payload.distributorId = profileId || accountId || null;
   } else if (normalizedRole === "MARKETING_PARTNER") {
     payload.partnerId = profileId || accountId || null;
   } else {

@@ -192,6 +192,36 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(mfgApLine.credit.toFixed(2), "6000.00");
 });
 
+test("production-layer delivery expenses COGS without accruing it twice to manufacturer payable", async () => {
+  const { client } = createComprehensiveHarness();
+  const order = {
+    id: "ord-production-005",
+    userId: "user-cust-005",
+    amount: 226,
+    paymentMethod: "ONLINE_BANK",
+    orderType: "ONLINE_STORE",
+    manufacturerId: "mfg-001",
+    items: [{
+      productId: "prod-001",
+      quantity: 2,
+      productionCostAllocations: [{ quantity: 2, unitCogs: "100.00", unitDeliveryCost: "10.00" }],
+      legacyCostQuantity: 0,
+    }],
+  };
+
+  const journal = await postDeliveredOrderAccounting(order, { client });
+  const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
+  const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
+  const deliveryExpenseLine = journal.lines.find((line) => line.account.accountCode === "6430");
+  const manufacturerPayableLine = journal.lines.find((line) => line.account.accountCode === "2160");
+
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(cogsLine.debit.toFixed(2), "200.00");
+  assert.equal(inventoryLine.credit.toFixed(2), "200.00");
+  assert.equal(deliveryExpenseLine.debit.toFixed(2), "20.00");
+  assert.equal(manufacturerPayableLine.credit.toFixed(2), "20.00");
+});
+
 test("delivered direct manufacturer COD sale recognizes commission expense and COD receivable", async () => {
   const { client } = createComprehensiveHarness();
 
@@ -384,6 +414,37 @@ test("confirmed delivery return reverses sales revenue, output VAT, and manufact
   assert.equal(codClearLine.credit.toFixed(2), "11300.00");
   assert.equal(mfgApReversal.debit.toFixed(2), "6000.00");
   assert.equal(cogsReversal.credit.toFixed(2), "6000.00");
+});
+
+test("production-layer return restores inventory without reversing production COGS payable", async () => {
+  const { client } = createComprehensiveHarness();
+  client.order.findUnique = async () => ({
+    id: "ord-production-return-006",
+    userId: "user-cust-006",
+    amount: 226,
+    paymentMethod: "COD",
+    orderType: "ONLINE_STORE",
+    manufacturerId: "mfg-001",
+    items: [{
+      productId: "prod-001",
+      quantity: 2,
+      productionCostAllocations: [{ quantity: 2, unitCogs: "100.00", unitDeliveryCost: "10.00" }],
+      legacyCostQuantity: 0,
+    }],
+  });
+
+  const journal = await postConfirmedDeliveryReturnAccounting({
+    returnRecord: { id: "ret-production-006", orderId: "ord-production-return-006", manufacturerId: "mfg-001" },
+    client,
+  });
+  const payableReversal = journal.lines.find((line) => line.account.accountCode === "2160");
+  const inventoryRestock = journal.lines.find((line) => line.account.accountCode === "1140");
+  const cogsReversal = journal.lines.find((line) => line.account.accountCode === "5100");
+
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(payableReversal.debit.toFixed(2), "20.00");
+  assert.equal(inventoryRestock.debit.toFixed(2), "200.00");
+  assert.equal(cogsReversal.credit.toFixed(2), "200.00");
 });
 
 test("marketing CPA redemption posts marketing expense and partner payable", async () => {

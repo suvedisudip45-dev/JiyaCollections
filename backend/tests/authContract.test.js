@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import "dotenv/config";
 import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
-import { resolvePassword, resolveTargetPortal } from "../services/authService.js";
+import {
+  getAccountWorkspaceRoles,
+  isWorkspaceProfileActive,
+  resolvePassword,
+  resolveTargetPortal,
+} from "../services/authService.js";
 import {
   clearRefreshCookie,
   getRefreshCookie,
@@ -29,6 +34,26 @@ test("login request decrypts password and target portal without a request IV", (
   assert.equal(Object.hasOwn(body, "iv"), false);
 });
 
+test("workspace access includes only active role mappings with active profiles", () => {
+  const account = {
+    role: "MANUFACTURER",
+    manufacturerProfile: { id: "manufacturer-1" },
+    distributorProfile: { id: "distributor-1", status: "ACTIVE", isActive: true },
+    roleMappings: [
+      { isActive: true, role: { code: "MANUFACTURER", isActive: true } },
+      { isActive: true, role: { code: "DISTRIBUTOR", isActive: true } },
+      { isActive: true, role: { code: "ADMIN", isActive: false } },
+      { isActive: false, role: { code: "CUSTOMER", isActive: true } },
+    ],
+  };
+
+  assert.deepEqual(getAccountWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
+  assert.equal(isWorkspaceProfileActive(account, "MANUFACTURER"), true);
+  assert.equal(isWorkspaceProfileActive(account, "DISTRIBUTOR"), true);
+  assert.equal(isWorkspaceProfileActive({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }, "DISTRIBUTOR"), false);
+  assert.equal(isWorkspaceProfileActive({ ...account, manufacturerProfile: null }, "MANUFACTURER"), false);
+});
+
 test("login response is an explicit allow-list", () => {
   const response = serializeLoginResponse({
     token: "access-token",
@@ -47,7 +72,16 @@ test("login response is an explicit allow-list", () => {
   });
 
   assert.deepEqual(Object.keys(response).sort(), ["accessToken", "account", "message", "refreshTokenExpiresAt", "success", "token"]);
-  assert.deepEqual(Object.keys(response.account).sort(), ["email", "id", "mustChangePassword", "phone", "role", "status"]);
+  assert.deepEqual(Object.keys(response.account).sort(), [
+    "availableWorkspaces",
+    "email",
+    "id",
+    "mustChangePassword",
+    "phone",
+    "primaryRole",
+    "role",
+    "status",
+  ]);
   assert.equal(response.account.mustChangePassword, true);
   assert.equal(JSON.stringify(response).includes("password"), false);
   assert.equal(JSON.stringify(response).includes("profile"), false);

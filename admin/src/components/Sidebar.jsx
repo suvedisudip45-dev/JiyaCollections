@@ -191,12 +191,15 @@ const Sidebar = () => {
           label="Supply Chain"
           icon={Icon.supply}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.supply}
-          routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory"]}
+          routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory", "/manufacturer-production", "/distributor-applications", "/stock-transfers"]}
         >
           <NavItem to="/order-assignments"     icon={Icon.routing}   label="Order Routing Engine" />
           <NavItem to="/delivery-monitor"      icon={Icon.shipping}  label="Delivery & COD Monitor" />
           <NavItem to="/manufacturers"         icon={Icon.factory}   label="Manufacturers" />
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
+          <NavItem to="/manufacturer-production" icon={Icon.factory} label="Production Requests" />
+          <NavItem to="/distributor-applications" icon={Icon.factory} label="Distributor Applications" />
+          <NavItem to="/stock-transfers" icon={Icon.shipping} label="Bulk Stock Transfers" />
         </SectionGroup>
 
         <SectionGroup
@@ -226,9 +229,10 @@ const Sidebar = () => {
           label="Operations"
           icon={Icon.ops}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.operations}
-          routes={["/inventory", "/cogs", "/shipping"]}
+          routes={["/inventory", "/inventory-ledger", "/cogs", "/shipping"]}
         >
           <NavItem to="/inventory" icon={Icon.inventory} label="Inventory & Stock" />
+          <NavItem to="/inventory-ledger" icon={Icon.inventory} label="Inventory Ledger Audit" />
           <NavItem to="/cogs"      icon={Icon.cogs}      label="COGS & Margins" />
           <NavItem to="/shipping"  icon={Icon.shipping}  label="Shipping Rates" />
         </SectionGroup>

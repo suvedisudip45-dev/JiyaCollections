@@ -189,6 +189,8 @@ export const getShippingRate = ({ creation, destination, type }) =>
     query: { creation, destination, type: shippingRateTypeForNcm(type) },
   });
 export const createOrder = (payload) => requestNcm("/api/v1/order/create", { method: "POST", body: payload });
+export const createOrderOnce = (payload) =>
+  requestNcmOnce("/api/v1/order/create", { method: "POST", body: payload });
 export const getOrder = (orderId) => requestNcm("/api/v1/order", { query: { id: orderId } });
 export const getOrderStatus = (orderId) =>
   requestNcm("/api/v1/order/status", { query: { id: orderId } });

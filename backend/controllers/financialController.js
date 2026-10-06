@@ -46,7 +46,7 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     const credit = Number(line.credit || 0);
     const sourceType = line.journalEntry?.sourceType;
 
-    if (["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
+    if (["MANUFACTURER_PRODUCTION", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
       recognized += credit - debit;
     }
 
@@ -303,9 +303,12 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       });
 
       const isAdminView = req.auth?.role === "ADMIN";
-      const paidAgainstPayable = isAdminView ? totalPaidToMfg : totalCollectedFromMfg;
+      const postedPayable = await getPostedManufacturerPayable(manufacturerId, manufacturer?.name);
+      const paidAgainstPayable = isAdminView ? postedPayable.paid : totalCollectedFromMfg;
       const paidAgainstReceivable = isAdminView ? totalCollectedFromMfg : totalPaidToMfg;
-      const remainingPayable = Math.max(0, Number((totalPayable - paidAgainstPayable).toFixed(2)));
+      totalPayable = postedPayable.recognized;
+      totalPaidToMfg = postedPayable.paid;
+      const remainingPayable = postedPayable.outstanding;
       const remainingReceivable = Math.max(0, Number((totalReceivable - paidAgainstReceivable).toFixed(2)));
       const netPayable = Math.max(0, Number((remainingPayable - remainingReceivable).toFixed(2)));
       const netReceivable = Math.max(0, Number((remainingReceivable - remainingPayable).toFixed(2)));
@@ -398,6 +401,46 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         select: { referenceId: true, paidAmount: true },
       }),
     ]);
+
+    const payableAccount = await prisma.account.findUnique({ where: { accountCode: "2160" }, select: { id: true } });
+    const payableLines = payableAccount
+      ? await prisma.journalLine.findMany({
+        where: { accountId: payableAccount.id },
+        select: {
+          debit: true,
+          credit: true,
+          supplierId: true,
+          supplierName: true,
+          accountingParty: { select: { partyType: true, sourceEntityId: true } },
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      })
+      : [];
+
+    const postedPayableMap = {};
+    for (const line of payableLines) {
+      const sourceType = line.journalEntry?.sourceType;
+      const sourceId = String(line.journalEntry?.sourceId || "");
+      const fallbackId = sourceType === "SUPPLIER_PAYMENT" && sourceId.startsWith("MFG-COGS-")
+        ? sourceId.slice("MFG-COGS-".length)
+        : null;
+      const manufacturer = manufacturers.find((entry) =>
+        entry.id === line.supplierId ||
+        entry.id === line.accountingParty?.sourceEntityId ||
+        entry.id === fallbackId ||
+        String(entry.name || "").trim().toLowerCase() === String(line.supplierName || "").trim().toLowerCase()
+      );
+      if (!manufacturer) continue;
+      const posted = postedPayableMap[manufacturer.id] || { recognized: 0, paid: 0 };
+      const debit = Number(line.debit || 0);
+      const credit = Number(line.credit || 0);
+      if (["MANUFACTURER_PRODUCTION", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType)) {
+        posted.recognized += credit - debit;
+      } else if (sourceType === "SUPPLIER_PAYMENT") {
+        posted.paid += debit - credit;
+      }
+      postedPayableMap[manufacturer.id] = posted;
+    }
 
     // Compute payments made to each manufacturer
     const mfgPaidMap = {};
@@ -571,9 +614,16 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       return orderItem;
     }).filter(Boolean);
 
+    totalPayable = 0;
     let totalPaidMfg = 0;
     const manufacturersList = Object.values(mfgGroups).map((mfg) => {
+      const posted = postedPayableMap[mfg.id];
+      if (posted) {
+        mfg.payable = Number(posted.recognized.toFixed(2));
+        mfg.paidAmount = Number(posted.paid.toFixed(2));
+      }
       const remainingPayable = Math.max(0, Number((mfg.payable - (mfg.paidAmount || 0)).toFixed(2)));
+      totalPayable += mfg.payable;
       totalPaidMfg += Number(mfg.paidAmount || 0);
       return {
         ...mfg,

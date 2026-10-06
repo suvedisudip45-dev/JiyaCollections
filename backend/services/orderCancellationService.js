@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "./stockSyncService.js";
+import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
 
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -153,6 +154,14 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
       const lines = productLines.get(item.productId) || [];
       lines.push(item);
       productLines.set(item.productId, lines);
+    }
+    if (assignment?.manufacturerId) {
+      await transitionOrderProductionAllocations({
+        tx,
+        orderId: order.id,
+        fromState: "RESERVED",
+        toState: "RELEASED",
+      });
     }
 
     if (assignment) {

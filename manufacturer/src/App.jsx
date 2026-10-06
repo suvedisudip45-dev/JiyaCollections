@@ -11,6 +11,8 @@ import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
 import Inventory from "./pages/Inventory";
+import Production from "./pages/Production";
+import FactoryTransfers from "./pages/FactoryTransfers";
 import Performance from "./pages/Performance";
 import DirectOrders from "./pages/DirectOrders";
 import CustomerLoyalty from "./pages/CustomerLoyalty";
@@ -19,12 +21,13 @@ import PickupProfile from "./pages/PickupProfile";
 import Finance from "./pages/Finance";
 import MarketingCards from "./pages/MarketingCards";
 import Collaborations from "./pages/Collaborations";
+import DistributorHome from "./pages/DistributorHome";
 import { installAuthInterceptor } from "./api/authInterceptor";
 
 installAuthInterceptor();
 
 const MainLayout = () => {
-  const { token, loading, manufacturer } = useManufacturer();
+  const { token, loading, manufacturer, activeWorkspace } = useManufacturer();
 
   if (loading) {
     return (
@@ -49,6 +52,13 @@ const MainLayout = () => {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <Navbar />
+      {activeWorkspace === "DISTRIBUTOR" ? (
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
+          <div className="max-w-7xl mx-auto">
+            <DistributorHome />
+          </div>
+        </main>
+      ) : (
       <div className="flex flex-1">
         <Sidebar />
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-x-hidden min-w-0">
@@ -59,6 +69,8 @@ const MainLayout = () => {
               <Route path="/orders/:id" element={<OrderDetail />} />
               <Route path="/direct-orders" element={<DirectOrders />} />
               <Route path="/inventory" element={<Inventory />} />
+              <Route path="/production" element={<Production />} />
+              <Route path="/bulk-transfers" element={<FactoryTransfers />} />
               <Route path="/collaborations" element={<Collaborations />} />
               <Route path="/pickup-profile" element={<PickupProfile />} />
               <Route path="/performance" element={<Performance />} />
@@ -71,6 +83,7 @@ const MainLayout = () => {
           </div>
         </main>
       </div>
+      )}
     </div>
   );
 };

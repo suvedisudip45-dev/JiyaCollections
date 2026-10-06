@@ -3,6 +3,7 @@ import {
   login,
   refresh,
   getMe,
+  switchWorkspace,
   logout,
   changePassword,
   requestOtp,
@@ -21,6 +22,7 @@ const authRouter = express.Router();
 // Public Authentication Endpoints
 authRouter.post("/login", loginRateLimit, resetLoginRateLimitOnSuccess, login);
 authRouter.post("/refresh", refresh);
+authRouter.post("/workspace", authenticate, switchWorkspace);
 authRouter.post("/2fa/send", sendPortalTwoFactor);
 authRouter.post("/2fa/resend", resendPortalTwoFactor);
 authRouter.post("/2fa/verify", resetLoginRateLimitOnSuccess, verifyPortalTwoFactor);

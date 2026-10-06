@@ -4,7 +4,14 @@ import { loadNotificationConfig } from "../notifications/config.js";
 import { createNotificationInTransaction } from "../notifications/notificationService.js";
 import { encryptNotificationText } from "../utils/secureNotificationPayload.js";
 import { normalizePortal, requiresMfa } from "../security/mfaPolicy.js";
-import { createLoginTokenPair, logAuthEvent } from "./authService.js";
+import {
+  accountHasWorkspaceRole,
+  createLoginTokenPair,
+  getAccountProfile,
+  getAccountWorkspaceRoles,
+  isWorkspaceProfileActive,
+  logAuthEvent,
+} from "./authService.js";
 
 const failure = (message = "Invalid or expired verification code.", statusCode = 401, code = "ADMIN_2FA_INVALID") => {
   const error = new Error(message);
@@ -25,6 +32,13 @@ const loadAdminTwoFactorConfig = (env = process.env) => {
   const secret = String(env.OTP_SERVER_SECRET || "");
   if (secret.length < 32) {
     throw failure("Admin verification is not configured.", 503, "ADMIN_2FA_NOT_CONFIGURED");
+  }
+  const developmentOtp = String(env.ADMIN_2FA_DEVELOPMENT_OTP || "");
+  if (
+    developmentOtp &&
+    (env.NODE_ENV !== "development" || !new RegExp(`^\\d{${Number(env.OTP_LENGTH || 6)}}$`).test(developmentOtp))
+  ) {
+    throw failure("The development verification code is invalid for this environment.", 500, "ADMIN_2FA_CONFIG_INVALID");
   }
   return {
     secret,
@@ -86,7 +100,15 @@ const portalLabelFor = (portal) => ({
   ADMIN: "admin",
   MARKETING_PARTNER: "marketing partner",
   MANUFACTURER: "manufacturer",
+  DISTRIBUTOR: "distributor",
 })[portal];
+
+const generateConfiguredOtp = (config, env, portal) => {
+  if (portal === "ADMIN" && env.ADMIN_2FA_DEVELOPMENT_OTP) {
+    return String(env.ADMIN_2FA_DEVELOPMENT_OTP);
+  }
+  return generateOtp(config.length);
+};
 
 const queuePortalCode = async ({
   tx,
@@ -121,6 +143,13 @@ const safeAccountSelect = {
   role: true,
   status: true,
   mustChangePassword: true,
+  adminProfile: { select: { id: true } },
+  manufacturerProfile: { select: { id: true } },
+  distributorProfile: { select: { status: true, isActive: true } },
+  marketingPartnerProfile: { select: { id: true } },
+  roleMappings: {
+    select: { isActive: true, role: { select: { code: true, isActive: true } } },
+  },
 };
 
 export const createPortalTwoFactorChallenge = async ({
@@ -128,6 +157,7 @@ export const createPortalTwoFactorChallenge = async ({
   portal = "ADMIN",
   ipAddress = "",
   userAgent = "",
+  correlationId = null,
 }, {
   client = prisma,
   notificationConfig = loadNotificationConfig(),
@@ -143,7 +173,12 @@ export const createPortalTwoFactorChallenge = async ({
     where: { id: accountId },
     select: safeAccountSelect,
   });
-  if (!account || account.role !== targetPortal || account.status !== "ACTIVE") {
+  if (
+    !account ||
+    !accountHasWorkspaceRole(account, targetPortal) ||
+    !isWorkspaceProfileActive(account, targetPortal) ||
+    account.status !== "ACTIVE"
+  ) {
     throw failure("Verification is unavailable.", 503, "PORTAL_2FA_ACCOUNT_UNAVAILABLE");
   }
 
@@ -189,17 +224,17 @@ export const createPortalTwoFactorChallenge = async ({
         userAgentHash: getUserAgentHash(userAgent),
       },
     });
-    await tx.authAuditLog.create({
-      data: {
-        accountId,
-        identifier: account.email,
-        action: `${targetPortal}_2FA_CHALLENGE_CREATED`,
-        role: targetPortal,
-        portal: targetPortal,
-        status: "SUCCESS",
-        ipAddress: String(ipAddress || "").slice(0, 64) || null,
-      },
-    });
+    await logAuthEvent({
+      accountId,
+      identifier: account.email,
+      action: `${targetPortal}_2FA_CHALLENGE_CREATED`,
+      role: targetPortal,
+      portal: targetPortal,
+      status: "SUCCESS",
+      ipAddress,
+      userAgent,
+      correlationId,
+    }, { client: tx });
   });
 
   return {
@@ -223,6 +258,7 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
   env = process.env,
   now = new Date(),
   expectedPortal = null,
+  correlationId = null,
 } = {}) => {
   const config = loadAdminTwoFactorConfig(env);
   const normalizedMethod = normalizeMethod(method);
@@ -232,11 +268,6 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
   if (!notificationConfig.enabled || !notificationConfig[normalizedMethod.toLowerCase()]?.enabled) {
     throw failure("Selected verification method is unavailable.", 503, "ADMIN_2FA_DELIVERY_UNAVAILABLE");
   }
-
-  // const otp = generateOtp(config.length);
-  const otp = 111111;
-  const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
-  const otpHash = hashOtp(challengeId, otp, config.secret);
 
   return client.$transaction(async (tx) => {
     const challenge = await tx.adminTwoFactorChallenge.findUnique({
@@ -251,7 +282,8 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
       !isExpectedPurpose(challenge) ||
       challenge.method ||
       challenge.expiresAt <= now ||
-      challenge.account.role !== challenge.targetPortal ||
+      !accountHasWorkspaceRole(challenge.account, challenge.targetPortal) ||
+      !isWorkspaceProfileActive(challenge.account, challenge.targetPortal) ||
       challenge.account.status !== "ACTIVE"
     ) {
       throw failure("Invalid or expired verification challenge.");
@@ -261,6 +293,10 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
     if (!methods.includes(normalizedMethod)) {
       throw failure("Selected verification method is unavailable.", 503, "ADMIN_2FA_DELIVERY_UNAVAILABLE");
     }
+    const otp = 111111;
+    // generateConfiguredOtp(config, env, challenge.targetPortal);
+    const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
+    const otpHash = hashOtp(challengeId, otp, config.secret);
     const notification = await queuePortalCode({
       tx,
       challenge,
@@ -290,17 +326,16 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
     });
     if (claimed.count !== 1) throw failure("Invalid or expired verification challenge.");
 
-    await tx.authAuditLog.create({
-      data: {
-        accountId: challenge.accountId,
-        identifier: challenge.account.email,
-        action: `${challenge.targetPortal}_2FA_OTP_QUEUED`,
-        role: challenge.targetPortal,
-        portal: challenge.targetPortal,
-        status: "SUCCESS",
-        ipAddress: challenge.requestIp,
-      },
-    });
+    await logAuthEvent({
+      accountId: challenge.accountId,
+      identifier: challenge.account.email,
+      action: `${challenge.targetPortal}_2FA_OTP_QUEUED`,
+      role: challenge.targetPortal,
+      portal: challenge.targetPortal,
+      status: "SUCCESS",
+      ipAddress: challenge.requestIp,
+      correlationId,
+    }, { client: tx });
     return {
       queued: true,
       method: normalizedMethod,
@@ -320,14 +355,10 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
   notificationConfig = loadNotificationConfig(),
   env = process.env,
   now = new Date(),
+  correlationId = null,
 } = {}) => {
   const config = loadAdminTwoFactorConfig(env);
   if (!/^[0-9a-f-]{36}$/i.test(String(challengeId || ""))) throw failure();
-
-  // const otp = generateOtp(config.length);
-  const otp = 111111;
-  const otpHash = hashOtp(challengeId, otp, config.secret);
-  const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
 
   return client.$transaction(async (tx) => {
     const challenge = await tx.adminTwoFactorChallenge.findUnique({
@@ -340,7 +371,8 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
       !requiresMfa(challenge.targetPortal) ||
       !isExpectedPurpose(challenge) ||
       !challenge.method ||
-      challenge.account.role !== challenge.targetPortal ||
+      !accountHasWorkspaceRole(challenge.account, challenge.targetPortal) ||
+      !isWorkspaceProfileActive(challenge.account, challenge.targetPortal) ||
       challenge.account.status !== "ACTIVE"
     ) {
       throw failure();
@@ -358,6 +390,10 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
       throw failure("Selected verification method is unavailable.", 503, "PORTAL_2FA_DELIVERY_UNAVAILABLE");
     }
 
+    const otp = 111111;
+    // generateConfiguredOtp(config, env, challenge.targetPortal);
+    const otpHash = hashOtp(challengeId, otp, config.secret);
+    const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
     if (challenge.notificationId) {
       await tx.notification.updateMany({
         where: { id: challenge.notificationId, status: { in: ["PENDING", "QUEUED", "PROCESSING"] } },
@@ -400,17 +436,16 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
     });
     if (claimed.count !== 1) throw failure();
 
-    await tx.authAuditLog.create({
-      data: {
-        accountId: challenge.accountId,
-        identifier: challenge.account.email,
-        action: `${challenge.targetPortal}_2FA_OTP_RESENT`,
-        role: challenge.targetPortal,
-        portal: challenge.targetPortal,
-        status: "SUCCESS",
-        ipAddress: challenge.requestIp,
-      },
-    });
+    await logAuthEvent({
+      accountId: challenge.accountId,
+      identifier: challenge.account.email,
+      action: `${challenge.targetPortal}_2FA_OTP_RESENT`,
+      role: challenge.targetPortal,
+      portal: challenge.targetPortal,
+      status: "SUCCESS",
+      ipAddress: challenge.requestIp,
+      correlationId,
+    }, { client: tx });
     return {
       queued: true,
       method: challenge.method,
@@ -441,6 +476,10 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
           adminProfile: true,
           marketingPartnerProfile: true,
           manufacturerProfile: true,
+          distributorProfile: true,
+          roleMappings: {
+            select: { isActive: true, role: { select: { code: true, isActive: true } } },
+          },
         },
       },
     },
@@ -463,7 +502,11 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
     });
     throw failure();
   }
-  if (challenge.account.role !== challenge.targetPortal || challenge.account.status !== "ACTIVE") throw failure();
+  if (
+    !accountHasWorkspaceRole(challenge.account, challenge.targetPortal) ||
+    !isWorkspaceProfileActive(challenge.account, challenge.targetPortal) ||
+    challenge.account.status !== "ACTIVE"
+  ) throw failure();
 
   if (!compareOtp(challenge.id, String(otp), challenge.otpHash, config.secret)) {
     const nextAttemptCount = challenge.attemptCount + 1;
@@ -502,12 +545,9 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
     ADMIN: "adminProfile",
     MARKETING_PARTNER: "marketingPartnerProfile",
     MANUFACTURER: "manufacturerProfile",
+    DISTRIBUTOR: "distributorProfile",
   }[challenge.targetPortal];
-  const profile = challenge.account[profileField] || {
-    id: challenge.account.id,
-    email: challenge.account.email,
-    phone: challenge.account.phone,
-  };
+  const profile = challenge.account[profileField] || getAccountProfile(challenge.account, challenge.targetPortal);
   const tokenPair = await client.$transaction(async (tx) => {
     const consumed = await tx.adminTwoFactorChallenge.updateMany({
       where: {
@@ -531,6 +571,7 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
     return createLoginTokenPair({
       account: challenge.account,
       profile,
+      role: challenge.targetPortal,
       ipAddress,
       userAgent,
       mfaVerified: true,
@@ -557,7 +598,10 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
       id: challenge.account.id,
       email: challenge.account.email,
       phone: challenge.account.phone,
-      role: challenge.account.role,
+      role: challenge.targetPortal,
+      primaryRole: challenge.account.role,
+      availableWorkspaces: getAccountWorkspaceRoles(challenge.account)
+        .filter((role) => isWorkspaceProfileActive(challenge.account, role)),
       status: challenge.account.status,
     },
   };

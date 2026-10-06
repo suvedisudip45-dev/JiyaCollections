@@ -1,11 +1,32 @@
 import React from "react";
+import axios from "axios";
+import { toast } from "react-toastify";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { LogOut, Power, MapPin, Building2, Star, ShieldCheck } from "lucide-react";
 
 const Navbar = () => {
-  const { manufacturer, toggleAvailability, logout } = useManufacturer();
+  const {
+    manufacturer,
+    toggleAvailability,
+    logout,
+    activeWorkspace,
+    availableWorkspaces,
+    switchWorkspace,
+    backendUrl,
+  } = useManufacturer();
 
   if (!manufacturer) return null;
+  const canSwitchWorkspace = availableWorkspaces.some(
+    ({ code }) => code === (activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER"),
+  );
+  const requestDistributorAccess = async () => {
+    try {
+      const response = await axios.post(`${backendUrl}/api/manufacturer/distributor-access-request`);
+      toast.success(response.data.message || "Request submitted for admin approval.");
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Distributor access request could not be submitted.");
+    }
+  };
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-4 sm:px-6 py-3 flex items-center justify-between shadow-xs">
@@ -17,7 +38,7 @@ const Navbar = () => {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
-              {manufacturer.businessName}
+              {manufacturer.businessName || manufacturer.name}
             </h1>
             <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold border border-emerald-200">
               <ShieldCheck className="w-3 h-3" />
@@ -40,28 +61,39 @@ const Navbar = () => {
 
       {/* Right: Availability Toggle + User Actions */}
       <div className="flex items-center gap-3">
-        {/* Availability Toggle */}
-        <button
-          onClick={toggleAvailability}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
-            manufacturer.isAvailable
-              ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
-              : "bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200"
-          }`}
-          title="Toggle receiving new auto-assigned orders"
-        >
-          <span
-            className={`w-2.5 h-2.5 rounded-full ${
-              manufacturer.isAvailable ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+        {activeWorkspace === "MANUFACTURER" && (
+          <button
+            onClick={toggleAvailability}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
+              manufacturer.isAvailable
+                ? "bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100"
+                : "bg-slate-100 text-slate-600 border-slate-300 hover:bg-slate-200"
             }`}
-          />
-          <span className="hidden md:inline">
-            {manufacturer.isAvailable ? "Accepting Orders (Online)" : "Paused (Offline)"}
-          </span>
-          <span className="md:hidden">
-            {manufacturer.isAvailable ? "Online" : "Offline"}
-          </span>
-        </button>
+            title="Toggle receiving new auto-assigned orders"
+          >
+            <span className={`w-2.5 h-2.5 rounded-full ${manufacturer.isAvailable ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+            <span className="hidden md:inline">{manufacturer.isAvailable ? "Accepting Orders (Online)" : "Paused (Offline)"}</span>
+            <span className="md:hidden">{manufacturer.isAvailable ? "Online" : "Offline"}</span>
+          </button>
+        )}
+
+        {canSwitchWorkspace ? (
+          <button
+            type="button"
+            onClick={switchWorkspace}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 border border-slate-200 hover:bg-slate-50"
+          >
+            Switch to {activeWorkspace === "MANUFACTURER" ? "Distributor" : "Manufacturer"}
+          </button>
+        ) : activeWorkspace === "MANUFACTURER" ? (
+          <button
+            type="button"
+            onClick={requestDistributorAccess}
+            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 border border-emerald-200 hover:bg-emerald-50"
+          >
+            Request distributor access
+          </button>
+        ) : null}
 
         {/* Logout */}
         <button

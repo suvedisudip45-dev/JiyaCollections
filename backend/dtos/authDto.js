@@ -9,46 +9,56 @@ export const serializeLoginResponse = ({ token, accessToken, refreshTokenExpires
     email: account.email,
     phone: account.phone,
     role: account.role,
+    primaryRole: account.primaryRole || account.role,
+    availableWorkspaces: account.availableWorkspaces || [],
     status: account.status,
     mustChangePassword: Boolean(account.mustChangePassword),
   },
 });
 
-export const serializeSessionProfile = (account) => {
+export const serializeSessionProfile = (account, activeRole = account.role) => {
   const safeAccount = {
     id: account.id,
     email: account.email,
     phone: account.phone,
-    role: account.role,
+    role: activeRole,
+    primaryRole: account.role,
+    availableWorkspaces: account.availableWorkspaces || [],
     status: account.status,
     mustChangePassword: Boolean(account.mustChangePassword),
   };
-  const sourceProfile = account.role === "ADMIN"
+  const sourceProfile = activeRole === "ADMIN"
     ? account.adminProfile
-    : account.role === "MANUFACTURER"
+    : activeRole === "MANUFACTURER"
       ? account.manufacturerProfile
-      : account.role === "MARKETING_PARTNER"
+      : activeRole === "DISTRIBUTOR"
+        ? account.distributorProfile
+        : activeRole === "MARKETING_PARTNER"
         ? account.marketingPartnerProfile
         : account.customerProfile;
-  const profileFields = account.role === "ADMIN"
+  const profileFields = activeRole === "ADMIN"
     ? ["id", "email", "phone", "displayName", "firstName", "lastName"]
-    : account.role === "MANUFACTURER"
+    : activeRole === "MANUFACTURER"
       ? ["id", "email", "phone", "name", "pickupAddress", "pickupContactName", "pickupContactPhone", "pickupWindow", "returnInstructions"]
-      : account.role === "MARKETING_PARTNER"
+      : activeRole === "DISTRIBUTOR"
+        ? ["id", "email", "phone", "name", "address", "city", "status"]
+        : activeRole === "MARKETING_PARTNER"
         ? ["id", "email", "phone", "name", "status"]
         : ["id", "email", "phone", "name", "firstName", "lastName", "socialCustomerCode", "gender", "addresses"];
   const profile = sourceProfile
     ? Object.fromEntries(profileFields.filter((field) => sourceProfile[field] !== undefined).map((field) => [field, sourceProfile[field]]))
     : { id: account.id, email: account.email, phone: account.phone };
-  if (account.role === "MANUFACTURER") profile.businessName = profile.name || "";
+  if (activeRole === "MANUFACTURER" || activeRole === "DISTRIBUTOR") profile.businessName = profile.name || "";
 
-  const profileAlias = account.role === "CUSTOMER"
+  const profileAlias = activeRole === "CUSTOMER"
     ? { user: profile }
-    : account.role === "MANUFACTURER"
+    : activeRole === "MANUFACTURER"
       ? { manufacturer: profile }
-      : account.role === "MARKETING_PARTNER"
+      : activeRole === "DISTRIBUTOR"
+        ? { distributor: profile }
+        : activeRole === "MARKETING_PARTNER"
         ? { partner: profile }
         : {};
 
-  return { success: true, account: safeAccount, profile, role: account.role, ...profileAlias };
+  return { success: true, account: safeAccount, profile, role: activeRole, ...profileAlias };
 };

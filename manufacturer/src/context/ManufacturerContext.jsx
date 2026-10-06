@@ -1,7 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { clearAuthTokens, getAccessToken, revokeAuthSession, storeAuthTokens } from "../auth/tokenStorage";
+import {
+  clearAuthTokens,
+  getAccessToken,
+  getActiveWorkspace,
+  revokeAuthSession,
+  storeAuthTokens,
+  storeActiveWorkspace,
+} from "../auth/tokenStorage";
 
 const ManufacturerContext = createContext();
 
@@ -11,6 +18,8 @@ export const currency = "Rs ";
 export const ManufacturerProvider = ({ children }) => {
   const [token, setToken] = useState(() => getAccessToken());
   const [manufacturer, setManufacturer] = useState(null);
+  const [activeWorkspace, setActiveWorkspaceState] = useState(() => getActiveWorkspace());
+  const [availableWorkspaces, setAvailableWorkspaces] = useState([]);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({
     pending: 0,
@@ -37,8 +46,14 @@ export const ManufacturerProvider = ({ children }) => {
     await revokeAuthSession(backendUrl);
     setToken("");
     setManufacturer(null);
+    setAvailableWorkspaces([]);
     toast.info("Logged out successfully");
   };
+
+  const setActiveWorkspace = useCallback((role) => {
+    const normalized = storeActiveWorkspace(role);
+    setActiveWorkspaceState(normalized);
+  }, []);
 
   const fetchProfile = useCallback(async () => {
     if (!token) {
@@ -46,25 +61,48 @@ export const ManufacturerProvider = ({ children }) => {
       return;
     }
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer/profile`, {
+      const sessionResponse = await axios.get(`${backendUrl}/api/auth/me`, {
         headers: { token },
       });
-      if (response.data.success) {
-        setManufacturer(response.data.manufacturer);
-      } else {
-        clearAuthTokens();
-        setToken("");
-        setManufacturer(null);
+      const role = String(sessionResponse.data?.account?.role || "").toUpperCase();
+      if (!sessionResponse.data?.success || !["MANUFACTURER", "DISTRIBUTOR"].includes(role)) {
+        throw new Error("An active manufacturer or distributor workspace is required.");
       }
+      setActiveWorkspace(role);
+      setAvailableWorkspaces(sessionResponse.data.account.roles || []);
+      const profilePath = role === "DISTRIBUTOR" ? "/api/distributor/profile" : "/api/manufacturer/profile";
+      const response = await axios.get(`${backendUrl}${profilePath}`, { headers: { token } });
+      const profile = role === "MANUFACTURER" ? response.data.manufacturer : response.data.distributor;
+      if (!response.data.success || !profile) throw new Error("Partner profile could not be loaded.");
+      setManufacturer({
+        ...profile,
+        businessName: profile.businessName || profile.name || "",
+      });
     } catch (err) {
       console.error("Failed to fetch profile:", err);
       clearAuthTokens();
       setToken("");
       setManufacturer(null);
+      setAvailableWorkspaces([]);
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [setActiveWorkspace, token]);
+
+  const switchWorkspace = useCallback(async () => {
+    const targetRole = activeWorkspace === "MANUFACTURER" ? "DISTRIBUTOR" : "MANUFACTURER";
+    try {
+      const response = await axios.post(`${backendUrl}/api/auth/workspace`, { role: targetRole });
+      if (!response.data?.success || !(response.data.accessToken || response.data.token)) {
+        throw new Error(response.data?.message || "Workspace could not be changed.");
+      }
+      setActiveWorkspace(targetRole);
+      storeAuthTokens(response.data);
+      toast.success(`Switched to ${targetRole === "DISTRIBUTOR" ? "distributor" : "manufacturer"} workspace.`);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Workspace could not be changed.");
+    }
+  }, [activeWorkspace, setActiveWorkspace]);
 
   const toggleAvailability = async () => {
     if (!token || !manufacturer) return;
@@ -101,6 +139,9 @@ export const ManufacturerProvider = ({ children }) => {
         setToken,
         manufacturer,
         setManufacturer,
+        activeWorkspace,
+        availableWorkspaces,
+        switchWorkspace,
         loading,
         stats,
         setStats,

@@ -12,7 +12,7 @@ model AuthAccount {
   email        String  @unique @db.VarChar(255)
   phone        String? @unique @db.VarChar(32)
   passwordHash String  @db.VarChar(255)
-  role         String  @default("CUSTOMER") // CUSTOMER | ADMIN | MANUFACTURER | MARKETING_PARTNER
+  role         String  @default("CUSTOMER") // Legacy primary role; active workspace grants are stored in AuthAccountRoleMapping.
   status       String  @default("ACTIVE") // ACTIVE | PENDING_APPROVAL | SUSPENDED | REJECTED | INACTIVE
 
   failedLoginAttempts Int       @default(0)
@@ -31,6 +31,7 @@ model AuthAccount {
   customerProfile         User?
   adminProfile            Admin?
   manufacturerProfile     Manufacturer?
+  distributorProfile      Distributor?
   marketingPartnerProfile MarketingPartner?
 
   otpChallenges OtpChallenge[]
@@ -554,6 +555,9 @@ model Product {
   comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
   collaborationLink CollaborationProduct?
   collaborationSales CollaborationSale[]
+  manufacturerProductionRequests ManufacturerProductionRequest[]
+  manufacturerProductionCostLayers ManufacturerInventoryCostLayer[]
+  inventorySkus InventorySku[]
 
   @@index([published])
   @@index([category])
@@ -644,6 +648,7 @@ model Order {
   marketingCardOrder          MarketingCardOrder?
   exchangeRequests            OrderExchangeRequest[]
   collaborationSales          CollaborationSale[]
+  manufacturerCostAllocations ManufacturerInventoryCostAllocation[]
   assignedGift                GiftCatalog?        @relation("GiftCatalogOrder", fields: [assignedGiftId], references: [id], onDelete: SetNull)
   assignedGiftInventory       ManufacturerGiftInventory? @relation("GiftInventoryOrders", fields: [assignedGiftInventoryId], references: [id], onDelete: SetNull)
 
@@ -781,6 +786,7 @@ model GiftMovementLog {
   orderId        String?
   movementType   String     @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | DAMAGED | REJECTED
   quantity       Int        @default(0)
+  uncostedQuantity      Int                       @default(0)
   notes          String?    @db.Text
   createdAt      DateTime   @default(now())
   manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Cascade)
@@ -1569,9 +1575,294 @@ model Manufacturer {
   marketingCardAssignments MarketingCardAssignment[]
   marketingCards           MarketingCard[]           @relation("MarketingCardManufacturer")
   marketingCardOrders      MarketingCardOrder[]
+  productionRequests       ManufacturerProductionRequest[]
+  productionCostLayers     ManufacturerInventoryCostLayer[]
+  stockLocations           InventoryLocation[] @relation("ManufacturerStockLocations")
+  stockTransfers           StockTransfer[]
 
   @@index([city])
   @@index([isActive, isAvailable])
+}
+
+model Distributor {
+  id          String       @id @default(uuid())
+  accountId   String?      @unique
+  account     AuthAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  name        String
+  phone       String?      @db.VarChar(40)
+  address     String?      @db.Text
+  city        String?      @db.VarChar(120)
+  status      String       @default("PENDING_APPROVAL") // PENDING_APPROVAL | ACTIVE | SUSPENDED | REJECTED
+  isActive    Boolean      @default(false)
+  appliedAt   DateTime     @default(now())
+  approvedAt  DateTime?
+  approvedBy  String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  stockLocations       InventoryLocation[] @relation("DistributorStockLocations")
+  destinationTransfers StockTransfer[]     @relation("TransferDestinationDistributor")
+
+  @@index([status, isActive])
+}
+
+model InventorySku {
+  id        String   @id @default(uuid())
+  productId String
+  size      String   @db.VarChar(120)
+  color     String   @db.VarChar(120)
+  sizeKey   String   @db.VarChar(120)
+  colorKey  String   @db.VarChar(120)
+  skuCode   String?  @unique @db.VarChar(191)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product       Product                    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  balances      InventoryBalance[]
+  movements     InventoryLedgerEntry[]
+  transferLines StockTransferLine[]
+  costLayers    ManufacturerInventoryCostLayer[]
+  discrepancies InventoryDiscrepancy[]
+
+  @@unique([productId, sizeKey, colorKey])
+  @@index([productId, isActive])
+}
+
+model InventoryLocation {
+  id             String   @id @default(uuid())
+  locationKey    String   @unique @db.VarChar(191)
+  name           String   @db.VarChar(191)
+  kind           String   // FACTORY | DISTRIBUTOR | IN_TRANSIT | QUARANTINE | DAMAGED | LOST
+  inventoryOwner String   @default("PLATFORM") @db.VarChar(32)
+  manufacturerId String?
+  distributorId  String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  manufacturer      Manufacturer?          @relation("ManufacturerStockLocations", fields: [manufacturerId], references: [id], onDelete: Restrict)
+  distributor       Distributor?            @relation("DistributorStockLocations", fields: [distributorId], references: [id], onDelete: Restrict)
+  balances          InventoryBalance[]
+  sourceMovements   InventoryLedgerEntry[]  @relation("InventoryMovementSource")
+  targetMovements   InventoryLedgerEntry[]  @relation("InventoryMovementTarget")
+  sourceTransfers   StockTransfer[]          @relation("TransferSourceLocation")
+  destinationTransfers StockTransfer[]       @relation("TransferDestinationLocation")
+
+  @@index([kind, isActive])
+  @@index([manufacturerId, kind])
+  @@index([distributorId, kind])
+}
+
+model InventoryBalance {
+  id                String          @id @default(uuid())
+  locationId        String
+  inventorySkuId    String
+  quantityOnHand    Int             @default(0)
+  reservedQuantity  Int             @default(0)
+  updatedAt         DateTime        @updatedAt
+  location          InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  inventorySku      InventorySku   @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+
+  @@unique([locationId, inventorySkuId])
+  @@index([inventorySkuId])
+}
+
+model InventoryLedgerEntry {
+  id                       String            @id @default(uuid())
+  inventorySkuId           String
+  sourceLocationId         String?
+  destinationLocationId    String?
+  quantity                 Int
+  movementType             String // OPENING_BALANCE | PRODUCTION_RECEIPT | TRANSFER_DISPATCH | TRANSFER_RECEIPT | FULFILLMENT | RETURN | DAMAGE | LOSS | ADJUSTMENT
+  inventoryOwner           String            @default("PLATFORM") @db.VarChar(32)
+  referenceType            String?           @db.VarChar(64)
+  referenceId              String?           @db.VarChar(191)
+  productionCostLayerId    String?
+  idempotencyKey           String            @unique @db.VarChar(191)
+  actorId                  String?
+  actorRole                String?           @db.VarChar(64)
+  reason                   String?           @db.Text
+  createdAt                DateTime          @default(now())
+  inventorySku             InventorySku      @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+  sourceLocation           InventoryLocation? @relation("InventoryMovementSource", fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  destinationLocation      InventoryLocation? @relation("InventoryMovementTarget", fields: [destinationLocationId], references: [id], onDelete: Restrict)
+  productionCostLayer      ManufacturerInventoryCostLayer? @relation(fields: [productionCostLayerId], references: [id], onDelete: Restrict)
+
+  @@index([inventorySkuId, createdAt])
+  @@index([sourceLocationId, createdAt])
+  @@index([destinationLocationId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+model StockTransfer {
+  id                       String           @id @default(uuid())
+  manufacturerId           String
+  distributorId            String
+  sourceLocationId         String
+  destinationLocationId    String
+  status                   String           @default("PENDING_ADMIN_APPROVAL") // PENDING_ADMIN_APPROVAL | APPROVED | REJECTED | IN_TRANSIT | PARTIALLY_RECEIVED | RECEIVED | DISCREPANCY | CANCELLED
+  requestedByAccountId     String?
+  requestedAt              DateTime         @default(now())
+  reviewedByAccountId      String?
+  reviewedAt               DateTime?
+  adminNote                String?          @db.Text
+  dispatchedAt             DateTime?
+  completedAt              DateTime?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+  manufacturer             Manufacturer     @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  distributor              Distributor      @relation("TransferDestinationDistributor", fields: [distributorId], references: [id], onDelete: Restrict)
+  sourceLocation           InventoryLocation @relation("TransferSourceLocation", fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  destinationLocation      InventoryLocation @relation("TransferDestinationLocation", fields: [destinationLocationId], references: [id], onDelete: Restrict)
+  lines                    StockTransferLine[]
+  shipments                StockTransferShipment[]
+  discrepancies            InventoryDiscrepancy[]
+
+  @@index([manufacturerId, status, requestedAt])
+  @@index([distributorId, status, requestedAt])
+  @@index([status, requestedAt])
+}
+
+model StockTransferLine {
+  id                String       @id @default(uuid())
+  stockTransferId   String
+  inventorySkuId    String
+  requestedQuantity Int
+  approvedQuantity  Int?
+  dispatchedQuantity Int        @default(0)
+  reservedShipmentQuantity Int  @default(0)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  stockTransfer     StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  inventorySku      InventorySku @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+  shipmentLines     StockTransferShipmentLine[]
+
+  @@unique([stockTransferId, inventorySkuId])
+  @@index([inventorySkuId])
+}
+
+model StockTransferShipment {
+  id                   String       @id @default(uuid())
+  stockTransferId      String
+  status               String       @default("PREPARING") // PREPARING | BOOKING_PENDING | BOOKING_UNKNOWN | BOOKING_FAILED | BOOKED | DISPATCHED | PARTIALLY_RECEIVED | DELIVERED | DISCREPANCY | LOST | CANCELLED
+  bookingMode          String       @default("MANUAL") // MANUAL | NCM
+  bookingIdempotencyKey String?     @unique @db.VarChar(191)
+  bookingRequestHash   String?      @db.VarChar(64)
+  deliveryPartner      String?      @db.VarChar(191)
+  trackingNumber       String?      @db.VarChar(191)
+  externalReference    String?      @db.VarChar(191)
+  freightCharge        Decimal?     @db.Decimal(20, 2)
+  freightSettlementStatus String    @default("PENDING_ADMIN_SETTLEMENT") @db.VarChar(64)
+  bookedAt             DateTime?
+  dispatchedAt         DateTime?
+  deliveredAt          DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  stockTransfer        StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Restrict)
+  lines                StockTransferShipmentLine[]
+  receipts             StockTransferReceipt[]
+  discrepancies        InventoryDiscrepancy[]
+
+  @@index([stockTransferId, status])
+  @@index([trackingNumber])
+}
+
+model StockTransferShipmentLine {
+  id                    String                 @id @default(uuid())
+  shipmentId            String
+  stockTransferLineId   String
+  quantity              Int
+  createdAt             DateTime               @default(now())
+  shipment              StockTransferShipment  @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  stockTransferLine     StockTransferLine      @relation(fields: [stockTransferLineId], references: [id], onDelete: Restrict)
+  receiptLines          StockTransferReceiptLine[]
+  costLayerAllocations  StockTransferShipmentLineCostLayer[]
+
+  @@unique([shipmentId, stockTransferLineId])
+  @@index([stockTransferLineId])
+}
+
+model StockTransferShipmentLineCostLayer {
+  id                  String                       @id @default(uuid())
+  shipmentLineId      String
+  costLayerId         String
+  quantity            Int
+  status              String                       @default("RESERVED") // RESERVED | DISPATCHED | RELEASED
+  createdAt           DateTime                     @default(now())
+  shipmentLine        StockTransferShipmentLine    @relation(fields: [shipmentLineId], references: [id], onDelete: Restrict)
+  costLayer           ManufacturerInventoryCostLayer @relation(fields: [costLayerId], references: [id], onDelete: Restrict)
+
+  @@unique([shipmentLineId, costLayerId])
+  @@index([costLayerId, status])
+}
+
+model StockTransferReceipt {
+  id            String                @id @default(uuid())
+  shipmentId    String
+  idempotencyKey String?              @unique @db.VarChar(191)
+  requestHash   String?               @db.VarChar(64)
+  status        String                @default("CONFIRMED") // CONFIRMED | DISPUTED
+  receivedBy    String?
+  receivedAt    DateTime              @default(now())
+  notes         String?               @db.Text
+  createdAt     DateTime              @default(now())
+  shipment      StockTransferShipment @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  lines         StockTransferReceiptLine[]
+  discrepancies InventoryDiscrepancy[]
+
+  @@index([shipmentId, receivedAt])
+}
+
+model StockTransferReceiptLine {
+  id                       String                    @id @default(uuid())
+  receiptId                String
+  shipmentLineId           String
+  goodQuantity             Int                       @default(0)
+  damagedQuantity          Int                       @default(0)
+  missingQuantity          Int                       @default(0)
+  damageType               String?                   @db.VarChar(120)
+  evidence                 Json?
+  note                     String?                   @db.Text
+  receipt                  StockTransferReceipt      @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  shipmentLine             StockTransferShipmentLine @relation(fields: [shipmentLineId], references: [id], onDelete: Restrict)
+
+  @@unique([receiptId, shipmentLineId])
+  @@index([shipmentLineId])
+}
+
+model InventoryDiscrepancy {
+  id                             String                 @id @default(uuid())
+  stockTransferId                String
+  shipmentId                     String?
+  receiptId                      String?
+  inventorySkuId                 String
+  discrepancyType                String // TRANSIT_LOSS | MISSING | STITCH_DAMAGE | DELIVERY_DAMAGE | OTHER_DAMAGE | SHORT_RECEIPT | COUNT_ADJUSTMENT
+  custodyStage                   String?                @db.VarChar(64)
+  quantity                       Int
+  status                         String                 @default("OPEN") // OPEN | UNDER_REVIEW | RESOLVED | REJECTED
+  reportedBy                     String?
+  reportedByRole                 String?                @db.VarChar(64)
+  evidence                       Json?
+  details                        String?                @db.Text
+  financialResponsibleParty      String                 @default("PLATFORM") @db.VarChar(32)
+  responsiblePartyRole           String?                @db.VarChar(64)
+  responsiblePartyId             String?
+  platformLossAmount             Decimal?               @db.Decimal(20, 2)
+  reviewedBy                     String?
+  resolution                     String?                @db.Text
+  resolvedAt                     DateTime?
+  createdAt                      DateTime               @default(now())
+  updatedAt                      DateTime               @updatedAt
+  stockTransfer                  StockTransfer          @relation(fields: [stockTransferId], references: [id], onDelete: Restrict)
+  shipment                       StockTransferShipment? @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  receipt                        StockTransferReceipt?  @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  inventorySku                   InventorySku           @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+
+  @@index([stockTransferId, status, createdAt])
+  @@index([shipmentId, status])
+  @@index([receiptId])
+  @@index([inventorySkuId, discrepancyType])
 }
 
 // ============================================================
@@ -2029,6 +2320,94 @@ model ManufacturerInventory {
   @@unique([manufacturerId, productId])
   @@index([productId])
   @@index([manufacturerId])
+}
+
+model ManufacturerProductionRequest {
+  id                    String   @id @default(uuid())
+  manufacturerId        String
+  productId             String
+  productName           String
+  status                String   @default("PENDING_REVIEW") // PENDING_REVIEW | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
+  proposedUnitCogs       Decimal  @db.Decimal(20, 2)
+  minimumOrderQuantity  Int
+  proposedDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2) // Packaging/other overhead per delivered unit; excluded from production COGS
+  approvedUnitCogs       Decimal? @db.Decimal(20, 2)
+  approvedMinimumOrderQuantity Int?
+  approvedDeliveryCost  Decimal? @db.Decimal(20, 2)
+  manufacturerNote      String?  @db.Text
+  adminNote             String?  @db.Text
+  reviewedBy            String?
+  requestedBy           String?
+  requestedAt           DateTime @default(now())
+  reviewedAt            DateTime?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  manufacturer          Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  product               Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lines                 ManufacturerProductionRequestLine[]
+  costLayers            ManufacturerInventoryCostLayer[]
+
+  @@index([manufacturerId, status, requestedAt])
+  @@index([productId, status])
+}
+
+model ManufacturerProductionRequestLine {
+  id          String   @id @default(uuid())
+  requestId   String
+  size        String   @db.VarChar(120)
+  color       String   @db.VarChar(120)
+  quantity    Int
+  request     ManufacturerProductionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, size, color])
+  @@index([requestId])
+}
+
+model ManufacturerInventoryCostLayer {
+  id                String   @id @default(uuid())
+  productionRequestId String
+  manufacturerId    String
+  productId         String
+  inventorySkuId    String?
+  size              String   @db.VarChar(120)
+  color             String   @db.VarChar(120)
+  producedQuantity  Int
+  availableQuantity Int
+  reservedQuantity  Int      @default(0)
+  consumedQuantity  Int      @default(0)
+  unitCogs          Decimal  @db.Decimal(20, 2)
+  unitDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2)
+  createdAt         DateTime @default(now())
+  productionRequest ManufacturerProductionRequest @relation(fields: [productionRequestId], references: [id], onDelete: Restrict)
+  manufacturer      Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  product           Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  inventorySku      InventorySku? @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+  allocations       ManufacturerInventoryCostAllocation[]
+  transferAllocations StockTransferShipmentLineCostLayer[]
+  ledgerEntries    InventoryLedgerEntry[]
+
+  @@index([manufacturerId, productId, size, color, createdAt])
+  @@unique([productionRequestId, size, color])
+}
+
+model ManufacturerInventoryCostAllocation {
+  id          String   @id @default(uuid())
+  orderId     String
+  orderItemIndex Int
+  costLayerId String
+  quantity    Int
+  returnedQuantity Int @default(0)
+  state       String   @default("RESERVED") // RESERVED | CONSUMED | RELEASED | RETURNED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  order       Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  costLayer   ManufacturerInventoryCostLayer @relation(fields: [costLayerId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, orderItemIndex, costLayerId])
+  @@index([costLayerId, state])
+  @@index([orderId, state])
 }
 
 model ManufacturerInventoryMovement {

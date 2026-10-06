@@ -259,6 +259,16 @@ const updateStock = async (req, res) => {
 
       const totalPhysicalQuantity = cleanVariantsStock.reduce((sum, variant) => sum + variant.quantity, 0);
       const totalReservedQty = cleanVariantsStock.reduce((sum, variant) => sum + variant.reservedQty, 0);
+      const increasedVariant = cleanVariantsStock.find((variant) => {
+        const previous = existingVariantsStock.find((entry) =>
+          String(entry.size || "Standard").trim() === variant.size
+          && String(entry.color || "Standard").trim() === variant.color
+        );
+        return variant.quantity > Number(previous?.quantity || 0);
+      });
+      if (increasedVariant) {
+        throw Object.assign(new Error("New manufacturer stock must be received through a completed production request."), { statusCode: 409 });
+      }
       const movements = buildManufacturerStockMovements({
         previousVariants: existingVariantsStock,
         nextVariants: cleanVariantsStock,
@@ -352,7 +362,7 @@ const updateStock = async (req, res) => {
     });
   } catch (error) {
     console.error("updateStock error:", error);
-    return res.status(400).json({ success: false, message: error.message });
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
   }
 };
 

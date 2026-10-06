@@ -7,6 +7,9 @@ import {
   resolveTargetPortal,
   revokeTokenFamily,
   rotateRefreshToken,
+  getAccountWorkspaceRoles,
+  isWorkspaceProfileActive,
+  switchAccountWorkspace,
 } from "../services/authService.js";
 import {
   createOtpChallenge,
@@ -233,10 +236,10 @@ export const getMe = async (req, res) => {
         customerProfile: true,
         adminProfile: true,
         manufacturerProfile: true,
+        distributorProfile: true,
         marketingPartnerProfile: true,
         roleMappings: {
-          where: { isActive: true, role: { isActive: true, portalScope: role } },
-          select: { role: { select: { id: true, code: true, name: true } } },
+          include: { role: { select: { id: true, code: true, name: true, isActive: true } } },
         },
       },
     });
@@ -245,18 +248,66 @@ export const getMe = async (req, res) => {
       return res.status(404).json({ success: false, message: "Account not found." });
     }
 
-    const sessionProfile = serializeSessionProfile(account);
+    const availableWorkspaces = getAccountWorkspaceRoles(account)
+      .filter((workspaceRole) => isWorkspaceProfileActive(account, workspaceRole))
+      .map((code) => ({
+        code,
+        name: {
+          MANUFACTURER: "Manufacturer",
+          DISTRIBUTOR: "Distributor",
+          ADMIN: "Administrator",
+          CUSTOMER: "Customer",
+          MARKETING_PARTNER: "Marketing partner",
+        }[code] || code,
+      }));
+    const sessionProfile = serializeSessionProfile({ ...account, availableWorkspaces }, role);
     const permissions = await resolveAccountPermissions(accountId, { principalRole: role });
     return res.json({
       ...sessionProfile,
       account: {
         ...sessionProfile.account,
         permissions: [...permissions].sort(),
-        roles: account.roleMappings.map(({ role: mappedRole }) => mappedRole),
+        roles: availableWorkspaces,
       },
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const switchWorkspace = async (req, res) => {
+  try {
+    const targetRole = resolveTargetPortal(req.body?.role || req.body?.workspace);
+    if (!targetRole) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid manufacturer or distributor workspace is required.",
+        code: "WORKSPACE_INVALID",
+      });
+    }
+    const result = await switchAccountWorkspace({
+      accountId: req.auth.accountId,
+      currentTokenFamilyId: req.auth.tokenFamilyId,
+      targetRole,
+      mfaVerified: req.auth.mfaVerified,
+      authMethods: req.auth.authMethods,
+      ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+      userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
+    });
+    if (targetRole !== req.auth.role) clearRefreshCookie(res, req.auth.role);
+    setRefreshCookie(res, targetRole, result.refreshToken, result.refreshTokenExpiresAt);
+    return res.json(serializeLoginResponse({
+      accessToken: result.accessToken,
+      refreshTokenExpiresAt: result.refreshTokenExpiresAt,
+      account: result.account,
+    }));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Workspace could not be changed.",
+      code: error.code || "WORKSPACE_SWITCH_FAILED",
+    });
   }
 };
 

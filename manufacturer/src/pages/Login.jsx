@@ -60,6 +60,16 @@ const Login = () => {
   const [resendAvailableAt, setResendAvailableAt] = useState("");
   const [clock, setClock] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
+  const [registrationType, setRegistrationType] = useState("MANUFACTURER");
+  const [loginPortal, setLoginPortal] = useState("MANUFACTURER");
+  const [distributorForm, setDistributorForm] = useState({
+    name: "",
+    email: "",
+    password: "",
+    phone: "",
+    city: "",
+    address: "",
+  });
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
@@ -154,7 +164,7 @@ const Login = () => {
       if (loginStep === "credentials") {
         const response = await axios.post(`${backendUrl}/api/auth/login`, {
           email: email.trim().toLowerCase(),
-          targetPortal: encryptValue("MANUFACTURER"),
+          targetPortal: encryptValue(loginPortal),
           encryptedPassword: encryptValue(password),
         }, { withCredentials: true });
         if (response.data.requiresTwoFactor) {
@@ -164,7 +174,7 @@ const Login = () => {
         } else if (response.data.success && (response.data.accessToken || response.data.token)) {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
-          toast.success("Welcome back, manufacturer!");
+          toast.success(`Welcome back, ${loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid credentials");
         }
@@ -186,7 +196,7 @@ const Login = () => {
           const accessToken = storeAuthTokens(response.data);
           setToken(accessToken);
           setOtp("");
-          toast.success("Welcome back, manufacturer!");
+          toast.success(`Welcome back, ${loginPortal === "DISTRIBUTOR" ? "distributor" : "manufacturer"}!`);
         } else {
           toast.error(response.data.message || "Invalid or expired verification code.");
         }
@@ -288,6 +298,90 @@ const Login = () => {
       setRegisterLoading(false);
     }
   };
+
+  const handleDistributorRegister = async (e) => {
+    e.preventDefault();
+    if (!distributorForm.name.trim() || !distributorForm.city.trim()) {
+      toast.error("Please enter a business name and city.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(distributorForm.email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    if (distributorForm.password.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    if (!isValidNepalMobileNumber(distributorForm.phone)) {
+      toast.error("Please enter a valid mobile number starting with 98 or 97.");
+      return;
+    }
+
+    setRegisterLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/distributor/register`, {
+        ...distributorForm,
+        name: distributorForm.name.trim(),
+        email: distributorForm.email.trim().toLowerCase(),
+        phone: distributorForm.phone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+      });
+      toast.success(response.data.message || "Distributor application submitted.");
+      setShowRegister(false);
+      setDistributorForm({ name: "", email: "", password: "", phone: "", city: "", address: "" });
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to submit distributor application.");
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  if (showRegister && registrationType === "DISTRIBUTOR") {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100">
+        <form onSubmit={handleDistributorRegister} className="w-full max-w-xl space-y-5 rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-9">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-black text-white">Register as Distributor</h2>
+              <p className="mt-1 text-sm text-slate-400">Applications require admin approval before portal access.</p>
+            </div>
+            <button type="button" onClick={() => setShowRegister(false)} className="text-sm text-slate-400 hover:text-white">Back to login</button>
+          </div>
+          <label className="block text-xs font-semibold text-slate-300">
+            Business / Contact Name *
+            <input required value={distributorForm.name} onChange={(event) => setDistributorForm((prev) => ({ ...prev, name: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+          </label>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block text-xs font-semibold text-slate-300">
+              Email *
+              <input required type="email" value={distributorForm.email} onChange={(event) => setDistributorForm((prev) => ({ ...prev, email: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+            </label>
+            <label className="block text-xs font-semibold text-slate-300">
+              Mobile *
+              <input required type="tel" value={distributorForm.phone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+            </label>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block text-xs font-semibold text-slate-300">
+              City *
+              <input required value={distributorForm.city} onChange={(event) => setDistributorForm((prev) => ({ ...prev, city: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+            </label>
+            <label className="block text-xs font-semibold text-slate-300">
+              Password *
+              <input required type="password" minLength={8} value={distributorForm.password} onChange={(event) => setDistributorForm((prev) => ({ ...prev, password: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+            </label>
+          </div>
+          <label className="block text-xs font-semibold text-slate-300">
+            Address
+            <textarea rows={3} value={distributorForm.address} onChange={(event) => setDistributorForm((prev) => ({ ...prev, address: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+          </label>
+          <button type="submit" disabled={registerLoading} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
+            {registerLoading ? "Submitting..." : "Submit distributor application"}
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   if (showRegister) {
     return (
@@ -682,7 +776,7 @@ const Login = () => {
                   <span aria-live="polite" className={`font-mono font-semibold ${expiresIn ? "text-emerald-300" : "text-rose-300"}`}>{expiresIn ? formatCountdown(expiresIn) : "00:00"}</span>
                 </div>
                 <button type="submit" disabled={loading || otp.length !== (challenge?.codeLength || 6) || expiresIn === 0} className="w-full rounded-xl bg-emerald-400 px-4 py-3 font-bold text-slate-950 hover:bg-emerald-300 disabled:opacity-50">
-                  {loading ? "Checking code..." : "Verify and enter Manufacturer Hub"}
+                  {loading ? "Checking code..." : `Verify and enter ${loginPortal === "DISTRIBUTOR" ? "Distributor" : "Manufacturer"} Workspace`}
                 </button>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-slate-400">Didn&apos;t receive the code?</span>
@@ -713,13 +807,30 @@ const Login = () => {
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mb-4 shadow-lg shadow-emerald-500/5">
             <Factory className="w-8 h-8" />
           </div>
-          <h1 className="text-2xl font-black text-white tracking-tight">Manufacturer Hub</h1>
-          <p className="text-sm text-slate-400 mt-1">Sign in to manage your order fulfillment pipeline</p>
+          <h1 className="text-2xl font-black text-white tracking-tight">
+            {loginPortal === "DISTRIBUTOR" ? "Distributor Workspace" : "Manufacturer Hub"}
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Sign in to manage your {loginPortal === "DISTRIBUTOR" ? "distribution" : "manufacturing"} operations
+          </p>
         </div>
 
         {/* Card */}
         <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {loginStep === "credentials" && (
+              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Sign in as
+                <select
+                  value={loginPortal}
+                  onChange={(event) => setLoginPortal(event.target.value)}
+                  className="mt-1.5 w-full rounded-xl border border-slate-800 bg-slate-950/80 px-4 py-2.5 text-sm text-white outline-none focus:border-emerald-500"
+                >
+                  <option value="MANUFACTURER">Manufacturer</option>
+                  <option value="DISTRIBUTOR">Distributor</option>
+                </select>
+              </label>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
                 Email Address
@@ -771,15 +882,25 @@ const Login = () => {
           </form>
 
           <div className="mt-6 pt-6 border-t border-slate-800 text-center">
-            <p className="text-xs text-slate-400 mb-2">Want to partner as an apparel manufacturing hub?</p>
-            <button
-              type="button"
-              onClick={() => setShowRegister(true)}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Register new manufacturer account</span>
-            </button>
+            <p className="text-xs text-slate-400 mb-3">Choose how you want to partner with Aama Clothings</p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => { setRegistrationType("MANUFACTURER"); setShowRegister(true); }}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Register as manufacturer</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRegistrationType("DISTRIBUTOR"); setShowRegister(true); }}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Register as distributor</span>
+              </button>
+            </div>
           </div>
 
           <div className="mt-6 pt-4 border-t border-slate-800/60 flex items-center justify-center gap-2 text-slate-500 text-xs">

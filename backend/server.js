@@ -27,8 +27,12 @@ import returnsRouter from "./routes/returnsRoute.js";
 import accountingRouter from "./routes/accountingRoute.js";
 import manufacturerRouter from "./routes/manufacturerRoute.js";
 import manufacturerInventoryRouter from "./routes/manufacturerInventoryRoute.js";
+import manufacturerProductionRouter from "./routes/manufacturerProductionRoute.js";
 import orderAssignmentRouter from "./routes/orderAssignmentRoute.js";
 import manufacturerDirectOrderRouter from "./routes/manufacturerDirectOrderRoute.js";
+import distributorRouter from "./routes/distributorRoute.js";
+import inventoryLedgerRouter from "./routes/inventoryLedgerRoute.js";
+import stockTransferRouter from "./routes/stockTransferRoute.js";
 import expenseRouter from "./routes/expenseRoute.js";
 import deliveryRouter from "./routes/deliveryRoute.js";
 import personalizedLetterRouter from "./routes/personalizedLetterRoute.js";
@@ -88,7 +92,7 @@ const corsOptions = {
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'x-requested-with', 'x-correlation-id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'distributorToken', 'x-requested-with', 'x-correlation-id'],
   credentials: true,
 };
 
@@ -97,6 +101,9 @@ app.options('*', cors(corsOptions));
 
 //  Api Endpoints
 app.use("/api/auth", authRouter);
+app.use("/api/distributor", distributorRouter);
+app.use("/api/admin/inventory-ledger", inventoryLedgerRouter);
+app.use("/api/stock-transfers", stockTransferRouter);
 app.use("/api/admin/access", accessManagementRouter);
 app.use("/api/admin", locationPricingRouter);
 app.use("/api/admin/gifts", adminGiftRouter);
@@ -123,6 +130,7 @@ app.use("/api/accounting", accountingRouter);
 // Manufacturer system
 app.use("/api/manufacturer", manufacturerRouter);
 app.use("/api/manufacturer-inventory", manufacturerInventoryRouter);
+app.use("/api/manufacturer-production", manufacturerProductionRouter);
 app.use("/api/assignment", orderAssignmentRouter);
 app.use("/api/order-assignment", orderAssignmentRouter);
 app.use("/api/manufacturer-order", manufacturerDirectOrderRouter);

@@ -1,0 +1,80 @@
+CREATE TABLE `ManufacturerProductionRequest` (
+    `id` VARCHAR(191) NOT NULL,
+    `manufacturerId` VARCHAR(191) NOT NULL,
+    `productId` VARCHAR(191) NOT NULL,
+    `productName` VARCHAR(191) NOT NULL,
+    `status` VARCHAR(191) NOT NULL DEFAULT 'PENDING_REVIEW',
+    `proposedUnitCogs` DECIMAL(20,2) NOT NULL,
+    `minimumOrderQuantity` INTEGER NOT NULL,
+    `proposedDeliveryCost` DECIMAL(20,2) NOT NULL DEFAULT 0,
+    `approvedUnitCogs` DECIMAL(20,2) NULL,
+    `approvedMinimumOrderQuantity` INTEGER NULL,
+    `approvedDeliveryCost` DECIMAL(20,2) NULL,
+    `manufacturerNote` TEXT NULL,
+    `adminNote` TEXT NULL,
+    `reviewedBy` VARCHAR(191) NULL,
+    `requestedBy` VARCHAR(191) NULL,
+    `requestedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `reviewedAt` DATETIME(3) NULL,
+    `startedAt` DATETIME(3) NULL,
+    `completedAt` DATETIME(3) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+    INDEX `ManufacturerProductionRequest_manufacturerId_status_requestedAt_idx` (`manufacturerId`, `status`, `requestedAt`),
+    INDEX `ManufacturerProductionRequest_productId_status_idx` (`productId`, `status`),
+    PRIMARY KEY (`id`),
+    CONSTRAINT `ManufacturerProductionRequest_manufacturerId_fkey` FOREIGN KEY (`manufacturerId`) REFERENCES `Manufacturer`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `ManufacturerProductionRequest_productId_fkey` FOREIGN KEY (`productId`) REFERENCES `Product`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE `ManufacturerProductionRequestLine` (
+    `id` VARCHAR(191) NOT NULL,
+    `requestId` VARCHAR(191) NOT NULL,
+    `size` VARCHAR(120) NOT NULL,
+    `color` VARCHAR(120) NOT NULL,
+    `quantity` INTEGER NOT NULL,
+    UNIQUE INDEX `ManufacturerProductionRequestLine_requestId_size_color_key` (`requestId`, `size`, `color`),
+    INDEX `ManufacturerProductionRequestLine_requestId_idx` (`requestId`),
+    PRIMARY KEY (`id`),
+    CONSTRAINT `ManufacturerProductionRequestLine_requestId_fkey` FOREIGN KEY (`requestId`) REFERENCES `ManufacturerProductionRequest`(`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE `ManufacturerInventoryCostLayer` (
+    `id` VARCHAR(191) NOT NULL,
+    `productionRequestId` VARCHAR(191) NOT NULL,
+    `manufacturerId` VARCHAR(191) NOT NULL,
+    `productId` VARCHAR(191) NOT NULL,
+    `size` VARCHAR(120) NOT NULL,
+    `color` VARCHAR(120) NOT NULL,
+    `producedQuantity` INTEGER NOT NULL,
+    `availableQuantity` INTEGER NOT NULL,
+    `reservedQuantity` INTEGER NOT NULL DEFAULT 0,
+    `consumedQuantity` INTEGER NOT NULL DEFAULT 0,
+    `unitCogs` DECIMAL(20,2) NOT NULL,
+    `unitDeliveryCost` DECIMAL(20,2) NOT NULL DEFAULT 0,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX `ManufacturerInventoryCostLayer_manufacturer_product_variant_created_idx` (`manufacturerId`, `productId`, `size`, `color`, `createdAt`),
+    UNIQUE INDEX `ManufacturerInventoryCostLayer_productionRequestId_size_color_key` (`productionRequestId`, `size`, `color`),
+    PRIMARY KEY (`id`),
+    CONSTRAINT `ManufacturerInventoryCostLayer_productionRequestId_fkey` FOREIGN KEY (`productionRequestId`) REFERENCES `ManufacturerProductionRequest`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `ManufacturerInventoryCostLayer_manufacturerId_fkey` FOREIGN KEY (`manufacturerId`) REFERENCES `Manufacturer`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `ManufacturerInventoryCostLayer_productId_fkey` FOREIGN KEY (`productId`) REFERENCES `Product`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE `ManufacturerInventoryCostAllocation` (
+    `id` VARCHAR(191) NOT NULL,
+    `orderId` VARCHAR(191) NOT NULL,
+    `orderItemIndex` INTEGER NOT NULL,
+    `costLayerId` VARCHAR(191) NOT NULL,
+    `quantity` INTEGER NOT NULL,
+    `returnedQuantity` INTEGER NOT NULL DEFAULT 0,
+    `state` VARCHAR(191) NOT NULL DEFAULT 'RESERVED',
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+    UNIQUE INDEX `ManufacturerInventoryCostAllocation_orderId_orderItemIndex_costLayerId_key` (`orderId`, `orderItemIndex`, `costLayerId`),
+    INDEX `ManufacturerInventoryCostAllocation_costLayerId_state_idx` (`costLayerId`, `state`),
+    INDEX `ManufacturerInventoryCostAllocation_orderId_state_idx` (`orderId`, `state`),
+    PRIMARY KEY (`id`),
+    CONSTRAINT `ManufacturerInventoryCostAllocation_orderId_fkey` FOREIGN KEY (`orderId`) REFERENCES `Order`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `ManufacturerInventoryCostAllocation_costLayerId_fkey` FOREIGN KEY (`costLayerId`) REFERENCES `ManufacturerInventoryCostLayer`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

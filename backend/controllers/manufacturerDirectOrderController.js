@@ -4,6 +4,8 @@ import { calculateUserLoyalty } from "./loyaltyController.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 import { accrueCollaborationSalesForOrder, createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
+import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
+import { allocateProductionLayersForOrderItem, transitionOrderProductionAllocations } from "../services/manufacturerProductionService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -139,7 +141,7 @@ export const createDirectOrder = async (req, res) => {
     }
 
     const acceptedAt = new Date();
-    const acceptedItems = createManufacturerCostSnapshot({
+    let acceptedItems = createManufacturerCostSnapshot({
       items: frozenItems,
       inventoryRows: mInventories,
       acceptedAt,
@@ -247,8 +249,36 @@ export const createDirectOrder = async (req, res) => {
             : "Direct Phone Order (Self-Delivered by Manufacturer Hub)"),
         },
       });
+      acceptedItems = await Promise.all(acceptedItems.map(async (item, itemIndex) => {
+        const allocation = await allocateProductionLayersForOrderItem({
+          tx,
+          orderId: createdOrder.id,
+          itemIndex,
+          manufacturerId,
+          item,
+        });
+        return {
+          ...item,
+          ...allocation,
+          legacyUnitCogsVatInclusiveAtAcceptance: item.agreedUnitCogsVatInclusiveAtAcceptance ?? item.costPrice ?? 0,
+        };
+      }));
+      await tx.order.update({
+        where: { id: createdOrder.id },
+        data: { items: acceptedItems },
+      });
+      if (isWalkIn) {
+        await transitionOrderProductionAllocations({
+          tx,
+          orderId: createdOrder.id,
+          fromState: "RESERVED",
+          toState: "CONSUMED",
+        });
+      }
       await createCollaborationSalesForOrder({ order: createdOrder, items: acceptedItems, client: tx });
-      return createdOrder;
+      const finalizedOrder = { ...createdOrder, items: acceptedItems };
+      if (isWalkIn) await postDeliveredOrderAccounting({ order: finalizedOrder, client: tx });
+      return finalizedOrder;
     });
 
     // Deduct stock from Manufacturer inventory and sync product stockQuantity
@@ -416,10 +446,26 @@ export const updateDirectOrderStatus = async (req, res) => {
       updateData.payment = Boolean(payment);
     }
 
-    const updated = await prisma.order.update({
-      where: { id: orderId },
-      data: updateData,
-    });
+    const shouldPostDelivery = status && status.toLowerCase() === "delivered" && order.status !== "Delivered";
+    const updated = shouldPostDelivery
+      ? await prisma.$transaction(async (tx) => {
+        const updatedOrder = await tx.order.update({
+          where: { id: orderId },
+          data: updateData,
+        });
+        await transitionOrderProductionAllocations({
+          tx,
+          orderId,
+          fromState: "RESERVED",
+          toState: "CONSUMED",
+        });
+        await postDeliveredOrderAccounting({ order: updatedOrder, client: tx });
+        return updatedOrder;
+      }, { isolationLevel: "Serializable" })
+      : await prisma.order.update({
+        where: { id: orderId },
+        data: updateData,
+      });
     if (status && status.toLowerCase() === "delivered") {
       await accrueCollaborationSalesForOrder({ orderId, deliveredAt: new Date() });
     }
@@ -431,7 +477,7 @@ export const updateDirectOrderStatus = async (req, res) => {
       });
     }
 
-    if (status && status.toLowerCase() === "delivered" && order.status !== "Delivered") {
+    if (shouldPostDelivery) {
       await prisma.manufacturer.update({
         where: { id: manufacturerId },
         data: { totalOrdersFulfilled: { increment: 1 } },

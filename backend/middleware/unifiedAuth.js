@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { hasVerifiedMfa, verifyAccessToken } from "../services/tokenService.js";
+import { accountHasWorkspaceRole, isWorkspaceProfileActive } from "../services/authService.js";
 import { requiresMfa } from "../security/mfaPolicy.js";
 
 export { authorize } from "./authorize.js";
@@ -12,7 +13,7 @@ export const extractToken = (req) => {
   if (authHeader && authHeader.startsWith("Bearer ")) {
     return authHeader.substring(7).trim();
   }
-  return req.headers.token || req.headers.admintoken || req.headers.manufacturertoken || null;
+  return req.headers.token || req.headers.admintoken || req.headers.manufacturertoken || req.headers.distributortoken || null;
 };
 
 /**
@@ -79,6 +80,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
         CUSTOMER: () => client.user.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         ADMIN: () => client.admin.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         MANUFACTURER: () => client.manufacturer.findUnique({ where: { id: profileId }, select: { accountId: true } }),
+        DISTRIBUTOR: () => client.distributor.findUnique({ where: { id: profileId }, select: { accountId: true } }),
         MARKETING_PARTNER: () => client.marketingPartner.findUnique({ where: { id: profileId }, select: { accountId: true } }),
       }[role];
       const profile = profileLookup ? await profileLookup() : null;
@@ -96,24 +98,24 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
             customerProfile: { select: { id: true } },
             adminProfile: { select: { id: true } },
             manufacturerProfile: { select: { id: true } },
+            distributorProfile: { select: { id: true, status: true, isActive: true } },
             marketingPartnerProfile: { select: { id: true } },
-            roleMappings: {
-              where: {
-                isActive: true,
-                role: { isActive: true, portalScope: role },
-              },
-              select: {
-                role: { select: { code: true } },
-              },
-            },
+            roleMappings: { include: { role: { select: { code: true, isActive: true } } } },
           },
         })
       : null;
-    if (!account || account.role.toUpperCase() !== role) {
+    if (!account || !accountHasWorkspaceRole(account, role)) {
       return res.status(401).json({
         success: false,
         message: "Invalid authentication identity.",
         code: "INVALID_IDENTITY",
+      });
+    }
+    if (!isWorkspaceProfileActive(account, role)) {
+      return res.status(403).json({
+        success: false,
+        message: "This workspace is not active.",
+        code: "WORKSPACE_INACTIVE",
       });
     }
     if (requiresMfa(role) && !hasVerifiedMfa(decoded)) {
@@ -149,6 +151,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
       CUSTOMER: account.customerProfile?.id,
       ADMIN: account.adminProfile?.id,
       MANUFACTURER: account.manufacturerProfile?.id,
+      DISTRIBUTOR: account.distributorProfile?.id,
       MARKETING_PARTNER: account.marketingPartnerProfile?.id,
     }[role] || account.id;
     if (profileId !== canonicalProfileId && profileId !== account.id) {
@@ -159,10 +162,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
       });
     }
 
-    const roles = Array.from(new Set([
-      role,
-      ...account.roleMappings.map(({ role: mappedRole }) => String(mappedRole.code).toUpperCase()),
-    ]));
+    const roles = [role];
 
     req.auth = {
       userId: profileId,
@@ -176,7 +176,9 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
       tokenFamilyId: session.tokenFamilyId,
       mustChangePassword: account.mustChangePassword,
       manufacturerId: decoded.manufacturerId || null,
+      distributorId: role === "DISTRIBUTOR" ? canonicalProfileId : null,
       partnerId: decoded.partnerId || null,
+      authMethods: Array.isArray(decoded.amr) ? decoded.amr : [],
       role,
       email: decoded.email || "",
       phone: decoded.phone || "",
@@ -191,6 +193,9 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
     } else if (role === "MANUFACTURER") {
       req.manufacturerId = profileId;
       req.body.manufacturerId = profileId;
+    } else if (role === "DISTRIBUTOR") {
+      req.distributorId = profileId;
+      req.body.distributorId = profileId;
     } else if (role === "MARKETING_PARTNER") {
       req.partnerId = profileId;
       req.body.partnerId = profileId;
@@ -251,6 +256,7 @@ export const requirePortal = (portalName) => {
     CUSTOMER: ["CUSTOMER"],
     ADMIN: ["ADMIN"],
     MANUFACTURER: ["MANUFACTURER"],
+    DISTRIBUTOR: ["DISTRIBUTOR"],
     MARKETING: ["MARKETING_PARTNER"],
   };
 
@@ -261,6 +267,7 @@ export const requirePortal = (portalName) => {
 export const requireAdmin = [authenticate, requireRole("ADMIN")];
 export const requireCustomer = [authenticate, requireRole("CUSTOMER")];
 export const requireManufacturer = [authenticate, requireRole("MANUFACTURER")];
+export const requireDistributor = [authenticate, requireRole("DISTRIBUTOR")];
 export const requireMarketingPartner = [authenticate, requireRole("MARKETING_PARTNER")];
 
 const hasPortalRole = (req, allowedRoles) => {
@@ -287,6 +294,33 @@ export const setManufacturerContext = (req, res, next) => {
   req.manufacturerId = manufacturerId;
   req.body.manufacturerId = manufacturerId;
   delete req.body.manufacturerIdOverride;
+  next();
+};
+
+export const setDistributorContext = (req, res, next) => {
+  if (!req.auth?.accountId) {
+    return res.status(401).json({ success: false, message: "Authentication required." });
+  }
+  if (!hasPortalRole(req, ["DISTRIBUTOR", "ADMIN"])) {
+    return res.status(403).json({
+      success: false,
+      message: "Distributor portal access is required.",
+      code: "PORTAL_FORBIDDEN",
+    });
+  }
+
+  const distributorId = req.auth.distributorId || req.auth.profileId;
+  if (!distributorId) {
+    return res.status(403).json({
+      success: false,
+      message: "An approved distributor profile is required.",
+      code: "DISTRIBUTOR_PROFILE_REQUIRED",
+    });
+  }
+  if (!req.body) req.body = {};
+  req.distributorId = distributorId;
+  req.body.distributorId = distributorId;
+  delete req.body.distributorIdOverride;
   next();
 };
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { ADMIN_ROUTE_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
 import { createAuthorize } from "../middleware/authorize.js";
 import { requireRole } from "../middleware/unifiedAuth.js";
-import { hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
+import { deactivateAccountRole, hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
 
 const invoke = (middleware, req) => new Promise((resolve) => {
   const response = {
@@ -40,6 +40,56 @@ test("resolveAccountPermissions returns only active mapped permissions", async (
   assert.equal(calls[1].where.role.portalScope, "CUSTOMER");
   assert.equal(hasPermission(permissions, "product:create"), true);
   assert.equal(hasPermission(permissions, "finance:read"), true);
+});
+
+test("permission cache is isolated by active workspace role", async () => {
+  const cache = new Map();
+  const client = {
+    rolePermissionMapping: {
+      findMany: async ({ where }) => [{ permission: { code: `${where.role.portalScope.toLowerCase()}:read` } }],
+    },
+  };
+
+  const manufacturer = await resolveAccountPermissions("shared-account", {
+    client,
+    cache,
+    principalRole: "MANUFACTURER",
+  });
+  const distributor = await resolveAccountPermissions("shared-account", {
+    client,
+    cache,
+    principalRole: "DISTRIBUTOR",
+  });
+
+  assert.deepEqual([...manufacturer], ["manufacturer:read"]);
+  assert.deepEqual([...distributor], ["distributor:read"]);
+  assert.equal(cache.size, 2);
+});
+
+test("deactivateAccountRole centralizes role-mapping changes", async () => {
+  let updateQuery;
+  const result = await deactivateAccountRole("account-1", "distributor", {
+    client: {
+      role: {
+        findUnique: async (query) => {
+          assert.deepEqual(query, { where: { code: "DISTRIBUTOR" }, select: { id: true } });
+          return { id: "role-1" };
+        },
+      },
+      authAccountRoleMapping: {
+        updateMany: async (query) => {
+          updateQuery = query;
+          return { count: 1 };
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(updateQuery, {
+    where: { accountId: "account-1", roleId: "role-1" },
+    data: { isActive: false },
+  });
+  assert.deepEqual(result, { count: 1 });
 });
 
 test("authorize allows, denies, caches, and fails closed", async () => {

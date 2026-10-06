@@ -443,22 +443,47 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   }
 
   let totalAgreedCogs = new Prisma.Decimal(0);
+  let productionLayerCogs = new Prisma.Decimal(0);
+  let legacyManufacturerCogs = new Prisma.Decimal(0);
+  let deliveryOverhead = new Prisma.Decimal(0);
   for (const item of items) {
-    const qty = new Prisma.Decimal(String(item.quantity || 1));
-    const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
-      ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
-      : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-    totalAgreedCogs = totalAgreedCogs.plus(unitCost.mul(qty));
+    const qty = Number(item.quantity || 1);
+    if (Array.isArray(item.productionCostAllocations)) {
+      for (const allocation of item.productionCostAllocations) {
+        const allocationQty = new Prisma.Decimal(String(allocation.quantity || 0));
+        const unitCogs = new Prisma.Decimal(String(allocation.unitCogs || 0));
+        const unitOverhead = new Prisma.Decimal(String(allocation.unitDeliveryCost || 0));
+        productionLayerCogs = productionLayerCogs.plus(unitCogs.mul(allocationQty));
+        deliveryOverhead = deliveryOverhead.plus(unitOverhead.mul(allocationQty));
+      }
+      const legacyQty = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
+      const legacyUnitCost = new Prisma.Decimal(String(
+        item.legacyUnitCogsVatInclusiveAtAcceptance ??
+        item.agreedUnitCogsVatInclusiveAtAcceptance ??
+        item.costPrice ??
+        0
+      ));
+      legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQty));
+    } else {
+      const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
+        ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
+        : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
+      legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+    }
   }
+  totalAgreedCogs = productionLayerCogs.plus(legacyManufacturerCogs);
   totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  deliveryOverhead = deliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const hasValidTaxInvoice = Boolean(orderOrParams.hasValidTaxInvoice || opts.hasValidTaxInvoice);
   let recoverableInputVat = new Prisma.Decimal(0);
   let netCogs = totalAgreedCogs;
-  if (hasValidTaxInvoice && totalAgreedCogs.greaterThan(0)) {
-    const net = totalAgreedCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-    recoverableInputVat = totalAgreedCogs.minus(net);
-    netCogs = net;
+  if (hasValidTaxInvoice && legacyManufacturerCogs.greaterThan(0)) {
+    const net = legacyManufacturerCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    recoverableInputVat = legacyManufacturerCogs.minus(net);
+    netCogs = productionLayerCogs.plus(net);
   }
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
@@ -534,12 +559,31 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     });
   }
 
-  if (totalAgreedCogs.greaterThan(0)) {
+  if (productionLayerCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "COGS",
+        debit: productionLayerCogs,
+        credit: 0,
+        description: `COGS for delivered production-batch inventory on Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      },
+      {
+        mappingKey: "INVENTORY",
+        debit: 0,
+        credit: productionLayerCogs,
+        description: `Relieve production-batch inventory for Order #${order.id.slice(-6)}`,
+        productId: items.find((item) => Array.isArray(item.productionCostAllocations))?.productId || null,
+      }
+    );
+  }
+
+  if (legacyManufacturerCogs.greaterThan(0)) {
     if (recoverableInputVat.greaterThan(0)) {
       lines.push(
         {
           mappingKey: "COGS",
-          debit: netCogs,
+          debit: legacyManufacturerCogs.minus(recoverableInputVat),
           credit: 0,
           description: `Approved COGS ex-VAT for Order #${order.id.slice(-6)}`,
           accountingPartyId: manufacturerParty?.id,
@@ -554,7 +598,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         {
           mappingKey: "MANUFACTURER_PAYABLE",
           debit: 0,
-          credit: totalAgreedCogs,
+          credit: legacyManufacturerCogs,
           description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
           supplierId: manufacturerId,
           accountingPartyId: manufacturerParty?.id,
@@ -564,7 +608,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       lines.push(
         {
           mappingKey: "COGS",
-          debit: totalAgreedCogs,
+          debit: legacyManufacturerCogs,
           credit: 0,
           description: `Approved Gross COGS for Order #${order.id.slice(-6)}`,
           accountingPartyId: manufacturerParty?.id,
@@ -572,7 +616,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         {
           mappingKey: "MANUFACTURER_PAYABLE",
           debit: 0,
-          credit: totalAgreedCogs,
+          credit: legacyManufacturerCogs,
           description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
           supplierId: manufacturerId,
           accountingPartyId: manufacturerParty?.id,
@@ -595,6 +639,26 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         debit: 0,
         credit: commissionAmount,
         description: `Manufacturer commission payable for Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
+      }
+    );
+  }
+
+  if (deliveryOverhead.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: deliveryOverhead,
+        credit: 0,
+        description: `Manufacturer packaging and delivery overhead for Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      },
+      {
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: 0,
+        credit: deliveryOverhead,
+        description: `Delivered-unit packaging and overhead payable for Order #${order.id.slice(-6)}`,
         supplierId: manufacturerId,
         accountingPartyId: manufacturerParty?.id,
       }
@@ -647,14 +711,40 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   }
 
   let totalAgreedCogs = new Prisma.Decimal(0);
+  let productionLayerCogs = new Prisma.Decimal(0);
+  let legacyManufacturerCogs = new Prisma.Decimal(0);
+  let deliveryOverhead = new Prisma.Decimal(0);
   for (const item of items) {
     const qty = new Prisma.Decimal(String(item.quantity || 1));
-    const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
-      ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
-      : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-    totalAgreedCogs = totalAgreedCogs.plus(unitCost.mul(qty));
+    if (Array.isArray(item.productionCostAllocations)) {
+      for (const allocation of item.productionCostAllocations) {
+        const allocatedQuantity = new Prisma.Decimal(String(allocation.quantity || 0));
+        productionLayerCogs = productionLayerCogs.plus(
+          new Prisma.Decimal(String(allocation.unitCogs || 0)).mul(allocatedQuantity)
+        );
+        deliveryOverhead = deliveryOverhead.plus(
+          new Prisma.Decimal(String(allocation.unitDeliveryCost || 0)).mul(allocatedQuantity)
+        );
+      }
+      const legacyQuantity = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
+      const legacyUnitCost = new Prisma.Decimal(String(
+        item.legacyUnitCogsVatInclusiveAtAcceptance ??
+        item.agreedUnitCogsVatInclusiveAtAcceptance ??
+        item.costPrice ??
+        0
+      ));
+      legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQuantity));
+    } else {
+      const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
+        ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
+        : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
+      legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+    }
   }
-  totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  deliveryOverhead = deliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  totalAgreedCogs = productionLayerCogs.plus(legacyManufacturerCogs).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
   let commissionAmount = new Prisma.Decimal(0);
@@ -706,11 +796,11 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     },
   ];
 
-  if (totalAgreedCogs.greaterThan(0)) {
+  if (legacyManufacturerCogs.greaterThan(0)) {
     lines.push(
       {
         mappingKey: "MANUFACTURER_PAYABLE",
-        debit: totalAgreedCogs,
+        debit: legacyManufacturerCogs,
         credit: 0,
         description: `Reverse Manufacturer AP for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
@@ -718,8 +808,46 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
       {
         mappingKey: "COGS",
         debit: 0,
-        credit: totalAgreedCogs,
+        credit: legacyManufacturerCogs,
         description: `Reverse COGS for returned Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      }
+    );
+  }
+
+  if (productionLayerCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: productionLayerCogs,
+        credit: 0,
+        description: `Restore production-batch inventory for returned Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: productionLayerCogs,
+        description: `Reverse production-batch COGS for returned Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      }
+    );
+  }
+
+  if (deliveryOverhead.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: deliveryOverhead,
+        credit: 0,
+        description: `Reverse delivered-unit overhead payable for returned Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
+      },
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: 0,
+        credit: deliveryOverhead,
+        description: `Reverse packaging and delivery overhead for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
       }
     );

@@ -2,6 +2,7 @@ import axios from "axios";
 import {
   clearAuthTokens,
   getAccessToken,
+  getActiveWorkspace,
   getRefreshTokenExpiresAt,
   ACCESS_TOKEN_KEY,
   REFRESH_EXPIRY_KEY,
@@ -41,7 +42,7 @@ const refreshAccessToken = (staleAccessToken = getAccessToken()) => {
 
       const refreshResponse = await axios.post(
         `${backendUrl}/api/auth/refresh`,
-        { portal: "MANUFACTURER" },
+        { portal: getActiveWorkspace() },
         { withCredentials: true }
       );
       const accessToken = storeAuthTokens(refreshResponse.data);
