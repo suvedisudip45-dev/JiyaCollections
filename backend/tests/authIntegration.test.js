@@ -196,4 +196,8 @@ async function runTests() {
   }
 }
 
-runTests();
+if (process.env.RUN_DATABASE_INTEGRATION_TESTS === "1") {
+  runTests();
+} else {
+  console.log("Skipping database-backed auth integration test; set RUN_DATABASE_INTEGRATION_TESTS=1 against an isolated test database to run it.");
+}

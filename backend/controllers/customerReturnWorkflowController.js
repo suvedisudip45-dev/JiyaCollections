@@ -17,6 +17,15 @@ const sendError = (res, error) => res.status(error.status || 400).json({
   message: error.message || "Return request failed.",
 });
 
+const actorContextFromRequest = (req) => ({
+  actorId: req.auth?.accountId,
+  actorRole: req.auth?.role,
+  portalSource: req.auth?.role || "ADMIN",
+  ipAddress: req.ip || null,
+  userAgent: req.headers["user-agent"] || null,
+  correlationId: req.correlationId || null,
+});
+
 export const customerCreateReturnRequest = async (req, res) => {
   try {
     const result = await createRequest({
@@ -91,6 +100,7 @@ export const adminDecideReturnRequest = async (req, res) => {
     const returnRecord = await decideCustomerReturnRequest({
       returnId: req.params.id,
       adminId: req.adminId,
+      actorContext: actorContextFromRequest(req),
       decision: req.body.decision,
       reason: req.body.reason,
       chargePayer: req.body.chargePayer,
@@ -120,6 +130,7 @@ export const adminInspectReturn = async (req, res) => {
     const returnRecord = await inspectCustomerReturn({
       returnId: req.params.id,
       adminId: req.adminId,
+      actorContext: actorContextFromRequest(req),
       result: req.body.result,
       notes: req.body.notes,
     });
@@ -131,7 +142,11 @@ export const adminInspectReturn = async (req, res) => {
 
 export const adminCompleteReturnRefund = async (req, res) => {
   try {
-    const returnRecord = await markCustomerReturnRefunded({ returnId: req.params.id, adminId: req.adminId });
+    const returnRecord = await markCustomerReturnRefunded({
+      returnId: req.params.id,
+      adminId: req.adminId,
+      actorContext: actorContextFromRequest(req),
+    });
     return res.json({ success: true, returnRecord });
   } catch (error) {
     return sendError(res, error);

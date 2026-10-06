@@ -36,6 +36,7 @@ The repository implements a distributed operating model where customer orders ar
 - Delivery and NCM integration for ready-for-pickup, webhook handling, manual handoff recovery, delivery settlements, and return workflows.
 - NCM create-booking flows now preserve explicit failure states such as `submission_failed` / `failed_to_book_courier`, and the frontend must not surface those cases as a successful courier booking.
 - RBAC and auth system with user, admin, manufacturer, and partner roles plus permission checks and session validation.
+- Admin audit history backed by a transactional outbox, with redacted before/after diffs for business changes and reviewable authentication, MFA, rate-limit, refresh-token-reuse, and RBAC-denial security signals.
 - MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, delivery, and local pricing flows.
 - Gift inventory is batch-based and auditable: orders reserve one accepted manufacturer batch atomically, pack/delivery transitions update the gift state, and movement logs record allocation, reservation, deduction, restock, or loss.
 
@@ -65,6 +66,9 @@ The repository implements a distributed operating model where customer orders ar
 4. Validate the schema against a clean database state and regenerate Prisma client after stopping any running backend process that holds the native client binary.
 5. Review the current `backend/notifications/README.md` and staging deployment notes before enabling outbound messaging in production.
 6. Keep route-level RBAC and backend ownership checks as the source of truth for all future feature work.
+7. Apply the additive `20261005000000_add_system_audit_outbox` migration, run the RBAC seed to register `access:audit_read` for the system Admin role, and regenerate Prisma Client before deploying the admin audit-history endpoints. The seed fallback account data remains unchanged.
+8. Monitor pending/failed system-audit outbox records and define retention/archival policy before audit volume grows.
+9. Review [Security, Data Flow, and UI Audit](SECURITY_DATA_FLOW_AND_UI_AUDIT.md) before production rollout; it documents source-code-based flows and security/UI follow-ups, not production or forensic findings.
 
 ## 6. Documentation Maintenance Rule
 

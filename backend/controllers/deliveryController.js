@@ -308,7 +308,7 @@ export const adminListDeliveries = async (req, res) => {
 
 export const getRecentSystemLogs = async (_req, res) => {
   try {
-    const logs = readRecentLogs(80);
+    const logs = await readRecentLogs(80);
     res.json({ success: true, logs });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message || "Failed to read log file" });
@@ -476,4 +476,3 @@ export const adminConfirmSettlement = async (req, res) => {
 };
 
 export { applyNcmStatus };
-

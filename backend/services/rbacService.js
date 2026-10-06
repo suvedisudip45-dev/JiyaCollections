@@ -1,6 +1,9 @@
 import { prisma } from "../config/db.js";
 
 export const ALL_FUNCTION_PERMISSION = "all:function";
+const PERMISSION_CACHE_TTL_MS = 2000;
+const PERMISSION_CACHE_MAX_ENTRIES = 1000;
+const permissionCache = new Map();
 
 const normalizePermission = (permission) => String(permission || "").trim().toLowerCase();
 
@@ -10,6 +13,14 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
 
   if (cache?.has(accountId)) {
     return cache.get(accountId);
+  }
+  if (client === prisma) {
+    const cached = permissionCache.get(accountId);
+    if (cached && cached.expiresAt > Date.now()) {
+      cache?.set(accountId, cached.permissions);
+      return cached.permissions;
+    }
+    if (cached) permissionCache.delete(accountId);
   }
 
   const mappings = await client.rolePermissionMapping.findMany({
@@ -45,7 +56,22 @@ export const resolveAccountPermissions = async (accountId, { client = prisma, ca
   );
 
   cache?.set(accountId, permissions);
+  if (client === prisma) {
+    if (permissionCache.size >= PERMISSION_CACHE_MAX_ENTRIES) {
+      const firstKey = permissionCache.keys().next().value;
+      if (firstKey !== undefined) permissionCache.delete(firstKey);
+    }
+    permissionCache.set(accountId, {
+      permissions,
+      expiresAt: Date.now() + PERMISSION_CACHE_TTL_MS,
+    });
+  }
   return permissions;
+};
+
+export const invalidatePermissionCache = (accountId = null) => {
+  if (accountId) permissionCache.delete(accountId);
+  else permissionCache.clear();
 };
 
 export const hasPermission = (permissions, requiredPermission) => {

@@ -39,10 +39,14 @@ const request = ({ email = "", ip = "203.0.113.10", headers = {} } = {}) => ({
   ip,
   headers,
 });
+const createTestLimiters = (options) => createAuthRateLimiters({
+  auditRecorder: async () => {},
+  ...options,
+});
 
 test("login rate limit applies independent username and IP buckets", () => {
   let currentTime = 1_000;
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 2,
     loginIpBucketSize: 2,
@@ -68,7 +72,7 @@ test("login rate limit applies independent username and IP buckets", () => {
 });
 
 test("public registration rate limit uses IP only", () => {
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 5,
     loginIpBucketSize: 30,
@@ -84,8 +88,32 @@ test("public registration rate limit uses IP only", () => {
   assert.equal(invoke(limiter.publicRegistration, request({ email: "one@example.test", ip: "203.0.113.11" })).nextValue, undefined);
 });
 
+test("rate-limit denials enqueue a deduplicated security event without recording login identifiers", () => {
+  const auditEvents = [];
+  const limiter = createTestLimiters({
+    windowMs: 60_000,
+    loginUsernameBucketSize: 1,
+    loginIpBucketSize: 30,
+    publicRegisterIpBucketSize: 2,
+    now: () => 10_000,
+    auditRecorder: async (actor, event) => auditEvents.push({ actor, event }),
+  });
+  const req = request({ email: "target@example.test", ip: "203.0.113.10" });
+  req.body.targetPortal = "ADMIN";
+  invoke(limiter.login, req);
+  invoke(limiter.login, req);
+  invoke(limiter.login, req);
+
+  assert.equal(auditEvents.length, 1);
+  assert.equal(auditEvents[0].event.action, "LOGIN_RATE_LIMITED");
+  assert.equal(auditEvents[0].event.entityType, "SecurityEvent");
+  assert.equal(auditEvents[0].event.status, "BLOCKED");
+  assert.equal(auditEvents[0].actor.portalSource, "ADMIN");
+  assert.equal(JSON.stringify(auditEvents[0]).includes("target@example.test"), false);
+});
+
 test("authenticated Manufacturer registration skips the public route limiter", () => {
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 5,
     loginIpBucketSize: 30,
@@ -151,7 +179,7 @@ test("only public portal signup routes use the registration limiter", () => {
 });
 
 test("IP buckets are isolated by portal", () => {
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 10,
     loginIpBucketSize: 1,
@@ -167,7 +195,7 @@ test("IP buckets are isolated by portal", () => {
 });
 
 test("authenticated login resets username and portal IP buckets, but MFA pending does not", () => {
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 1,
     loginIpBucketSize: 1,
@@ -196,7 +224,7 @@ test("authenticated login resets username and portal IP buckets, but MFA pending
 });
 
 test("username buckets are isolated by portal", () => {
-  const limiter = createAuthRateLimiters({
+  const limiter = createTestLimiters({
     windowMs: 60_000,
     loginUsernameBucketSize: 1,
     loginIpBucketSize: 10,

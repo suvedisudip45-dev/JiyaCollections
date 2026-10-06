@@ -13,6 +13,7 @@ const invoke = (middleware, req) => new Promise((resolve) => {
   };
   middleware(req, response, () => resolve({ code: 200 }));
 });
+const ignoreAudit = async () => {};
 
 test("resolveAccountPermissions returns only active mapped permissions", async () => {
   const calls = [];
@@ -58,10 +59,30 @@ test("authorize allows, denies, caches, and fails closed", async () => {
   assert.equal((await invoke(middleware, request)).code, 200);
   assert.equal(resolverCalls, 2);
 
-  const denied = await invoke(createAuthorize(async () => new Set())("product:create"), {
+  const denied = await invoke(createAuthorize(async () => new Set(), ignoreAudit)("product:create"), {
     auth: { accountId: "account-2" },
   });
   assert.equal(denied.code, 403);
+
+  let deniedEvent;
+  const auditedDenied = await invoke(createAuthorize(async () => new Set(), async (actor, event) => {
+    deniedEvent = { actor, event };
+  })("product:delete"), {
+    auth: { accountId: "account-4", role: "MANUFACTURER" },
+    method: "DELETE",
+    originalUrl: "/api/products/123?include=private",
+    ip: "203.0.113.7",
+    correlationId: "request-1",
+    headers: { "user-agent": "test-agent" },
+  });
+  assert.equal(auditedDenied.code, 403);
+  assert.equal(deniedEvent.actor.actorId, "account-4");
+  assert.equal(deniedEvent.actor.correlationId, "request-1");
+  assert.deepEqual(deniedEvent.event.afterState, {
+    requiredPermissions: ["product:delete"],
+    method: "DELETE",
+    path: "/api/products/123",
+  });
 
   const missingAuth = await invoke(middleware, {});
   assert.equal(missingAuth.code, 401);
@@ -99,7 +120,7 @@ test("required password rotation permits only the Admin password-change permissi
   assert.equal((await invoke(createAuthorize(permissionResolver)("admin:change_password"), request)).code, 200);
   assert.equal(resolverCalls, 0);
 
-  const denied = await invoke(createAuthorize(permissionResolver)("access:admin_users_read"), request);
+  const denied = await invoke(createAuthorize(permissionResolver, ignoreAudit)("access:admin_users_read"), request);
   assert.equal(denied.code, 403);
   assert.equal(resolverCalls, 1);
 });

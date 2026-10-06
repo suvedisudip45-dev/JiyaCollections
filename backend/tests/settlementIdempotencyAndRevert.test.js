@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { prisma } from "../config/db.js";
 import * as financialController from "../controllers/financialController.js";
 
-test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", async (t) => {
+test("Settlement Idempotency, 409 Conflict & Admin Reversion Flow", {
+  skip: process.env.RUN_DATABASE_INTEGRATION_TESTS !== "1",
+}, async (t) => {
   // Setup test bank account
   const timestamp = Date.now();
   const testAccount = await prisma.financialAccount.create({

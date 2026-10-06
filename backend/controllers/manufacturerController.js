@@ -98,6 +98,7 @@ const loginManufacturer = async (req, res) => {
       targetPortal: "MANUFACTURER",
       ipAddress,
       userAgent,
+      correlationId: req.correlationId || null,
     });
 
     const safeManufacturer = { ...authResult.profile };

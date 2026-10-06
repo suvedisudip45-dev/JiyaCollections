@@ -66,6 +66,7 @@ const loginUser = async (req, res) => {
       targetPortal: "CUSTOMER",
       ipAddress,
       userAgent,
+      correlationId: req.correlationId || null,
     });
     setRefreshCookie(res, "CUSTOMER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
 
@@ -222,6 +223,7 @@ const registerUser = async (req, res) => {
       targetPortal: "CUSTOMER",
       ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
       userAgent: req.headers["user-agent"] || "",
+      correlationId: req.correlationId || null,
     });
     setRefreshCookie(res, "CUSTOMER", authResult.refreshToken, authResult.refreshTokenExpiresAt);
 

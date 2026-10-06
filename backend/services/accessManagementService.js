@@ -1,8 +1,9 @@
 import bcrypt from "bcryptjs";
 import validator from "validator";
 import { prisma } from "../config/db.js";
-import { ALL_FUNCTION_PERMISSION, hasPermission, resolveAccountPermissions } from "./rbacService.js";
+import { ALL_FUNCTION_PERMISSION, hasPermission, invalidatePermissionCache, resolveAccountPermissions } from "./rbacService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
+import { recordSystemAudit } from "./auditService.js";
 
 const PORTALS = new Set(["ADMIN", "CUSTOMER", "MANUFACTURER", "MARKETING_PARTNER"]);
 const SYSTEM_ROLE_CODES = new Set(["ADMIN", "CUSTOMER", "MANUFACTURER", "MARKETING_PARTNER"]);
@@ -145,10 +146,33 @@ const buildSearchWhere = (portal, search) => {
   return where;
 };
 
-const audit = (client, { actorAccountId, targetAccountId = null, action, metadata = {} }) =>
-  client.accessManagementAuditLog.create({
+const audit = async (client, {
+  actorAccountId,
+  actorContext = {},
+  targetAccountId = null,
+  action,
+  metadata = {},
+  entityType = "AccessManagement",
+  entityId = targetAccountId,
+  beforeState = {},
+  afterState = metadata,
+}) => {
+  await client.accessManagementAuditLog.create({
     data: { actorAccountId, targetAccountId, action, metadata },
   });
+  await recordSystemAudit({
+    ...actorContext,
+    actorId: actorAccountId,
+    actorRole: actorContext.actorRole || "ADMIN",
+    portalSource: actorContext.portalSource || "ADMIN",
+  }, {
+    action,
+    entityType,
+    entityId,
+    beforeState,
+    afterState,
+  }, { client });
+};
 
 const assertNotSelf = (actorAccountId, targetAccountId) => {
   if (actorAccountId === targetAccountId) {
@@ -272,7 +296,7 @@ export const getPortalUser = async ({ portal: rawPortal, accountId }, { client =
   return user;
 };
 
-export const createAdminUser = async ({ actorAccountId, input }, { client = prisma } = {}) => {
+export const createAdminUser = async ({ actorAccountId, actorContext, input }, { client = prisma } = {}) => {
   const displayName = String(input?.displayName || "").trim();
   const firstName = String(input?.firstName || "").trim();
   const lastName = String(input?.lastName || "").trim();
@@ -314,15 +338,26 @@ export const createAdminUser = async ({ actorAccountId, input }, { client = pris
     });
     await audit(tx, {
       actorAccountId,
+      actorContext,
       targetAccountId: account.id,
       action: "ADMIN_USER_CREATED",
       metadata: { roleCodes: roles.map(({ code }) => code), changedFields: ["displayName", "firstName", "lastName", "email", "contactNumber"] },
+      entityType: "AuthAccount",
+      entityId: account.id,
+      afterState: {
+        displayName,
+        firstName,
+        lastName,
+        email,
+        roles: roles.map(({ code }) => code),
+        status: "ACTIVE",
+      },
     });
     return { accountId: account.id };
   });
 };
 
-export const updatePortalUser = async ({ actorAccountId, portal: rawPortal, accountId, input }, { client = prisma } = {}) => {
+export const updatePortalUser = async ({ actorAccountId, actorContext, portal: rawPortal, accountId, input }, { client = prisma } = {}) => {
   const portal = normalizePortal(rawPortal);
   assertNotSelf(actorAccountId, accountId);
   const existing = await getPortalAccount(client, portal, accountId);
@@ -373,6 +408,21 @@ export const updatePortalUser = async ({ actorAccountId, portal: rawPortal, acco
     throw createServiceError("No supported profile changes were provided.", 400, "NO_CHANGES");
   }
 
+  const beforeState = {
+    email: existing.email,
+    displayName: portal === "ADMIN"
+      ? profile.displayName || [profile.firstName, profile.lastName].filter(Boolean).join(" ")
+      : profile.name || [profile.firstName, profile.lastName].filter(Boolean).join(" "),
+    firstName: profile.firstName || "",
+    lastName: profile.lastName || "",
+  };
+  const afterState = {
+    ...beforeState,
+    email: accountData.email ?? beforeState.email,
+    displayName: profileData.displayName ?? profileData.name ?? beforeState.displayName,
+    firstName: profileData.firstName ?? beforeState.firstName,
+    lastName: profileData.lastName ?? beforeState.lastName,
+  };
   await client.$transaction(async (tx) => {
     if (Object.keys(accountData).length) await tx.authAccount.update({ where: { id: accountId }, data: accountData });
     if (Object.keys(profileData).length) {
@@ -386,9 +436,14 @@ export const updatePortalUser = async ({ actorAccountId, portal: rawPortal, acco
     }
     await audit(tx, {
       actorAccountId,
+      actorContext,
       targetAccountId: accountId,
       action: `${portal}_USER_UPDATED`,
       metadata: { changedFields: Object.keys({ ...accountData, ...profileData }).filter((field) => field !== "password") },
+      entityType: "AuthAccount",
+      entityId: accountId,
+      beforeState,
+      afterState,
     });
   });
   return getPortalUser({ portal, accountId }, { client });
@@ -412,7 +467,7 @@ const assertCanDeactivateLastAdmin = async (client, accountId) => {
   }
 };
 
-export const setPortalUserStatus = async ({ actorAccountId, portal: rawPortal, accountId, active }, { client = prisma } = {}) => {
+export const setPortalUserStatus = async ({ actorAccountId, actorContext, portal: rawPortal, accountId, active }, { client = prisma } = {}) => {
   const portal = normalizePortal(rawPortal);
   assertNotSelf(actorAccountId, accountId);
   const existing = await getPortalAccount(client, portal, accountId);
@@ -445,9 +500,14 @@ export const setPortalUserStatus = async ({ actorAccountId, portal: rawPortal, a
     }
     await audit(tx, {
       actorAccountId,
+      actorContext,
       targetAccountId: accountId,
       action: `${portal}_USER_${active ? "ACTIVATED" : "DEACTIVATED"}`,
       metadata: { previousStatus: existing.status, status: nextStatus },
+      entityType: "AuthAccount",
+      entityId: accountId,
+      beforeState: { status: existing.status },
+      afterState: { status: nextStatus },
     });
   };
   if (!active && portal === "ADMIN") {
@@ -455,10 +515,11 @@ export const setPortalUserStatus = async ({ actorAccountId, portal: rawPortal, a
   } else {
     await client.$transaction(updateStatus);
   }
+  invalidatePermissionCache(accountId);
   return getPortalUser({ portal, accountId }, { client });
 };
 
-export const assignAdminUserRoles = async ({ actorAccountId, accountId, roleIds }, { client = prisma } = {}) => {
+export const assignAdminUserRoles = async ({ actorAccountId, actorContext, accountId, roleIds }, { client = prisma } = {}) => {
   assertNotSelf(actorAccountId, accountId);
   const existing = await getPortalAccount(client, "ADMIN", accountId);
   await client.$transaction(async (tx) => {
@@ -473,11 +534,17 @@ export const assignAdminUserRoles = async ({ actorAccountId, accountId, roleIds 
     await replaceAdminRoleMappings(tx, accountId, roles);
     await audit(tx, {
       actorAccountId,
+      actorContext,
       targetAccountId: accountId,
       action: "ADMIN_USER_ROLES_UPDATED",
       metadata: { previousRoleCodes: existing.roleMappings.map(({ role }) => role.code), roleCodes: roles.map(({ code }) => code) },
+      entityType: "AuthAccount",
+      entityId: accountId,
+      beforeState: { roles: existing.roleMappings.map(({ role }) => role.code) },
+      afterState: { roles: roles.map(({ code }) => code) },
     });
   }, { isolationLevel: "Serializable" });
+  invalidatePermissionCache(accountId);
   return getPortalUser({ portal: "ADMIN", accountId }, { client });
 };
 
@@ -534,7 +601,7 @@ export const listAdminRoles = async ({ search = "", page = 1, limit = 25 }, { cl
   };
 };
 
-export const createAdminRole = async ({ actorAccountId, name, description = "" }, { client = prisma } = {}) => {
+export const createAdminRole = async ({ actorAccountId, actorContext, name, description = "" }, { client = prisma } = {}) => {
   const normalizedName = String(name || "").trim();
   if (!normalizedName) throw createServiceError("Role name is required.", 400, "ROLE_NAME_REQUIRED");
   const code = makeRoleCode(normalizedName);
@@ -543,12 +610,20 @@ export const createAdminRole = async ({ actorAccountId, name, description = "" }
       data: { code, name: normalizedName, description: String(description || "").trim(), portalScope: "ADMIN" },
       select: { id: true, code: true, name: true, description: true, portalScope: true, isActive: true },
     });
-    await audit(tx, { actorAccountId, action: "ADMIN_ROLE_CREATED", metadata: { roleId: role.id, roleCode: role.code } });
+    await audit(tx, {
+      actorAccountId,
+      actorContext,
+      action: "ADMIN_ROLE_CREATED",
+      metadata: { roleId: role.id, roleCode: role.code },
+      entityType: "Role",
+      entityId: role.id,
+      afterState: { code: role.code, name: role.name, description: role.description, isActive: role.isActive },
+    });
     return role;
   });
 };
 
-export const updateAdminRole = async ({ actorAccountId, roleId, name, description }, { client = prisma } = {}) => {
+export const updateAdminRole = async ({ actorAccountId, actorContext, roleId, name, description }, { client = prisma } = {}) => {
   const role = await client.role.findFirst({ where: { id: roleId, portalScope: "ADMIN" } });
   if (!role) throw createServiceError("Admin role not found.", 404, "ROLE_NOT_FOUND");
   if (SYSTEM_ROLE_CODES.has(role.code)) throw createServiceError("System roles cannot be edited.", 409, "SYSTEM_ROLE_PROTECTED");
@@ -563,21 +638,40 @@ export const updateAdminRole = async ({ actorAccountId, roleId, name, descriptio
   if (!Object.keys(data).length) throw createServiceError("No role changes were provided.", 400, "NO_CHANGES");
   return client.$transaction(async (tx) => {
     const updated = await tx.role.update({ where: { id: roleId }, data });
-    await audit(tx, { actorAccountId, action: "ADMIN_ROLE_UPDATED", metadata: { roleId, changedFields: Object.keys(data) } });
+    await audit(tx, {
+      actorAccountId,
+      actorContext,
+      action: "ADMIN_ROLE_UPDATED",
+      metadata: { roleId, changedFields: Object.keys(data) },
+      entityType: "Role",
+      entityId: roleId,
+      beforeState: { name: role.name, description: role.description },
+      afterState: { name: updated.name, description: updated.description },
+    });
     return updated;
   });
 };
 
-export const setAdminRoleStatus = async ({ actorAccountId, roleId, active }, { client = prisma } = {}) => {
+export const setAdminRoleStatus = async ({ actorAccountId, actorContext, roleId, active }, { client = prisma } = {}) => {
   const role = await client.role.findFirst({ where: { id: roleId, portalScope: "ADMIN" } });
   if (!role) throw createServiceError("Admin role not found.", 404, "ROLE_NOT_FOUND");
   if (SYSTEM_ROLE_CODES.has(role.code)) throw createServiceError("System roles cannot be deactivated.", 409, "SYSTEM_ROLE_PROTECTED");
   await assertRoleNotAssignedToActor(client, roleId, actorAccountId);
   const updated = await client.$transaction(async (tx) => {
     const result = await tx.role.update({ where: { id: roleId }, data: { isActive: Boolean(active) } });
-    await audit(tx, { actorAccountId, action: `ADMIN_ROLE_${active ? "ACTIVATED" : "DEACTIVATED"}`, metadata: { roleId, code: role.code } });
+    await audit(tx, {
+      actorAccountId,
+      actorContext,
+      action: `ADMIN_ROLE_${active ? "ACTIVATED" : "DEACTIVATED"}`,
+      metadata: { roleId, code: role.code },
+      entityType: "Role",
+      entityId: roleId,
+      beforeState: { isActive: role.isActive },
+      afterState: { isActive: Boolean(active) },
+    });
     return result;
   });
+  invalidatePermissionCache();
   return updated;
 };
 
@@ -608,7 +702,7 @@ export const getAdminRole = async ({ roleId }, { client = prisma } = {}) => {
   };
 };
 
-export const replaceAdminRolePermissions = async ({ actorAccountId, roleId, permissionIds }, { client = prisma } = {}) => {
+export const replaceAdminRolePermissions = async ({ actorAccountId, actorContext, roleId, permissionIds }, { client = prisma } = {}) => {
   const role = await client.role.findFirst({ where: { id: roleId, portalScope: "ADMIN" } });
   if (!role) throw createServiceError("Admin role not found.", 404, "ROLE_NOT_FOUND");
   if (SYSTEM_ROLE_CODES.has(role.code)) throw createServiceError("System role permissions are managed by the seed.", 409, "SYSTEM_ROLE_PROTECTED");
@@ -616,7 +710,10 @@ export const replaceAdminRolePermissions = async ({ actorAccountId, roleId, perm
   const ids = [...new Set((permissionIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
   const permissions = await client.permission.findMany({ where: { id: { in: ids }, isActive: true }, select: { id: true, code: true } });
   if (permissions.length !== ids.length) throw createServiceError("One or more permissions are invalid or inactive.", 400, "INVALID_PERMISSION");
-  const existingMappings = await client.rolePermissionMapping.findMany({ where: { roleId }, select: { permissionId: true } });
+  const existingMappings = await client.rolePermissionMapping.findMany({
+    where: { roleId },
+    select: { permissionId: true, permission: { select: { code: true } } },
+  });
   const existingPermissionIds = new Set(existingMappings.map(({ permissionId }) => permissionId));
   if (permissions.some(({ code }) => code === ALL_FUNCTION_PERMISSION)) {
     throw createServiceError("The full authorization bypass is reserved for the seeded system Admin role.", 409, "SYSTEM_PERMISSION_PROTECTED");
@@ -637,10 +734,16 @@ export const replaceAdminRolePermissions = async ({ actorAccountId, roleId, perm
     }
     await audit(tx, {
       actorAccountId,
+      actorContext,
       action: "ADMIN_ROLE_PERMISSIONS_UPDATED",
       metadata: { roleId, permissionCodes: permissions.map(({ code }) => code).sort() },
+      entityType: "Role",
+      entityId: roleId,
+      beforeState: { permissions: existingMappings.map(({ permission }) => permission.code).sort() },
+      afterState: { permissions: permissions.map(({ code }) => code).sort() },
     });
   });
+  invalidatePermissionCache();
   return getAdminRole({ roleId }, { client });
 };
 
@@ -676,4 +779,116 @@ export const listPermissions = async ({ search = "", page = 1, limit = 50 }, { c
     })),
     pagination: { page: normalizedPage, limit: normalizedLimit, total, totalPages: Math.ceil(total / normalizedLimit) },
   };
+};
+
+const parseAuditDate = (value, field) => {
+  if (!value) return undefined;
+  const dateValue = String(value);
+  const parsed = new Date(dateValue);
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(dateValue);
+  if (Number.isNaN(parsed.getTime()) || (isDateOnly && parsed.toISOString().slice(0, 10) !== dateValue)) {
+    throw createServiceError(`${field} must be a valid date.`, 400, "INVALID_AUDIT_DATE");
+  }
+  if (field === "endDate" && isDateOnly) {
+    parsed.setUTCHours(23, 59, 59, 999);
+  }
+  return parsed;
+};
+
+const buildAuditWhere = (query = {}) => {
+  const startDate = parseAuditDate(query.startDate, "startDate");
+  const endDate = parseAuditDate(query.endDate, "endDate");
+  if (startDate && endDate && startDate > endDate) {
+    throw createServiceError("startDate must not be later than endDate.", 400, "INVALID_AUDIT_DATE_RANGE");
+  }
+  const search = String(query.search || "").trim().slice(0, 120);
+  const status = String(query.status || "").trim().toUpperCase();
+  if (status && !["SUCCESS", "FAILED", "BLOCKED"].includes(status)) {
+    throw createServiceError("status must be SUCCESS, FAILED, or BLOCKED.", 400, "INVALID_AUDIT_STATUS");
+  }
+  return {
+    ...(query.actorId ? { actorId: String(query.actorId).slice(0, 191) } : {}),
+    ...(query.entityType ? { entityType: String(query.entityType).slice(0, 80) } : {}),
+    ...(query.action ? { action: { contains: String(query.action).slice(0, 120) } } : {}),
+    ...(status ? { status } : {}),
+    ...(startDate || endDate ? {
+      createdAt: {
+        ...(startDate ? { gte: startDate } : {}),
+        ...(endDate ? { lte: endDate } : {}),
+      },
+    } : {}),
+    ...(search ? {
+      OR: [
+        { action: { contains: search } },
+        { entityType: { contains: search } },
+        { entityId: { contains: search } },
+        { correlationId: { contains: search } },
+      ],
+    } : {}),
+  };
+};
+
+export const listSystemAuditLogs = async ({
+  page = 1,
+  limit = 25,
+  startDate,
+  endDate,
+  actorId,
+  entityType,
+  action,
+  status,
+  search,
+} = {}, { client = prisma } = {}) => {
+  const normalizedPage = normalizePage(page, 1);
+  const normalizedLimit = Math.min(normalizePage(limit, 25), MAX_PAGE_SIZE);
+  const where = buildAuditWhere({ startDate, endDate, actorId, entityType, action, status, search });
+  const [data, total] = await Promise.all([
+    client.systemAuditLog.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: (normalizedPage - 1) * normalizedLimit,
+      take: normalizedLimit,
+    }),
+    client.systemAuditLog.count({ where }),
+  ]);
+  return {
+    data,
+    pagination: {
+      page: normalizedPage,
+      limit: normalizedLimit,
+      total,
+      totalPages: Math.ceil(total / normalizedLimit),
+    },
+  };
+};
+
+const csvCell = (value) => {
+  const text = value === null || value === undefined
+    ? ""
+    : typeof value === "string" ? value : JSON.stringify(value);
+  const safeText = /^[\s]*[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replace(/"/g, '""')}"`;
+};
+
+export const exportSystemAuditLogs = async (query = {}, { client = prisma } = {}) => {
+  const where = buildAuditWhere(query);
+  const rows = await client.systemAuditLog.findMany({
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 1000,
+  });
+  const format = String(query.format || "json").toLowerCase() === "csv" ? "csv" : "json";
+  if (format === "json") {
+    return { format, content: JSON.stringify({ data: rows, truncated: rows.length === 1000 }) };
+  }
+  const columns = [
+    "id", "actorId", "actorRole", "action", "entityType", "entityId",
+    "beforeState", "afterState", "portalSource", "ipAddress", "userAgent",
+    "status", "failureReason", "correlationId", "createdAt",
+  ];
+  const content = [
+    columns.map(csvCell).join(","),
+    ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
+  ].join("\r\n");
+  return { format, content: `\uFEFF${content}` };
 };

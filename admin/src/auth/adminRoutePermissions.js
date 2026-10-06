@@ -40,6 +40,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/access-control/users": ["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"],
   "/access-control/roles": ["access:roles_read"],
   "/access-control/permissions": ["access:permissions_read"],
+  "/audit-history": ["access:audit_read"],
 };
 
 export const ADMIN_SECTION_PERMISSIONS = {

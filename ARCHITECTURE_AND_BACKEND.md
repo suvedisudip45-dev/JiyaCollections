@@ -97,9 +97,12 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-manufacturer`
 - `GET /api/manufacturer/gifts/inbound` and `POST /api/manufacturer/gifts/:id/respond`
 - `GET /api/manufacturer/gifts/order-options/:orderId` returns eligible gifts only from the authenticated manufacturer's accepted, available inventory
+- `GET /api/manufacturer-inventory/my/:productId/movements` returns that manufacturer's paginated per-variant stock adjustment history; `POST /api/manufacturer-inventory/update` stores quantity changes and history rows atomically
 - Gift assignment is submitted with final checklist completion through the manufacturer order-assignment status endpoint; delivery deduction is driven by the NCM webhook, and `POST /api/manufacturer/gifts/returned/:orderId` records an explicit returned-or-lost decision
 
 Gift assignment is manufacturer-selected and backend-authoritative. Admins configure order-value gift ceilings separately and distribute catalog gifts to manufacturer hubs as pending-acceptance batches. Loyalty gift value and description are configured directly on `CustomerLevel`; the existing backend loyalty calculation places an active tier gift allowance in `rewardApplied` when the order is created. At the final checklist, eligible manufacturers see only accepted local stock whose catalog value is within the highest active reward ceiling. Checklist completion atomically decrements available quantity, increments reserved quantity, links the exact inventory batch to the order, and writes a movement log. NCM delivery consumes the reserved unit. Campaign/product triggers and automatic return-inspection reconciliation remain follow-up work.
+
+Manufacturer stock quantity edits are captured in the `ManufacturerInventoryMovement` ledger per size/color variant. Each stock-in or stock-out event retains before/after quantity, signed delta, required reason, optional note, authenticated actor, and timestamp in the same database transaction as the current inventory update. This follows established inventory audit practice of retaining adjustment history instead of relying on the latest on-hand balance alone.
 
 ## 4. Request / Response Lifecycle
 
@@ -190,8 +193,23 @@ A failed NCM courier-booking request must remain in a failed state (`submission_
 
 - The backend runs on port `4000` by default and exposes portals on Vite local ports: `5173`, `5174`, `5175`, and `5176`.
 - `server.js` boots the application and also initializes the default accounting chart of accounts via `ensureStandardChartOfAccounts()`.
+- `npm test` in `backend/` runs unit/regression test files under `backend/tests/` sequentially; test files are isolated in individual Node test-runner processes and failures do not prevent later files from running. Tests that access the real Prisma database are opt-in with `RUN_DATABASE_INTEGRATION_TESTS=1` and must be run against an isolated, migrated/seeded test database because they create and mutate records.
+- Startup now validates JWT configuration, awaits the database connection, Cloudinary setup, and standard chart initialization before opening the HTTP listener. Critical initialization failures are logged and cause a non-zero process exit instead of serving a partially initialized API.
 - `sanitizeMiddleware` is called before route handling to reduce injection risk.
-- API logs are produced in a structured way via a `logger.request` utility, and the server explicitly logs request timing.
+- API logs are produced in a structured way via `logger.request`; writes use an asynchronous bounded stream, and recent-log reads are bounded asynchronous tail reads. Sensitive metadata fields are redacted before file/console output.
+- Requests receive a validated or generated `X-Correlation-ID`, which is available to audit events and returned to clients.
+
+## 10. System audit history and performance
+
+Business mutations enqueue a redacted `SystemAuditOutbox` record in the same Prisma transaction as the change. The background worker writes each event to `SystemAuditLog` and marks its outbox entry processed in one transaction; failed delivery is retried with bounded exponential backoff. This keeps audit processing off the HTTP response path while preserving transactional enqueueing. The worker is started only after critical startup initialization.
+
+`recordSystemAudit` centralizes actor/request context, changed-field diffs, and sensitive-key redaction. Capture points include access-management changes, order fulfillment status transitions, product and manufacturer inventory adjustments, customer-return decisions/inspection/refund transitions, privileged authentication/MFA events, unsuccessful authentication, admin password changes, rate-limit denials, refresh-token reuse, and authenticated RBAC denials. Authentication, rate-limit, and RBAC signals that do not share a business transaction are enqueued asynchronously to avoid delaying their primary response; these signals are best-effort if the process stops before enqueue completion. Existing domain event/movement logs and legacy access-management audit records remain in place.
+
+The protected endpoints `GET /api/admin/access/audit-logs` and `GET /api/admin/access/audit-logs/export` require `access:audit_read`. The list API supports bounded pagination and filters for date range, actor, entity, action, result status, and search; export is capped at 1,000 rows and CSV cells are protected against spreadsheet formula injection. `SecurityEvent` records are review signals, not confirmed breach determinations. Read-only page views and full request bodies are deliberately excluded.
+
+RBAC permission resolution uses a per-process cache capped at 1,000 entries with a 2-second TTL. Access-management changes invalidate the relevant account or whole cache. The short expiry bounds stale permissions across multiple API instances; session validation is not cached. Admin audit-history query results are cached in the browser for 15 seconds, with a 20-query memory bound and an explicit refresh action.
+
+Operational follow-up: apply `20261005000000_add_system_audit_outbox`, run the RBAC seed to register `access:audit_read` for the system Admin role, and regenerate Prisma Client before deploying the new audit endpoints or worker. Monitor outbox entries in `PENDING`/`FAILED`, and establish retention/archival and alerting policies before production audit volume grows. See [Security, Data Flow, and UI Audit](SECURITY_DATA_FLOW_AND_UI_AUDIT.md) for the static flow map, security observations, limits, and deployment checks. Client-bundled AES settings and browser local-storage access tokens remain security follow-ups; they are not a substitute for TLS or XSS controls.
 
 ## 8. Business domain map
 

@@ -211,6 +211,45 @@ model AccessManagementAuditLog {
   @@index([action, createdAt])
 }
 
+model SystemAuditLog {
+  id             String   @id @default(uuid())
+  outboxId       String?  @unique @db.VarChar(36)
+  actorId        String?  @db.VarChar(191)
+  actorRole      String?  @db.VarChar(32)
+  action         String   @db.VarChar(120)
+  entityType     String   @db.VarChar(80)
+  entityId       String?  @db.VarChar(191)
+  beforeState    Json?
+  afterState     Json?
+  portalSource   String?  @db.VarChar(32)
+  ipAddress      String?  @db.VarChar(64)
+  userAgent      String?  @db.Text
+  status         String   @default("SUCCESS") @db.VarChar(24)
+  failureReason  String?  @db.VarChar(255)
+  correlationId  String?  @db.VarChar(128)
+  createdAt      DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@index([correlationId])
+}
+
+model SystemAuditOutbox {
+  id          String    @id @default(uuid()) @db.VarChar(36)
+  event       Json
+  status      String    @default("PENDING") @db.VarChar(16)
+  attemptCount Int      @default(0)
+  availableAt DateTime  @default(now())
+  claimedAt   DateTime?
+  processedAt DateTime?
+  lastError   String?   @db.VarChar(1000)
+  createdAt   DateTime  @default(now())
+
+  @@index([status, availableAt, createdAt])
+  @@index([claimedAt])
+}
+
 model Notification {
   id                 String   @id @default(uuid())
   idempotencyKey     String?  @unique @db.VarChar(191)
@@ -1986,6 +2025,27 @@ model ManufacturerInventory {
   @@unique([manufacturerId, productId])
   @@index([productId])
   @@index([manufacturerId])
+}
+
+model ManufacturerInventoryMovement {
+  id             String   @id @default(uuid())
+  manufacturerId String
+  productId      String
+  productName    String
+  variantLabel   String
+  previousQty    Int
+  newQty         Int
+  changeQty      Int
+  movementType   String
+  reason         String
+  note           String?  @db.Text
+  actorId        String?
+  actorRole      String   @default("MANUFACTURER")
+  source         String   @default("MANUFACTURER_PORTAL")
+  createdAt      DateTime @default(now())
+
+  @@index([manufacturerId, productId, createdAt], map: "ManInvMove_manufacturer_product_created_idx")
+  @@index([productId, createdAt], map: "ManInvMove_product_created_idx")
 }
 
 // Order assignment from Allocation Engine to a Manufacturer

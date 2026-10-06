@@ -6,6 +6,7 @@ import { syncProductStock, syncAllProductsStock } from "../services/stockSyncSer
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
+import { recordSystemAudit } from "../services/auditService.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -840,9 +841,11 @@ const adjustStock = async (req, res) => {
     let parsedVariants = typeof product.variants === "string"
       ? JSON.parse(product.variants || "[]")
       : (product.variants || []);
+    const previousVariants = parsedVariants.map((variant) => ({ ...variant }));
     const hasVariants = Array.isArray(parsedVariants) && parsedVariants.length > 0;
 
     const stockLogs = [];
+    let nextStockQuantity = product.stockQuantity || 0;
 
     if (hasVariants && adjustments.length > 0 && adjustments[0].size) {
       // Variant-level adjustments
@@ -874,16 +877,13 @@ const adjustStock = async (req, res) => {
       const totalVariantStock = parsedVariants.reduce(
         (acc, v) => acc + (Number(v.quantity) || 0), 0
       );
-
-      await prisma.product.update({
-        where: { id: productId },
-        data: { variants: parsedVariants, stockQuantity: totalVariantStock },
-      });
+      nextStockQuantity = totalVariantStock;
     } else {
       // Simple product-level stock adjustment
       const totalChange = adjustments.reduce((sum, a) => sum + Number(a.quantity || 0), 0);
       const previousQty = product.stockQuantity || 0;
       const newQty = Math.max(0, previousQty + totalChange);
+      nextStockQuantity = newQty;
 
       stockLogs.push({
         productId,
@@ -896,16 +896,40 @@ const adjustStock = async (req, res) => {
         source: source || "admin",
       });
 
-      await prisma.product.update({
-        where: { id: productId },
-        data: { stockQuantity: newQty },
-      });
     }
 
-    // Create stock log entries
-    if (stockLogs.length > 0) {
-      await prisma.stockLog.createMany({ data: stockLogs });
-    }
+    await prisma.$transaction(async (tx) => {
+      await tx.product.update({
+        where: { id: productId },
+        data: hasVariants && adjustments.length > 0 && adjustments[0].size
+          ? { variants: parsedVariants, stockQuantity: nextStockQuantity }
+          : { stockQuantity: nextStockQuantity },
+      });
+      if (stockLogs.length > 0) {
+        await tx.stockLog.createMany({ data: stockLogs });
+      }
+      await recordSystemAudit({
+        actorId: req.auth?.accountId,
+        actorRole: req.auth?.role || "ADMIN",
+        portalSource: req.auth?.role || "ADMIN",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      }, {
+        action: "PRODUCT_STOCK_ADJUSTED",
+        entityType: "Product",
+        entityId: productId,
+        beforeState: {
+          stockQuantity: product.stockQuantity || 0,
+          variants: previousVariants.map(({ size, color, quantity }) => ({ size, color, quantity })),
+        },
+        afterState: {
+          stockQuantity: nextStockQuantity,
+          variants: parsedVariants.map(({ size, color, quantity }) => ({ size, color, quantity })),
+          reason,
+        },
+      }, { client: tx });
+    });
 
     res.json({ success: true, message: "Stock adjusted successfully" });
   } catch (error) {
@@ -952,4 +976,3 @@ export {
   adjustStock,
   getStockLogs,
 };
-

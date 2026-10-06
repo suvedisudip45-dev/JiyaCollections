@@ -2,11 +2,79 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createAdminUser,
+  exportSystemAuditLogs,
   listPortalUsers,
+  listSystemAuditLogs,
   replaceAdminRolePermissions,
   setPortalUserStatus,
   updatePortalUser,
 } from "../services/accessManagementService.js";
+
+test("system audit listing is filtered and bounded with pagination metadata", async () => {
+  let query;
+  const client = {
+    systemAuditLog: {
+      findMany: async (request) => {
+        query = request;
+        return [{ id: "audit-1", action: "PRODUCT_UPDATED" }];
+      },
+      count: async ({ where }) => {
+        assert.deepEqual(where, query.where);
+        return 205;
+      },
+    },
+  };
+
+  const result = await listSystemAuditLogs({
+    page: 2,
+    limit: 1000,
+    actorId: "admin-1",
+    entityType: "Product",
+    action: "UPDATED",
+    status: "BLOCKED",
+    search: "sku-1",
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+  }, { client });
+
+  assert.equal(query.skip, 100);
+  assert.equal(query.take, 100);
+  assert.equal(query.where.actorId, "admin-1");
+  assert.equal(query.where.status, "BLOCKED");
+  assert.equal(query.where.createdAt.gte.toISOString(), "2026-01-01T00:00:00.000Z");
+  assert.equal(query.where.createdAt.lte.toISOString(), "2026-01-31T23:59:59.999Z");
+  assert.deepEqual(result.pagination, { page: 2, limit: 100, total: 205, totalPages: 3 });
+});
+
+test("audit event status filters reject unsupported values", async () => {
+  await assert.rejects(() => listSystemAuditLogs({ status: "UNKNOWN" }), {
+    statusCode: 400,
+    code: "INVALID_AUDIT_STATUS",
+  });
+});
+
+test("audit CSV export escapes spreadsheet formulas and caps exported rows", async () => {
+  let query;
+  const client = {
+    systemAuditLog: {
+      findMany: async (request) => {
+        query = request;
+        return [{
+          id: "event-1",
+          action: "=HYPERLINK(\"https://example.invalid\")",
+          entityType: "Product",
+          entityId: "sku-1",
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+        }];
+      },
+    },
+  };
+
+  const result = await exportSystemAuditLogs({ format: "csv" }, { client });
+  assert.equal(query.take, 1000);
+  assert.equal(result.format, "csv");
+  assert.match(result.content, /'=HYPERLINK/);
+});
 
 test("portal user listing is filtered, searched, and paginated server-side", async () => {
   let query;
@@ -60,7 +128,7 @@ test("Admin user management refuses self-edits before touching persistence", asy
 });
 
 test("deactivation revokes sessions and audits without deleting the account", async () => {
-  const calls = { accountUpdates: [], sessionRevocations: [], audits: [] };
+  const calls = { accountUpdates: [], sessionRevocations: [], audits: [], systemAudits: [] };
   const customer = {
     id: "customer-1",
     email: "customer@example.com",
@@ -101,6 +169,12 @@ test("deactivation revokes sessions and audits without deleting the account", as
         return request.data;
       },
     },
+    systemAuditOutbox: {
+      create: async (request) => {
+        calls.systemAudits.push(request);
+        return { id: request.data.id };
+      },
+    },
     $transaction: async (callback) => callback(client),
   };
 
@@ -116,6 +190,7 @@ test("deactivation revokes sessions and audits without deleting the account", as
   assert.equal(calls.sessionRevocations[0].where.accountId, "customer-1");
   assert.equal(calls.sessionRevocations[0].data.revocationReason, "ACCOUNT_DEACTIVATED");
   assert.equal(calls.audits[0].data.action, "CUSTOMER_USER_DEACTIVATED");
+  assert.equal(calls.systemAudits[0].data.event.action, "CUSTOMER_USER_DEACTIVATED");
 });
 
 test("Admin account creation rejects roles scoped to another portal", async () => {
@@ -196,6 +271,7 @@ test("the last active full Admin cannot be deactivated", async () => {
       update: async () => { calls.updates += 1; },
     },
     accessManagementAuditLog: { create: async () => { calls.audits += 1; } },
+    systemAuditOutbox: { create: async () => { throw new Error("Audit must not be written."); } },
     $transaction: async (callback, options) => {
       calls.isolationLevel = options?.isolationLevel;
       return callback(client);
