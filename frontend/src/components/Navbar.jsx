@@ -115,9 +115,13 @@ const Navbar = () => {
             </div>
           </li>
         ))}
-        <NavLink to="/shop?featured=new" className="transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
-        <NavLink to="/shop?featured=bestseller" className="transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
-        <NavLink to="/about" className="transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
+        <NavLink to="/shop?category=Unisex" className="py-2 transition-colors hover:text-[var(--ink)] text-indigo-900 font-extrabold flex items-center gap-1">
+          <span>Unisex</span>
+          <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1 py-0.2 rounded font-bold">⚧</span>
+        </NavLink>
+        <NavLink to="/shop?featured=new" className="py-2 transition-colors hover:text-[var(--ink)]">New Arrivals</NavLink>
+        <NavLink to="/shop?featured=bestseller" className="py-2 transition-colors hover:text-[var(--ink)]">Best Sellers</NavLink>
+        <NavLink to="/about" className="py-2 transition-colors hover:text-[var(--ink)]">The Journal</NavLink>
       </ul>
 
       <div className="z-10 flex items-center gap-4 sm:gap-5">
@@ -193,6 +197,10 @@ const Navbar = () => {
               </Link>
             </div>
           )}
+          <Link onClick={() => setVisible(false)} to="/shop?category=Unisex" className="border-b border-[var(--line)] px-5 py-5 text-sm font-bold uppercase tracking-[0.08em] text-indigo-900 flex items-center justify-between">
+            <span>Unisex Catalog</span>
+            <span className="text-xs bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold">⚧</span>
+          </Link>
           <Link onClick={() => setVisible(false)} to="/shop?featured=bestseller" className="border-b border-[var(--line)] px-5 py-5 text-sm font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
             Best sellers
           </Link>

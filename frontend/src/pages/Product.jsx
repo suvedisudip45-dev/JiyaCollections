@@ -796,7 +796,7 @@ const Product = () => {
         <div className="lg:col-span-5 flex flex-col space-y-6 lg:sticky lg:top-24">
           {/* Header & Title */}
           <div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
               {productData.category && (
                 <span className="text-[11px] font-bold uppercase tracking-widest text-[#d85b3f] bg-[#d85b3f]/10 px-2.5 py-0.5 rounded-md">
                   {productData.category}
@@ -807,11 +807,23 @@ const Product = () => {
                   {productData.subCategory}
                 </span>
               )}
+              {Boolean(productData.isUnisex || productData.unisex) && (
+                <span className="text-[11px] font-bold uppercase tracking-widest text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2.5 py-0.5 rounded-md flex items-center gap-1">
+                  <span>Unisex</span>
+                  <span>⚧</span>
+                </span>
+              )}
             </div>
 
             <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 tracking-tight leading-snug">
               {productData.name}
             </h1>
+
+            {productData.nepaliName && (
+              <p className="text-sm font-medium text-stone-500 mt-0.5">
+                {productData.nepaliName}
+              </p>
+            )}
 
             {/* Rating Summary & Quick Review Link */}
             <div className="flex items-center gap-2 mt-2.5">
@@ -865,11 +877,20 @@ const Product = () => {
           </div>
 
           {/* Short Bio */}
-          {productData.description && (
-            <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
-              {productData.description}
-            </p>
-          )}
+          {(() => {
+            let bioText = productData.description;
+            if (typeof bioText === "string" && bioText.trim().startsWith("{")) {
+              try {
+                const parsed = JSON.parse(bioText);
+                bioText = parsed.about || bioText;
+              } catch {}
+            }
+            return bioText ? (
+              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
+                {bioText}
+              </p>
+            ) : null;
+          })()}
 
           <hr className="border-stone-200" />
 
@@ -1183,75 +1204,114 @@ const Product = () => {
         </div>
 
         {activeTab === "description" && (
-          <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
-            <h3 className="text-lg font-bold text-gray-900">
-              About {productData.name}
-            </h3>
-            <p className="text-base text-gray-700 leading-relaxed max-w-3xl">
-              {productData.description ||
-                "A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."}
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
-              <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                <Layers className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                <div>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                    Tailored Construction
-                  </h4>
-                  <p className="text-xs text-gray-600 mt-1 leading-normal">
-                    Precision high-density stitching with reinforced seams designed to maintain fit after multiple wash cycles.
-                  </p>
+          (() => {
+            let aboutText = productData.description;
+            let sizeFitText = "";
+            if (typeof aboutText === "string" && aboutText.trim().startsWith("{")) {
+              try {
+                const parsed = JSON.parse(aboutText);
+                aboutText = parsed.about || aboutText;
+                sizeFitText = parsed.sizeFit || "";
+              } catch {}
+            }
+
+            return (
+              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+                <h3 className="text-lg font-bold text-gray-900">
+                  About {productData.name}
+                </h3>
+                <p className="text-base text-gray-700 leading-relaxed max-w-3xl whitespace-pre-line">
+                  {aboutText ||
+                    "A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."}
+                </p>
+
+                {sizeFitText && (
+                  <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
+                    <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider mb-1">
+                      📏 Size &amp; Fit Guide
+                    </h4>
+                    <p className="text-xs text-gray-700 leading-relaxed">
+                      {sizeFitText}
+                    </p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
+                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
+                    <Layers className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
+                    <div>
+                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                        Tailored Construction
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1 leading-normal">
+                        Precision high-density stitching with reinforced seams designed to maintain fit after multiple wash cycles.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
+                    <Sparkles className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
+                    <div>
+                      <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                        Authentic Color Fastness
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1 leading-normal">
+                        Specially dyed using eco-conscious pigments for rich saturation and minimal fading.
+                      </p>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                <Sparkles className="w-5 h-5 text-gray-900 mt-0.5 shrink-0" />
-                <div>
-                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
-                    Authentic Color Fastness
-                  </h4>
-                  <p className="text-xs text-gray-600 mt-1 leading-normal">
-                    Specially dyed using eco-conscious pigments for rich saturation and minimal fading.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+            );
+          })()
         )}
 
         {activeTab === "details" && (
-          <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🧵 Fabric & Material
-                </h4>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🧼 Wash & Garment Care
-                </h4>
-                <ul className="text-xs text-gray-600 space-y-1 list-disc list-inside">
-                  <li>Machine wash cold with like colors</li>
-                  <li>Do not bleach or dry clean</li>
-                  <li>Tumble dry low or hang in shade</li>
-                  <li>Iron inside-out on low heat</li>
-                </ul>
-              </div>
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
-                  🚚 Delivery & Cash on Delivery
-                </h4>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  Dispatched from Kathmandu within 24 hours. Inside Valley delivered in 1-2 days; all other major districts within 3-4 days. Cash on delivery accepted.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
+          (() => {
+            let customFabricCare = "";
+            let customSizeFit = "";
+            if (typeof productData.description === "string" && productData.description.trim().startsWith("{")) {
+              try {
+                const parsed = JSON.parse(productData.description);
+                customFabricCare = parsed.fabricCare || "";
+                customSizeFit = parsed.sizeFit || "";
+              } catch {}
+            }
 
+            return (
+              <div className="bg-white border border-t-0 border-stone-200 p-6 sm:p-10 rounded-b-3xl space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🧵 Fabric &amp; Material
+                    </h4>
+                    <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-line">
+                      {customFabricCare || "100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear."}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🧼 Wash &amp; Garment Care
+                    </h4>
+                    <ul className="text-xs text-gray-600 space-y-1 list-disc list-inside">
+                      <li>Machine wash cold with like colors</li>
+                      <li>Do not bleach or dry clean</li>
+                      <li>Tumble dry low or hang in shade</li>
+                      <li>Iron inside-out on low heat</li>
+                    </ul>
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
+                      🚚 Delivery &amp; Cash on Delivery
+                    </h4>
+                    <p className="text-xs text-gray-600 leading-relaxed">
+                      Dispatched from Kathmandu within 24 hours. Inside Valley delivered in 1-2 days; all other major districts within 3-4 days. Cash on delivery accepted.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        )}
         {activeTab === "reviews" && (
           <div className="bg-white border border-t-0 border-stone-200 p-4 sm:p-8 rounded-b-3xl">
             <ReviewSection

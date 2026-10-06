@@ -10,8 +10,9 @@ import {
   singleProduct,
   adjustStock,
   getStockLogs,
+  transliterateProductText,
 } from "../controllers/productController.js";
-import upload from "../middleware/multer.js";
+import { secureProductUpload } from "../middleware/secureUpload.js";
 import { authenticate, authorize, extractToken } from "../middleware/unifiedAuth.js";
 import { resolveProductPrices } from "../controllers/locationPricingController.js";
 
@@ -28,7 +29,7 @@ productRouter.post(
   "/add",
   authenticate,
   authorize("product:create"),
-  upload.any(),
+  ...secureProductUpload,
   addProduct
 );
 
@@ -36,7 +37,7 @@ productRouter.post(
   "/update",
   authenticate,
   authorize("product:update"),
-  upload.any(),
+  ...secureProductUpload,
   updateProduct
 );
 
@@ -49,6 +50,7 @@ productRouter.get("/list", authenticateProductList, listProducts);
 productRouter.post("/resolve-prices", resolveProductPrices);
 productRouter.post("/adjust-stock", authenticate, authorize("stock:adjust"), adjustStock);
 productRouter.get("/stock-logs", authenticate, authorize("stock:logs_read"), getStockLogs);
+productRouter.post("/transliterate", transliterateProductText);
 
 export default productRouter;
 

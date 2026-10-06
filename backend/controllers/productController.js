@@ -7,6 +7,8 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { recordSystemAudit } from "../services/auditService.js";
+import { validateImageMerchandisingRules, assembleProductImages } from "../services/imageMerchandisingRules.js";
+import { transliterateToNepali, parseStructuredDescription } from "../utils/nepaliTransliteration.js";
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -29,7 +31,7 @@ const normalizeCategories = (val) => {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return parsed.map((s) => String(s).trim()).filter(Boolean);
-      } catch {}
+      } catch { }
     }
     return trimmed.split(",").map((s) => s.trim()).filter(Boolean);
   }
@@ -145,54 +147,26 @@ const addProduct = async (req, res) => {
       colorImage.image = await uploadImage(file);
     }
 
-    // 3. Assemble and order the full image gallery, ensuring Featured Image is at index 0
-    let featuredUrl = "";
-    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
+    // 3. Validate image merchandising rules (gallery cover required, color option cover disallowed)
+    const merchandisingCheck = validateImageMerchandisingRules({
+      galleryUrls,
+      colorImages: parsedColorImages,
+      variants: parsedVariants,
+      featuredType,
+      featuredIndex,
+      isUpdate: false,
+    });
 
-    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      const featuredVariant = parsedVariants[featIdx];
-      featuredUrl = featuredVariant?.image || parsedColorImages.find(
-        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
-      )?.image || "";
-      parsedVariants = parsedVariants.map((v, idx) => ({
-        ...v,
-        isFeatured: idx === featIdx,
-      }));
-    } else if (featuredType === "gallery" && featIdx >= 0 && featIdx < galleryUrls.length) {
-      featuredUrl = galleryUrls[featIdx] || "";
-      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
-    } else {
-      // Check if any variant has isFeatured = true
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        featuredUrl = featVar.image;
-      } else if (galleryUrls.length > 0) {
-        featuredUrl = galleryUrls[0];
-      } else if (parsedColorImages[0]?.image) {
-        featuredUrl = parsedColorImages[0].image;
-      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
-        featuredUrl = parsedVariants[0].image;
-        parsedVariants[0].isFeatured = true;
-      }
+    if (!merchandisingCheck.valid) {
+      return res.json({ success: false, message: merchandisingCheck.message });
     }
 
-    // Combine all distinct image URLs
-    const allImages = [];
-    if (featuredUrl) allImages.push(featuredUrl);
-
-    // Add remaining gallery URLs
-    galleryUrls.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    // Add remaining variant image URLs
-    parsedVariants.forEach((v) => {
-      if (v.image && !allImages.includes(v.image)) {
-        allImages.push(v.image);
-      }
-    });
-    parsedColorImages.forEach((entry) => {
-      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
+    // Assemble ordered images with the verified cover at index 0
+    const allImages = assembleProductImages({
+      featuredUrl: merchandisingCheck.resolvedFeaturedUrl,
+      galleryUrls,
+      variants: parsedVariants,
+      colorImages: parsedColorImages,
     });
 
     let qty = stockQuantity !== undefined && stockQuantity !== "" ? parseInt(stockQuantity, 10) : 0;
@@ -204,8 +178,25 @@ const addProduct = async (req, res) => {
     const isProductUnisex = isUnisex === "true" || isUnisex === true;
 
     const cleanName = sanitizeText(name, { stripAllHtml: true }) || "";
-    const cleanNepaliName = sanitizeText(nepaliName || nameNepali || name || "", { stripAllHtml: true }) || "";
-    const cleanDescription = sanitizeText(description) || "";
+    // Auto-transliterate to Nepali Unicode if nepaliName not supplied
+    let cleanNepaliName = sanitizeText(nepaliName || nameNepali || "", { stripAllHtml: true }) || "";
+    if (!cleanNepaliName && cleanName) {
+      cleanNepaliName = transliterateToNepali(cleanName);
+    }
+
+    // Process and sanitize description (supports both structured JSON and plain text)
+    let cleanDescription = "";
+    const parsedDesc = parseStructuredDescription(description);
+    if (parsedDesc.isStructured) {
+      cleanDescription = JSON.stringify({
+        about: sanitizeText(parsedDesc.about),
+        fabricCare: sanitizeText(parsedDesc.fabricCare),
+        sizeFit: sanitizeText(parsedDesc.sizeFit),
+      });
+    } else {
+      cleanDescription = sanitizeText(description || "");
+    }
+
     const cleanSubCategory = sanitizeText(subCategory, { stripAllHtml: true }) || "";
 
     if (!cleanName) {
@@ -262,7 +253,7 @@ const addProduct = async (req, res) => {
       await prisma.stockLog.create({
         data: {
           productId: newProduct.id,
-          productName: name,
+          productName: cleanName,
           previousQty: 0,
           newQty: qty,
           changeQty: qty,
@@ -314,7 +305,7 @@ const updateProduct = async (req, res) => {
       where: { id },
       include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true, pendingTermsVersion: true } } },
     });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
     if ((published === "true" || published === true) && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
@@ -373,60 +364,27 @@ const updateProduct = async (req, res) => {
       colorImage.image = await uploadImage(file);
     }
 
-    // 3. Determine Featured Image
-    const featIdx = featuredIndex !== undefined && featuredIndex !== null ? parseInt(featuredIndex, 10) : -1;
-    let featuredUrl = "";
+    // 3. Image Merchandising Rules Validation & Assembly
+    const combinedGallery = [...newGalleryUrls, ...currentImages];
 
-    if (featuredType === "variant" && featIdx >= 0 && featIdx < parsedVariants.length) {
-      const featuredVariant = parsedVariants[featIdx];
-      featuredUrl = featuredVariant?.image || parsedColorImages.find(
-        (entry) => entry.color.toLowerCase() === String(featuredVariant?.color || "").toLowerCase()
-      )?.image || "";
-      parsedVariants = parsedVariants.map((v, idx) => ({
-        ...v,
-        isFeatured: idx === featIdx,
-      }));
-    } else if (featuredType === "gallery") {
-      const combinedGallery = [...newGalleryUrls, ...currentImages];
-      if (featIdx >= 0 && featIdx < combinedGallery.length) {
-        featuredUrl = combinedGallery[featIdx] || "";
-      }
-      parsedVariants = parsedVariants.map((v) => ({ ...v, isFeatured: false }));
-    } else {
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        featuredUrl = featVar.image;
-      } else if (newGalleryUrls.length > 0) {
-        featuredUrl = newGalleryUrls[0];
-      } else if (currentImages.length > 0) {
-        featuredUrl = currentImages[0];
-      } else if (parsedColorImages[0]?.image) {
-        featuredUrl = parsedColorImages[0].image;
-      } else if (parsedVariants.length > 0 && parsedVariants[0].image) {
-        featuredUrl = parsedVariants[0].image;
-        parsedVariants[0].isFeatured = true;
-      }
+    const merchandisingCheck = validateImageMerchandisingRules({
+      galleryUrls: combinedGallery,
+      colorImages: parsedColorImages,
+      variants: parsedVariants,
+      featuredType,
+      featuredIndex,
+      isUpdate: true,
+    });
+
+    if (!merchandisingCheck.valid) {
+      return res.json({ success: false, message: merchandisingCheck.message });
     }
 
-    // Combine all images cleanly
-    const allImages = [];
-    if (featuredUrl) allImages.push(featuredUrl);
-
-    newGalleryUrls.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    currentImages.forEach((u) => {
-      if (u && !allImages.includes(u)) allImages.push(u);
-    });
-
-    parsedVariants.forEach((v) => {
-      if (v.image && !allImages.includes(v.image)) {
-        allImages.push(v.image);
-      }
-    });
-    parsedColorImages.forEach((entry) => {
-      if (entry.image && !allImages.includes(entry.image)) allImages.push(entry.image);
+    const allImages = assembleProductImages({
+      featuredUrl: merchandisingCheck.resolvedFeaturedUrl,
+      galleryUrls: combinedGallery,
+      variants: parsedVariants,
+      colorImages: parsedColorImages,
     });
 
     // Determine stock quantity
@@ -452,8 +410,25 @@ const updateProduct = async (req, res) => {
     const isProductUnisex = isUnisex !== undefined ? isUnisex === "true" || isUnisex === true : undefined;
 
     const cleanName = name ? sanitizeText(name, { stripAllHtml: true }) : undefined;
-    const cleanNepaliName = (nepaliName || nameNepali || name) ? sanitizeText(nepaliName || nameNepali || name, { stripAllHtml: true }) : undefined;
-    const cleanDescription = description !== undefined ? sanitizeText(description) : undefined;
+    let cleanNepaliName = (nepaliName || nameNepali) ? sanitizeText(nepaliName || nameNepali, { stripAllHtml: true }) : undefined;
+    if (!cleanNepaliName && cleanName) {
+      cleanNepaliName = transliterateToNepali(cleanName);
+    }
+
+    let cleanDescription = undefined;
+    if (description !== undefined) {
+      const parsedDesc = parseStructuredDescription(description);
+      if (parsedDesc.isStructured) {
+        cleanDescription = JSON.stringify({
+          about: sanitizeText(parsedDesc.about),
+          fabricCare: sanitizeText(parsedDesc.fabricCare),
+          sizeFit: sanitizeText(parsedDesc.sizeFit),
+        });
+      } else {
+        cleanDescription = sanitizeText(description);
+      }
+    }
+
     const cleanSubCategory = subCategory ? sanitizeText(subCategory, { stripAllHtml: true }) : undefined;
 
     let validatedPrice = undefined;
@@ -541,7 +516,7 @@ const togglePublish = async (req, res) => {
       where: { id },
       include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
     });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
     if (!existingProduct.published && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
@@ -566,7 +541,7 @@ const toggleBestseller = async (req, res) => {
   try {
     const { id } = req.body;
     const existingProduct = await prisma.product.findUnique({ where: { id } });
-    if (!existingProduct) {
+    if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -594,6 +569,7 @@ const getSubcategoryBestsellers = async (req, res) => {
     const whereCondition = {
       published: true,
       bestseller: true,
+      deletedAt: null,
       OR: [
         { collaborationLink: null },
         { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
@@ -641,8 +617,10 @@ const listProducts = async (req, res) => {
     await syncAllProductsStock();
 
     // Admin sees all products; Public customers see only published products
-    const whereCondition = isAdmin ? {} : {
+    // Both views exclude soft-deleted products
+    const whereCondition = isAdmin ? { deletedAt: null } : {
       published: true,
+      deletedAt: null,
       OR: [
         { collaborationLink: null },
         { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
@@ -651,7 +629,14 @@ const listProducts = async (req, res) => {
     if (hasPublicFilters) {
       if (requestedCategory) {
         const categoryValue = requestedCategoryValue.replace(/"/g, "");
-        whereCondition.category = { contains: categoryValue };
+        if (categoryValue.toLowerCase() === "unisex") {
+          whereCondition.OR = [
+            { category: { contains: "Unisex" } },
+            { isUnisex: true },
+          ];
+        } else {
+          whereCondition.category = { contains: categoryValue };
+        }
       }
       if (requestedSubcategory) {
         whereCondition.subCategory = { contains: requestedSubcategory };
@@ -749,12 +734,23 @@ const listProducts = async (req, res) => {
   }
 };
 
-// function for removing product
+// function for removing product (soft-delete: sets deletedAt, preserves FK integrity)
 const removeProduct = async (req, res) => {
   try {
     const { id } = req.body;
-    await prisma.product.delete({
-      where: { id: id },
+    const existing = await prisma.product.findUnique({ where: { id } });
+    if (!existing) {
+      return res.json({ success: false, message: "Product not found" });
+    }
+    if (existing.deletedAt) {
+      return res.json({ success: false, message: "Product is already removed" });
+    }
+    await prisma.product.update({
+      where: { id },
+      data: {
+        deletedAt: new Date(),
+        published: false,
+      },
     });
     res.json({ success: true, message: "Product Removed" });
   } catch (error) {
@@ -767,7 +763,7 @@ const removeProduct = async (req, res) => {
 const singleProduct = async (req, res) => {
   try {
     const { productId, province, district } = req.body;
-    
+
     // Sync stock from manufacturer inventory first
     await syncProductStock(productId);
 
@@ -776,7 +772,7 @@ const singleProduct = async (req, res) => {
       include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
     });
     const isAdmin = req.auth?.role === "ADMIN";
-    if (!rawProduct || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
+    if (!rawProduct || rawProduct.deletedAt || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -834,7 +830,7 @@ const adjustStock = async (req, res) => {
     }
 
     const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product) {
+    if (!product || product.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
 
@@ -964,6 +960,25 @@ const getStockLogs = async (req, res) => {
   }
 };
 
+/**
+ * Controller endpoint: transliterate Romanized English to Nepali Unicode
+ * Used by Admin UI for live real-time transliteration of names and descriptions.
+ */
+const transliterateProductText = async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== "string") {
+      return res.json({ success: true, transliterated: "" });
+    }
+    const clean = sanitizeText(text, { stripAllHtml: true });
+    const transliterated = transliterateToNepali(clean);
+    return res.json({ success: true, transliterated });
+  } catch (error) {
+    console.error("Transliteration endpoint error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 export {
   addProduct,
   updateProduct,
@@ -975,4 +990,6 @@ export {
   singleProduct,
   adjustStock,
   getStockLogs,
+  transliterateProductText,
 };
+

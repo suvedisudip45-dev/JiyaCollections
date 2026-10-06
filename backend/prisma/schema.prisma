@@ -547,6 +547,9 @@ model Product {
   lowStockThreshold Int       @default(5)
   published         Boolean   @default(true)
   date              BigInt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
   locationDiscounts LocationProductDiscount[]
   comboBundleProducts ComboBundleProduct[] @relation("ComboBundleProductProduct")
   collaborationLink CollaborationProduct?
@@ -555,6 +558,7 @@ model Product {
   @@index([published])
   @@index([category])
   @@index([bestseller])
+  @@index([deletedAt])
 }
 
 model ComboBundle {

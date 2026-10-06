@@ -18,6 +18,7 @@ const ProductItem = ({
   reviewCount,
   newInStore,
   bestseller,
+  isUnisex,
 }) => {
   const { currency, wishlist, toggleWishlist } = useContext(ShopContext);
   const finalPrice = discount > 0 ? Math.round(price * (1 - discount / 100)) : price;
@@ -64,12 +65,12 @@ const ProductItem = ({
         {/* Top Badges */}
         <div className="absolute top-2 left-2 flex flex-col gap-1 z-10">
           {newInStore && (
-            <span className="bg-white/95 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-[var(--ink)]">
+            <span className="bg-white/95 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-[var(--ink)] shadow-2xs">
               New arrival
             </span>
           )}
           {bestseller && !newInStore && (
-            <span className="bg-[var(--ink)]/95 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-white">
+            <span className="bg-[var(--ink)]/95 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.16em] text-white shadow-2xs">
               Bestseller
             </span>
           )}
