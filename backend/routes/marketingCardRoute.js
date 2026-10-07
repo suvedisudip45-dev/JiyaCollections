@@ -1,6 +1,6 @@
 import express from "express";
 import multer from "multer";
-import { authenticate, authorize, setManufacturerContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
+import { authenticate, authorize, setDistributorContext, setMarketingPartnerContext } from "../middleware/unifiedAuth.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 import {
@@ -20,10 +20,9 @@ import {
   adminListCampaigns,
   adminListPartners,
   adminGetLocations,
-  manufacturerAttachCard,
-  manufacturerBulkUpdateCards,
-  manufacturerListCards,
-  manufacturerReceiveCard,
+  distributorListCards,
+  distributorBulkUpdateCards,
+  distributorReceiveCard,
   customerListCards,
   customerListRewards,
   customerClaimReward,
@@ -94,11 +93,10 @@ marketingCardRouter.post("/admin/cards/invalidate", authenticate, authorize("mar
 marketingCardRouter.get("/admin/metrics", authenticate, authorize("marketing_card:admin_manage"), adminCardMetrics);
 marketingCardRouter.get("/admin/stats", authenticate, authorize("marketing_card:admin_manage"), adminCardStats);
 
-// ── Manufacturer routes ──────────────────────────────────────
-marketingCardRouter.get("/manufacturer/cards", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerListCards);
-marketingCardRouter.post("/manufacturer/cards/bulk-status", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerBulkUpdateCards);
-marketingCardRouter.post("/manufacturer/cards/:cardId/receive", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerReceiveCard);
-marketingCardRouter.post("/manufacturer/orders/:orderId/attach", authenticate, authorize("marketing_card:manufacturer_manage"), setManufacturerContext, manufacturerAttachCard);
+// ── Distributor Hub routes ────────────────────────────────────
+marketingCardRouter.get("/distributor/cards", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorListCards);
+marketingCardRouter.post("/distributor/cards/bulk-status", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorBulkUpdateCards);
+marketingCardRouter.post("/distributor/cards/:cardId/receive", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorReceiveCard);
 
 // ── Customer routes ──────────────────────────────────────────
 marketingCardRouter.get("/customer/cards", authenticate, authorize("marketing_card:customer_manage"), customerListCards);

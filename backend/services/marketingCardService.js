@@ -968,9 +968,15 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
   return tx.marketingCardOrder.findUnique({ where: { id: link.id }, include: { card: true } });
 }, { isolationLevel: "Serializable" });
 
-export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufacturerId }) => {
+export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufacturerId, distributorId }) => {
   const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
-  if (!order || order.manufacturerId !== manufacturerId) throw new Error("Order not found or unauthorized.");
+  if (!order) throw new Error("Order not found or unauthorized.");
+  if (manufacturerId && order.manufacturerId && order.manufacturerId !== manufacturerId) {
+    throw new Error("Order not found or unauthorized.");
+  }
+  if (distributorId && order.assignedDistributorId && order.assignedDistributorId !== distributorId) {
+    throw new Error("Order not found or unauthorized.");
+  }
   if (order.marketingCardRequired && !order.marketingCardOrder) {
     const error = new Error("A marketing card must be attached before delivery handoff.");
     error.code = "MARKETING_CARD_REQUIRED";
@@ -992,3 +998,132 @@ export const getLocationMappingsService = async () => {
 };
 
 export const cardTokenHash = hashToken;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Distributor Hub Marketing Card Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * List all marketing cards assigned to a distributor hub.
+ */
+export const getDistributorInventory = async ({ distributorId, status }) => {
+  await expireCampaignCards();
+  return prisma.marketingCard.findMany({
+    where: {
+      assignedDistributorId: distributorId,
+      ...(status && status !== "all" ? { physicalStatus: status } : {}),
+    },
+    orderBy: { assignedAt: "desc" },
+    include: {
+      campaign: { include: { marketingPartner: true } },
+      batch: true,
+      orderLink: true,
+      assignments: { orderBy: { assignedAt: "desc" }, take: 1, include: { receipt: true } },
+    },
+  });
+};
+
+/**
+ * Confirm receipt of a single marketing card assigned to a distributor hub.
+ */
+export const receiveCardAsDistributor = async ({ cardId, distributorId, notes }) =>
+  prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
+    const card = await tx.marketingCard.findUnique({
+      where: { id: cardId },
+      include: { assignments: { orderBy: { assignedAt: "desc" }, take: 1 } },
+    });
+    if (!card || card.assignedDistributorId !== distributorId) throw new Error("Assigned card not found.");
+    if (card.physicalStatus === "AVAILABLE") return card;
+    if (card.physicalStatus !== "ASSIGNED") throw new Error("Only assigned cards can be received.");
+    const assignment = card.assignments?.[0];
+    if (assignment) {
+      await tx.marketingCardReceipt.create({
+        data: { assignmentId: assignment.id, confirmedBy: distributorId, notes: notes || null },
+      });
+      await tx.marketingCardAssignment.update({
+        where: { id: assignment.id },
+        data: { status: "RECEIVED", confirmedAt: new Date(), notes: notes || assignment.notes },
+      });
+    }
+    const updated = await tx.marketingCard.update({
+      where: { id: card.id },
+      data: { physicalStatus: "AVAILABLE", receivedAt: new Date() },
+    });
+    await addEvent(tx, {
+      cardId: card.id,
+      eventType: "CARD_RECEIPT_CONFIRMED",
+      actorId: distributorId,
+      actorRole: "DISTRIBUTOR",
+      fromStatus: "ASSIGNED",
+      toStatus: "AVAILABLE",
+      referenceId: assignment?.id,
+    });
+    return updated;
+  });
+
+/**
+ * Bulk update card statuses for a distributor hub.
+ * action: "RECEIVE"   → ASSIGNED → AVAILABLE
+ * action: "DAMAGED"   → ASSIGNED | AVAILABLE → CANCELLED
+ * action: "NOT_FOUND" → ASSIGNED → CANCELLED
+ */
+export const bulkUpdateDistributorCards = async ({ cardIds, action, distributorId, notes }) => {
+  if (!Array.isArray(cardIds) || cardIds.length === 0) throw new Error("At least one card must be selected.");
+  if (cardIds.length > 200) throw new Error("Cannot update more than 200 cards at once.");
+  const validActions = ["RECEIVE", "DAMAGED", "NOT_FOUND"];
+  if (!validActions.includes(action)) throw new Error(`Invalid action. Must be one of: ${validActions.join(", ")}.`);
+
+  return prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
+    const cards = await tx.marketingCard.findMany({
+      where: { id: { in: cardIds }, assignedDistributorId: distributorId },
+      include: { assignments: { orderBy: { assignedAt: "desc" }, take: 1 } },
+    });
+
+    const found = new Set(cards.map((c) => c.id));
+    const notFound = cardIds.filter((id) => !found.has(id));
+    if (notFound.length > 0) throw new Error(`${notFound.length} card(s) not found in your inventory.`);
+
+    const results = { succeeded: [], skipped: [], failed: [] };
+
+    for (const card of cards) {
+      const assignment = card.assignments?.[0];
+      const fromStatus = card.physicalStatus;
+      try {
+        if (action === "RECEIVE") {
+          if (fromStatus === "AVAILABLE") { results.skipped.push({ id: card.id, reason: "Already received." }); continue; }
+          if (fromStatus !== "ASSIGNED") { results.skipped.push({ id: card.id, reason: `Cannot receive card with status ${fromStatus}.` }); continue; }
+          if (assignment) {
+            await tx.marketingCardReceipt.create({ data: { assignmentId: assignment.id, confirmedBy: distributorId, notes: notes || null } });
+            await tx.marketingCard.update({ where: { id: card.id }, data: { physicalStatus: "AVAILABLE", receivedAt: new Date() } });
+            await tx.marketingCardAssignment.update({ where: { id: assignment.id }, data: { status: "RECEIVED", confirmedAt: new Date(), notes: notes || assignment.notes } });
+          }
+          await addEvent(tx, { cardId: card.id, eventType: "CARD_RECEIPT_CONFIRMED", actorId: distributorId, actorRole: "DISTRIBUTOR", fromStatus, toStatus: "AVAILABLE", referenceId: assignment?.id });
+          results.succeeded.push({ id: card.id, toStatus: "AVAILABLE" });
+
+        } else if (action === "DAMAGED") {
+          if (!["ASSIGNED", "AVAILABLE"].includes(fromStatus)) { results.skipped.push({ id: card.id, reason: `Cannot mark ${fromStatus} card as damaged.` }); continue; }
+          await tx.marketingCard.update({ where: { id: card.id }, data: { physicalStatus: "CANCELLED" } });
+          if (assignment && assignment.status !== "CANCELLED") {
+            await tx.marketingCardAssignment.update({ where: { id: assignment.id }, data: { status: "CANCELLED", notes: notes || "Marked as DAMAGED by distributor." } });
+          }
+          await addEvent(tx, { cardId: card.id, eventType: "CARD_CANCELLED", actorId: distributorId, actorRole: "DISTRIBUTOR", fromStatus, toStatus: "CANCELLED", metadata: { reason: "DAMAGED", notes: notes || null } });
+          results.succeeded.push({ id: card.id, toStatus: "CANCELLED", reason: "DAMAGED" });
+
+        } else if (action === "NOT_FOUND") {
+          if (fromStatus !== "ASSIGNED") { results.skipped.push({ id: card.id, reason: `Only ASSIGNED cards can be marked as not found. Current status: ${fromStatus}.` }); continue; }
+          await tx.marketingCard.update({ where: { id: card.id }, data: { physicalStatus: "CANCELLED" } });
+          if (assignment && assignment.status !== "CANCELLED") {
+            await tx.marketingCardAssignment.update({ where: { id: assignment.id }, data: { status: "CANCELLED", notes: notes || "Marked as NOT FOUND by distributor." } });
+          }
+          await addEvent(tx, { cardId: card.id, eventType: "CARD_CANCELLED", actorId: distributorId, actorRole: "DISTRIBUTOR", fromStatus, toStatus: "CANCELLED", metadata: { reason: "NOT_FOUND", notes: notes || null } });
+          results.succeeded.push({ id: card.id, toStatus: "CANCELLED", reason: "NOT_FOUND" });
+        }
+      } catch (err) {
+        results.failed.push({ id: card.id, reason: err.message });
+      }
+    }
+    return results;
+  });
+};

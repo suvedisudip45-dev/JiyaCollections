@@ -9,7 +9,14 @@ import {
   getAllAssignments,
   manualAssign,
 } from "../controllers/orderAssignmentController.js";
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import {
+  authenticate,
+  authorize,
+  authorizeAny,
+  setDistributorContext,
+  setManufacturerContext,
+  setFulfillmentContext,
+} from "../middleware/unifiedAuth.js";
 
 const orderAssignmentRouter = express.Router();
 
@@ -20,17 +27,69 @@ orderAssignmentRouter.get("/admin/all", authenticate, authorize("assignment:admi
 orderAssignmentRouter.post("/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
 orderAssignmentRouter.post("/admin/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
 
-// Manufacturer-authenticated
-orderAssignmentRouter.get("/my", authenticate, authorize("manufacturer:assignments_read"), setManufacturerContext, getMyAssignments);
-orderAssignmentRouter.post("/my", authenticate, authorize("manufacturer:assignments_read"), setManufacturerContext, getMyAssignments);
-orderAssignmentRouter.get("/detail/:id", authenticate, authorize("manufacturer:assignment_detail"), setManufacturerContext, getAssignmentById);
-orderAssignmentRouter.get("/:id", authenticate, authorize("manufacturer:assignment_detail"), setManufacturerContext, getAssignmentById);
-orderAssignmentRouter.post("/accept/:id", authenticate, authorize("manufacturer:assignment_accept"), setManufacturerContext, acceptOrder);
-orderAssignmentRouter.post("/accept", authenticate, authorize("manufacturer:assignment_accept"), setManufacturerContext, acceptOrder);
-orderAssignmentRouter.post("/reject/:id", authenticate, authorize("manufacturer:assignment_reject"), setManufacturerContext, rejectOrder);
-orderAssignmentRouter.post("/reject", authenticate, authorize("manufacturer:assignment_reject"), setManufacturerContext, rejectOrder);
-orderAssignmentRouter.put("/status/:id", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
-orderAssignmentRouter.post("/status/:id", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
-orderAssignmentRouter.post("/status", authenticate, authorize("manufacturer:assignment_status_update"), setManufacturerContext, updateAssignmentStatus);
+// Fulfillment Routes (Accessible by Distributor Hubs, Manufacturers & Admins)
+orderAssignmentRouter.get(
+  "/my",
+  authenticate,
+  authorizeAny("distributor:assignments_read", "manufacturer:assignments_read", "assignment:admin_list"),
+  setFulfillmentContext,
+  getMyAssignments
+);
+orderAssignmentRouter.post(
+  "/my",
+  authenticate,
+  authorizeAny("distributor:assignments_read", "manufacturer:assignments_read", "assignment:admin_list"),
+  setFulfillmentContext,
+  getMyAssignments
+);
+orderAssignmentRouter.get(
+  "/detail/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_detail", "distributor:assignments_read", "manufacturer:assignment_detail", "manufacturer:assignments_read", "assignment:admin_list"),
+  setFulfillmentContext,
+  getAssignmentById
+);
+orderAssignmentRouter.get(
+  "/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_detail", "distributor:assignments_read", "manufacturer:assignment_detail", "manufacturer:assignments_read", "assignment:admin_list"),
+  setFulfillmentContext,
+  getAssignmentById
+);
+
+orderAssignmentRouter.post(
+  "/accept/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_accept", "manufacturer:assignment_accept", "assignment:admin_list"),
+  setFulfillmentContext,
+  acceptOrder
+);
+
+orderAssignmentRouter.post(
+  "/reject/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_reject", "manufacturer:assignment_reject", "assignment:admin_list"),
+  setFulfillmentContext,
+  rejectOrder
+);
+
+orderAssignmentRouter.put(
+  "/status/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_status_update", "manufacturer:assignment_status_update", "assignment:admin_list"),
+  setFulfillmentContext,
+  updateAssignmentStatus
+);
+orderAssignmentRouter.patch(
+  "/status/:id",
+  authenticate,
+  authorizeAny("distributor:assignment_status_update", "manufacturer:assignment_status_update", "assignment:admin_list"),
+  setFulfillmentContext,
+  updateAssignmentStatus
+);
+
+// Distributor-explicit subroutes
+orderAssignmentRouter.get("/distributor/my", authenticate, authorizeAny("distributor:assignments_read", "assignment:admin_list"), setDistributorContext, getMyAssignments);
+orderAssignmentRouter.get("/distributor/:id", authenticate, authorizeAny("distributor:assignment_detail", "distributor:assignments_read", "assignment:admin_list"), setDistributorContext, getAssignmentById);
 
 export default orderAssignmentRouter;

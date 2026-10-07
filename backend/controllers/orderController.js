@@ -22,7 +22,7 @@ import {
   getSharedComboBundleVariants,
 } from "../services/comboBundleRules.js";
 import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
-import { resolveLocationProductPrices, reserveLocationManufacturerInventory } from "../services/locationPricingService.js";
+import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
 
 // global variables
@@ -587,7 +587,7 @@ const placeOrder = async (req, res) => {
       date: BigInt(Date.now()),
       address,
       loyaltyDiscount,
-      manufacturerId: manufacturingPlan.primaryManufacturerId || null,
+      manufacturerId: null,
       locationDiscountManufacturerId: locationDiscountApplied ? locationPricing.locationDiscountManufacturerId : null,
       locationDiscountProvince: locationDiscountApplied ? locationPricing.location.province : null,
       locationDiscountDistrict: locationDiscountApplied ? locationPricing.location.district : null,
@@ -623,22 +623,7 @@ const placeOrder = async (req, res) => {
           throw error;
         }
       }
-      let order = await tx.order.create({ data: orderData });
-      if (locationDiscountApplied) {
-        await reserveLocationManufacturerInventory(tx, locationPricing.locationDiscountManufacturerId, frozenItemsSnapshot);
-        const assignment = await tx.orderAssignment.create({
-          data: {
-            orderId: order.id,
-            manufacturerId: locationPricing.locationDiscountManufacturerId,
-            status: "assigned",
-            notes: `Location-priced order: assigned to the mapped ${locationPricing.location.district} hub and reserved at checkout.`,
-          },
-        });
-        order = await tx.order.update({
-          where: { id: order.id },
-          data: { assignmentId: assignment.id, fulfillmentStatus: "assigned" },
-        });
-      }
+      const order = await tx.order.create({ data: orderData });
       await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
       return order;
     });
@@ -788,7 +773,7 @@ const placeOrder = async (req, res) => {
       if (!result.success) {
         console.warn(`[Allocation] Order ${createdOrder.id} could not be auto-assigned: ${result.message}`);
       } else {
-        console.log(`[Allocation] Order ${createdOrder.id} assigned to manufacturer ${result.assignment?.manufacturerId}`);
+        console.log(`[Allocation] Order ${createdOrder.id} assigned to distributor ${result.assignment?.distributorId}`);
       }
     }).catch((err) => {
       console.error("[Allocation] Engine error:", err);
@@ -1272,7 +1257,7 @@ const adminCreateOrder = async (req, res) => {
         date: BigInt(Date.now()),
         address: addressSnapshot,
         loyaltyDiscount: manualDiscount,
-        manufacturerId: manufacturingPlan.primaryManufacturerId || null,
+        manufacturerId: null,
         specialOrder: Boolean(manufacturingPlan.specialOrder),
         specialOrderReason: manufacturingPlan.specialOrderReason,
         specialOrderManufacturerIds: manufacturingPlan.specialOrderManufacturerIds,
@@ -1399,7 +1384,7 @@ const adminCreateOrder = async (req, res) => {
         if (!result.success) {
           console.warn(`[Allocation] Admin Order ${newOrder.id} could not be auto-assigned: ${result.message}`);
         } else {
-          console.log(`[Allocation] Admin Order ${newOrder.id} assigned to manufacturer ${result.assignment?.manufacturerId}`);
+          console.log(`[Allocation] Admin Order ${newOrder.id} assigned to distributor ${result.assignment?.distributorId}`);
         }
       })
       .catch((err) => {

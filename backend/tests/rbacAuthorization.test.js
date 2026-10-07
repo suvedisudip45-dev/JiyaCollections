@@ -143,6 +143,25 @@ test("authorize allows, denies, caches, and fails closed", async () => {
   assert.equal(unavailable.code, 500);
 });
 
+test("dual-role manufacturer authorization includes distributor permissions", async () => {
+  const resolvedRoles = [];
+  const middleware = createAuthorize(async (_accountId, { principalRole }) => {
+    resolvedRoles.push(principalRole);
+    return new Set(principalRole === "DISTRIBUTOR" ? ["transfer:distributor_request"] : ["manufacturer:profile_read"]);
+  }, ignoreAudit)("transfer:distributor_request");
+
+  const result = await invoke(middleware, {
+    auth: {
+      accountId: "shared-account",
+      role: "MANUFACTURER",
+      roles: ["MANUFACTURER", "DISTRIBUTOR"],
+    },
+  });
+
+  assert.equal(result.code, 200);
+  assert.deepEqual(resolvedRoles.sort(), ["DISTRIBUTOR", "MANUFACTURER"]);
+});
+
 test("requireRole uses the centralized mapped role context", async () => {
   assert.equal(
     (await invoke(requireRole("MANUFACTURER"), {

@@ -5,6 +5,7 @@ import "dotenv/config";
 import { serializeLoginResponse, serializeSessionProfile } from "../dtos/authDto.js";
 import {
   getAccountWorkspaceRoles,
+  getActiveWorkspaceRoles,
   isWorkspaceProfileActive,
   resolvePassword,
   resolveTargetPortal,
@@ -14,6 +15,7 @@ import {
   getRefreshCookie,
   setRefreshCookie,
 } from "../utils/refreshCookie.js";
+import { setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
 const encrypt = (value) => {
   const key = Buffer.from(process.env.AES_SECRET_KEY, "hex");
@@ -48,10 +50,40 @@ test("workspace access includes only active role mappings with active profiles",
   };
 
   assert.deepEqual(getAccountWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
+  assert.deepEqual(getActiveWorkspaceRoles(account), ["MANUFACTURER", "DISTRIBUTOR"]);
   assert.equal(isWorkspaceProfileActive(account, "MANUFACTURER"), true);
   assert.equal(isWorkspaceProfileActive(account, "DISTRIBUTOR"), true);
   assert.equal(isWorkspaceProfileActive({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }, "DISTRIBUTOR"), false);
   assert.equal(isWorkspaceProfileActive({ ...account, manufacturerProfile: null }, "MANUFACTURER"), false);
+  assert.deepEqual(getActiveWorkspaceRoles({ ...account, distributorProfile: { ...account.distributorProfile, status: "PENDING_APPROVAL" } }), ["MANUFACTURER"]);
+});
+
+test("manufacturer login can attach both approved workspace contexts", () => {
+  const req = {
+    auth: {
+      accountId: "account-1",
+      profileId: "manufacturer-1",
+      roles: ["MANUFACTURER", "DISTRIBUTOR"],
+      manufacturerId: "manufacturer-1",
+      distributorId: "distributor-1",
+      manufacturer: { id: "manufacturer-1", name: "Factory" },
+      distributor: { id: "distributor-1", name: "Hub", status: "ACTIVE", isActive: true },
+    },
+    body: {},
+  };
+  const res = { status: () => { throw new Error("Unexpected response"); }, json: () => { throw new Error("Unexpected response"); } };
+  let nextCalls = 0;
+
+  setManufacturerContext(req, res, () => { nextCalls += 1; });
+  setDistributorContext(req, res, () => { nextCalls += 1; });
+
+  assert.equal(nextCalls, 2);
+  assert.equal(req.manufacturerId, "manufacturer-1");
+  assert.equal(req.distributorId, "distributor-1");
+  assert.equal(req.body.manufacturerId, "manufacturer-1");
+  assert.equal(req.body.distributorId, "distributor-1");
+  assert.equal(req.manufacturer.id, "manufacturer-1");
+  assert.equal(req.distributor.id, "distributor-1");
 });
 
 test("login response is an explicit allow-list", () => {

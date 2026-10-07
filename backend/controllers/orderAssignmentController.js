@@ -8,6 +8,7 @@ import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnap
 import { onOrderPacked } from "../services/giftService.js";
 import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
 import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
+import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -136,313 +137,180 @@ const CITY_PROXIMITY = {
 };
 
 const normalize = (city) => (city || "").toLowerCase().trim();
+const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
-/**
- * Multi-Factor Smart Allocation Engine
- * Evaluates all candidate manufacturers based on:
- * 1. Location Proximity (Exact city vs nearby city vs regional)
- * 2. Quality Rating (Customer-driven 1.0 - 5.0 score)
- * 3. Real-time Variant Stock Availability (Size & Color match in hub inventory)
- * 4. Reliability (On-time fulfillment history and defect rates)
- */
+const distributorHasStock = (distributor, requirements) => requirements.every((requirement) => {
+  const available = (distributor.stockLocations || [])
+    .flatMap((location) => location.balances || [])
+    .filter((balance) =>
+      balance.inventorySku?.productId === requirement.productId &&
+      normalizeSkuKey(balance.inventorySku?.sizeKey || balance.inventorySku?.size) === normalizeSkuKey(requirement.size) &&
+      normalizeSkuKey(balance.inventorySku?.colorKey || balance.inventorySku?.color) === normalizeSkuKey(requirement.color)
+    )
+    .reduce((total, balance) => total + Math.max(0, balance.quantityOnHand - balance.reservedQuantity), 0);
+  return available >= requirement.qty;
+});
+
 export const runAllocationEngine = async (orderId, actorContext = {}) => {
+  const actor = {
+    actorId: null,
+    actorRole: "SYSTEM",
+    portalSource: "SYSTEM",
+    ipAddress: null,
+    userAgent: null,
+    correlationId: null,
+    ...actorContext,
+  };
+
   try {
-    const allocationActor = {
-      actorId: null,
-      actorRole: "SYSTEM",
-      portalSource: "SYSTEM",
-      ipAddress: null,
-      userAgent: null,
-      correlationId: null,
-      ...actorContext,
-    };
     const order = await prisma.order.findUnique({ where: { id: orderId } });
-    if (!order) return { success: false, message: "Order not found" };
+    if (!order) return { success: false, message: "Order not found." };
     if (String(order.status || "").toLowerCase() === "cancelled") {
-      return { success: false, message: "Cancelled orders cannot be assigned to a manufacturer." };
+      return { success: false, message: "Cancelled orders cannot be assigned to a distributor." };
     }
-
-    if (order.assignmentId) return { success: false, message: "Order already assigned" };
-
-    if (order.specialOrder) {
-      const fallbackManufacturerId = order.manufacturerId || (parseJSON(order.specialOrderManufacturerIds, [])[0] ?? null);
-      if (!fallbackManufacturerId) {
-        return {
-          success: false,
-          message: "Order is marked as a special order and requires manual assignment because no fallback manufacturer is available.",
-        };
-      }
-
-      const [manufacturer, assignment] = await Promise.all([
-        prisma.manufacturer.findUnique({ where: { id: fallbackManufacturerId } }),
-        prisma.$transaction(async (tx) => {
-          const claimed = await tx.order.updateMany({
-            where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
-            data: { fulfillmentStatus: "assigned", manufacturerId: fallbackManufacturerId },
-          });
-          if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
-          const assignment = await tx.orderAssignment.create({
-            data: {
-              orderId,
-              manufacturerId: fallbackManufacturerId,
-              status: "assigned",
-              notes: `Special order fallback assignment: ${order.specialOrderReason || "Mixed manufacturer fulfillment requires manual oversight."}`,
-            },
-          });
-          await tx.order.update({ where: { id: orderId }, data: { assignmentId: assignment.id } });
-          await recordSystemAudit(allocationActor, {
-            action: "ORDER_AUTO_ASSIGNED",
-            entityType: "Order",
-            entityId: orderId,
-            beforeState: {
-              fulfillmentStatus: order.fulfillmentStatus,
-              manufacturerId: order.manufacturerId,
-              assignmentId: order.assignmentId,
-            },
-            afterState: {
-              fulfillmentStatus: "assigned",
-              manufacturerId: fallbackManufacturerId,
-              assignmentId: assignment.id,
-              allocationMode: "special_order_fallback",
-            },
-          }, { client: tx });
-          return assignment;
-        }, { isolationLevel: "Serializable" }),
-      ]);
-
-      return {
-        success: true,
-        assignment,
-        manufacturer,
-        scoreDetails: {
-          totalScore: 0,
-          locationTier: "Special Order Fallback",
-          qualityRating: 0,
-          hasAllItemsInStock: false,
-        },
-      };
-    }
+    if (order.assignmentId) return { success: false, message: "Order already assigned." };
 
     const address = parseJSON(order.address, {});
-    const customerCity = normalize(address?.city);
-
-    // Parse ordered line items with requested variants
-    const rawItems = parseJSON(order.items, []);
-    const itemRequirements = rawItems.map((item) => ({
-      productId: item.productId || item._id || item.id,
-      name: item.name || "Garment",
-      size: item.size || "Standard",
-      color: item.color || "Standard",
-      qty: Math.max(1, Number(item.quantity || 1)),
+    const location = canonicalizeNepalLocation(address.province || address.state, address.district || address.city);
+    if (!location) {
+      return { success: false, message: "A valid customer province and district are required for distributor hub allocation." };
+    }
+    const lineItems = parseJSON(order.items, []).map((item) => ({
+      productId: String(item.productId || item._id || item.id || ""),
+      size: String(item.size || "Standard"),
+      color: String(item.color || "Standard"),
+      qty: Number(item.quantity ?? 1),
     }));
-
-    // Fetch all active and available contracted manufacturers
-    const candidateManufacturers = await prisma.manufacturer.findMany({
+    if (!lineItems.length || lineItems.some((item) => !item.productId || !Number.isSafeInteger(item.qty) || item.qty < 1)) {
+      return { success: false, message: "Order items are invalid for distributor allocation." };
+    }
+    const requirementsBySku = new Map();
+    for (const item of lineItems) {
+      const key = [item.productId, normalizeSkuKey(item.size), normalizeSkuKey(item.color)].join("\0");
+      const existing = requirementsBySku.get(key);
+      if (existing) existing.qty += item.qty;
+      else requirementsBySku.set(key, { ...item });
+    }
+    const requirements = [...requirementsBySku.values()];
+    const productIds = [...new Set(requirements.map((item) => item.productId))];
+    const locations = await prisma.distributorLocation.findMany({
       where: {
+        province: location.province,
+        district: location.district,
         isActive: true,
-        isAvailable: true,
-        contractStatus: "ACTIVE",
+        distributor: { status: "ACTIVE", isActive: true },
       },
       include: {
-        inventory: true,
+        distributor: {
+          include: {
+            stockLocations: {
+              where: { kind: "DISTRIBUTOR", isActive: true },
+              include: {
+                balances: {
+                  where: { inventorySku: { productId: { in: productIds }, isActive: true } },
+                  include: { inventorySku: true },
+                },
+              },
+            },
+          },
+        },
       },
     });
-
-    if (candidateManufacturers.length === 0) {
-      return { success: false, message: "No active manufacturer hubs available in the network." };
-    }
-
+    const candidateMap = new Map(locations.map(({ distributor }) => [distributor.id, distributor]));
+    const customerCity = normalize(address.city || address.district);
     const nearbyCities = CITY_PROXIMITY[customerCity] || [];
-
-    // Evaluate each candidate and calculate comprehensive matching score
-    const scoredCandidates = candidateManufacturers.map((mfg) => {
-      const hubCity = normalize(mfg.city);
-      let locationScore = 15; // default cross-region base
-      let locationTier = "National";
-
-      if (hubCity === customerCity && customerCity !== "") {
-        locationScore = 100; // Exact same city match
-        locationTier = "Same City (Local)";
-      } else if (nearbyCities.includes(hubCity)) {
-        locationScore = 70; // Adjacent metro hub
-        locationTier = "Neighboring City";
-      }
-
-      // ─── 2. Evaluate Stock Availability per Ordered Variant ─────────────────
-      let totalReqQty = 0;
-      let availableReqQty = 0;
-      let hasAllItemsInStock = true;
-
-      const inventoryMap = {};
-      mfg.inventory.forEach((inv) => {
-        inventoryMap[inv.productId] = inv;
+    const candidates = [...candidateMap.values()]
+      .filter((distributor) => distributorHasStock(distributor, requirements))
+      .sort((left, right) => {
+        const score = (distributor) => {
+          const city = normalize(distributor.city);
+          return city === customerCity && city ? 2 : nearbyCities.includes(city) ? 1 : 0;
+        };
+        return score(right) - score(left) || left.id.localeCompare(right.id);
       });
-
-      for (const req of itemRequirements) {
-        totalReqQty += req.qty;
-        const inv = inventoryMap[req.productId];
-
-        if (!inv) {
-          hasAllItemsInStock = false;
-          continue;
-        }
-
-        const variantsStock = parseJSON(inv.variantsStock, []);
-        let variantAvailable = 0;
-
-        if (variantsStock.length > 0) {
-          const matched = variantsStock.find(
-            (v) =>
-              (v.size || "Standard") === req.size &&
-              (v.color || "Standard") === req.color
-          );
-          if (matched) {
-            variantAvailable = Math.max(
-              0,
-              (matched.quantity || 0) - (matched.reservedQty || 0)
-            );
-          }
-        } else {
-          variantAvailable = Math.max(0, (inv.quantity || 0) - (inv.reservedQty || 0));
-        }
-
-        const fulfilledQty = Math.min(req.qty, variantAvailable);
-        availableReqQty += fulfilledQty;
-
-        if (variantAvailable < req.qty) {
-          hasAllItemsInStock = false;
-        }
-      }
-
-      const stockFulfillmentRatio = totalReqQty > 0 ? availableReqQty / totalReqQty : 1;
-      let stockScore = 0;
-      if (hasAllItemsInStock) {
-        stockScore = 120; // 100% variant stock ready
-      } else if (stockFulfillmentRatio > 0) {
-        stockScore = Math.round(stockFulfillmentRatio * 60); // Partial stock
-      } else {
-        stockScore = 0; // 0 physical units available
-      }
-
-      // ─── 3. Customer Quality Rating Score ─────────────────────────────────
-      const rawQuality = Number(mfg.qualityRating) || 5.0;
-      const normalizedQuality = Math.min(5.0, Math.max(1.0, rawQuality));
-      // Quality rating contributes up to 75 points (5.0 rating = 75 pts)
-      const ratingScore = Math.round((normalizedQuality / 5.0) * 75);
-
-      // ─── 4. Reliability & On-Time Performance Score ───────────────────────
-      let reliabilityScore = 10;
-      if (mfg.totalOrdersFulfilled > 0) {
-        const onTimeRate = (mfg.onTimeCount || 0) / mfg.totalOrdersFulfilled;
-        const defectRate = (mfg.defectCount || 0) / mfg.totalOrdersFulfilled;
-        reliabilityScore = Math.round(onTimeRate * 15) - Math.round(defectRate * 10);
-      }
-
-      const totalScore = locationScore + stockScore + ratingScore + reliabilityScore;
-
-      return {
-        manufacturer: mfg,
-        totalScore,
-        locationScore,
-        locationTier,
-        stockScore,
-        hasAllItemsInStock,
-        stockFulfillmentRatio,
-        ratingScore,
-        qualityRating: normalizedQuality,
-        reliabilityScore,
-      };
-    });
-
-    // Sort descending by total score
-    scoredCandidates.sort((a, b) => b.totalScore - a.totalScore);
-
-    // Pick top scoring candidate (giving strong preference to in-stock hubs)
-    let bestCandidate = scoredCandidates.find((c) => c.hasAllItemsInStock);
-    if (!bestCandidate) {
-      bestCandidate = scoredCandidates.find((c) => c.stockFulfillmentRatio > 0);
+    const selected = candidates[0];
+    if (!selected) {
+      return { success: false, message: "No approved distributor covering this district has all requested variants in stock." };
     }
-
-    if (!bestCandidate || !bestCandidate.manufacturer) {
-      return {
-        success: false,
-        message: "No manufacturer hub currently has available inventory to fulfill this order.",
-      };
-    }
-
-    const assignedManufacturer = bestCandidate.manufacturer;
-
-    // Create OrderAssignment record
-    const assignmentNote = `Auto-allocated by smart engine: Location [${bestCandidate.locationTier} +${bestCandidate.locationScore}pts], Customer Rating [${bestCandidate.qualityRating}★ +${bestCandidate.ratingScore}pts], Stock Status [${bestCandidate.hasAllItemsInStock ? "100% In Stock" : "Production Required"} +${bestCandidate.stockScore}pts]. Total Score: ${bestCandidate.totalScore}.`;
 
     const assignment = await prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
         where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
-        data: { fulfillmentStatus: "assigned", manufacturerId: assignedManufacturer.id },
+        data: { fulfillmentStatus: "assigned", manufacturerId: null },
       });
       if (claimed.count !== 1) throw new Error("Order was cancelled or assigned before allocation completed.");
 
-      for (const requirement of itemRequirements) {
-        const inventory = await tx.manufacturerInventory.findUnique({
-          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
-        });
-        if (!inventory) continue;
-        const variantsStock = parseJSON(inventory.variantsStock, []);
-        const updatedVariants = variantsStock.length > 0
-          ? variantsStock.map((variant) => (
-              (variant.size || "Standard") === requirement.size && (variant.color || "Standard") === requirement.color
-                ? { ...variant, reservedQty: Number(variant.reservedQty || 0) + requirement.qty }
-                : variant
-            ))
-          : [{ size: requirement.size, color: requirement.color, quantity: inventory.quantity, reservedQty: Number(inventory.reservedQty || 0) + requirement.qty }];
-
-        await tx.manufacturerInventory.update({
-          where: { manufacturerId_productId: { manufacturerId: assignedManufacturer.id, productId: requirement.productId } },
-          data: {
-            reservedQty: Number(inventory.reservedQty || 0) + requirement.qty,
-            variantsStock: updatedVariants,
+      for (const requirement of requirements) {
+        let remaining = requirement.qty;
+        const balances = await tx.inventoryBalance.findMany({
+          where: {
+            location: { distributorId: selected.id, kind: "DISTRIBUTOR", isActive: true },
+            inventorySku: {
+              productId: requirement.productId,
+              isActive: true,
+              sizeKey: normalizeSkuKey(requirement.size),
+              colorKey: normalizeSkuKey(requirement.color),
+            },
           },
+          orderBy: { id: "asc" },
         });
-        await syncProductStock(requirement.productId, { client: tx, throwOnError: true });
+        for (const balance of balances) {
+          const available = Math.max(0, balance.quantityOnHand - balance.reservedQuantity);
+          const reserveQuantity = Math.min(remaining, available);
+          if (!reserveQuantity) continue;
+          const updated = await tx.inventoryBalance.updateMany({
+            where: {
+              id: balance.id,
+              reservedQuantity: balance.reservedQuantity,
+              quantityOnHand: { gte: balance.reservedQuantity + reserveQuantity },
+            },
+            data: { reservedQuantity: { increment: reserveQuantity } },
+          });
+          if (updated.count !== 1) {
+            throw Object.assign(new Error("Distributor stock changed during allocation. Retry the assignment."), {
+              code: "DISTRIBUTOR_STOCK_CHANGED",
+              statusCode: 409,
+            });
+          }
+          remaining -= reserveQuantity;
+          if (!remaining) break;
+        }
+        if (remaining) {
+          throw Object.assign(new Error("Distributor stock changed during allocation. Retry the assignment."), {
+            code: "DISTRIBUTOR_STOCK_CHANGED",
+            statusCode: 409,
+          });
+        }
       }
 
       const createdAssignment = await tx.orderAssignment.create({
-        data: { orderId, manufacturerId: assignedManufacturer.id, status: "assigned", notes: assignmentNote },
+        data: {
+          orderId,
+          distributorId: selected.id,
+          status: "assigned",
+          notes: `Auto-allocated to ${selected.name} for ${location.district}; all requested variants were in stock.`,
+        },
       });
       await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
-      await recordSystemAudit(allocationActor, {
+      await recordSystemAudit(actor, {
         action: "ORDER_AUTO_ASSIGNED",
         entityType: "Order",
         entityId: orderId,
-        beforeState: {
-          fulfillmentStatus: order.fulfillmentStatus,
-          manufacturerId: order.manufacturerId,
-          assignmentId: order.assignmentId,
-        },
+        beforeState: { fulfillmentStatus: order.fulfillmentStatus, assignmentId: order.assignmentId },
         afterState: {
           fulfillmentStatus: "assigned",
-          manufacturerId: assignedManufacturer.id,
+          distributorId: selected.id,
           assignmentId: createdAssignment.id,
-          allocationMode: "smart_allocation",
+          allocationMode: "distributor_hub",
         },
       }, { client: tx });
       return createdAssignment;
     }, { isolationLevel: "Serializable" });
 
-    return {
-      success: true,
-      assignment,
-      manufacturer: assignedManufacturer,
-      scoreDetails: {
-        totalScore: bestCandidate.totalScore,
-        locationTier: bestCandidate.locationTier,
-        qualityRating: bestCandidate.qualityRating,
-        hasAllItemsInStock: bestCandidate.hasAllItemsInStock,
-      },
-    };
+    return { success: true, assignment, distributor: selected };
   } catch (error) {
     console.error("runAllocationEngine error:", error);
-    return { success: false, message: error.message };
+    return { success: false, message: error.message, ...(error.code ? { code: error.code } : {}) };
   }
 };
 
@@ -456,10 +324,9 @@ const assignOrder = async (req, res) => {
     if (result.success) {
       res.json({
         success: true,
-        message: "Order successfully auto-allocated based on location, rating & stock!",
+        message: "Order successfully allocated to a distributor covering the customer location.",
         assignment: result.assignment,
-        manufacturer: result.manufacturer?.name,
-        scoreDetails: result.scoreDetails,
+        distributor: result.distributor?.name,
       });
     } else {
       res.json({ success: false, message: result.message });
@@ -470,14 +337,18 @@ const assignOrder = async (req, res) => {
   }
 };
 
-// ─── MANUFACTURER: GET MY ASSIGNMENTS ────────────────────────────────────────
+// ─── WORKSPACE: GET MY CUSTOMER-ORDER ASSIGNMENTS ────────────────────────────
 const getMyAssignments = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
+    const distributorId = req.distributorId;
+    const manufacturerId = distributorId ? null : (req.manufacturerId || req.body?.manufacturerId);
+    if (!distributorId && !manufacturerId) {
+      return res.status(403).json({ success: false, message: "No active assignment workspace is available." });
+    }
     const { status } = req.query;
     const pagination = getPagination(req.query);
 
-    const where = { manufacturerId };
+    const where = distributorId ? { distributorId } : { manufacturerId };
     if (status && status !== "all") where.status = status;
 
     const [assignments, total] = await prisma.$transaction([
@@ -487,9 +358,12 @@ const getMyAssignments = async (req, res) => {
         skip: pagination.skip,
         take: pagination.limit,
         include: {
-        manufacturer: {
-          select: { id: true, name: true, city: true, phone: true, qualityRating: true },
-        },
+          manufacturer: {
+            select: { id: true, name: true, city: true, phone: true, qualityRating: true },
+          },
+          distributor: {
+            select: { id: true, name: true, city: true, phone: true },
+          },
         },
       }),
       prisma.orderAssignment.count({ where }),
@@ -568,10 +442,8 @@ const getMyAssignments = async (req, res) => {
 
     const enriched = assignments.map((a) => ({
       ...a,
-      manufacturer: {
-        ...a.manufacturer,
-        businessName: a.manufacturer.name,
-      },
+      manufacturer: a.manufacturer ? { ...a.manufacturer, businessName: a.manufacturer.name } : null,
+      distributor: a.distributor || null,
       order: orderMap[a.orderId] || null,
       delivery: deliveryMap[a.orderId]
         ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
@@ -586,16 +458,22 @@ const getMyAssignments = async (req, res) => {
   }
 };
 
-// ─── MANUFACTURER: ACCEPT ORDER ───────────────────────────────────────────────
+// ─── FULFILLMENT HUB: ACCEPT ORDER ───────────────────────────────────────────────
 const acceptOrder = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
 
     const acceptedAt = new Date();
     await prisma.$transaction(async (tx) => {
       const assignment = await tx.orderAssignment.findUnique({ where: { id: assignmentId } });
-      if (!assignment || assignment.manufacturerId !== manufacturerId) {
+      const isOwner =
+        (distributorId && assignment?.distributorId === distributorId) ||
+        (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+        req.adminId;
+
+      if (!assignment || !isOwner) {
         const error = new Error("Assignment not found");
         error.statusCode = 404;
         throw error;
@@ -603,7 +481,7 @@ const acceptOrder = async (req, res) => {
 
       const deliveryExists = await tx.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
       if (deliveryExists || !canAdminReassignAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
-        const error = new Error("This order is already in production or has moved to delivery handoff and cannot be re-routed.");
+        const error = new Error("This order is already in fulfillment or has moved to delivery handoff and cannot be re-routed.");
         error.statusCode = 409;
         throw error;
       }
@@ -614,31 +492,36 @@ const acceptOrder = async (req, res) => {
         error.statusCode = 404;
         throw error;
       }
+
       const items = parseJSON(order.items, []);
-      const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
-      const inventoryRows = await tx.manufacturerInventory.findMany({
-        where: { manufacturerId, productId: { in: productIds } },
-      });
-      const costSnapshottedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
-      const acceptedItems = [];
-      for (let index = 0; index < costSnapshottedItems.length; index += 1) {
-        const item = costSnapshottedItems[index];
-        const productionAllocation = await allocateProductionLayersForOrderItem({
-          tx,
-          orderId: order.id,
-          itemIndex: index,
-          manufacturerId,
-          item,
+      let acceptedItems = items;
+
+      if (manufacturerId && !distributorId) {
+        const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
+        const inventoryRows = await tx.manufacturerInventory.findMany({
+          where: { manufacturerId, productId: { in: productIds } },
         });
-        acceptedItems.push({
-          ...item,
-          legacyUnitCogsVatInclusiveAtAcceptance: item.agreedUnitCogsVatInclusiveAtAcceptance,
-          ...productionAllocation,
-        });
+        const costSnapshottedItems = createManufacturerCostSnapshot({ items, inventoryRows, acceptedAt });
+        acceptedItems = [];
+        for (let index = 0; index < costSnapshottedItems.length; index += 1) {
+          const item = costSnapshottedItems[index];
+          const productionAllocation = await allocateProductionLayersForOrderItem({
+            tx,
+            orderId: order.id,
+            itemIndex: index,
+            manufacturerId,
+            item,
+          });
+          acceptedItems.push({
+            ...item,
+            legacyUnitCogsVatInclusiveAtAcceptance: item.agreedUnitCogsVatInclusiveAtAcceptance,
+            ...productionAllocation,
+          });
+        }
       }
 
       const claimed = await tx.orderAssignment.updateMany({
-        where: { id: assignmentId, manufacturerId, status: assignment.status },
+        where: { id: assignmentId, status: assignment.status },
         data: { status: "accepted", acceptedAt },
       });
       if (claimed.count !== 1) {
@@ -651,8 +534,8 @@ const acceptOrder = async (req, res) => {
         where: { id: assignment.orderId },
         data: { items: acceptedItems, fulfillmentStatus: "accepted", status: "In Production" },
       });
-      await recordSystemAudit(auditActorContext(req), {
-        action: "ORDER_ACCEPTED_FOR_PRODUCTION",
+      await recordSystemAudit(auditActorContext(req, distributorId ? "DISTRIBUTOR" : "MANUFACTURER"), {
+        action: "ORDER_ACCEPTED_FOR_FULFILLMENT",
         entityType: "Order",
         entityId: assignment.orderId,
         beforeState: {
@@ -666,29 +549,35 @@ const acceptOrder = async (req, res) => {
       }, { client: tx });
     });
 
-    res.json({ success: true, message: "Order accepted for production!" });
+    res.json({ success: true, message: "Order accepted for fulfillment!" });
   } catch (error) {
     console.error("acceptOrder error:", error);
     res.status(error.statusCode || 400).json({ success: false, message: error.message, ...(error.code ? { code: error.code } : {}) });
   }
 };
 
-// ─── MANUFACTURER: REJECT ORDER ───────────────────────────────────────────────
+// ─── FULFILLMENT HUB: REJECT ORDER ───────────────────────────────────────────────
 const rejectOrder = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
     const reason = req.body?.reason || req.body?.rejectionReason;
 
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
-    if (!assignment || assignment.manufacturerId !== manufacturerId)
+    const isOwner =
+      (distributorId && assignment?.distributorId === distributorId) ||
+      (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+      req.adminId;
+
+    if (!assignment || !isOwner)
       return res.json({ success: false, message: "Assignment not found" });
 
     const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId: assignment.orderId } });
     if (!canManufacturerRejectAssignment({ status: assignment.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
       return res.status(409).json({
         success: false,
-        message: "This order is already accepted or already assigned to a delivery partner. Only the admin can reassign it to a different manufacturer.",
+        message: "This order is already accepted or already assigned to a delivery partner. Only the admin can reassign it.",
       });
     }
 
@@ -697,20 +586,22 @@ const rejectOrder = async (req, res) => {
         where: { id: assignment.orderId },
         select: { fulfillmentStatus: true, status: true },
       });
-      await tx.manufacturer.update({
-        where: { id: manufacturerId },
-        data: { rejectionCount: { increment: 1 } },
-      });
+      if (manufacturerId) {
+        await tx.manufacturer.update({
+          where: { id: manufacturerId },
+          data: { rejectionCount: { increment: 1 } },
+        }).catch(() => null);
+      }
       await tx.orderAssignment.update({
         where: { id: assignmentId },
         data: { status: "rejected", rejectionReason: reason || "No capacity" },
       });
       await tx.order.update({
         where: { id: assignment.orderId },
-        data: { fulfillmentStatus: "rejected", status: "Rejected by Manufacturer" },
+        data: { fulfillmentStatus: "rejected", status: "Rejected by Hub" },
       });
-      await recordSystemAudit(auditActorContext(req), {
-        action: "ORDER_REJECTED_BY_MANUFACTURER",
+      await recordSystemAudit(auditActorContext(req, distributorId ? "DISTRIBUTOR" : "MANUFACTURER"), {
+        action: "ORDER_REJECTED_BY_HUB",
         entityType: "Order",
         entityId: assignment.orderId,
         beforeState: {
@@ -719,21 +610,22 @@ const rejectOrder = async (req, res) => {
         },
         afterState: {
           fulfillmentStatus: "rejected",
-          status: "Rejected by Manufacturer",
+          status: "Rejected by Hub",
         },
       }, { client: tx });
     });
 
-    res.json({ success: true, message: "Order rejected. Only an admin can reassign this order to another manufacturer." });
+    res.json({ success: true, message: "Order rejected. Admin or allocation engine will reassign this order." });
   } catch (error) {
     console.error("rejectOrder error:", error);
     res.json({ success: false, message: error.message });
   }
 };
 
-// ─── MANUFACTURER: UPDATE ASSIGNMENT STATUS ───────────────────────────────────
+// ─── FULFILLMENT HUB: UPDATE ASSIGNMENT STATUS ───────────────────────────────────
 const updateAssignmentStatus = async (req, res) => {
   try {
+    const distributorId = req.distributorId || req.body?.distributorId;
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId;
     const assignmentId = req.params?.id || req.body?.assignmentId || req.body?.id;
     const {
@@ -752,8 +644,8 @@ const updateAssignmentStatus = async (req, res) => {
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
-    const manufacturerStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
-    if (!manufacturerStatuses.has(normalizedStatus)) {
+    const allowedStatuses = new Set(["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]);
+    if (!allowedStatuses.has(normalizedStatus)) {
       return res.status(400).json({
         success: false,
         message: "Carrier delivery states are controlled by the NCM integration. Use the dedicated ready-for-delivery action for handoff.",
@@ -761,7 +653,12 @@ const updateAssignmentStatus = async (req, res) => {
     }
 
     const assignment = await prisma.orderAssignment.findUnique({ where: { id: assignmentId } });
-    if (!assignment || assignment.manufacturerId !== manufacturerId)
+    const isOwner =
+      (distributorId && assignment?.distributorId === distributorId) ||
+      (manufacturerId && assignment?.manufacturerId === manufacturerId) ||
+      req.adminId;
+
+    if (!assignment || !isOwner)
       return res.json({ success: false, message: "Assignment not found" });
 
     if (giftInventoryId && normalizedStatus !== "checklist_complete") {
@@ -896,6 +793,9 @@ const getAllAssignments = async (req, res) => {
             pickupWindow: true,
           },
         },
+          distributor: {
+            select: { id: true, name: true, city: true, phone: true },
+          },
         },
       }),
       prisma.orderAssignment.count({ where }),
@@ -960,10 +860,8 @@ const getAllAssignments = async (req, res) => {
 
     const enriched = assignments.map((a) => ({
       ...a,
-      manufacturer: {
-        ...a.manufacturer,
-        businessName: a.manufacturer.name,
-      },
+      manufacturer: a.manufacturer ? { ...a.manufacturer, businessName: a.manufacturer.name } : null,
+      distributor: a.distributor || null,
       order: orderMap[a.orderId] || null,
       delivery: deliveryMap[a.orderId]
         ? { ...deliveryMap[a.orderId], comments: commentsMap[deliveryMap[a.orderId].id] || [] }
@@ -999,6 +897,9 @@ const getAssignmentById = async (req, res) => {
             pickupWindow: true,
           },
         },
+        distributor: {
+          select: { id: true, name: true, city: true, phone: true },
+        },
       },
     });
 
@@ -1007,6 +908,9 @@ const getAssignmentById = async (req, res) => {
     }
 
     if (req.manufacturerId && assignment.manufacturerId !== req.manufacturerId) {
+      return res.status(403).json({ success: false, message: "Unauthorized access" });
+    }
+    if (req.distributorId && assignment.distributorId !== req.distributorId) {
       return res.status(403).json({ success: false, message: "Unauthorized access" });
     }
 
@@ -1051,10 +955,10 @@ const getAssignmentById = async (req, res) => {
       success: true,
       assignment: {
         ...assignment,
-        manufacturer: {
-          ...assignment.manufacturer,
-          businessName: assignment.manufacturer.name,
-        },
+        manufacturer: assignment.manufacturer
+          ? { ...assignment.manufacturer, businessName: assignment.manufacturer.name }
+          : null,
+        distributor: assignment.distributor || null,
         order: enrichedOrder,
         delivery: delivery ? { ...delivery, comments } : null,
         createdAt: assignment.assignedAt,
@@ -1068,81 +972,10 @@ const getAssignmentById = async (req, res) => {
 
 // ─── ADMIN: MANUAL OVERRIDE ASSIGN ───────────────────────────────────────────
 const manualAssign = async (req, res) => {
-  try {
-    const { orderId, manufacturerId, reason } = req.body;
-    if (!orderId || !manufacturerId)
-      return res.json({ success: false, message: "orderId and manufacturerId required" });
-
-    const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
-    if (!manufacturer) return res.json({ success: false, message: "Manufacturer not found" });
-
-    const existing = await prisma.orderAssignment.findUnique({ where: { orderId } });
-    const deliveryExists = await prisma.deliveryOrder.findUnique({ where: { orderId } });
-    if (existing && !canAdminReassignAssignment({ status: existing.status, hasDeliveryOrder: Boolean(deliveryExists) })) {
-      return res.status(409).json({
-        success: false,
-        message: "This order is already accepted by the manufacturer or assigned to a delivery partner, so it cannot be reassigned to another hub.",
-      });
-    }
-
-    const assignment = await prisma.$transaction(async (tx) => {
-      const orderBefore = await tx.order.findUnique({
-        where: { id: orderId },
-        select: { fulfillmentStatus: true, manufacturerId: true, assignmentId: true },
-      });
-      let updatedAssignment;
-      if (existing) {
-        updatedAssignment = await tx.orderAssignment.update({
-          where: { orderId },
-          data: {
-            manufacturerId,
-            status: "assigned",
-            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-          },
-        });
-      } else {
-        updatedAssignment = await tx.orderAssignment.create({
-          data: {
-            orderId,
-            manufacturerId,
-            status: "assigned",
-            notes: reason ? `Manual override: ${reason}` : "Manual admin assignment",
-          },
-        });
-      }
-
-      await tx.order.update({
-        where: { id: orderId },
-        data: {
-          fulfillmentStatus: "assigned",
-          assignmentId: updatedAssignment.id,
-          manufacturerId,
-        },
-      });
-      await recordSystemAudit(auditActorContext(req, "ADMIN"), {
-        action: "ORDER_MANUALLY_ASSIGNED",
-        entityType: "Order",
-        entityId: orderId,
-        beforeState: {
-          fulfillmentStatus: orderBefore?.fulfillmentStatus || null,
-          manufacturerId: orderBefore?.manufacturerId || null,
-          assignmentId: orderBefore?.assignmentId || null,
-        },
-        afterState: {
-          fulfillmentStatus: "assigned",
-          manufacturerId,
-          assignmentId: updatedAssignment.id,
-          reason: reason || null,
-        },
-      }, { client: tx });
-      return updatedAssignment;
-    });
-
-    res.json({ success: true, message: "Order manually assigned to manufacturer", assignment });
-  } catch (error) {
-    console.error("manualAssign error:", error);
-    res.json({ success: false, message: error.message });
-  }
+  return res.status(409).json({
+    success: false,
+    message: "Manual manufacturer assignment is disabled. Route customer orders through distributor allocation.",
+  });
 };
 
 export {

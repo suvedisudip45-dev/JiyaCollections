@@ -578,7 +578,7 @@ const uploadContractDoc = async (req, res) => {
   }
 };
 
-// ─── ADMIN: UPDATE MANUFACTURER (general) ────────────────────────────────────
+// ─── ADMIN / PARTNER: UPDATE MANUFACTURER PICKUP PROFILE ─────────────────────
 const updatePickupProfile = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId || req.body?.manufacturerId || req.params?.id;
@@ -597,7 +597,28 @@ const updatePickupProfile = async (req, res) => {
     if (pickupWindow !== undefined) updateData.pickupWindow = String(pickupWindow || "").trim();
     if (returnInstructions !== undefined) updateData.returnInstructions = returnInstructions || null;
 
-    const updated = await prisma.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+    const updated = await prisma.manufacturer.update({
+      where: { id: manufacturerId },
+      data: updateData,
+    });
+
+    // If linked to an account that also has a distributor profile, keep them perfectly in sync
+    if (updated.accountId) {
+      const linkedDistributor = await prisma.distributor.findUnique({
+        where: { accountId: updated.accountId },
+      });
+      if (linkedDistributor) {
+        await prisma.distributor.update({
+          where: { id: linkedDistributor.id },
+          data: {
+            ...updateData,
+            ncmPickupBranch: updated.ncmPickupBranch,
+            pickupBranchStatus: updated.pickupBranchStatus,
+          },
+        });
+      }
+    }
+
     const { password: _, ...safe } = updated;
     safe.businessName = safe.name;
     res.json({ success: true, message: "Pickup profile updated", manufacturer: safe });
@@ -606,6 +627,7 @@ const updatePickupProfile = async (req, res) => {
     res.json({ success: false, message: error.message });
   }
 };
+
 
 const normalizeCommissionRate = (value) => {
   if (value === null || value === undefined || value === "") return null;

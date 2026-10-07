@@ -1,4 +1,10 @@
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import {
+  authenticate,
+  authorize,
+  authorizeAny,
+  setManufacturerContext,
+  setFulfillmentContext,
+} from "../middleware/unifiedAuth.js";
 import express from "express";
 import {
   getCustomerReturns,
@@ -44,7 +50,7 @@ returnsRouter.post("/exchange/admin/:id/resolve-ncm", authenticate, authorize("e
 // Customer Returns (RMA)
 returnsRouter.post("/customer/request", authenticate, authorize("returns:customer_create"), customerCreateReturnRequest);
 returnsRouter.get("/customer/requests", authenticate, authorize("returns:customer_read"), customerListReturnRequests);
-returnsRouter.get("/customer/manufacturer", authenticate, authorize("manufacturer:delivery_return"), setManufacturerContext, manufacturerListReturnRequests);
+returnsRouter.get("/customer/manufacturer", authenticate, authorizeAny("distributor:delivery_return", "manufacturer:delivery_return", "returns:customer_read", "returns:admin_read"), setFulfillmentContext, manufacturerListReturnRequests);
 returnsRouter.get("/customer/list", authenticate, authorize("returns:admin_read"), getCustomerReturns);
 returnsRouter.post("/customer/create", authenticate, authorize("returns:admin_create"), adminCreateReturnRequest);
 returnsRouter.get("/customer/admin/requests", authenticate, authorize("returns:admin_read"), adminListReturnRequests);

@@ -53,7 +53,10 @@ export const customerListReturnRequests = async (req, res) => {
 
 export const manufacturerListReturnRequests = async (req, res) => {
   try {
-    const returns = await listManufacturerCustomerReturns({ manufacturerId: req.manufacturerId });
+    const returns = await listManufacturerCustomerReturns({
+      manufacturerId: req.manufacturerId,
+      distributorId: req.distributorId,
+    });
     return res.json({ success: true, returns });
   } catch (error) {
     return sendError(res, error);

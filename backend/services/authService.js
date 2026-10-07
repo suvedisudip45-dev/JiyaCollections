@@ -114,6 +114,9 @@ export const isWorkspaceProfileActive = (account, role) => {
   return profileField ? Boolean(account[profileField]?.id) : false;
 };
 
+export const getActiveWorkspaceRoles = (account) =>
+  getAccountWorkspaceRoles(account).filter((role) => isWorkspaceProfileActive(account, role));
+
 export const generateAuthToken = (account, profile = {}, activeRole = account.role) => {
   return generateAccessToken({
     accountId: account.id,

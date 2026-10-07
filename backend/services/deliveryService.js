@@ -418,22 +418,32 @@ const parsePackagingMeta = (payload) => {
   return payload;
 };
 
-export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
+export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
-  if (!order || order.manufacturerId !== manufacturerId) {
+  const isOrderOwner = order && (
+    (distributorId && order.assignedDistributorId === distributorId) ||
+    (manufacturerId && order.manufacturerId === manufacturerId) ||
+    (!distributorId && !manufacturerId)
+  );
+  if (!order || !isOrderOwner) {
     const error = new Error("Order not found or unauthorized");
     error.code = "DELIVERY_NOT_FOUND";
     throw error;
   }
 
   const assignment = await prisma.orderAssignment.findUnique({ where: { orderId } });
-  if (!assignment || assignment.manufacturerId !== manufacturerId) {
-    const error = new Error("Manufacturer assignment not found");
+  const isAssignmentOwner = assignment && (
+    (distributorId && assignment.distributorId === distributorId) ||
+    (manufacturerId && assignment.manufacturerId === manufacturerId) ||
+    (!distributorId && !manufacturerId)
+  );
+  if (!assignment || !isAssignmentOwner) {
+    const error = new Error("Fulfillment assignment not found");
     error.code = "DELIVERY_ASSIGNMENT_NOT_FOUND";
     throw error;
   }
 
-  await ensureOrderCardAttached({ orderId, manufacturerId });
+  await ensureOrderCardAttached({ orderId, manufacturerId, distributorId });
 
   const existingNotes = parsePackagingMeta(assignment.notes);
   const packagingMeta = {
@@ -485,11 +495,15 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
     throw error;
   }
 
-  const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
-  const input = buildDeliveryInput({ order, assignment, manufacturer, packagingMeta });
+  const activeDistributor = distributorId ? await prisma.distributor.findUnique({ where: { id: distributorId } }) : null;
+  const activeManufacturer = manufacturerId ? await prisma.manufacturer.findUnique({ where: { id: manufacturerId } }) : null;
+  const originEntity = activeDistributor || activeManufacturer;
+
+  const input = buildDeliveryInput({ order, assignment, manufacturer: originEntity, packagingMeta });
 
   logger.info("Prepared NCM delivery payload", {
     orderId,
+    distributorId,
     manufacturerId,
     origin: input.origin,
     destination: input.destination,
@@ -515,7 +529,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
             codAmount: input.codAmount,
             packageWeight: Math.max(0.1, Number(packageWeight || existing.packageWeight || 1)),
             assignmentId: assignment.id,
-            manufacturerId,
+            manufacturerId: manufacturerId || null,
             lastSyncError: null,
           },
         })
@@ -523,7 +537,7 @@ export const prepareReadyDelivery = async ({ orderId, manufacturerId, packageWei
           data: {
             orderId,
             assignmentId: assignment.id,
-            manufacturerId,
+            manufacturerId: manufacturerId || null,
             state: "SUBMISSION_PENDING",
             deliveryType: input.deliveryType,
             packageDescription: input.packageDescription,

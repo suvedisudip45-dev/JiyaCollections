@@ -6,19 +6,19 @@ import {
   approvePartner,
   attachRandomCardToOrder,
   adminInvalidateCards,
-  bulkUpdateManufacturerCards,
   createCampaign,
   createPartner,
   deactivateCampaign,
   generateBatch,
   getAdminCardStats,
-  getManufacturerInventory,
   listAdminCards,
   getCardMetrics,
   listCampaigns,
   listPartners,
-  receiveCard,
   getLocationMappingsService,
+  getDistributorInventory,
+  receiveCardAsDistributor,
+  bulkUpdateDistributorCards,
 } from "../services/marketingCardService.js";
 import {
   claimCustomerReward,
@@ -166,20 +166,39 @@ export const adminInvalidate = async (req, res) => {
   } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerListCards = async (req, res) => {
-  try { return res.json({ success: true, cards: await getManufacturerInventory({ manufacturerId: req.manufacturerId, status: req.query.status }) }); } catch (error) { return sendError(res, error); }
+// ── Distributor Hub card management ──────────────────────────────────────────
+
+export const distributorListCards = async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      cards: await getDistributorInventory({ distributorId: req.distributorId, status: req.query.status }),
+    });
+  } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerReceiveCard = async (req, res) => {
-  try { return res.json({ success: true, card: await receiveCard({ cardId: req.params.cardId, manufacturerId: req.manufacturerId, notes: req.body.notes }) }); } catch (error) { return sendError(res, error); }
+export const distributorReceiveCard = async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      card: await receiveCardAsDistributor({ cardId: req.params.cardId, distributorId: req.distributorId, notes: req.body.notes }),
+    });
+  } catch (error) { return sendError(res, error); }
 };
 
-export const manufacturerBulkUpdateCards = async (req, res) => {
+export const distributorBulkUpdateCards = async (req, res) => {
   try {
     const { cardIds, action, notes } = req.body;
-    if (!Array.isArray(cardIds) || cardIds.length === 0) return res.status(400).json({ success: false, message: "cardIds array is required." });
-    if (!action) return res.status(400).json({ success: false, message: "action is required (RECEIVE, DAMAGED, NOT_FOUND)." });
-    const results = await bulkUpdateManufacturerCards({ cardIds, action: String(action).toUpperCase(), manufacturerId: req.manufacturerId, notes });
+    if (!Array.isArray(cardIds) || cardIds.length === 0)
+      return res.status(400).json({ success: false, message: "cardIds array is required." });
+    if (!action)
+      return res.status(400).json({ success: false, message: "action is required (RECEIVE, DAMAGED, NOT_FOUND)." });
+    const results = await bulkUpdateDistributorCards({
+      cardIds,
+      action: String(action).toUpperCase(),
+      distributorId: req.distributorId,
+      notes,
+    });
     const total = results.succeeded.length + results.skipped.length + results.failed.length;
     return res.json({
       success: true,
@@ -188,10 +207,6 @@ export const manufacturerBulkUpdateCards = async (req, res) => {
       message: `${results.succeeded.length} of ${total} card(s) updated successfully.`,
     });
   } catch (error) { return sendError(res, error); }
-};
-
-export const manufacturerAttachCard = async (req, res) => {
-  try { return res.json({ success: true, card: await attachRandomCardToOrder({ orderId: req.params.orderId, manufacturerId: req.manufacturerId }), message: "Marketing card attached to the order." }); } catch (error) { return sendError(res, error); }
 };
 
 export const customerListCards = async (req, res) => {

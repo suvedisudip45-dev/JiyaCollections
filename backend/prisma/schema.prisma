@@ -558,6 +558,7 @@ model Product {
   manufacturerProductionRequests ManufacturerProductionRequest[]
   manufacturerProductionCostLayers ManufacturerInventoryCostLayer[]
   inventorySkus InventorySku[]
+  deliveryChargeNegotiations DistributorDeliveryChargeNegotiation[]
 
   @@index([published])
   @@index([category])
@@ -1555,6 +1556,7 @@ model Manufacturer {
   adminCommissionFeedback  String?                   @db.Text
   // Contract fields
   contractStatus           String                    @default("ACTIVE") // ACTIVE | SUSPENDED | TERMINATED
+  distributorApplicationStatus String @default("NONE") // NONE | REQUESTED | APPROVED | REJECTED
   contractDocUrl           String?                   @db.Text // uploaded PDF URL (Cloudinary)
   contractStartDate        DateTime?
   contractExpiryDate       DateTime?
@@ -1577,7 +1579,8 @@ model Manufacturer {
   marketingCardOrders      MarketingCardOrder[]
   productionRequests       ManufacturerProductionRequest[]
   productionCostLayers     ManufacturerInventoryCostLayer[]
-  stockLocations           InventoryLocation[] @relation("ManufacturerStockLocations")
+  settlementRequests           ManufacturerSettlementRequest[]
+  stockLocations               InventoryLocation[]              @relation("ManufacturerStockLocations")
   stockTransfers           StockTransfer[]
 
   @@index([city])
@@ -1594,6 +1597,14 @@ model Distributor {
   city        String?      @db.VarChar(120)
   status      String       @default("PENDING_APPROVAL") // PENDING_APPROVAL | ACTIVE | SUSPENDED | REJECTED
   isActive    Boolean      @default(false)
+  ncmPickupBranch          String?                   @default("")
+  pickupBranchStatus       String?                   @default("UNVERIFIED") // UNVERIFIED | VERIFIED | REJECTED
+  pickupBranchVerifiedAt   DateTime?
+  pickupAddress            String?                   @db.Text
+  pickupContactName        String?                   @default("")
+  pickupContactPhone       String?                   @default("")
+  pickupWindow             String?                   @default("")
+  returnInstructions       String?                   @db.Text
   appliedAt   DateTime     @default(now())
   approvedAt  DateTime?
   approvedBy  String?
@@ -1602,8 +1613,85 @@ model Distributor {
 
   stockLocations       InventoryLocation[] @relation("DistributorStockLocations")
   destinationTransfers StockTransfer[]     @relation("TransferDestinationDistributor")
+  locations DistributorLocation[]
+  assignments OrderAssignment[]
+  deliveryChargeNegotiations DistributorDeliveryChargeNegotiation[]
+  settlementRequests DistributorSettlementRequest[]
+  inventoryDiscrepancies InventoryDiscrepancy[]
+  marketingCards         MarketingCard[]             @relation("MarketingCardDistributor")
 
   @@index([status, isActive])
+}
+
+model DistributorLocation {
+  id            String   @id @default(uuid())
+  distributorId String
+  province      String   @db.VarChar(120)
+  district      String   @db.VarChar(120)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  distributor   Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+
+  @@unique([distributorId, province, district])
+  @@index([province, district, isActive])
+  @@index([distributorId, isActive])
+}
+
+model DistributorDeliveryChargeNegotiation {
+  id                  String   @id @default(uuid())
+  distributorId       String
+  productId           String?
+  deliveryCharge      Decimal  @db.Decimal(20, 2)
+  returnCharge        Decimal  @db.Decimal(20, 2)
+  commissionRate      Decimal  @default(0) @db.Decimal(20, 2)
+  bonusRate           Decimal  @default(0) @db.Decimal(20, 2)
+  incentiveRate       Decimal  @default(0) @db.Decimal(20, 2)
+  vatRate             Decimal  @default(13) @db.Decimal(5, 2)
+  vatInclusive        Boolean  @default(false)
+  status              String   @default("PENDING") // PENDING | APPROVED | REJECTED | EXPIRED
+  proposedByRole      String   @db.VarChar(32) // ADMIN | DISTRIBUTOR
+  proposedByAccountId String?
+  reviewedByAccountId String?
+  reviewedAt          DateTime?
+  effectiveFrom       DateTime?
+  effectiveUntil      DateTime?
+  notes               String?  @db.Text
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  distributor         Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+  product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([distributorId, status, effectiveFrom])
+  @@index([productId, status])
+}
+
+model DistributorSettlementRequest {
+  id                  String   @id @default(uuid())
+  distributorId       String
+  amount              Decimal  @db.Decimal(20, 2)
+  grossEarnings       Decimal  @default(0) @db.Decimal(20, 2)
+  incentives          Decimal  @default(0) @db.Decimal(20, 2)
+  discountsApplied    Decimal  @default(0) @db.Decimal(20, 2)
+  chargesApplied      Decimal  @default(0) @db.Decimal(20, 2)
+  vatAmount           Decimal  @default(0) @db.Decimal(20, 2)
+  netPayable          Decimal  @default(0) @db.Decimal(20, 2)
+  status              String   @default("PENDING") // PENDING | SETTLED | REJECTED
+  notes               String?  @db.Text
+  adminNotes          String?  @db.Text
+  requestedBy         String?
+  reviewedBy          String?
+  financialAccountId  String?
+  idempotencyKey      String?  @unique @db.VarChar(191)
+  requestedAt         DateTime @default(now())
+  settledAt           DateTime?
+  metadata            Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  distributor         Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+
+  @@index([distributorId, status, requestedAt])
+  @@index([status])
 }
 
 model InventorySku {
@@ -1648,6 +1736,7 @@ model InventoryLocation {
   targetMovements   InventoryLedgerEntry[]  @relation("InventoryMovementTarget")
   sourceTransfers   StockTransfer[]          @relation("TransferSourceLocation")
   destinationTransfers StockTransfer[]       @relation("TransferDestinationLocation")
+  discrepancies     InventoryDiscrepancy[]
 
   @@index([kind, isActive])
   @@index([manufacturerId, kind])
@@ -1833,9 +1922,11 @@ model StockTransferReceiptLine {
 
 model InventoryDiscrepancy {
   id                             String                 @id @default(uuid())
-  stockTransferId                String
+  stockTransferId                String?
   shipmentId                     String?
   receiptId                      String?
+  distributorId                  String?
+  inventoryLocationId            String?
   inventorySkuId                 String
   discrepancyType                String // TRANSIT_LOSS | MISSING | STITCH_DAMAGE | DELIVERY_DAMAGE | OTHER_DAMAGE | SHORT_RECEIPT | COUNT_ADJUSTMENT
   custodyStage                   String?                @db.VarChar(64)
@@ -1846,6 +1937,7 @@ model InventoryDiscrepancy {
   evidence                       Json?
   details                        String?                @db.Text
   financialResponsibleParty      String                 @default("PLATFORM") @db.VarChar(32)
+  idempotencyKey                String?                @unique @db.VarChar(191)
   responsiblePartyRole           String?                @db.VarChar(64)
   responsiblePartyId             String?
   platformLossAmount             Decimal?               @db.Decimal(20, 2)
@@ -1854,12 +1946,16 @@ model InventoryDiscrepancy {
   resolvedAt                     DateTime?
   createdAt                      DateTime               @default(now())
   updatedAt                      DateTime               @updatedAt
-  stockTransfer                  StockTransfer          @relation(fields: [stockTransferId], references: [id], onDelete: Restrict)
+  stockTransfer                  StockTransfer?         @relation(fields: [stockTransferId], references: [id], onDelete: Restrict)
   shipment                       StockTransferShipment? @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
   receipt                        StockTransferReceipt?  @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  distributor                    Distributor?           @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  inventoryLocation              InventoryLocation?     @relation(fields: [inventoryLocationId], references: [id], onDelete: Restrict)
   inventorySku                   InventorySku           @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
 
   @@index([stockTransferId, status, createdAt])
+  @@index([distributorId, status, createdAt])
+  @@index([inventoryLocationId, status])
   @@index([shipmentId, status])
   @@index([receiptId])
   @@index([inventorySkuId, discrepancyType])
@@ -1958,6 +2054,7 @@ model MarketingCard {
   campaignId             String
   batchId                String
   assignedManufacturerId String?
+  assignedDistributorId  String?
   hasBenefit             Boolean                      @default(false)
   benefitId              String?
   exchangeLockRequestId  String?                      @db.VarChar(191)
@@ -1974,6 +2071,7 @@ model MarketingCard {
   batch                  MarketingCardBatch           @relation(fields: [batchId], references: [id], onDelete: Restrict)
   benefit                MarketingBenefit?            @relation(fields: [benefitId], references: [id], onDelete: SetNull)
   assignedManufacturer   Manufacturer?                @relation("MarketingCardManufacturer", fields: [assignedManufacturerId], references: [id], onDelete: SetNull)
+  assignedDistributor    Distributor?                 @relation("MarketingCardDistributor", fields: [assignedDistributorId], references: [id], onDelete: SetNull)
   assignments            MarketingCardAssignment[]
   orderLink              MarketingCardOrder?
   exchangeRequests       OrderExchangeRequest[]
@@ -1983,6 +2081,7 @@ model MarketingCard {
 
   @@index([campaignId, physicalStatus])
   @@index([assignedManufacturerId, physicalStatus])
+  @@index([assignedDistributorId, physicalStatus])
   @@index([batchId, physicalStatus])
   @@index([benefitId])
   @@index([exchangeLockRequestId])
@@ -2323,46 +2422,77 @@ model ManufacturerInventory {
 }
 
 model ManufacturerProductionRequest {
-  id                    String   @id @default(uuid())
-  manufacturerId        String
-  productId             String
-  productName           String
-  status                String   @default("PENDING_REVIEW") // PENDING_REVIEW | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
-  proposedUnitCogs       Decimal  @db.Decimal(20, 2)
-  minimumOrderQuantity  Int
-  proposedDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2) // Packaging/other overhead per delivered unit; excluded from production COGS
-  approvedUnitCogs       Decimal? @db.Decimal(20, 2)
+  id                         String   @id @default(uuid())
+  manufacturerId             String
+  productId                  String
+  productName                String
+  status                     String   @default("PENDING_REVIEW") // PENDING_REVIEW | PENDING_PRE_CHECK | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
+  proposedUnitCogs            Decimal? @db.Decimal(20, 2)
+  minimumOrderQuantity        Int
+  proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Packaging/other overhead per delivered unit; excluded from production COGS
+  approvedUnitCogs            Decimal? @db.Decimal(20, 2)
   approvedMinimumOrderQuantity Int?
-  approvedDeliveryCost  Decimal? @db.Decimal(20, 2)
-  manufacturerNote      String?  @db.Text
-  adminNote             String?  @db.Text
-  reviewedBy            String?
-  requestedBy           String?
-  requestedAt           DateTime @default(now())
-  reviewedAt            DateTime?
-  startedAt             DateTime?
-  completedAt           DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  manufacturer          Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
-  product               Product @relation(fields: [productId], references: [id], onDelete: Restrict)
-  lines                 ManufacturerProductionRequestLine[]
-  costLayers            ManufacturerInventoryCostLayer[]
+  approvedDeliveryCost       Decimal? @db.Decimal(20, 2)
+  fabricType                 String?  @db.VarChar(120)
+  gsm                        Decimal? @db.Decimal(8, 2)
+  targetCompletionDate       DateTime?
+  batchPlan                  Json?
+  preProductionChecklist     Json?
+  preProductionCheckedAt     DateTime?
+  postProductionChecklist    Json?
+  postProductionCheckedAt    DateTime?
+  manufacturerNote           String?  @db.Text
+  adminNote                  String?  @db.Text
+  reviewedBy                 String?
+  requestedBy                String?
+  requestedAt                DateTime @default(now())
+  reviewedAt                 DateTime?
+  startedAt                  DateTime?
+  completedAt                DateTime?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+  manufacturer               Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  product                    Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lines                      ManufacturerProductionRequestLine[]
+  costLayers                 ManufacturerInventoryCostLayer[]
 
   @@index([manufacturerId, status, requestedAt])
   @@index([productId, status])
 }
 
 model ManufacturerProductionRequestLine {
-  id          String   @id @default(uuid())
-  requestId   String
-  size        String   @db.VarChar(120)
-  color       String   @db.VarChar(120)
-  quantity    Int
-  request     ManufacturerProductionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id              String   @id @default(uuid())
+  requestId       String
+  size            String   @db.VarChar(120)
+  color           String   @db.VarChar(120)
+  quantity        Int
+  actualQuantity  Int?
+  damagedQuantity Int      @default(0)
+  request         ManufacturerProductionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
   @@unique([requestId, size, color])
   @@index([requestId])
+}
+
+model ManufacturerSettlementRequest {
+  id                  String   @id @default(uuid())
+  manufacturerId      String
+  requestType         String   @default("PRODUCTION") // PRODUCTION | LOGISTICS
+  amount              Decimal  @db.Decimal(20, 2)
+  status              String   @default("PENDING") // PENDING | PAID | REJECTED
+  notes               String?  @db.Text
+  requestedBy         String?
+  reviewedBy          String?
+  financialAccountId  String?
+  idempotencyKey      String?  @unique @db.VarChar(191)
+  requestedAt         DateTime @default(now())
+  paidAt              DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  manufacturer        Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+
+  @@index([manufacturerId, status, requestedAt])
+  @@index([requestType, status])
 }
 
 model ManufacturerInventoryCostLayer {
@@ -2435,23 +2565,31 @@ model ManufacturerInventoryMovement {
 model OrderAssignment {
   id              String    @id @default(uuid())
   orderId         String    @unique
-  manufacturerId  String
+  manufacturerId  String?
+  distributorId   String?
+  deliveryType    String    @default("SELF_DELIVERY") // SELF_DELIVERY | NCM
   status          String    @default("PENDING_ACCEPTANCE")
-  // PENDING_ACCEPTANCE | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | REJECTED
+  // PENDING_ACCEPTANCE | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | DISPATCHED | ON_THE_WAY | DELIVERED | RETURNED | REJECTED
   assignedAt      DateTime  @default(now())
   acceptedAt      DateTime?
+  dispatchedAt    DateTime?
+  onTheWayAt      DateTime?
   manufacturingAt DateTime?
   qualityCheckAt  DateTime?
   packedAt        DateTime?
   readyAt         DateTime?
   pickedUpAt      DateTime?
+  deliveredAt     DateTime?
+  returnedAt      DateTime?
   notes           String?   @db.Text
   rejectionReason String?
 
-  manufacturer Manufacturer @relation(fields: [manufacturerId], references: [id])
+  manufacturer Manufacturer? @relation(fields: [manufacturerId], references: [id])
+  distributor Distributor? @relation(fields: [distributorId], references: [id])
 
   @@index([orderId])
   @@index([manufacturerId])
+  @@index([distributorId])
   @@index([status])
 }
 

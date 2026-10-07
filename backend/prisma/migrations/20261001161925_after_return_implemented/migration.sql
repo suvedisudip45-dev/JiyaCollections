@@ -4,11 +4,15 @@
   - You are about to drop the column `categoryId` on the `journalentry` table. All the data in the column will be lost.
 
 */
--- DropIndex
-DROP INDEX `CustomerReturn_ncmReturnOrderId_idx` ON `customerreturn`;
+-- DropIndex (idempotent)
+SET @exist_idx1 := (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'customerreturn' AND index_name = 'CustomerReturn_ncmReturnOrderId_idx');
+SET @sql1 := IF(@exist_idx1 > 0, 'DROP INDEX `CustomerReturn_ncmReturnOrderId_idx` ON `customerreturn`', 'SELECT 1');
+PREPARE stmt1 FROM @sql1; EXECUTE stmt1; DEALLOCATE PREPARE stmt1;
 
--- DropIndex
-DROP INDEX `JournalEntry_categoryId_status_idx` ON `journalentry`;
+-- DropIndex (idempotent)
+SET @exist_idx2 := (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'journalentry' AND index_name = 'JournalEntry_categoryId_status_idx');
+SET @sql2 := IF(@exist_idx2 > 0, 'DROP INDEX `JournalEntry_categoryId_status_idx` ON `journalentry`', 'SELECT 1');
+PREPARE stmt2 FROM @sql2; EXECUTE stmt2; DEALLOCATE PREPARE stmt2;
 
 -- AlterTable
 ALTER TABLE `combobundleproduct` ADD COLUMN `selectedColor` VARCHAR(100) NULL;

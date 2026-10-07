@@ -54,6 +54,7 @@ export const readyForDelivery = async (req, res) => {
   try {
     const result = await prepareReadyDelivery({
       orderId: req.body.orderId,
+      distributorId: req.distributorId,
       manufacturerId: req.manufacturerId,
       packageWeight: req.body.packageWeight,
       packageDimensions: req.body.packageDimensions,
@@ -80,7 +81,12 @@ export const readyForDelivery = async (req, res) => {
 
 export const readyForDeliveryByAssignment = async (req, res) => {
   const assignment = await prisma.orderAssignment.findUnique({ where: { id: req.params.id } });
-  if (!assignment || assignment.manufacturerId !== req.manufacturerId) {
+  const isOwner =
+    (req.distributorId && assignment?.distributorId === req.distributorId) ||
+    (req.manufacturerId && assignment?.manufacturerId === req.manufacturerId) ||
+    req.adminId;
+
+  if (!assignment || !isOwner) {
     return res.status(404).json({ success: false, message: "Assignment not found" });
   }
   req.body.orderId = assignment.orderId;

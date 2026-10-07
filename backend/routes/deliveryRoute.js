@@ -18,7 +18,13 @@ import {
   receiveOrderStatusWebhook,
   requestReturn,
 } from "../controllers/deliveryController.js";
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import {
+  authenticate,
+  authorize,
+  authorizeAny,
+  setManufacturerContext,
+  setFulfillmentContext,
+} from "../middleware/unifiedAuth.js";
 
 const deliveryRouter = express.Router();
 
@@ -29,12 +35,12 @@ deliveryRouter.post("/webhook/ncm/order-status", receiveOrderStatusWebhook);
 deliveryRouter.post("/webhook/ncm/order-comment", receiveOrderCommentWebhook);
 deliveryRouter.post("/ncm-webhook", receiveOrderStatusWebhook);
 deliveryRouter.post("/webhook", receiveOrderStatusWebhook);
-deliveryRouter.post("/manufacturer/ready", authenticate, authorize("manufacturer:delivery_ready"), setManufacturerContext, readyForDelivery);
-deliveryRouter.post("/job/ready/:id", authenticate, authorize("manufacturer:delivery_ready"), setManufacturerContext, readyForDeliveryByAssignment);
-deliveryRouter.post("/job/ready-for-pickup/:id", authenticate, authorize("manufacturer:delivery_ready"), setManufacturerContext, readyForDeliveryByAssignment);
-deliveryRouter.post("/ready/:id", authenticate, authorize("manufacturer:delivery_ready"), setManufacturerContext, readyForDeliveryByAssignment);
-deliveryRouter.post("/ready-for-pickup/:id", authenticate, authorize("manufacturer:delivery_ready"), setManufacturerContext, readyForDeliveryByAssignment);
-deliveryRouter.post("/manufacturer/return", authenticate, authorize("manufacturer:delivery_return"), setManufacturerContext, requestReturn);
+deliveryRouter.post("/manufacturer/ready", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDelivery);
+deliveryRouter.post("/job/ready/:id", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDeliveryByAssignment);
+deliveryRouter.post("/job/ready-for-pickup/:id", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDeliveryByAssignment);
+deliveryRouter.post("/ready/:id", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDeliveryByAssignment);
+deliveryRouter.post("/ready-for-pickup/:id", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDeliveryByAssignment);
+deliveryRouter.post("/manufacturer/return", authenticate, authorizeAny("distributor:delivery_return", "manufacturer:delivery_return"), setFulfillmentContext, requestReturn);
 deliveryRouter.get("/customer/:id", authenticate, authorize("customer:delivery_read"), getCustomerDelivery);
 deliveryRouter.get("/admin", authenticate, authorize("delivery:admin_list"), adminListDeliveries);
 deliveryRouter.get("/admin/settlements", authenticate, authorize("delivery:settlements_read"), adminListSettlements);

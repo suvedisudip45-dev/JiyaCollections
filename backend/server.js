@@ -31,6 +31,9 @@ import manufacturerProductionRouter from "./routes/manufacturerProductionRoute.j
 import orderAssignmentRouter from "./routes/orderAssignmentRoute.js";
 import manufacturerDirectOrderRouter from "./routes/manufacturerDirectOrderRoute.js";
 import distributorRouter from "./routes/distributorRoute.js";
+import adminDistributorApplicationRouter from "./routes/adminDistributorApplicationRoute.js";
+import adminDistributorRateRouter, { adminDistributorFinanceRouter } from "./routes/adminDistributorRateRoute.js";
+import adminManufacturerSettlementRouter from "./routes/adminManufacturerSettlementRoute.js";
 import inventoryLedgerRouter from "./routes/inventoryLedgerRoute.js";
 import stockTransferRouter from "./routes/stockTransferRoute.js";
 import expenseRouter from "./routes/expenseRoute.js";
@@ -102,6 +105,10 @@ app.options('*', cors(corsOptions));
 //  Api Endpoints
 app.use("/api/auth", authRouter);
 app.use("/api/distributor", distributorRouter);
+app.use("/api/admin/distributor-applications", adminDistributorApplicationRouter);
+app.use("/api/admin/distributor-rates", adminDistributorRateRouter);
+app.use("/api/admin/distributor-finance", adminDistributorFinanceRouter);
+app.use("/api/admin/finance", adminManufacturerSettlementRouter);
 app.use("/api/admin/inventory-ledger", inventoryLedgerRouter);
 app.use("/api/stock-transfers", stockTransferRouter);
 app.use("/api/admin/access", accessManagementRouter);

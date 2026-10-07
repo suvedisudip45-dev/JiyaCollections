@@ -19,6 +19,18 @@ import {
   syncNcmBranches,
 } from "../controllers/manufacturerController.js";
 import { requestManufacturerDistributorAccess } from "../controllers/distributorController.js";
+import { dispatchStockTransferRequest } from "../controllers/stockTransferController.js";
+import {
+  completeProduction,
+  createAdminProductionRequest,
+  setProductionMoqPricing,
+  startProduction,
+  submitPreProductionChecklist,
+} from "../controllers/manufacturerProductionController.js";
+import {
+  createManufacturerSettlementRequest,
+  getManufacturerFinanceDashboard,
+} from "../controllers/manufacturerFinanceController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
 
@@ -31,11 +43,73 @@ manufacturerRouter.get("/branches", getAvailableNcmBranches);
 manufacturerRouter.post("/admin/branches/sync", authenticate, authorize("manufacturer:branches_sync"), syncNcmBranches);
 manufacturerRouter.post("/register", publicRegistrationRateLimit, upload.single("contractDoc"), registerManufacturerSelf);
 manufacturerRouter.post(
+  "/apply-distributor",
+  authenticate,
+  authorize("manufacturer:distributor_request"),
+  setManufacturerContext,
+  requestManufacturerDistributorAccess,
+);
+manufacturerRouter.post(
   "/distributor-access-request",
   authenticate,
   authorize("manufacturer:distributor_request"),
   setManufacturerContext,
   requestManufacturerDistributorAccess,
+);
+manufacturerRouter.post(
+  "/stock-requests/:id/dispatch",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  dispatchStockTransferRequest,
+);
+manufacturerRouter.post(
+  "/production/create",
+  authenticate,
+  authorize("manufacturer:production_admin"),
+  createAdminProductionRequest,
+);
+manufacturerRouter.patch(
+  "/production/:id/pre-check",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  submitPreProductionChecklist,
+);
+manufacturerRouter.patch(
+  "/production/:id/moq-pricing",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  setProductionMoqPricing,
+);
+manufacturerRouter.post(
+  "/production/:id/start",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  startProduction,
+);
+manufacturerRouter.patch(
+  "/production/:id/post-check",
+  authenticate,
+  authorize("manufacturer:production_manage"),
+  setManufacturerContext,
+  completeProduction,
+);
+manufacturerRouter.get(
+  "/finance/dashboard",
+  authenticate,
+  authorize("manufacturer:finance_dashboard"),
+  setManufacturerContext,
+  getManufacturerFinanceDashboard,
+);
+manufacturerRouter.post(
+  "/finance/settlement-request",
+  authenticate,
+  authorize("manufacturer:settlement_request"),
+  setManufacturerContext,
+  createManufacturerSettlementRequest,
 );
 
 // Manufacturer-authenticated

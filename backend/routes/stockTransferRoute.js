@@ -5,6 +5,7 @@ import {
   dispatchManualStockTransfer,
   getStockTransferCatalog,
   listAdminStockTransfers,
+  listAdminInventoryDiscrepancies,
   listDistributorStockTransfers,
   listManufacturerStockTransfers,
   receiveStockTransferShipment,
@@ -69,6 +70,12 @@ stockTransferRouter.get(
   authenticate,
   authorize("transfer:admin_read"),
   listAdminStockTransfers,
+);
+stockTransferRouter.get(
+  "/admin/discrepancies",
+  authenticate,
+  authorize("transfer:admin_read"),
+  listAdminInventoryDiscrepancies,
 );
 stockTransferRouter.patch(
   "/admin/:id/review",

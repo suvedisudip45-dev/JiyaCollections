@@ -3,6 +3,12 @@ import { prisma } from "../config/db.js";
 import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
 import { buildManufacturerStockMovements } from "../services/manufacturerInventoryAudit.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { ensureAccountingParty } from "../services/accountingPartyService.js";
+import { postJournalEntry } from "../services/accountingPostingEngine.js";
+import {
+  normalizeDistributorInboundChecklist,
+  normalizeDistributorStockDecrease,
+} from "../services/distributorStockService.js";
 import {
   buildReceiptRequestHash,
   buildShipmentRequestHash,
@@ -66,6 +72,58 @@ const actorFor = (req) => ({
 });
 
 const requestKeyFor = (req) => clean(req.get?.("Idempotency-Key") || req.body?.idempotencyKey);
+
+const resolveStockRequestLines = async (tx, lines) => {
+  if (!Array.isArray(lines) || lines.length < 1 || lines.length > 100) {
+    throw fail("A stock request must contain between 1 and 100 SKU lines.");
+  }
+  const variantLines = lines.map((line) => {
+    if (line?.inventorySkuId) return null;
+    const productId = clean(line?.productId);
+    if (!clean(line?.size) || !clean(line?.color)) {
+      throw fail("Each variant stock request must include a size and color.");
+    }
+    const size = normalizeSkuOption(line?.size);
+    const color = normalizeSkuOption(line?.color);
+    const quantity = Number(line?.quantity);
+    if (!productId || productId.length > 191 || !Number.isSafeInteger(quantity) || quantity <= 0 || quantity > 2147483647) {
+      throw fail("Each variant stock request must include a valid product, size, color, and positive whole-number quantity.");
+    }
+    return { productId, size, color };
+  });
+  const variantKeys = new Set(variantLines.filter(Boolean).map(({ productId, size, color }) =>
+    JSON.stringify([productId, size.key, color.key])
+  ));
+  let variantSkuByKey = new Map();
+  if (variantKeys.size) {
+    const variantInputs = variantLines.filter(Boolean);
+    const skus = await tx.inventorySku.findMany({
+      where: {
+        isActive: true,
+        OR: variantInputs.map(({ productId, size, color }) => ({
+          productId,
+          sizeKey: size.key,
+          colorKey: color.key,
+        })),
+      },
+      select: { id: true, productId: true, sizeKey: true, colorKey: true },
+    });
+    variantSkuByKey = new Map(skus.map((sku) => [
+      JSON.stringify([sku.productId, sku.sizeKey, sku.colorKey]),
+      sku.id,
+    ]));
+  }
+  const resolvedLines = lines.map((line, index) => {
+    if (line?.inventorySkuId) return line;
+    const variant = variantLines[index];
+    const inventorySkuId = variantSkuByKey.get(JSON.stringify([variant.productId, variant.size.key, variant.color.key]));
+    if (!inventorySkuId) {
+      throw fail(`No active inventory SKU exists for product ${variant.productId} (${variant.size.label}/${variant.color.label}).`, "SKU_NOT_FOUND", 404);
+    }
+    return { inventorySkuId, quantity: line.quantity };
+  });
+  return normalizeTransferRequestLines(resolvedLines);
+};
 
 const ensureActiveDistributor = async (tx, distributorId) => {
   const distributor = await tx.distributor.findFirst({
@@ -488,11 +546,11 @@ export const getStockTransferCatalog = async (req, res) => {
 
 export const createStockTransferRequest = async (req, res) => {
   try {
-    const requestedLines = normalizeTransferRequestLines(req.body?.lines);
     const manufacturerId = clean(req.body?.manufacturerId);
     if (!manufacturerId || manufacturerId.length > 191) throw fail("Select a valid manufacturer.");
     const transfer = await prisma.$transaction(async (tx) => {
       await ensureActiveDistributor(tx, req.distributorId);
+      const requestedLines = await resolveStockRequestLines(tx, req.body?.lines);
       const manufacturer = await tx.manufacturer.findFirst({
         where: { id: manufacturerId, isActive: true },
         select: { id: true },
@@ -575,6 +633,44 @@ export const listAdminStockTransfers = async (req, res) => {
     return res.json({ success: true, transfers, page, limit, total });
   } catch (error) {
     return respondError(res, error, "listAdminStockTransfers");
+  }
+};
+
+export const listAdminInventoryDiscrepancies = async (req, res) => {
+  try {
+    const status = clean(req.query.status).toUpperCase();
+    if (status && !["OPEN", "UNDER_REVIEW", "RESOLVED", "REJECTED"].includes(status)) {
+      throw fail("Discrepancy status filter is invalid.");
+    }
+    const distributorId = clean(req.query.distributorId);
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
+    const where = {
+      ...(status ? { status } : {}),
+      ...(distributorId ? { distributorId } : {}),
+    };
+    const [discrepancies, total] = await prisma.$transaction([
+      prisma.inventoryDiscrepancy.findMany({
+        where,
+        include: {
+          distributor: { select: { id: true, name: true } },
+          inventoryLocation: { select: { id: true, name: true, kind: true } },
+          inventorySku: {
+            include: {
+              product: { select: { id: true, name: true } },
+            },
+          },
+          stockTransfer: { select: { id: true, status: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.inventoryDiscrepancy.count({ where }),
+    ]);
+    return res.json({ success: true, discrepancies, page, limit, total });
+  } catch (error) {
+    return respondError(res, error, "listAdminInventoryDiscrepancies");
   }
 };
 
@@ -695,6 +791,38 @@ export const dispatchManualStockTransfer = async (req, res) => {
         data: { status: "DISPATCHED", dispatchedAt: new Date() },
         include: { lines: true },
       });
+      if (freightCharge?.greaterThan(0)) {
+        const party = await ensureAccountingParty({
+          partyType: "MANUFACTURER",
+          sourceEntityId: transfer.manufacturerId,
+          displayName: transfer.manufacturer.name,
+        }, { client: tx });
+        await postJournalEntry({
+          transactionDate: new Date(),
+          sourceType: "MANUFACTURER_LOGISTICS",
+          sourceId: shipment.id,
+          idempotencyKey: `MANUFACTURER_LOGISTICS:TRANSFER:${shipment.id}`,
+          referenceNumber: `MFG-LOG-${shipment.id.slice(-8).toUpperCase()}`,
+          description: `Manufacturer-paid logistics for stock transfer ${transfer.id}`,
+          lines: [
+            {
+              mappingKey: "DELIVERY_EXPENSE",
+              debit: freightCharge,
+              credit: 0,
+              description: `Local logistics for stock transfer ${transfer.id}`,
+            },
+            {
+              mappingKey: "MANUFACTURER_PAYABLE",
+              debit: 0,
+              credit: freightCharge,
+              description: `Local logistics payable to ${transfer.manufacturer.name}`,
+              supplierId: transfer.manufacturerId,
+              accountingPartyId: party.id,
+            },
+          ],
+          client: tx,
+        });
+      }
       return { shipment: updatedShipment, replayed: false };
     }, { isolationLevel: "Serializable" });
     return res.status(outcome.replayed ? 200 : 201).json({ success: true, ...outcome });
@@ -879,6 +1007,30 @@ export const bookNcmStockTransfer = async (req, res) => {
   }
 };
 
+export const dispatchStockTransferRequest = async (req, res) => {
+  try {
+    const method = clean(req.body?.deliveryMethod || req.body?.method).toUpperCase().replace(/[\s-]+/g, "_");
+    if (["NCM", "NEPAL_CAN_MOVE"].includes(method)) {
+      return bookNcmStockTransfer(req, res);
+    }
+    if (!["LOCAL", "LOCAL_LOGISTICS"].includes(method)) {
+      throw fail("Delivery method must be NCM or LOCAL_LOGISTICS.");
+    }
+    const freightCharge = normalizeFreightCharge(req.body?.freightCharge);
+    if (!freightCharge?.greaterThan(0)) {
+      throw fail("Local logistics requires a positive manufacturer-paid freight charge.");
+    }
+    req.body = {
+      ...req.body,
+      deliveryPartner: clean(req.body?.deliveryPartner) || "Local Logistics",
+      freightCharge: freightCharge.toFixed(2),
+    };
+    return dispatchManualStockTransfer(req, res);
+  } catch (error) {
+    return respondError(res, error, "dispatchStockTransferRequest");
+  }
+};
+
 export const resolveNcmShipmentBooking = async (req, res) => {
   const outcome = clean(req.body?.outcome).toUpperCase();
   if (!["BOOKED", "NOT_BOOKED"].includes(outcome)) {
@@ -928,6 +1080,65 @@ export const resolveNcmShipmentBooking = async (req, res) => {
     return res.json({ success: true, shipment });
   } catch (error) {
     return respondError(res, error, "resolveNcmShipmentBooking");
+  }
+};
+
+export const receiveStockTransferForRequest = async (req, res) => {
+  try {
+    const transfer = await prisma.stockTransfer.findUnique({
+      where: { id: req.params.id },
+      include: {
+        shipments: {
+          where: { status: { in: ["DISPATCHED", "PARTIALLY_RECEIVED"] } },
+          include: {
+            lines: {
+              include: {
+                stockTransferLine: { include: { inventorySku: true } },
+                receiptLines: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!transfer || transfer.distributorId !== req.distributorId) {
+      throw fail("Stock request not found for this distributor.", "TRANSFER_NOT_FOUND", 404);
+    }
+    const pendingShipments = transfer.shipments.map((shipment) => ({
+      ...shipment,
+      lines: shipment.lines.map((line) => ({
+        ...line,
+        remainingQuantity: line.quantity - line.receiptLines.reduce(
+          (total, receiptLine) => total + receiptLine.goodQuantity + receiptLine.damagedQuantity + receiptLine.missingQuantity,
+          0,
+        ),
+      })).filter((line) => line.remainingQuantity > 0),
+    })).filter((shipment) => shipment.lines.length > 0);
+    const shipment = req.body?.shipmentId
+      ? pendingShipments.find((candidate) => candidate.id === String(req.body.shipmentId))
+      : pendingShipments.length === 1 ? pendingShipments[0] : null;
+    if (!shipment) {
+      if (pendingShipments.length > 1 && !req.body?.shipmentId) {
+        throw fail("This stock request has multiple dispatched shipments; provide shipmentId from the transfer details.", "SHIPMENT_ID_REQUIRED", 409);
+      }
+      throw fail("No dispatched shipment awaiting receipt was found for this stock request.", "SHIPMENT_NOT_FOUND", 404);
+    }
+    const checklist = normalizeDistributorInboundChecklist(
+      req.body?.checklist || req.body,
+      shipment.lines,
+    );
+    req.params.shipmentId = shipment.id;
+    req.body = {
+      ...req.body,
+      lines: checklist.lines,
+      notes: [
+        String(req.body?.notes || "").trim(),
+        `Overall quality check passed.${checklist.qualityNotes ? ` ${checklist.qualityNotes}` : ""}`,
+      ].filter(Boolean).join("\n"),
+    };
+    return receiveStockTransferShipment(req, res);
+  } catch (error) {
+    return respondError(res, error, "receiveStockTransferForRequest");
   }
 };
 
@@ -1069,6 +1280,8 @@ export const receiveStockTransferShipment = async (req, res) => {
               stockTransferId: shipment.stockTransferId,
               shipmentId: shipment.id,
               receiptId: receipt.id,
+              distributorId: req.distributorId,
+              inventoryLocationId: damageLocation.id,
               inventorySkuId,
               discrepancyType: receiptLine.damageType,
               custodyStage: "DISTRIBUTOR_RECEIPT",
@@ -1086,6 +1299,8 @@ export const receiveStockTransferShipment = async (req, res) => {
               stockTransferId: shipment.stockTransferId,
               shipmentId: shipment.id,
               receiptId: receipt.id,
+              distributorId: req.distributorId,
+              inventoryLocationId: lostLocation.id,
               inventorySkuId,
               discrepancyType: "MISSING",
               custodyStage: "IN_TRANSIT",

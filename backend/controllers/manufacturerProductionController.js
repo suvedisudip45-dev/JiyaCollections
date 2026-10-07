@@ -8,6 +8,11 @@ import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from 
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { validateProductionRequestInput } from "../services/manufacturerProductionService.js";
+import {
+  validateAdminProductionPlan,
+  validatePostProductionChecklist,
+  validatePreProductionChecklist,
+} from "../services/manufacturerProductionWorkflowService.js";
 
 const parseArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -110,6 +115,176 @@ export const listProductionRequests = async (req, res) => {
   } catch (error) {
     console.error("listProductionRequests error:", error);
     return res.status(500).json({ success: false, message: "Unable to load production requests." });
+  }
+};
+
+export const createAdminProductionRequest = async (req, res) => {
+  try {
+    const manufacturerId = String(req.body.manufacturerId || "").trim();
+    const productId = String(req.body.productId || "").trim();
+    if (!manufacturerId || !productId) {
+      return res.status(400).json({ success: false, message: "Manufacturer and product are required." });
+    }
+    const manufacturer = await prisma.manufacturer.findFirst({
+      where: { id: manufacturerId, isActive: true, contractStatus: "ACTIVE" },
+      select: { id: true, name: true },
+    });
+    if (!manufacturer) return res.status(404).json({ success: false, message: "Active manufacturer not found." });
+
+    const product = await prisma.product.findFirst({
+      where: { id: productId, published: true, deletedAt: null },
+      select: { id: true, name: true, sizes: true, colors: true, variants: true },
+    });
+    if (!product) return res.status(404).json({ success: false, message: "Published product not found." });
+    const normalized = validateProductionRequestInput({
+      lines: req.body.lines,
+      unitCogs: 1,
+      minimumOrderQuantity: 1,
+      deliveryCost: 0,
+    });
+    validRequestLines(product, normalized.lines);
+    const plan = validateAdminProductionPlan(req.body);
+    if (plan.batchQuantity !== normalized.totalQuantity) {
+      return res.status(400).json({ success: false, message: "Batch planned quantities must equal the requested size/color quantities." });
+    }
+    const adminNote = String(req.body.adminNote || "").trim();
+    if (adminNote.length > 2000) return res.status(400).json({ success: false, message: "Admin note cannot exceed 2000 characters." });
+
+    const request = await prisma.$transaction(async (tx) => {
+      const created = await tx.manufacturerProductionRequest.create({
+        data: {
+          manufacturerId,
+          productId,
+          productName: product.name,
+          status: "PENDING_PRE_CHECK",
+          proposedUnitCogs: null,
+          minimumOrderQuantity: normalized.totalQuantity,
+          proposedDeliveryCost: 0,
+          approvedDeliveryCost: 0,
+          fabricType: plan.fabricType,
+          gsm: plan.gsm,
+          targetCompletionDate: plan.targetCompletionDate,
+          batchPlan: plan.batches,
+          adminNote: adminNote || null,
+          requestedBy: req.auth?.accountId || null,
+          lines: { create: normalized.lines },
+        },
+        include: {
+          manufacturer: { select: { id: true, name: true } },
+          product: { select: { id: true, name: true } },
+          lines: true,
+        },
+      });
+      await recordSystemAudit(actorContext(req), {
+        action: "ADMIN_MANUFACTURER_PRODUCTION_ORDER_CREATED",
+        entityType: "ManufacturerProductionRequest",
+        entityId: created.id,
+        afterState: {
+          manufacturerId,
+          productId,
+          totalQuantity: normalized.totalQuantity,
+          fabricType: plan.fabricType,
+          gsm: plan.gsm.toFixed(2),
+          targetCompletionDate: plan.targetCompletionDate.toISOString(),
+          batches: plan.batches,
+        },
+      }, { client: tx });
+      return created;
+    }, { isolationLevel: "Serializable" });
+    return res.status(201).json({ success: true, message: "Production order created; manufacturer pre-production approval is required.", request });
+  } catch (error) {
+    console.error("createAdminProductionRequest error:", error);
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to create production order." });
+  }
+};
+
+export const submitPreProductionChecklist = async (req, res) => {
+  try {
+    const checklist = validatePreProductionChecklist(req.body.checklist || req.body);
+    const { id } = req.params;
+    const request = await prisma.manufacturerProductionRequest.findFirst({
+      where: { id, manufacturerId: req.manufacturerId },
+      include: { lines: true },
+    });
+    if (!request) return res.status(404).json({ success: false, message: "Production request not found." });
+    if (!["PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "APPROVED"].includes(request.status)) {
+      return res.status(409).json({ success: false, message: "Pre-production checklist can only be submitted before production starts." });
+    }
+    const status = checklist.passed ? "PRE_CHECK_PASSED" : "PRE_CHECK_FAILED";
+    const updated = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.manufacturerProductionRequest.updateMany({
+        where: { id, manufacturerId: req.manufacturerId, status: request.status },
+        data: {
+          preProductionChecklist: checklist,
+          preProductionCheckedAt: new Date(),
+          status,
+        },
+      });
+      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while the checklist was being recorded."), { statusCode: 409 });
+      await recordSystemAudit(actorContext(req), {
+        action: "MANUFACTURER_PRE_PRODUCTION_CHECKLIST_RECORDED",
+        entityType: "ManufacturerProductionRequest",
+        entityId: id,
+        beforeState: { status: request.status },
+        afterState: { status, checklist },
+      }, { client: tx });
+      return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
+    }, { isolationLevel: "Serializable" });
+    return res.status(checklist.passed ? 200 : 422).json({
+      success: checklist.passed,
+      message: checklist.passed ? "Pre-production checklist passed." : "Resolve failed checklist items before starting production.",
+      request: updated,
+    });
+  } catch (error) {
+    console.error("submitPreProductionChecklist error:", error);
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
+};
+
+export const setProductionMoqPricing = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const unitCogs = new Prisma.Decimal(String(req.body.averagePricePerUnit ?? req.body.unitCogs ?? ""));
+    const moq = Number(req.body.moq ?? req.body.minimumOrderQuantity);
+    if (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !Number.isInteger(moq) || moq < 1 || moq > 2147483647) {
+      return res.status(400).json({ success: false, message: "Provide a positive average unit price and positive whole-number MOQ." });
+    }
+    const request = await prisma.manufacturerProductionRequest.findFirst({
+      where: { id, manufacturerId: req.manufacturerId },
+      include: { lines: true },
+    });
+    if (!request) return res.status(404).json({ success: false, message: "Production request not found." });
+    if (!["PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "PRE_CHECK_PASSED"].includes(request.status)) {
+      return res.status(409).json({ success: false, message: "MOQ and pricing can only be set before production starts." });
+    }
+    const plannedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
+    if (moq > plannedQuantity) {
+      return res.status(400).json({ success: false, message: "MOQ cannot exceed the quantity requested by the admin." });
+    }
+    const updated = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.manufacturerProductionRequest.updateMany({
+        where: { id, manufacturerId: req.manufacturerId, status: request.status },
+        data: {
+          proposedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+          approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+          approvedMinimumOrderQuantity: moq,
+          minimumOrderQuantity: moq,
+          approvedDeliveryCost: request.approvedDeliveryCost ?? request.proposedDeliveryCost ?? new Prisma.Decimal(0),
+        },
+      });
+      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while pricing was being recorded."), { statusCode: 409 });
+      await recordSystemAudit(actorContext(req), {
+        action: "MANUFACTURER_PRODUCTION_TERMS_SET",
+        entityType: "ManufacturerProductionRequest",
+        entityId: id,
+        afterState: { averagePricePerUnit: unitCogs.toFixed(2), moq },
+      }, { client: tx });
+      return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
+    }, { isolationLevel: "Serializable" });
+    return res.json({ success: true, message: "Manufacturer MOQ and average unit price saved.", request: updated });
+  } catch (error) {
+    console.error("setProductionMoqPricing error:", error);
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
   }
 };
 
@@ -257,12 +432,24 @@ export const startProduction = async (req, res) => {
   try {
     const { id } = req.params;
     const changed = await prisma.manufacturerProductionRequest.updateMany({
-      where: { id, manufacturerId: req.manufacturerId, status: "APPROVED" },
+      where: {
+        id,
+        manufacturerId: req.manufacturerId,
+        status: "PRE_CHECK_PASSED",
+        approvedUnitCogs: { not: null },
+        approvedMinimumOrderQuantity: { not: null },
+        approvedDeliveryCost: { not: null },
+      },
       data: { status: "IN_PRODUCTION", startedAt: new Date() },
     });
     if (changed.count !== 1) {
       const exists = await prisma.manufacturerProductionRequest.findFirst({ where: { id, manufacturerId: req.manufacturerId } });
-      return res.status(exists ? 409 : 404).json({ success: false, message: exists ? "Only an approved request can be started." : "Production request not found." });
+      return res.status(exists ? 409 : 404).json({
+        success: false,
+        message: exists
+          ? "Production requires a passed pre-production checklist and saved MOQ/pricing."
+          : "Production request not found.",
+      });
     }
     await recordSystemAudit(actorContext(req), {
       action: "MANUFACTURER_PRODUCTION_STARTED",
@@ -288,15 +475,46 @@ export const completeProduction = async (req, res) => {
       if (!request || request.manufacturerId !== req.manufacturerId) {
         throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
       }
-      if (request.status !== "IN_PRODUCTION") {
+      if (!["IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status)) {
         throw Object.assign(new Error("Only a request in production can be completed."), { statusCode: 409 });
       }
       if (!request.approvedUnitCogs || request.approvedMinimumOrderQuantity === null || request.approvedDeliveryCost === null) {
         throw Object.assign(new Error("The production request is missing approved cost terms."), { statusCode: 409 });
       }
+      const checklist = validatePostProductionChecklist(req.body.checklist || req.body, request.lines);
+      if (!checklist.passed) {
+        await tx.manufacturerProductionRequest.update({
+          where: { id: request.id },
+          data: {
+            status: "POST_CHECK_FAILED",
+            postProductionChecklist: checklist,
+            postProductionCheckedAt: new Date(),
+          },
+        });
+        for (const actual of checklist.actualCounts) {
+          await tx.manufacturerProductionRequestLine.update({
+            where: { requestId_size_color: { requestId: request.id, size: actual.size, color: actual.color } },
+            data: { actualQuantity: actual.quantity, damagedQuantity: actual.damagedQuantity },
+          });
+        }
+        await recordSystemAudit(actorContext(req), {
+          action: "MANUFACTURER_POST_PRODUCTION_CHECKLIST_FAILED",
+          entityType: "ManufacturerProductionRequest",
+          entityId: request.id,
+          beforeState: { status: request.status },
+          afterState: { status: "POST_CHECK_FAILED", checklist },
+        }, { client: tx });
+        return { failed: true, requestId: request.id };
+      }
       const product = await tx.product.findUnique({ where: { id: request.productId }, select: { id: true, name: true } });
       if (!product) throw Object.assign(new Error("The requested product no longer exists."), { statusCode: 409 });
 
+      for (const actual of checklist.actualCounts) {
+        await tx.manufacturerProductionRequestLine.update({
+          where: { requestId_size_color: { requestId: request.id, size: actual.size, color: actual.color } },
+          data: { actualQuantity: actual.quantity, damagedQuantity: actual.damagedQuantity },
+        });
+      }
       const inventory = await tx.manufacturerInventory.findUnique({
         where: { manufacturerId_productId: { manufacturerId: request.manufacturerId, productId: request.productId } },
       });
@@ -310,15 +528,26 @@ export const completeProduction = async (req, res) => {
         JSON.stringify([String(variant.size || "Standard").trim().toLowerCase(), String(variant.color || "Standard").trim().toLowerCase()]),
         { ...variant },
       ]));
+      const actualByKey = new Map(checklist.actualCounts.map((line) => [
+        JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]),
+        line,
+      ]));
+      let productionQuantity = 0;
+      let damagedQuantity = 0;
       for (const line of request.lines) {
+        const actual = actualByKey.get(JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]));
+        const goodQuantity = actual.quantity - actual.damagedQuantity;
+        productionQuantity += goodQuantity;
+        damagedQuantity += actual.damagedQuantity;
         const key = JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]);
         const current = variantsByKey.get(key) || { size: line.size, color: line.color, quantity: 0, reservedQty: 0 };
         const reservedQty = Number(current.reservedQty || 0);
         variantsByKey.set(key, {
           ...current,
-          quantity: Number(current.quantity || 0) + line.quantity,
+          quantity: Number(current.quantity || 0) + goodQuantity,
           reservedQty,
         });
+        if (!goodQuantity) continue;
         await receiveCompletedProductionLine({
           tx,
           requestId: request.id,
@@ -327,7 +556,7 @@ export const completeProduction = async (req, res) => {
           factoryLocationId: factoryLocation.id,
           size: line.size,
           color: line.color,
-          quantity: line.quantity,
+          quantity: goodQuantity,
           unitCogs: request.approvedUnitCogs,
           unitDeliveryCost: request.approvedDeliveryCost,
           actorId: req.auth?.accountId || req.auth?.profileId,
@@ -374,7 +603,6 @@ export const completeProduction = async (req, res) => {
       });
       if (movements.length) await tx.manufacturerInventoryMovement.createMany({ data: movements });
 
-      const productionQuantity = request.lines.reduce((sum, line) => sum + line.quantity, 0);
       const productionCogs = new Prisma.Decimal(request.approvedUnitCogs.toString())
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -383,36 +611,43 @@ export const completeProduction = async (req, res) => {
         sourceEntityId: request.manufacturerId,
         displayName: request.manufacturer.name,
       }, { client: tx });
-      await postJournalEntry({
-        transactionDate: new Date(),
-        sourceType: "MANUFACTURER_PRODUCTION",
-        sourceId: request.id,
-        idempotencyKey: `MANUFACTURER_PRODUCTION:${request.id}`,
-        referenceNumber: `MFG-PROD-${request.id.slice(-8).toUpperCase()}`,
-        description: `Completed production of ${productionQuantity} ${product.name} units`,
-        lines: [
-          {
-            mappingKey: "INVENTORY",
-            debit: productionCogs,
-            credit: 0,
-            description: `Inventory received from production request ${request.id}`,
-            productId: product.id,
-          },
-          {
-            mappingKey: "MANUFACTURER_PAYABLE",
-            debit: 0,
-            credit: productionCogs,
-            description: `Production COGS payable to ${request.manufacturer.name}`,
-            supplierId: request.manufacturerId,
-            accountingPartyId: party.id,
-          },
-        ],
-        client: tx,
-      });
+      if (productionCogs.greaterThan(0)) {
+        await postJournalEntry({
+          transactionDate: new Date(),
+          sourceType: "MANUFACTURER_PRODUCTION",
+          sourceId: request.id,
+          idempotencyKey: `MANUFACTURER_PRODUCTION:${request.id}`,
+          referenceNumber: `MFG-PROD-${request.id.slice(-8).toUpperCase()}`,
+          description: `Completed production of ${productionQuantity} ${product.name} units`,
+          lines: [
+            {
+              mappingKey: "INVENTORY",
+              debit: productionCogs,
+              credit: 0,
+              description: `Inventory received from production request ${request.id}`,
+              productId: product.id,
+            },
+            {
+              mappingKey: "MANUFACTURER_PAYABLE",
+              debit: 0,
+              credit: productionCogs,
+              description: `Production COGS payable to ${request.manufacturer.name}`,
+              supplierId: request.manufacturerId,
+              accountingPartyId: party.id,
+            },
+          ],
+          client: tx,
+        });
+      }
 
       const claimed = await tx.manufacturerProductionRequest.updateMany({
-        where: { id: request.id, manufacturerId: request.manufacturerId, status: "IN_PRODUCTION" },
-        data: { status: "COMPLETED", completedAt: new Date() },
+        where: { id: request.id, manufacturerId: request.manufacturerId, status: request.status },
+        data: {
+          status: "COMPLETED",
+          completedAt: new Date(),
+          postProductionChecklist: checklist,
+          postProductionCheckedAt: new Date(),
+        },
       });
       if (claimed.count !== 1) throw Object.assign(new Error("Production request changed before completion could be recorded."), { statusCode: 409 });
       await syncProductStock(product.id, { client: tx, throwOnError: true });
@@ -420,12 +655,13 @@ export const completeProduction = async (req, res) => {
         action: "MANUFACTURER_PRODUCTION_COMPLETED",
         entityType: "ManufacturerProductionRequest",
         entityId: request.id,
-        beforeState: { status: "IN_PRODUCTION", inventoryQuantity: inventory?.quantity || 0 },
+        beforeState: { status: request.status, inventoryQuantity: inventory?.quantity || 0 },
         afterState: {
           status: "COMPLETED",
           inventoryQuantity: totalQuantity,
           factoryLocationId: factoryLocation.id,
           producedQuantity: productionQuantity,
+          damagedQuantity,
           productionCogs: productionCogs.toFixed(2),
           deliveryOverheadAccrued: "0.00",
         },
@@ -435,9 +671,17 @@ export const completeProduction = async (req, res) => {
         productId: product.id,
         factoryLocationId: factoryLocation.id,
         producedQuantity: productionQuantity,
+        damagedQuantity,
         productionCogs: productionCogs.toFixed(2),
       };
     }, { isolationLevel: "Serializable" });
+    if (completed.failed) {
+      return res.status(422).json({
+        success: false,
+        message: "Resolve failed post-production checks before inventory can be received.",
+        requestId: completed.requestId,
+      });
+    }
     return res.json({ success: true, message: "Production completed; inventory and COGS payable were recorded.", ...completed });
   } catch (error) {
     console.error("completeProduction error:", error);

@@ -224,15 +224,22 @@ export const listAdminCustomerReturns = async ({ skip = 0, take = 30, status }) 
   return { returns, total };
 };
 
-export const listManufacturerCustomerReturns = ({ manufacturerId }) => prisma.customerReturn.findMany({
-  where: {
-    manufacturerId,
+export const listManufacturerCustomerReturns = ({ manufacturerId, distributorId }) => {
+  const where = {
     requestKey: { not: null },
     lifecycleStatus: { in: ["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT", "RECEIVED_AT_WAREHOUSE", "REFUND_PENDING", "REFUNDED"] },
-  },
-  include: { events: { orderBy: { occurredAt: "asc" } } },
-  orderBy: { createdAt: "desc" },
-});
+  };
+  if (distributorId) {
+    where.distributorId = distributorId;
+  } else if (manufacturerId) {
+    where.manufacturerId = manufacturerId;
+  }
+  return prisma.customerReturn.findMany({
+    where,
+    include: { events: { orderBy: { occurredAt: "asc" } } },
+    orderBy: { createdAt: "desc" },
+  });
+};
 
 export const submitApprovedCustomerReturn = async ({ returnId, adminId, retry = false, chargePayer }) => {
   const submission = await prisma.$transaction(async (tx) => {

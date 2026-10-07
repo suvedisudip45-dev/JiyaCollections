@@ -119,12 +119,130 @@ const DistributorHome = () => {
 
   return (
     <section className="space-y-6">
-      <header className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Distributor workspace</p>
-        <h2 className="mt-2 text-2xl font-bold text-slate-900">Bulk stock transfers</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-600">
-          Welcome, {distributor?.businessName || "Distributor"}. Request platform-owned factory stock and confirm each shipment here.
-        </p>
+      <header className="rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-6 shadow-xs space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Authorized Distributor Hub
+              </span>
+            </div>
+            <h2 className="mt-2 text-2xl font-bold text-[#171717] font-heading">
+              Distributor Operations Command
+            </h2>
+            <p className="mt-1 text-sm text-[#575757]">
+              Welcome, {distributor?.businessName || distributor?.name || "Distributor"}. Manage assigned regional customer orders, local hub stock, direct walk-in sales, and bulk replenishment.
+            </p>
+          </div>
+        </div>
+
+        {/* Hub Quick Navigation Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
+          <a
+            href="/orders"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Customer Fulfillment</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Order Assignments
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              View →
+            </span>
+          </a>
+
+          <a
+            href="/direct-orders"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Walk-in &amp; Phone Sales</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Direct Hub Orders
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Manage →
+            </span>
+          </a>
+
+          <a
+            href="/inventory"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Local Warehouse</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Hub Inventory Stock
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Stock →
+            </span>
+          </a>
+
+          <a
+            href="/distributor/deliveries"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Last-Mile Routing</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Self-Delivery Portal
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Dispatch →
+            </span>
+          </a>
+
+          <a
+            href="/distributor/demand"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Factory Stock Inbound</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Demand &amp; Receipts
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Inbound →
+            </span>
+          </a>
+
+          <a
+            href="/distributor/finance"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">Earnings &amp; Settlements</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Distributor Finance
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Statement →
+            </span>
+          </a>
+
+          <a
+            href="/pickup-profile"
+            className="flex items-center justify-between p-4 rounded-xl bg-[#f8f7f4] border border-[#dedbd3] hover:border-[#171717] transition-all group sm:col-span-2 lg:col-span-3"
+          >
+            <div>
+              <p className="text-xs text-[#575757] font-medium">NCM Courier Partner Logistics</p>
+              <h4 className="text-sm font-bold text-[#171717] group-hover:text-emerald-700 transition-colors">
+                Operational Pickup &amp; Branch Handoff Setup
+              </h4>
+            </div>
+            <span className="text-xs font-semibold px-2 py-1 rounded-md bg-white border border-[#dedbd3] text-[#171717]">
+              Configure Setup →
+            </span>
+          </a>
+        </div>
       </header>
 
       <form onSubmit={submitRequest} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

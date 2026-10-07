@@ -111,7 +111,15 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
   try {
     const manufacturer = await prisma.manufacturer.findUnique({
       where: { id: req.manufacturerId },
-      select: { id: true, accountId: true, name: true, phone: true, address: true, city: true },
+      select: {
+        id: true,
+        accountId: true,
+        name: true,
+        phone: true,
+        address: true,
+        city: true,
+        distributorApplicationStatus: true,
+      },
     });
     if (!manufacturer || manufacturer.accountId !== req.auth?.accountId) {
       return res.status(404).json({ success: false, message: "Manufacturer profile not found." });
@@ -120,24 +128,24 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
       where: { accountId: req.auth.accountId },
       select: { id: true, status: true },
     });
-    if (existing) {
+    if (
+      manufacturer.distributorApplicationStatus === "REQUESTED" ||
+      manufacturer.distributorApplicationStatus === "APPROVED" ||
+      existing?.status === "ACTIVE"
+    ) {
       return res.status(409).json({
         success: false,
-        message: "A distributor application already exists for this account.",
-        application: existing,
+        message: manufacturer.distributorApplicationStatus === "APPROVED" || existing?.status === "ACTIVE"
+          ? "This manufacturer account already has distributor access."
+          : "A distributor application is already awaiting review.",
+        application: { id: manufacturer.id, status: manufacturer.distributorApplicationStatus },
       });
     }
 
-    const distributor = await prisma.distributor.create({
-      data: {
-        accountId: req.auth.accountId,
-        name: manufacturer.name,
-        phone: manufacturer.phone,
-        address: manufacturer.address,
-        city: manufacturer.city,
-        status: "PENDING_APPROVAL",
-        isActive: false,
-      },
+    const application = await prisma.manufacturer.update({
+      where: { id: manufacturer.id },
+      data: { distributorApplicationStatus: "REQUESTED" },
+      select: { id: true, distributorApplicationStatus: true, updatedAt: true },
     });
     await logAuthEvent({
       accountId: req.auth.accountId,
@@ -148,18 +156,145 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
       ipAddress: req.ip || "",
       userAgent: req.headers["user-agent"] || "",
       correlationId: req.correlationId || null,
-      metadata: { distributorId: distributor.id },
+      metadata: { manufacturerId: manufacturer.id },
     });
     return res.status(202).json({
       success: true,
       message: "Distributor access request submitted for admin approval.",
-      application: { id: distributor.id, status: distributor.status, appliedAt: distributor.appliedAt },
+      application: {
+        id: application.id,
+        status: application.distributorApplicationStatus,
+        appliedAt: application.updatedAt,
+      },
     });
   } catch (error) {
-    if (error.code === "P2002") {
-      return res.status(409).json({ success: false, message: "A distributor application already exists for this account." });
-    }
     return sendFailure(res, error, "requestManufacturerDistributorAccess");
+  }
+};
+
+export const listManufacturerDistributorApplications = async (req, res) => {
+  try {
+    const status = clean(req.query?.status).toUpperCase() || "REQUESTED";
+    const allowedStatuses = ["NONE", "REQUESTED", "APPROVED", "REJECTED"];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid manufacturer distributor application status." });
+    }
+    const page = Math.max(1, Number.parseInt(req.query?.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query?.limit, 10) || 25));
+    const where = { distributorApplicationStatus: status };
+    const [applications, total] = await prisma.$transaction([
+      prisma.manufacturer.findMany({
+        where,
+        include: {
+          account: { select: { id: true, email: true, phone: true, role: true, status: true } },
+        },
+        orderBy: { updatedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.manufacturer.count({ where }),
+    ]);
+    return res.json({ success: true, applications, page, limit, total });
+  } catch (error) {
+    return sendFailure(res, error, "listManufacturerDistributorApplications");
+  }
+};
+
+export const reviewManufacturerDistributorApplication = async (req, res) => {
+  const targetStatus = clean(req.body?.status).toUpperCase();
+  if (!["APPROVED", "REJECTED"].includes(targetStatus)) {
+    return res.status(400).json({ success: false, message: "Status must be APPROVED or REJECTED." });
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const manufacturer = await tx.manufacturer.findUnique({
+        where: { id: req.params.id },
+        include: { account: { select: { id: true } } },
+      });
+      if (!manufacturer || !manufacturer.accountId) {
+        const error = new Error("Manufacturer distributor application not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (manufacturer.distributorApplicationStatus !== "REQUESTED") {
+        const error = new Error("Only pending distributor applications can be reviewed.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      const claimed = await tx.manufacturer.updateMany({
+        where: { id: manufacturer.id, distributorApplicationStatus: "REQUESTED" },
+        data: { distributorApplicationStatus: targetStatus },
+      });
+      if (claimed.count !== 1) {
+        const error = new Error("This distributor application has already been reviewed.");
+        error.statusCode = 409;
+        throw error;
+      }
+
+      let distributor = await tx.distributor.findUnique({
+        where: { accountId: manufacturer.accountId },
+      });
+      if (targetStatus === "APPROVED") {
+        const now = new Date();
+        const profileData = {
+          name: manufacturer.name,
+          phone: manufacturer.phone,
+          address: manufacturer.address,
+          city: manufacturer.city,
+          status: "ACTIVE",
+          isActive: true,
+          approvedAt: now,
+          approvedBy: req.auth?.accountId || req.auth?.profileId,
+        };
+        distributor = distributor
+          ? await tx.distributor.update({ where: { id: distributor.id }, data: profileData })
+          : await tx.distributor.create({
+              data: { ...profileData, accountId: manufacturer.accountId, appliedAt: manufacturer.updatedAt },
+            });
+        await assignAccountRole(manufacturer.accountId, "DISTRIBUTOR", { client: tx });
+      } else {
+        if (distributor && distributor.status === "PENDING_APPROVAL") {
+          distributor = await tx.distributor.update({
+            where: { id: distributor.id },
+            data: { status: "REJECTED", isActive: false },
+          });
+        }
+        if (distributor?.status !== "ACTIVE") {
+          await deactivateAccountRole(manufacturer.accountId, "DISTRIBUTOR", { client: tx });
+        }
+      }
+
+      await logAuthEvent({
+        accountId: manufacturer.accountId,
+        identifier: manufacturer.accountId,
+        action: "MANUFACTURER_DISTRIBUTOR_APPLICATION_REVIEWED",
+        role: "ADMIN",
+        portal: "ADMIN",
+        ipAddress: req.ip || "",
+        userAgent: req.headers["user-agent"] || "",
+        correlationId: req.correlationId || null,
+        metadata: {
+          manufacturerId: manufacturer.id,
+          distributorId: distributor?.id || null,
+          previousStatus: manufacturer.distributorApplicationStatus,
+          status: targetStatus,
+        },
+      }, { client: tx });
+
+      return { manufacturerId: manufacturer.id, accountId: manufacturer.accountId, status: targetStatus, distributor };
+    });
+
+    invalidatePermissionCache(result.accountId);
+    return res.json({
+      success: true,
+      message: `Manufacturer distributor application ${targetStatus.toLowerCase()}.`,
+      application: result,
+    });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
+    return sendFailure(res, error, "reviewManufacturerDistributorApplication");
   }
 };
 
@@ -286,5 +421,97 @@ export const reviewDistributorApplication = async (req, res) => {
   } catch (error) {
     if (error.statusCode) return res.status(error.statusCode).json({ success: false, message: error.message });
     return sendFailure(res, error, "reviewDistributorApplication");
+  }
+};
+
+export const getDistributorPickupProfile = async (req, res) => {
+  try {
+    const distributor = await prisma.distributor.findUnique({
+      where: { id: req.distributorId },
+    });
+    if (!distributor) {
+      return res.status(404).json({ success: false, message: "Distributor profile not found." });
+    }
+    return res.json({ success: true, distributor });
+  } catch (error) {
+    return sendFailure(res, error, "getDistributorPickupProfile");
+  }
+};
+
+export const updateDistributorPickupProfile = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.body?.distributorId;
+    const {
+      pickupAddress,
+      pickupContactName,
+      pickupContactPhone,
+      pickupWindow,
+      returnInstructions,
+    } = req.body;
+
+    const updateData = {};
+    if (pickupAddress !== undefined) updateData.pickupAddress = pickupAddress || null;
+    if (pickupContactName !== undefined) updateData.pickupContactName = String(pickupContactName || "").trim();
+    if (pickupContactPhone !== undefined) updateData.pickupContactPhone = String(pickupContactPhone || "").trim();
+    if (pickupWindow !== undefined) updateData.pickupWindow = String(pickupWindow || "").trim();
+    if (returnInstructions !== undefined) updateData.returnInstructions = returnInstructions || null;
+
+    const updated = await prisma.distributor.update({
+      where: { id: distributorId },
+      data: updateData,
+    });
+
+    // If this distributor account also has a linked manufacturer profile, sync to manufacturer
+    if (updated.accountId) {
+      const linkedManufacturer = await prisma.manufacturer.findUnique({
+        where: { accountId: updated.accountId },
+      });
+      if (linkedManufacturer) {
+        await prisma.manufacturer.update({
+          where: { id: linkedManufacturer.id },
+          data: {
+            ...updateData,
+            ncmPickupBranch: updated.ncmPickupBranch,
+            pickupBranchStatus: updated.pickupBranchStatus,
+          },
+        });
+      }
+    }
+
+    return res.json({ success: true, message: "Distributor pickup profile updated successfully.", distributor: updated });
+  } catch (error) {
+    return sendFailure(res, error, "updateDistributorPickupProfile");
+  }
+};
+
+/**
+ * Toggle distributor online/offline availability for accepting orders.
+ * PATCH /api/distributor/availability
+ */
+export const toggleDistributorAvailability = async (req, res) => {
+  try {
+    const distributorId = req.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, message: "Distributor profile required." });
+    }
+
+    const { isAvailable } = req.body;
+    if (typeof isAvailable !== "boolean") {
+      return res.status(400).json({ success: false, message: "isAvailable (boolean) is required." });
+    }
+
+    const updated = await prisma.distributor.update({
+      where: { id: distributorId },
+      data: { isActive: isAvailable },
+      select: { id: true, name: true, isActive: true, status: true },
+    });
+
+    return res.json({
+      success: true,
+      message: isAvailable ? "Hub is now accepting orders (Online)." : "Hub is paused (Offline).",
+      distributor: updated,
+    });
+  } catch (error) {
+    return sendFailure(res, error, "toggleDistributorAvailability");
   }
 };

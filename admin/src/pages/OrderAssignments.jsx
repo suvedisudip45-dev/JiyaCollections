@@ -1,79 +1,27 @@
-import React, { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import {
-  Package,
-  ArrowRight,
-  RefreshCw,
-  Search,
-  Filter,
-  CheckCircle2,
-  Clock,
-  Truck,
-  Building2,
-  X,
-  AlertCircle,
-} from "lucide-react";
+import { Package, RefreshCw, Search } from "lucide-react";
 import { backendUrl, currency } from "../App";
-
-const canAdminReassignAssignment = ({ status, hasDeliveryOrder = false } = {}) => {
-  const normalized = String(status || "").toLowerCase();
-
-  if (hasDeliveryOrder) return false;
-
-  const lockedStatuses = new Set([
-    "accepted",
-    "preparing",
-    "quality_check",
-    "packed",
-    "ready_for_pickup",
-    "picked_up",
-    "out_for_delivery",
-    "in_transit",
-    "arrived_at_destination",
-    "delivered",
-    "return_requested",
-  ]);
-
-  if (lockedStatuses.has(normalized)) return false;
-
-  return ["assigned", "pending_acceptance", "pending_assignment", "rejected"].includes(normalized) || normalized === "";
-};
 
 const OrderAssignments = ({ token }) => {
   const [assignments, setAssignments] = useState([]);
-  const [manufacturers, setManufacturers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-
-  // Re-assign Modal
-  const [reassignModalOpen, setReassignModalOpen] = useState(false);
-  const [selectedAssignment, setSelectedAssignment] = useState(null);
-  const [targetMfgId, setTargetMfgId] = useState("");
-  const [reassignReason, setReassignReason] = useState("");
-  const [submitting, setSubmitting] = useState(false);
 
   const fetchAssignmentsData = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [assignRes, mfgRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
-          headers: { token },
-        }),
-        axios.get(`${backendUrl}/api/manufacturer/admin/list`, {
-          headers: { token },
-        }),
-      ]);
+      const assignRes = await axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
+        headers: { token },
+      });
 
       if (assignRes.data.success) {
         setAssignments(assignRes.data.assignments || []);
       }
-      if (mfgRes.data.success) {
-        setManufacturers(mfgRes.data.manufacturers || []);
-      }
-    } catch (err) {
+    } catch {
       toast.error("Failed to load order assignments");
     } finally {
       setLoading(false);
@@ -84,40 +32,14 @@ const OrderAssignments = ({ token }) => {
     fetchAssignmentsData();
   }, [fetchAssignmentsData]);
 
-  const handleManualReassign = async (e) => {
-    e.preventDefault();
-    if (!selectedAssignment || !targetMfgId) return;
-    setSubmitting(true);
-    try {
-      const res = await axios.post(
-        `${backendUrl}/api/order-assignment/admin/manual-assign`,
-        {
-          orderId: selectedAssignment.orderId,
-          manufacturerId: targetMfgId,
-          reason: reassignReason || "Admin manual routing override",
-        },
-        { headers: { token } }
-      );
-      if (res.data.success) {
-        toast.success("Order re-allocated successfully!");
-        setReassignModalOpen(false);
-        fetchAssignmentsData();
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to re-assign order");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const filtered = assignments.filter((a) => {
     if (statusFilter !== "all" && a.status !== statusFilter) return false;
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       const orderId = (a.order?.id || a.id).toLowerCase();
-      const mfgName = (a.manufacturer?.businessName || "").toLowerCase();
+      const hubName = (a.distributor?.name || a.manufacturer?.name || a.manufacturer?.businessName || "").toLowerCase();
       const city = (a.order?.address?.city || a.order?.shippingAddress?.city || "").toLowerCase();
-      return orderId.includes(term) || mfgName.includes(term) || city.includes(term);
+      return orderId.includes(term) || hubName.includes(term) || city.includes(term);
     }
     return true;
   });
@@ -131,7 +53,7 @@ const OrderAssignments = ({ token }) => {
             Order Allocation &amp; Routing Engine
           </h1>
           <p className="text-xs text-slate-500">
-            Monitor real-time proximity manufacturer assignments and delivery handoffs across Nepal
+            Monitor distributor allocations and delivery handoffs across Nepal
           </p>
         </div>
 
@@ -150,7 +72,7 @@ const OrderAssignments = ({ token }) => {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Search by order ID, manufacturer, or city..."
+            placeholder="Search by order ID, distributor, or city..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
@@ -201,22 +123,18 @@ const OrderAssignments = ({ token }) => {
                 <tr>
                   <th className="py-3 px-4">Order ID &amp; Date</th>
                   <th className="py-3 px-4">Destination City</th>
-                  <th className="py-3 px-4">Assigned Manufacturer Hub</th>
+                  <th className="py-3 px-4">Assigned Distributor Hub</th>
                   <th className="py-3 px-4">Items / Total</th>
                   <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Admin Override</th>
+                  <th className="py-3 px-4">Assignment Type</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-medium">
                 {filtered.map((a) => {
                   const order = a.order;
-                  const mfg = a.manufacturer;
+                  const hub = a.distributor || a.manufacturer;
                   const items = order?.items || [];
                   const totalQty = items.reduce((sum, i) => sum + (i.quantity || 1), 0);
-                  const canAdminReassign = canAdminReassignAssignment({
-                    status: a.status,
-                    hasDeliveryOrder: Boolean(a.delivery),
-                  });
 
                   return (
                     <tr key={a.id} className="hover:bg-slate-50/80 transition-colors">
@@ -233,10 +151,10 @@ const OrderAssignments = ({ token }) => {
 
                       <td className="py-3.5 px-4">
                         <span className="font-bold text-slate-900 block">
-                          {mfg?.businessName || "Pending Assignment"}
+                          {hub?.name || hub?.businessName || "Pending Assignment"}
                         </span>
                         <span className="text-[11px] text-slate-500">
-                          {mfg?.city} (Score: {mfg?.qualityRating?.toFixed(1) || "5.0"})
+                          {hub?.city || ""}
                         </span>
                       </td>
 
@@ -265,24 +183,8 @@ const OrderAssignments = ({ token }) => {
                         </span>
                       </td>
 
-                      <td className="py-3.5 px-4 text-right">
-                        {canAdminReassign ? (
-                          <button
-                            onClick={() => {
-                              setSelectedAssignment(a);
-                              setTargetMfgId(a.manufacturerId || "");
-                              setReassignReason("");
-                              setReassignModalOpen(true);
-                            }}
-                            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs cursor-pointer shadow-xs"
-                          >
-                            Re-route Hub
-                          </button>
-                        ) : (
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-bold border border-slate-200">
-                            Locked
-                          </span>
-                        )}
+                      <td className="py-3.5 px-4 text-slate-600">
+                        {a.distributorId ? "Distributor" : a.manufacturerId ? "Legacy manufacturer" : "Unassigned"}
                       </td>
                     </tr>
                   );
@@ -293,79 +195,6 @@ const OrderAssignments = ({ token }) => {
         )}
       </div>
 
-      {/* Manual Re-assign Modal */}
-      {reassignModalOpen && selectedAssignment && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Manual Hub Re-Allocation
-              </h3>
-              <button
-                onClick={() => setReassignModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-500">
-              Manually override the proximity algorithm and assign this order to a specific manufacturer hub.
-            </p>
-
-            <form onSubmit={handleManualReassign} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Select Target Manufacturer Hub
-                </label>
-                <select
-                  required
-                  value={targetMfgId}
-                  onChange={(e) => setTargetMfgId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                >
-                  <option value="">Select manufacturer...</option>
-                  {manufacturers.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.businessName} — {m.city} ({m.qualityRating?.toFixed(1)} Rating)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Reason for Manual Override
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Prioritized rush order / capacity balancing"
-                  value={reassignReason}
-                  onChange={(e) => setReassignReason(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setReassignModalOpen(false)}
-                  className="px-3.5 py-2 rounded-xl font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 rounded-xl font-bold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer disabled:opacity-50"
-                >
-                  {submitting ? "Re-assigning..." : "Confirm Re-assignment"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
