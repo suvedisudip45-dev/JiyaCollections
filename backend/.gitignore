@@ -1,4 +1,4 @@
 node_modules
 .env
 .env.notifications
-backend/logs/app.log
+logs/app.log
