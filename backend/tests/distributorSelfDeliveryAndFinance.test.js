@@ -114,6 +114,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
 
   let ledgerCreated = false;
   let balanceUpdated = false;
+  let balanceReadCount = 0;
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma, "$transaction", async (cb) =>
@@ -122,6 +123,10 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
         findUnique: async () => mockOrder,
         update: async ({ data }) => ({ ...mockOrder, ...data }),
       },
+      product: {
+        findUnique: async () => ({ id: "prod-1", stockQuantity: 3, variants: [] }),
+        update: async ({ data }) => ({ id: "prod-1", ...data }),
+      },
       orderAssignment: {
         update: async ({ data }) => ({ ...mockAssignment, ...data }),
       },
@@ -129,16 +134,26 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
         findFirst: async () => mockLocation,
       },
       inventorySku: {
-        findFirst: async () => mockSku,
+        findUnique: async () => mockSku,
       },
       inventoryBalance: {
-        findUnique: async () => mockBalance,
-        update: async () => {
+        findMany: async () => {
+          balanceReadCount += 1;
+          return balanceReadCount === 1
+            ? [{ id: mockBalance.id, locationId: mockLocation.id, quantityOnHand: 5, reservedQuantity: 2 }]
+            : [{
+                quantityOnHand: 3,
+                reservedQuantity: 0,
+                inventorySku: { size: "M", color: "Black", sizeKey: "m", colorKey: "black" },
+              }];
+        },
+        updateMany: async () => {
           balanceUpdated = true;
-          return { ...mockBalance, quantityOnHand: 3, reservedQuantity: 0 };
+          return { count: 1 };
         },
       },
       inventoryLedgerEntry: {
+        findMany: async () => [],
         create: async () => {
           ledgerCreated = true;
           return { id: "ledger-1" };

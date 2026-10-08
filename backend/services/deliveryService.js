@@ -23,6 +23,7 @@ import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js
 import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
 import { applyGiftDeliveryTransition } from "./giftService.js";
+import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
@@ -1008,6 +1009,20 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
       if (deliveryState === "DELIVERED") {
         const fullOrder = await tx.order.findUnique({ where: { id: delivery.orderId } });
         if (fullOrder) {
+          const assignment = await tx.orderAssignment.findUnique({
+            where: { orderId: delivery.orderId },
+            select: { id: true, distributorId: true },
+          });
+          if (assignment?.distributorId) {
+            await consumeDistributorOrderInventory({
+              tx,
+              orderId: fullOrder.id,
+              distributorId: assignment.distributorId,
+              assignmentId: assignment.id,
+              items: parseJson(fullOrder.items, []),
+              actorRole: "NCM",
+            });
+          }
           await postDeliveredOrderAccounting(
             { order: fullOrder, deliveryOrder: delivery },
             { client: tx }

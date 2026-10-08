@@ -23,23 +23,32 @@ const GiftPromotions = ({ token }) => {
   const [saving, setSaving] = useState(false);
   const [gifts, setGifts] = useState([]);
   const [tiers, setTiers] = useState([]);
-  const [manufacturers, setManufacturers] = useState([]);
+  const [distributors, setDistributors] = useState([]);
   const [giftForm, setGiftForm] = useState(initialGift);
   const [tierForm, setTierForm] = useState(initialTier);
-  const [stockForm, setStockForm] = useState({ manufacturerId: "", giftId: "", quantity: 1, notes: "" });
+  const [stockForm, setStockForm] = useState({ distributorId: "", giftId: "", quantity: 1, notes: "" });
 
   const fetchData = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [giftResponse, tierResponse, manufacturerResponse] = await Promise.all([
+      const [giftResponse, tierResponse, distributorResponse] = await Promise.all([
         axios.get(`${backendUrl}/api/admin/gifts/catalog`, { headers: { token } }),
         axios.get(`${backendUrl}/api/admin/gifts/tiers`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/manufacturer/admin/list`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&limit=100`, { headers: { token } }),
       ]);
       setGifts(giftResponse.data.gifts || []);
       setTiers(tierResponse.data.tiers || []);
-      setManufacturers(manufacturerResponse.data.manufacturers || []);
+      const distributorPages = Number(distributorResponse.data.total || 0) > 100
+        ? await Promise.all(Array.from(
+          { length: Math.ceil(Number(distributorResponse.data.total) / 100) - 1 },
+          (_, index) => axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&page=${index + 2}&limit=100`, { headers: { token } }),
+        ))
+        : [];
+      setDistributors([
+        ...(distributorResponse.data.applications || []),
+        ...distributorPages.flatMap((response) => response.data.applications || []),
+      ].filter((distributor) => distributor.isActive));
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to load gift promotion data.");
     } finally {
@@ -104,12 +113,12 @@ const GiftPromotions = ({ token }) => {
     event.preventDefault();
     setSaving(true);
     try {
-      const response = await axios.post(`${backendUrl}/api/admin/gifts/assign-manufacturer`, {
+      const response = await axios.post(`${backendUrl}/api/admin/gifts/assign-distributor`, {
         ...stockForm,
         quantity: Number(stockForm.quantity),
       }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Could not distribute stock.");
-      toast.success("Gift stock assigned to the manufacturer.");
+      toast.success("Gift stock assigned to the distributor.");
       setStockForm((current) => ({ ...current, quantity: 1, notes: "" }));
       await fetchData();
     } catch (error) {
@@ -163,13 +172,13 @@ const GiftPromotions = ({ token }) => {
     if (activeTab === "distribution") return (
       <div className="grid gap-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
         <form onSubmit={distributeStock} className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
-          <div><h2 className="font-bold text-slate-900">Send stock to a hub</h2><p className="mt-1 text-xs text-slate-500">Distributed stock is available only after the manufacturer accepts it.</p></div>
-          <label className="block text-xs font-semibold text-slate-700">Manufacturer<select required value={stockForm.manufacturerId} onChange={(e) => setStockForm({ ...stockForm, manufacturerId: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"><option value="">Choose a hub</option>{manufacturers.map((manufacturer) => <option key={manufacturer.id} value={manufacturer.id}>{manufacturer.name} · {manufacturer.city}</option>)}</select></label>
+          <div><h2 className="font-bold text-slate-900">Send stock to a hub</h2><p className="mt-1 text-xs text-slate-500">Distributed stock is available only after the distributor accepts it.</p></div>
+          <label className="block text-xs font-semibold text-slate-700">Distributor<select required value={stockForm.distributorId} onChange={(e) => setStockForm({ ...stockForm, distributorId: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"><option value="">Choose a hub</option>{distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name} · {distributor.city || distributor.address || "Location not set"}</option>)}</select></label>
           <label className="block text-xs font-semibold text-slate-700">Gift<select required value={stockForm.giftId} onChange={(e) => setStockForm({ ...stockForm, giftId: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"><option value="">Choose a catalog gift</option>{gifts.map((gift) => <option key={gift.id} value={gift.id}>{gift.name} · {currency}{Number(gift.priceValue).toLocaleString()}</option>)}</select></label>
           <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold text-slate-700">Quantity<input required min="1" type="number" value={stockForm.quantity} onChange={(e) => setStockForm({ ...stockForm, quantity: e.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm" /></label><label className="text-xs font-semibold text-slate-700">Note<input value={stockForm.notes} onChange={(e) => setStockForm({ ...stockForm, notes: e.target.value })} placeholder="Optional" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm" /></label></div>
-          <button disabled={saving || !gifts.length || !manufacturers.length} className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-60"><Send className="h-4 w-4" /> Assign gift stock</button>
+          <button disabled={saving || !gifts.length || !distributors.length} className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-60"><Send className="h-4 w-4" /> Assign gift stock</button>
         </form>
-        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-5"><div className="flex h-full min-h-48 flex-col justify-center"><Archive className="h-8 w-8 text-emerald-700" /><h2 className="mt-3 font-bold text-slate-900">Hub stock lifecycle</h2><p className="mt-1 max-w-md text-sm leading-6 text-slate-600">A new distribution begins as pending acceptance. It becomes eligible for order allocation only after the manufacturer confirms the received quantity.</p><p className="mt-3 text-xs font-semibold text-slate-500">Catalog {gifts.length} · Active hubs {manufacturers.length}</p></div></div>
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white p-5"><div className="flex h-full min-h-48 flex-col justify-center"><Archive className="h-8 w-8 text-emerald-700" /><h2 className="mt-3 font-bold text-slate-900">Hub stock lifecycle</h2><p className="mt-1 max-w-md text-sm leading-6 text-slate-600">A new distribution begins as pending acceptance. It becomes eligible for order allocation only after the distributor confirms receipt.</p><p className="mt-3 text-xs font-semibold text-slate-500">Catalog {gifts.length} · Active hubs {distributors.length}</p></div></div>
       </div>
     );
 
@@ -179,7 +188,7 @@ const GiftPromotions = ({ token }) => {
   return (
     <div className="mx-auto w-full max-w-7xl space-y-5 pb-10">
       <header className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end">
-        <div><p className="text-[11px] font-bold uppercase text-emerald-800">Customer retention</p><h1 className="mt-1 text-2xl font-black text-slate-950">Gift promotions</h1><p className="mt-1 max-w-2xl text-sm text-slate-600">Manage gift products, order-value rules, and manufacturer stock distribution.</p></div>
+        <div><p className="text-[11px] font-bold uppercase text-emerald-800">Customer retention</p><h1 className="mt-1 text-2xl font-black text-slate-950">Gift promotions</h1><p className="mt-1 max-w-2xl text-sm text-slate-600">Manage gift products, order-value rules, and distributor stock distribution.</p></div>
         <button type="button" onClick={fetchData} disabled={loading} title="Refresh promotion data" className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 sm:self-auto"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh</button>
       </header>
       <div role="tablist" aria-label="Gift promotion sections" className="flex gap-1 overflow-x-auto border-b border-slate-200">

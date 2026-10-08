@@ -629,11 +629,13 @@ model Order {
   // PENDING_ASSIGNMENT | ASSIGNED | ACCEPTED | MANUFACTURING | QUALITY_CHECK | PACKED | READY_FOR_PICKUP | PICKED_UP | IN_TRANSIT | DELIVERED | FAILED
   assignmentId                String?
   deliveryJobId               String?
-  orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER
+  orderType                   String              @default("ONLINE_STORE") // ONLINE_STORE | DIRECT_MANUFACTURER | DIRECT_DISTRIBUTOR
   directOrderType             String?             @default("") // HUB_VISIT | PHONE_ORDER
   manufacturerId              String? // Fulfilled directly by manufacturer
+  distributorId               String? // Created and fulfilled directly by distributor hub
   assignedGiftId              String?
   assignedGiftInventoryId     String?
+  assignedDistributorGiftInventoryId String?
   giftStatus                  String              @default("NONE") // NONE | PENDING_PACKING | RESERVED | DELIVERED | RETURNED | LOST
   locationDiscountManufacturerId String?
   locationDiscountProvince    String?             @db.VarChar(120)
@@ -652,11 +654,14 @@ model Order {
   manufacturerCostAllocations ManufacturerInventoryCostAllocation[]
   assignedGift                GiftCatalog?        @relation("GiftCatalogOrder", fields: [assignedGiftId], references: [id], onDelete: SetNull)
   assignedGiftInventory       ManufacturerGiftInventory? @relation("GiftInventoryOrders", fields: [assignedGiftInventoryId], references: [id], onDelete: SetNull)
+  assignedDistributorGiftInventory DistributorGiftInventory? @relation("DistributorGiftInventoryOrders", fields: [assignedDistributorGiftInventoryId], references: [id], onDelete: SetNull)
+  distributor                 Distributor?         @relation("DistributorDirectOrders", fields: [distributorId], references: [id], onDelete: SetNull)
 
   @@index([fulfillmentStatus])
   @@index([userId])
   @@index([orderType])
   @@index([manufacturerId])
+  @@index([distributorId])
   @@index([date])
   @@index([status])
   @@index([payment])
@@ -757,6 +762,8 @@ model GiftCatalog {
   updatedAt   DateTime                @updatedAt
   inventory   ManufacturerGiftInventory[]
   movements   GiftMovementLog[]
+  distributorInventory DistributorGiftInventory[]
+  distributorMovements DistributorGiftMovementLog[]
   assignedOrders Order[]               @relation("GiftCatalogOrder")
 
   @@index([isActive, category])
@@ -794,6 +801,40 @@ model GiftMovementLog {
   gift           GiftCatalog  @relation(fields: [giftId], references: [id], onDelete: Cascade)
 
   @@index([manufacturerId, createdAt])
+  @@index([giftId, createdAt])
+}
+
+model DistributorGiftInventory {
+  id                String    @id @default(uuid())
+  distributorId     String
+  giftId            String
+  quantityAvailable Int       @default(0)
+  quantityReserved  Int       @default(0)
+  status            String    @default("PENDING_ACCEPTANCE") // PENDING_ACCEPTANCE | ACCEPTED | REJECTED
+  notes             String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  distributor       Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+  gift              GiftCatalog @relation(fields: [giftId], references: [id], onDelete: Cascade)
+  assignedOrders    Order[]    @relation("DistributorGiftInventoryOrders")
+
+  @@index([distributorId, status])
+  @@index([giftId, status])
+}
+
+model DistributorGiftMovementLog {
+  id             String      @id @default(uuid())
+  distributorId  String
+  giftId         String
+  orderId        String?
+  movementType   String      @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | REJECTED
+  quantity       Int         @default(0)
+  notes          String?     @db.Text
+  createdAt      DateTime    @default(now())
+  distributor    Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+  gift           GiftCatalog @relation(fields: [giftId], references: [id], onDelete: Cascade)
+
+  @@index([distributorId, createdAt])
   @@index([giftId, createdAt])
 }
 
@@ -1619,6 +1660,11 @@ model Distributor {
   settlementRequests DistributorSettlementRequest[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   marketingCards         MarketingCard[]             @relation("MarketingCardDistributor")
+  marketingCardAssignments MarketingCardAssignment[]
+  directOrders           Order[]                     @relation("DistributorDirectOrders")
+  giftInventory          DistributorGiftInventory[]
+  giftMovements           DistributorGiftMovementLog[]
+  marketingCardOrders    MarketingCardOrder[]
 
   @@index([status, isActive])
 }
@@ -1796,6 +1842,13 @@ model StockTransfer {
   reviewedByAccountId      String?
   reviewedAt               DateTime?
   adminNote                String?          @db.Text
+  availabilityPassed       Boolean          @default(false)
+  qualityPassed            Boolean          @default(false)
+  colorPassed              Boolean          @default(false)
+  sizePassed               Boolean          @default(false)
+  packagingPassed          Boolean          @default(false)
+  preparedByAccountId      String?
+  preparedAt               DateTime?
   dispatchedAt             DateTime?
   completedAt              DateTime?
   createdAt                DateTime         @default(now())
@@ -1835,7 +1888,7 @@ model StockTransferShipment {
   id                   String       @id @default(uuid())
   stockTransferId      String
   status               String       @default("PREPARING") // PREPARING | BOOKING_PENDING | BOOKING_UNKNOWN | BOOKING_FAILED | BOOKED | DISPATCHED | PARTIALLY_RECEIVED | DELIVERED | DISCREPANCY | LOST | CANCELLED
-  bookingMode          String       @default("MANUAL") // MANUAL | NCM
+  bookingMode          String       @default("MANUAL") // MANUAL | NCM | SELF_STORE
   bookingIdempotencyKey String?     @unique @db.VarChar(191)
   bookingRequestHash   String?      @db.VarChar(64)
   deliveryPartner      String?      @db.VarChar(191)
@@ -1862,6 +1915,7 @@ model StockTransferShipmentLine {
   shipmentId            String
   stockTransferLineId   String
   quantity              Int
+  uncostedQuantity       Int                    @default(0)
   createdAt             DateTime               @default(now())
   shipment              StockTransferShipment  @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
   stockTransferLine     StockTransferLine      @relation(fields: [stockTransferLineId], references: [id], onDelete: Restrict)
@@ -2093,17 +2147,20 @@ model MarketingCard {
 model MarketingCardAssignment {
   id             String                @id @default(uuid())
   cardId         String
-  manufacturerId String
+  manufacturerId String?
+  distributorId  String?
   assignedBy     String
   assignedAt     DateTime              @default(now())
   status         String                @default("ASSIGNED") // ASSIGNED | RECEIVED | DISPUTED | CANCELLED
   confirmedAt    DateTime?
   notes          String?               @db.Text
   card           MarketingCard         @relation(fields: [cardId], references: [id], onDelete: Cascade)
-  manufacturer   Manufacturer          @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  manufacturer   Manufacturer?         @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  distributor    Distributor?          @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   receipt        MarketingCardReceipt?
 
   @@index([manufacturerId, status])
+  @@index([distributorId, status])
   @@index([cardId, assignedAt])
 }
 
@@ -2120,13 +2177,16 @@ model MarketingCardOrder {
   id             String        @id @default(uuid())
   cardId         String        @unique
   orderId        String        @unique
-  manufacturerId String
+  manufacturerId String?
+  distributorId  String?
   attachedAt     DateTime      @default(now())
   card           MarketingCard @relation(fields: [cardId], references: [id], onDelete: Restrict)
   order          Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  manufacturer   Manufacturer  @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  manufacturer   Manufacturer? @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
+  distributor    Distributor?  @relation(fields: [distributorId], references: [id], onDelete: Restrict)
 
   @@index([manufacturerId, attachedAt])
+  @@index([distributorId, attachedAt])
 }
 
 model MarketingCardCustomer {

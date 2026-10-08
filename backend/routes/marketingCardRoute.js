@@ -20,6 +20,7 @@ import {
   adminListCampaigns,
   adminListPartners,
   adminGetLocations,
+  distributorAttachCardToOrder,
   distributorListCards,
   distributorBulkUpdateCards,
   distributorReceiveCard,
@@ -97,6 +98,7 @@ marketingCardRouter.get("/admin/stats", authenticate, authorize("marketing_card:
 marketingCardRouter.get("/distributor/cards", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorListCards);
 marketingCardRouter.post("/distributor/cards/bulk-status", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorBulkUpdateCards);
 marketingCardRouter.post("/distributor/cards/:cardId/receive", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorReceiveCard);
+marketingCardRouter.post("/distributor/orders/:orderId/attach", authenticate, authorize("marketing_card:distributor_manage"), setDistributorContext, distributorAttachCardToOrder);
 
 // ── Customer routes ──────────────────────────────────────────
 marketingCardRouter.get("/customer/cards", authenticate, authorize("marketing_card:customer_manage"), customerListCards);
@@ -126,4 +128,3 @@ marketingCardRouter.post("/partner/redemptions/redeem", authenticate, authorize(
 marketingCardRouter.post("/partner/redemptions/reject", authenticate, authorize("partner:card_manage"), setMarketingPartnerContext, marketingCardRateLimit("redeem"), rejectCard);
 
 export default marketingCardRouter;
-

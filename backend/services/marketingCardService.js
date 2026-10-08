@@ -453,12 +453,13 @@ export const generateBatch = async ({ campaignId, quantity, actorId }) => {
   return created;
 };
 
-export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, status, page = 1, pageSize = 50, search } = {}) => {
+export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, distributorId, status, page = 1, pageSize = 50, search } = {}) => {
   await expireCampaignCards();
   const where = {
     ...(campaignId ? { campaignId } : {}),
     ...(partnerId && !campaignId ? { campaign: { marketingPartnerId: partnerId } } : {}),
     ...(manufacturerId ? { assignedManufacturerId: manufacturerId } : {}),
+    ...(distributorId ? { assignedDistributorId: distributorId } : {}),
     ...(status && status !== "all" ? { physicalStatus: status } : {}),
     ...(search ? { cardCode: { contains: search } } : {}),
   };
@@ -475,6 +476,7 @@ export const listAdminCards = async ({ partnerId, campaignId, manufacturerId, st
         benefit: true,
         batch: true,
         assignedManufacturer: { select: { id: true, name: true, city: true } },
+        assignedDistributor: { select: { id: true, name: true, city: true } },
       },
     }),
     prisma.marketingCard.count({ where }),
@@ -488,6 +490,7 @@ export const getAdminCardStats = async () => {
     partnerStats,
     campaignStats,
     manufacturerStats,
+    distributorStats,
     statusBreakdown,
   ] = await Promise.all([
     // Per-partner: total generated, attached, cancelled
@@ -508,6 +511,11 @@ export const getAdminCardStats = async () => {
     prisma.marketingCard.groupBy({
       by: ["assignedManufacturerId", "physicalStatus"],
       where: { assignedManufacturerId: { not: null } },
+      _count: { _all: true },
+    }),
+    prisma.marketingCard.groupBy({
+      by: ["assignedDistributorId", "physicalStatus"],
+      where: { assignedDistributorId: { not: null } },
       _count: { _all: true },
     }),
     // Global status breakdown
@@ -546,6 +554,23 @@ export const getAdminCardStats = async () => {
     manuBreakdown[id].total += row._count._all;
   }
 
+  const distributorIds = [...new Set(distributorStats.map((row) => row.assignedDistributorId).filter(Boolean))];
+  const distributors = await prisma.distributor.findMany({
+    where: { id: { in: distributorIds } },
+    select: { id: true, name: true, city: true },
+  });
+  const distributorMap = Object.fromEntries(distributors.map((distributor) => [distributor.id, distributor]));
+  const distributorBreakdown = {};
+  for (const row of distributorStats) {
+    const id = row.assignedDistributorId;
+    if (!id) continue;
+    if (!distributorBreakdown[id]) {
+      distributorBreakdown[id] = { distributor: distributorMap[id] || { id, name: "Unknown" }, total: 0 };
+    }
+    distributorBreakdown[id][row.physicalStatus] = row._count._all;
+    distributorBreakdown[id].total += row._count._all;
+  }
+
   return {
     partnerBreakdown,
     campaignBreakdown: campaignStats.map((c) => ({
@@ -558,6 +583,7 @@ export const getAdminCardStats = async () => {
       startsAt: c.startsAt, endsAt: c.endsAt, createdAt: c.createdAt,
     })),
     manufacturerBreakdown: Object.values(manuBreakdown),
+    distributorBreakdown: Object.values(distributorBreakdown),
     statusBreakdown: Object.fromEntries(statusBreakdown.map((r) => [r.physicalStatus, r._count._all])),
   };
 };
@@ -621,10 +647,13 @@ export const getCardMetrics = async () => {
   };
 };
 
-export const assignCards = async ({ campaignId, manufacturerId, quantity, cardIds, actorId }) => {
+export const assignCards = async ({ campaignId, distributorId, quantity, cardIds, actorId }) => {
   await expireCampaignCards();
-  const manufacturer = await prisma.manufacturer.findUnique({ where: { id: manufacturerId } });
-  if (!manufacturer || !manufacturer.isActive) throw new Error("Active manufacturer not found.");
+  const distributor = await prisma.distributor.findFirst({
+    where: { id: distributorId, status: "ACTIVE", isActive: true },
+    select: { id: true },
+  });
+  if (!distributor) throw new Error("Active distributor not found.");
   const requestedIds = Array.isArray(cardIds) && cardIds.length ? cardIds : null;
   const count = requestedIds ? requestedIds.length : assertQuantity(quantity);
 
@@ -633,6 +662,8 @@ export const assignCards = async ({ campaignId, manufacturerId, quantity, cardId
       where: {
         campaignId,
         physicalStatus: "GENERATED",
+        assignedManufacturerId: null,
+        assignedDistributorId: null,
         ...(requestedIds ? { id: { in: requestedIds } } : {}),
       },
       orderBy: { createdAt: "asc" },
@@ -643,12 +674,26 @@ export const assignCards = async ({ campaignId, manufacturerId, quantity, cardId
     const assignments = [];
     for (const card of cards) {
       const changed = await tx.marketingCard.updateMany({
-        where: { id: card.id, physicalStatus: "GENERATED", assignedManufacturerId: null },
-        data: { assignedManufacturerId: manufacturerId, physicalStatus: "ASSIGNED", assignedAt: new Date() },
+        where: {
+          id: card.id,
+          physicalStatus: "GENERATED",
+          assignedManufacturerId: null,
+          assignedDistributorId: null,
+        },
+        data: { assignedDistributorId: distributorId, physicalStatus: "ASSIGNED", assignedAt: new Date() },
       });
       if (changed.count !== 1) throw new Error("Card inventory changed during assignment. Please retry.");
-      const assignment = await tx.marketingCardAssignment.create({ data: { cardId: card.id, manufacturerId, assignedBy: actorId } });
-      await addEvent(tx, { cardId: card.id, eventType: "CARD_ASSIGNED_TO_MANUFACTURER", actorId, actorRole: "ADMIN", fromStatus: "GENERATED", toStatus: "ASSIGNED", referenceId: assignment.id, metadata: { manufacturerId } });
+      const assignment = await tx.marketingCardAssignment.create({ data: { cardId: card.id, distributorId, assignedBy: actorId } });
+      await addEvent(tx, {
+        cardId: card.id,
+        eventType: "CARD_ASSIGNED_TO_DISTRIBUTOR",
+        actorId,
+        actorRole: "ADMIN",
+        fromStatus: "GENERATED",
+        toStatus: "ASSIGNED",
+        referenceId: assignment.id,
+        metadata: { distributorId },
+      });
       assignments.push(assignment);
     }
     await tx.marketingCardBatch.updateMany({ where: { id: { in: cards.map((card) => card.batchId) } }, data: { status: "ASSIGNED" } });
@@ -850,17 +895,30 @@ export const bulkUpdateManufacturerCards = async ({ cardIds, action, manufacture
   });
 };
 
-export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => prisma.$transaction(async (tx) => {
+export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distributorId }) => prisma.$transaction(async (tx) => {
   await expireCampaignCards({ db: tx });
   const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
-  if (!order || order.manufacturerId !== manufacturerId) throw new Error("Order not found or unauthorized.");
+  if (
+    !order ||
+    (manufacturerId && order.manufacturerId !== manufacturerId) ||
+    (distributorId && order.distributorId !== distributorId)
+  ) throw new Error("Order not found or unauthorized.");
   if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");
   if (order.marketingCardOrder) return order.marketingCardOrder;
   const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
-  if (!assignment || assignment.manufacturerId !== manufacturerId) throw new Error("Manufacturer assignment not found.");
+  if (
+    !assignment ||
+    (manufacturerId && assignment.manufacturerId !== manufacturerId) ||
+    (distributorId && assignment.distributorId !== distributorId)
+  ) throw new Error("Hub assignment not found.");
 
   const inventory = await tx.marketingCard.findMany({
-    where: { assignedManufacturerId: manufacturerId, physicalStatus: "AVAILABLE", assignments: { some: { manufacturerId, status: "RECEIVED", receipt: { isNot: null } } } },
+    where: {
+      ...(manufacturerId
+        ? { assignedManufacturerId: manufacturerId, assignments: { some: { manufacturerId, status: "RECEIVED", receipt: { isNot: null } } } }
+        : { assignedDistributorId: distributorId }),
+      physicalStatus: "AVAILABLE",
+    },
     select: { id: true, physicalStatus: true, campaign: true },
     take: 500,
   });
@@ -896,7 +954,7 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
     return campaignMatchesOrder(c, order);
   });
 
-  // Fallback if no strict MOV/geography matched: check if any active received cards exist for this manufacturer
+  // Fall back to any active card already received at this hub if strict campaign filters have no match.
   if (!eligibleInventory.length) {
     const fallbackActive = inventory.filter((card) => {
       const c = card.campaign;
@@ -961,10 +1019,27 @@ export const attachRandomCardToOrder = async ({ orderId, manufacturerId }) => pr
   }
 
   const selected = chosenTierCards[crypto.randomInt(chosenTierCards.length)];
-  const claimed = await tx.marketingCard.updateMany({ where: { id: selected.id, assignedManufacturerId: manufacturerId, physicalStatus: "AVAILABLE" }, data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() } });
+  const claimed = await tx.marketingCard.updateMany({
+    where: {
+      id: selected.id,
+      ...(manufacturerId ? { assignedManufacturerId: manufacturerId } : { assignedDistributorId: distributorId }),
+      physicalStatus: "AVAILABLE",
+    },
+    data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() },
+  });
   if (claimed.count !== 1) throw new Error("Card inventory changed during attachment. Please retry.");
-  const link = await tx.marketingCardOrder.create({ data: { cardId: selected.id, orderId, manufacturerId } });
-  await addEvent(tx, { cardId: selected.id, eventType: "CARD_ATTACHED_TO_ORDER", actorId: manufacturerId, actorRole: "MANUFACTURER", fromStatus: "AVAILABLE", toStatus: "ATTACHED", referenceId: orderId });
+  const link = await tx.marketingCardOrder.create({
+    data: { cardId: selected.id, orderId, manufacturerId: manufacturerId || null, distributorId: distributorId || null },
+  });
+  await addEvent(tx, {
+    cardId: selected.id,
+    eventType: "CARD_ATTACHED_TO_ORDER",
+    actorId: manufacturerId || distributorId,
+    actorRole: manufacturerId ? "MANUFACTURER" : "DISTRIBUTOR",
+    fromStatus: "AVAILABLE",
+    toStatus: "ATTACHED",
+    referenceId: orderId,
+  });
   return tx.marketingCardOrder.findUnique({ where: { id: link.id }, include: { card: true } });
 }, { isolationLevel: "Serializable" });
 
@@ -974,7 +1049,7 @@ export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufactur
   if (manufacturerId && order.manufacturerId && order.manufacturerId !== manufacturerId) {
     throw new Error("Order not found or unauthorized.");
   }
-  if (distributorId && order.assignedDistributorId && order.assignedDistributorId !== distributorId) {
+  if (distributorId && order.distributorId && order.distributorId !== distributorId) {
     throw new Error("Order not found or unauthorized.");
   }
   if (order.marketingCardRequired && !order.marketingCardOrder) {

@@ -20,7 +20,7 @@ const GiftInventory = () => {
     if (!token) return;
     setLoading(true);
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer/gifts/inbound`, { headers: { token } });
+      const response = await axios.get(`${backendUrl}/api/distributor/gifts/inbound`, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to load gift stock.");
       setInventory(response.data.inventory || []);
     } catch (error) {
@@ -35,7 +35,7 @@ const GiftInventory = () => {
   const respond = async (item, decision) => {
     setRespondingId(item.id);
     try {
-      const response = await axios.post(`${backendUrl}/api/manufacturer/gifts/${item.id}/respond`, { decision }, { headers: { token } });
+      const response = await axios.post(`${backendUrl}/api/distributor/gifts/${item.id}/respond`, { decision }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to update gift stock.");
       toast.success(decision === "ACCEPTED" ? "Gift stock accepted." : "Gift stock rejected.");
       await fetchInventory();

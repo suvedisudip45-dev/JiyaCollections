@@ -15,9 +15,13 @@ import {
   deriveTransferStatus,
   normalizeApprovalLines,
   normalizeShipmentReceiptLines,
+  normalizeTransferPreparationChecklist,
   normalizeTransferRequestLines,
+  isTransferPreparationComplete,
+  isSameProfileOwner,
   planCostLayerAllocations,
   remainingApprovedQuantity,
+  validateTransferRequestAvailability,
 } from "../services/stockTransferService.js";
 import { createOrderOnce, getShippingRate } from "../services/ncmClient.js";
 
@@ -70,6 +74,20 @@ const actorFor = (req) => ({
   id: req.auth?.accountId || req.auth?.profileId,
   role: String(req.auth?.role || "").toUpperCase(),
 });
+
+const isOwnStoreTransfer = async (tx, transfer) => {
+  const [manufacturer, distributor] = await Promise.all([
+    tx.manufacturer.findUnique({ where: { id: transfer.manufacturerId }, select: { accountId: true } }),
+    tx.distributor.findUnique({ where: { id: transfer.distributorId }, select: { accountId: true } }),
+  ]);
+  return isSameProfileOwner(manufacturer?.accountId, distributor?.accountId);
+};
+
+const assertPreparationComplete = (transfer) => {
+  if (!isTransferPreparationComplete(transfer)) {
+    throw fail("Complete and save every manufacturer product preparation check before dispatch.", "TRANSFER_PREPARATION_REQUIRED", 409);
+  }
+};
 
 const requestKeyFor = (req) => clean(req.get?.("Idempotency-Key") || req.body?.idempotencyKey);
 
@@ -140,6 +158,7 @@ const loadTransfer = (tx, id) => tx.stockTransfer.findUnique({
     manufacturer: { select: { id: true, name: true, phone: true, city: true, pickupAddress: true, pickupContactName: true, pickupContactPhone: true, ncmPickupBranch: true, pickupBranchStatus: true } },
     distributor: { select: { id: true, name: true, phone: true, address: true, city: true } },
     lines: { include: { inventorySku: { include: { product: { select: { id: true, name: true } } } } } },
+    shipments: { select: { id: true } },
   },
 });
 
@@ -566,6 +585,14 @@ export const createStockTransferRequest = async (req, res) => {
         select: { id: true },
       });
       if (!sourceLocation) throw fail("The selected manufacturer has no factory stock location yet.", "FACTORY_LOCATION_NOT_FOUND", 409);
+      const factoryBalances = await tx.inventoryBalance.findMany({
+        where: {
+          locationId: sourceLocation.id,
+          inventorySkuId: { in: requestedLines.map((line) => line.inventorySkuId) },
+        },
+        select: { inventorySkuId: true, quantityOnHand: true, reservedQuantity: true },
+      });
+      validateTransferRequestAvailability(requestedLines, factoryBalances);
       const destinationLocation = await ensureInventoryLocation(tx, {
         kind: "DISTRIBUTOR",
         distributorId: req.distributorId,
@@ -589,6 +616,35 @@ export const createStockTransferRequest = async (req, res) => {
   }
 };
 
+export const updateStockTransferPreparation = async (req, res) => {
+  try {
+    const checklist = normalizeTransferPreparationChecklist(req.body?.checklist);
+    const transfer = await prisma.$transaction(async (tx) => {
+      const current = await loadTransfer(tx, req.params.id);
+      if (!current || current.manufacturerId !== req.manufacturerId) {
+        throw fail("Stock transfer request not found.", "TRANSFER_NOT_FOUND", 404);
+      }
+      if (current.status !== "APPROVED" || current.lines.some((line) =>
+        line.dispatchedQuantity > 0 || line.reservedShipmentQuantity > 0
+      ) || current.shipments.length > 0) {
+        throw fail("Preparation checks can only be updated before any shipment is created.", "TRANSFER_STATE_CONFLICT", 409);
+      }
+      return tx.stockTransfer.update({
+        where: { id: current.id },
+        data: {
+          ...checklist,
+          preparedByAccountId: req.auth.accountId,
+          preparedAt: new Date(),
+        },
+        include: transferInclude,
+      });
+    }, { isolationLevel: "Serializable" });
+    return res.json({ success: true, transfer });
+  } catch (error) {
+    return respondError(res, error, "updateStockTransferPreparation");
+  }
+};
+
 export const listDistributorStockTransfers = async (req, res) => {
   try {
     await ensureActiveDistributor(prisma, req.distributorId);
@@ -609,12 +665,33 @@ export const listManufacturerStockTransfers = async (req, res) => {
   try {
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
-    const where = { manufacturerId: req.manufacturerId };
-    const [transfers, total] = await prisma.$transaction([
-      prisma.stockTransfer.findMany({ where, include: transferInclude, orderBy: { requestedAt: "desc" }, skip: (page - 1) * limit, take: limit }),
+    const where = { manufacturerId: req.manufacturerId, status: { not: "PENDING_ADMIN_APPROVAL" } };
+    const [transfers, total, pendingPreparationCount] = await prisma.$transaction([
+      prisma.stockTransfer.findMany({
+        where,
+        include: {
+          ...transferInclude,
+          distributor: { select: { id: true, name: true, phone: true, address: true, city: true, accountId: true } },
+        },
+        orderBy: { requestedAt: "desc" },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
       prisma.stockTransfer.count({ where }),
+      prisma.stockTransfer.count({ where: { manufacturerId: req.manufacturerId, status: "APPROVED" } }),
     ]);
-    return res.json({ success: true, transfers, page, limit, total });
+    const visibleTransfers = transfers.map(({ distributor, ...transfer }) => ({
+      ...transfer,
+      isOwnStore: Boolean(req.auth.accountId && distributor.accountId === req.auth.accountId),
+      distributor: {
+        id: distributor.id,
+        name: distributor.name,
+        phone: distributor.phone,
+        address: distributor.address,
+        city: distributor.city,
+      },
+    }));
+    return res.json({ success: true, transfers: visibleTransfers, page, limit, total, pendingPreparationCount });
   } catch (error) {
     return respondError(res, error, "listManufacturerStockTransfers");
   }
@@ -753,6 +830,10 @@ export const dispatchManualStockTransfer = async (req, res) => {
     const outcome = await prisma.$transaction(async (tx) => {
       const transfer = await loadTransfer(tx, req.params.id);
       if (!transfer || transfer.manufacturerId !== req.manufacturerId) throw fail("Stock transfer not found.", "TRANSFER_NOT_FOUND", 404);
+      assertPreparationComplete(transfer);
+      if (await isOwnStoreTransfer(tx, transfer)) {
+        throw fail("This distributor is your own store. Use own-store delivery with zero freight instead.", "OWN_STORE_DELIVERY_REQUIRED", 409);
+      }
       const actor = actorFor(req);
       const requestedLines = normalizeDispatchRequestLines(req.body?.lines, transfer.lines);
       const requestHash = buildShipmentRequestHash(shipmentHashPayload({
@@ -835,6 +916,10 @@ export const bookNcmStockTransfer = async (req, res) => {
   try {
     const transfer = await loadTransfer(prisma, req.params.id);
     if (!transfer || transfer.manufacturerId !== req.manufacturerId) throw fail("Stock transfer not found.", "TRANSFER_NOT_FOUND", 404);
+    assertPreparationComplete(transfer);
+    if (await isOwnStoreTransfer(prisma, transfer)) {
+      throw fail("This distributor is your own store. Use own-store delivery with zero freight instead.", "OWN_STORE_DELIVERY_REQUIRED", 409);
+    }
     const idempotencyKey = requestKeyFor(req);
     if (!idempotencyKey || idempotencyKey.length > 140) throw fail("Provide a valid Idempotency-Key for this NCM booking.");
     const weight = Number(req.body?.weight ?? 1);
@@ -1007,9 +1092,152 @@ export const bookNcmStockTransfer = async (req, res) => {
   }
 };
 
+export const deliverStockTransferToOwnStore = async (req, res) => {
+  try {
+    const idempotencyKey = requestKeyFor(req);
+    if (!idempotencyKey || idempotencyKey.length > 140) {
+      throw fail("Provide a valid Idempotency-Key for own-store delivery.");
+    }
+    const outcome = await prisma.$transaction(async (tx) => {
+      const transfer = await loadTransfer(tx, req.params.id);
+      if (!transfer || transfer.manufacturerId !== req.manufacturerId) {
+        throw fail("Stock transfer not found.", "TRANSFER_NOT_FOUND", 404);
+      }
+      if (!(await isOwnStoreTransfer(tx, transfer))) {
+        throw fail("Own-store delivery is available only when the manufacturer and distributor profiles belong to the same account.", "NOT_OWN_STORE_TRANSFER", 409);
+      }
+      await ensureActiveDistributor(tx, transfer.distributorId);
+      assertPreparationComplete(transfer);
+      const requestedLines = normalizeDispatchRequestLines(req.body?.lines, transfer.lines);
+      const bookingIdempotencyKey = `${transfer.id}:self-store:${idempotencyKey}`;
+      const requestHash = buildShipmentRequestHash(shipmentHashPayload({
+        bookingMode: "SELF_STORE",
+        deliveryPartner: "Own distributor store",
+        trackingNumber: null,
+        externalReference: null,
+        freightCharge: new Prisma.Decimal(0),
+        weight: null,
+        lines: requestedLines,
+      }));
+      const existing = await tx.stockTransferShipment.findUnique({
+        where: { bookingIdempotencyKey },
+      });
+      if (existing) {
+        if (existing.bookingRequestHash !== requestHash) {
+          throw fail("The own-store idempotency key was used for different shipment details.", "IDEMPOTENCY_CONFLICT", 409);
+        }
+        return { shipment: existing, replayed: true };
+      }
+      if (!["APPROVED", "IN_TRANSIT", "PARTIALLY_RECEIVED"].includes(transfer.status)) {
+        throw fail("This transfer is not available for own-store delivery.", "TRANSFER_STATE_CONFLICT", 409);
+      }
+      assertDispatchAvailability(requestedLines);
+      const shipment = await createTransferShipment(tx, transfer, {
+        lines: requestedLines,
+        bookingMode: "SELF_STORE",
+        bookingIdempotencyKey,
+        bookingRequestHash: requestHash,
+        deliveryPartner: "Own distributor store",
+        freightCharge: new Prisma.Decimal(0),
+        initialStatus: "DELIVERED",
+      });
+      const actor = actorFor(req);
+      const transitLocation = await dispatchShipmentStock(tx, transfer, shipment, transfer.lines, actor);
+      const receiptNotes = "Delivered directly to the manufacturer's own distributor store.";
+      const receiptLines = shipment.lines.map((line) => ({
+        shipmentLineId: line.id,
+        goodQuantity: line.quantity,
+        damagedQuantity: 0,
+        missingQuantity: 0,
+        damageType: null,
+        evidence: null,
+        note: null,
+      }));
+      const receiptRequestHash = buildReceiptRequestHash({ notes: receiptNotes, lines: receiptLines });
+      const receipt = await tx.stockTransferReceipt.create({
+        data: {
+          shipmentId: shipment.id,
+          idempotencyKey: `${shipment.id}:self-store-receipt`,
+          requestHash: receiptRequestHash,
+          status: "CONFIRMED",
+          receivedBy: req.auth.accountId,
+          notes: receiptNotes,
+          lines: {
+            create: receiptLines.map(({ shipmentLineId, goodQuantity }) => ({ shipmentLineId, goodQuantity })),
+          },
+        },
+      });
+      for (const line of shipment.lines) {
+        const transferLine = transfer.lines.find((item) => item.id === line.stockTransferLineId);
+        if (!transferLine) throw fail("A shipment line no longer belongs to this stock transfer.", "TRANSFER_LINE_NOT_FOUND", 409);
+        await applyInventoryMovement(tx, {
+          inventorySkuId: transferLine.inventorySkuId,
+          sourceLocationId: transitLocation.id,
+          destinationLocationId: transfer.destinationLocationId,
+          quantity: line.quantity,
+          movementType: "TRANSFER_RECEIPT",
+          referenceType: "STOCK_TRANSFER_RECEIPT",
+          referenceId: receipt.id,
+          idempotencyKey: `stock-transfer:${receipt.id}:${line.id}:own-store`,
+          actorId: actor.id,
+          actorRole: actor.role,
+          reason: "Accepted-good units delivered directly to the manufacturer's own distributor store.",
+        });
+      }
+      const productIds = [...new Set(transfer.lines
+        .filter((line) => requestedLines.some((requested) => requested.stockTransferLineId === line.id))
+        .map((line) => line.inventorySku.productId))];
+      await Promise.all(productIds.map((productId) =>
+        syncProductStock(productId, { client: tx, throwOnError: true })
+      ));
+      await tx.stockTransferShipment.update({
+        where: { id: shipment.id },
+        data: {
+          status: "DELIVERED",
+          freightCharge: new Prisma.Decimal(0),
+          freightSettlementStatus: "NOT_APPLICABLE",
+          dispatchedAt: new Date(),
+          deliveredAt: new Date(),
+        },
+      });
+      const updatedTransfer = await tx.stockTransfer.findUnique({
+        where: { id: transfer.id },
+        include: {
+          lines: { include: { shipmentLines: { include: { receiptLines: true } } } },
+        },
+      });
+      const status = deriveTransferStatus({
+        lines: updatedTransfer.lines,
+        shipmentLines: completedLineQuantities(updatedTransfer),
+      });
+      await tx.stockTransfer.update({
+        where: { id: transfer.id },
+        data: {
+          status,
+          ...(["RECEIVED", "DISCREPANCY"].includes(status) ? { completedAt: new Date() } : {}),
+        },
+      });
+      return {
+        shipment: await tx.stockTransferShipment.findUnique({
+          where: { id: shipment.id },
+          include: { lines: true, receipts: { include: { lines: true } } },
+        }),
+        replayed: false,
+        transferStatus: status,
+      };
+    }, { isolationLevel: "Serializable" });
+    return res.status(outcome.replayed ? 200 : 201).json({ success: true, ...outcome, freightCharge: "0.00" });
+  } catch (error) {
+    return respondError(res, error, "deliverStockTransferToOwnStore");
+  }
+};
+
 export const dispatchStockTransferRequest = async (req, res) => {
   try {
     const method = clean(req.body?.deliveryMethod || req.body?.method).toUpperCase().replace(/[\s-]+/g, "_");
+    if (method === "SELF_STORE") {
+      return deliverStockTransferToOwnStore(req, res);
+    }
     if (["NCM", "NEPAL_CAN_MOVE"].includes(method)) {
       return bookNcmStockTransfer(req, res);
     }
@@ -1314,6 +1542,12 @@ export const receiveStockTransferShipment = async (req, res) => {
         }
         if (!transferLine) throw fail("Receipt line lost its transfer reference.", "TRANSFER_LINE_NOT_FOUND", 409);
       }
+      const receivedProductIds = new Set(shipment.lines.map((line) =>
+        line.stockTransferLine.inventorySku.productId
+      ));
+      await Promise.all([...receivedProductIds].map((productId) =>
+        syncProductStock(productId, { client: tx, throwOnError: true })
+      ));
       const updatedShipmentLines = await tx.stockTransferShipmentLine.findMany({
         where: { shipmentId: shipment.id },
         include: { receiptLines: true },

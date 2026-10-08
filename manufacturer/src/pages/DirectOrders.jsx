@@ -24,7 +24,7 @@ import { useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
 
 const DirectOrders = () => {
-  const { token, backendUrl, currency, manufacturer } = useManufacturer();
+  const { token, backendUrl, currency, distributor } = useManufacturer();
   const [directOrders, setDirectOrders] = useState([]);
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -45,7 +45,7 @@ const DirectOrders = () => {
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [streetAddress, setStreetAddress] = useState("");
-  const [city, setCity] = useState(manufacturer?.city || "Kathmandu");
+  const [city, setCity] = useState(distributor?.city || "Kathmandu");
   const [paymentMethod, setPaymentMethod] = useState("CASH"); // "CASH", "QR_PAYMENT", "COD", "CARD"
   const [isPaid, setIsPaid] = useState(true);
   const [discountAmount, setDiscountAmount] = useState("");
@@ -62,10 +62,10 @@ const DirectOrders = () => {
     setLoading(true);
     try {
       const [ordersRes, invRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/manufacturer-order/my-orders?page=${page}&limit=10`, {
+        axios.get(`${backendUrl}/api/distributor/orders/direct?page=${page}&limit=10`, {
           headers: { token },
         }),
-        axios.get(`${backendUrl}/api/manufacturer-inventory/my`, {
+        axios.get(`${backendUrl}/api/distributor/inventory?page=1&limit=100`, {
           headers: { token },
         }),
       ]);
@@ -75,7 +75,35 @@ const DirectOrders = () => {
         setPagination(ordersRes.data.pagination || null);
       }
       if (invRes.data.success) {
-        setInventory(invRes.data.inventory || []);
+        const inventoryRows = [...(invRes.data.inventory || [])];
+        const pageCount = Number(invRes.data.pagination?.totalPages || 1);
+        if (pageCount > 1) {
+          const remainingPages = await Promise.all(
+            Array.from({ length: pageCount - 1 }, (_, index) =>
+              axios.get(`${backendUrl}/api/distributor/inventory?page=${index + 2}&limit=100`, { headers: { token } })
+            )
+          );
+          remainingPages.forEach((response) => inventoryRows.push(...(response.data.inventory || [])));
+        }
+        const productsById = new Map();
+        inventoryRows.forEach((row) => {
+          if (!productsById.has(row.productId)) {
+            productsById.set(row.productId, {
+              productId: row.productId,
+              productName: row.productName,
+              product: row.product,
+              variantsStock: [],
+            });
+          }
+          productsById.get(row.productId).variantsStock.push({
+            inventorySkuId: row.inventorySkuId,
+            size: row.size,
+            color: row.color,
+            quantity: row.quantity,
+            reservedQty: row.reservedQty,
+          });
+        });
+        setInventory([...productsById.values()]);
       }
     } catch (err) {
       toast.error("Failed to load direct orders");
@@ -188,7 +216,7 @@ const DirectOrders = () => {
         customerPhone: customerPhone.trim(),
         customerEmail: customerEmail.trim() || undefined,
         street: streetAddress.trim() || undefined,
-        city: city.trim() || manufacturer?.city || "Kathmandu",
+        city: city.trim() || distributor?.city || "Kathmandu",
         paymentMethod,
         isPaid: orderType === "HUB_VISIT" ? isPaid : paymentMethod !== "COD",
         discountAmount: discountVal,
@@ -202,7 +230,7 @@ const DirectOrders = () => {
         })),
       };
 
-      const res = await axios.post(`${backendUrl}/api/manufacturer-order/create`, payload, {
+      const res = await axios.post(`${backendUrl}/api/distributor/orders/direct`, payload, {
         headers: { token },
       });
 
@@ -232,8 +260,8 @@ const DirectOrders = () => {
 
   const handleUpdateOrderStatus = async (orderId, newStatus) => {
     try {
-      const res = await axios.post(
-        `${backendUrl}/api/manufacturer-order/update-status`,
+      const res = await axios.patch(
+        `${backendUrl}/api/distributor/orders/direct/status`,
         { orderId, status: newStatus, payment: newStatus === "Delivered" ? true : undefined },
         { headers: { token } }
       );
@@ -829,8 +857,8 @@ const DirectOrders = () => {
             {/* Receipt Printable Canvas */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 font-mono text-xs">
               <div className="text-center border-b border-dashed border-slate-300 pb-2">
-                <p className="font-bold text-sm text-slate-900">{manufacturer?.name || "Aama Clothing Hub"}</p>
-                <p className="text-[10px] text-slate-500">{manufacturer?.city}, Nepal • Phone: {manufacturer?.phone}</p>
+                <p className="font-bold text-sm text-slate-900">{distributor?.name || "Aama Clothing Hub"}</p>
+                <p className="text-[10px] text-slate-500">{distributor?.city}, Nepal • Phone: {distributor?.phone}</p>
                 <p className="text-[10px] text-slate-400 mt-1">
                   Receipt: #{activeReceiptOrder.id?.slice(-8).toUpperCase()} •{" "}
                   {new Date().toLocaleDateString()}

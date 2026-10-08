@@ -147,7 +147,7 @@ const MarketingCards = () => {
     setSelected(new Set());
     try {
       const response = await axios.get(
-        `${backendUrl}/api/marketing-cards/manufacturer/cards?status=all`,
+        `${backendUrl}/api/marketing-cards/distributor/cards?status=all`,
         { headers: { token } }
       );
       setCards(response.data.cards || []);
@@ -204,7 +204,7 @@ const MarketingCards = () => {
     setWorking(true);
     try {
       const res = await axios.post(
-        `${backendUrl}/api/marketing-cards/manufacturer/cards/bulk-status`,
+        `${backendUrl}/api/marketing-cards/distributor/cards/bulk-status`,
         { cardIds: [...selected], action: confirmAction, notes },
         { headers: { token } }
       );
@@ -226,7 +226,7 @@ const MarketingCards = () => {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Manufacturer inventory</p>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Distributor hub inventory</p>
           <h1 className="mt-1 text-2xl font-black text-slate-950">Marketing Cards</h1>
           <p className="mt-1 text-sm text-slate-500">Select cards to confirm receipt, or flag as damaged / not found.</p>
         </div>

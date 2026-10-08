@@ -472,22 +472,22 @@ export const getCustomerLoyaltyByPhone = async (req, res) => {
 
 /**
  * GET /api/loyalty/hub-customers?page=1&limit=20
- * Manufacturer: Get list of customers who have placed direct orders at this hub,
+ * Distributor: Get list of customers who have placed direct orders at this hub,
  * enriched with loyalty tier.
  */
 export const getHubCustomers = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
     const page = Math.max(1, Number(req.query.page || 1));
     const limit = Math.min(50, Math.max(5, Number(req.query.limit || 20)));
     const skip = (page - 1) * limit;
     const search = (req.query.search || "").trim().toLowerCase();
 
-    // Fetch direct orders for this hub
+    // Fetch distributor direct orders for this hub.
     const directOrders = await prisma.order.findMany({
       where: {
-        manufacturerId,
-        orderType: "DIRECT_MANUFACTURER",
+        distributorId,
+        orderType: "DIRECT_DISTRIBUTOR",
       },
       orderBy: { date: "desc" },
     });
@@ -579,25 +579,25 @@ export const getHubCustomers = async (req, res) => {
 
 /**
  * POST /api/loyalty/hub-gift
- * Manufacturer: Record that a loyalty gift/perk was physically handed to a customer.
+ * Distributor: Record that a loyalty gift/perk was physically handed to a customer.
  * Body: { orderId, giftType, giftNote, customerPhone, customerName }
  */
 export const recordLoyaltyGift = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
     const { orderId, giftType, giftNote, customerPhone, customerName } = req.body;
 
     if (!giftType) {
       return res.json({ success: false, message: "Gift type is required" });
     }
 
-    // Verify order belongs to this manufacturer if orderId provided
+    // Verify order belongs to this distributor if orderId provided.
     if (orderId) {
       const order = await prisma.order.findFirst({
-        where: { id: orderId, manufacturerId },
+        where: { id: orderId, distributorId },
       });
       if (!order) {
-        return res.json({ success: false, message: "Order not found or not assigned to your hub" });
+        return res.json({ success: false, message: "Order not found or not assigned to your distributor hub." });
       }
     }
 
@@ -624,7 +624,7 @@ export const recordLoyaltyGift = async (req, res) => {
           giftNote: giftNote || "",
           customerPhone: customerPhone || "",
           customerName: customerName || "",
-          manufacturerId,
+          distributorId,
           handedOver: true,
           handedOverAt: new Date().toISOString(),
         }),
@@ -645,16 +645,16 @@ export const recordLoyaltyGift = async (req, res) => {
 
 /**
  * GET /api/loyalty/hub-gifts
- * Manufacturer: Get all gift records for this hub.
+ * Distributor: Get all gift records for this hub.
  */
 export const getHubGifts = async (req, res) => {
   try {
-    const manufacturerId = req.manufacturerId;
+    const distributorId = req.distributorId;
 
     const gifts = await prisma.customerLetterImage.findMany({
       where: {
         title: { startsWith: "[HUB GIFT]" },
-        notes: { contains: manufacturerId },
+        notes: { contains: distributorId },
       },
       orderBy: { createdAt: "desc" },
     });

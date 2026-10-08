@@ -54,8 +54,87 @@ const validateBooleanChecklist = (value, fields, label) => {
   return { ...Object.fromEntries(fields.map((field) => [field, value[field]])), notes };
 };
 
+export const summarizeManufacturerProductionDashboard = ({
+  factoryBalances = [],
+  productionRequests = [],
+}) => {
+  const stockedProducts = new Set();
+  const stockedSkus = new Set();
+  let factoryUnitsOnHand = 0;
+  let factoryUnitsAvailable = 0;
+  let factoryUnitsReserved = 0;
+
+  for (const balance of factoryBalances) {
+    const onHand = Math.max(0, Number(balance.quantityOnHand || 0));
+    const reserved = Math.max(0, Number(balance.reservedQuantity || 0));
+    const available = Math.max(0, onHand - reserved);
+    factoryUnitsOnHand += onHand;
+    factoryUnitsReserved += reserved;
+    factoryUnitsAvailable += available;
+    if (onHand > 0) stockedSkus.add(balance.inventorySkuId);
+    if (onHand > 0 && balance.inventorySku?.productId) {
+      stockedProducts.add(balance.inventorySku.productId);
+    }
+  }
+
+  let producedUnits = 0;
+  let damagedUnits = 0;
+  let goodUnitsProduced = 0;
+  let completedBatches = 0;
+  let failedQaBatches = 0;
+  let activeBatches = 0;
+  for (const request of productionRequests) {
+    if (["PENDING_REVIEW", "PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "PRE_CHECK_PASSED", "APPROVED", "IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status)) {
+      activeBatches += 1;
+    }
+    for (const line of request.lines || []) {
+      if (line.actualQuantity === null || line.actualQuantity === undefined) continue;
+      producedUnits += Number(line.actualQuantity || 0);
+      damagedUnits += Number(line.damagedQuantity || 0);
+      if (request.status === "COMPLETED") {
+        goodUnitsProduced += Math.max(0, Number(line.actualQuantity || 0) - Number(line.damagedQuantity || 0));
+      }
+    }
+    if (request.status === "COMPLETED") {
+      completedBatches += 1;
+    } else if (request.status === "POST_CHECK_FAILED") {
+      failedQaBatches += 1;
+    }
+  }
+
+  return {
+    factoryProductCount: stockedProducts.size,
+    factorySkuCount: stockedSkus.size,
+    factoryUnitsOnHand,
+    factoryUnitsAvailable,
+    factoryUnitsReserved,
+    producedUnits,
+    goodUnitsProduced,
+    damagedUnits,
+    completedBatches,
+    failedQaBatches,
+    activeBatches,
+  };
+};
+
 export const validatePreProductionChecklist = (value) => {
-  const checklist = validateBooleanChecklist(value, ["fabricPassed", "qualitySamplePassed", "colorShadeMatched"], "Pre-production");
+  const fields = ["fabricPassed", "qualitySamplePassed", "colorShadeMatched"];
+  const fieldAliases = {
+    fabricPassed: "fabricCheckPassed",
+    qualitySamplePassed: "sampleCheckPassed",
+    colorShadeMatched: "colorShadeCheckPassed",
+  };
+  const normalizedValue = value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value }
+    : value;
+  if (normalizedValue && typeof normalizedValue === "object" && !Array.isArray(normalizedValue)) {
+    for (const [field, alias] of Object.entries(fieldAliases)) {
+      if (!Object.hasOwn(normalizedValue, field) && Object.hasOwn(normalizedValue, alias)) {
+        normalizedValue[field] = normalizedValue[alias];
+      }
+    }
+  }
+  const checklist = validateBooleanChecklist(normalizedValue, fields, "Pre-production");
   return { ...checklist, passed: Object.values(checklist).filter((entry) => typeof entry === "boolean").every(Boolean) };
 };
 

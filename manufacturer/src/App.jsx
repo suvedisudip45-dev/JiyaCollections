@@ -10,7 +10,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
 import OrderDetail from "./pages/OrderDetail";
-import Inventory from "./pages/Inventory";
+import DistributorInventory from "./pages/DistributorInventory";
 import Production from "./pages/Production";
 import FactoryTransfers from "./pages/FactoryTransfers";
 import Performance from "./pages/Performance";
@@ -79,16 +79,16 @@ const MainLayout = () => {
 
               {/* ── Distributor Portal Routes ───────────────────────────── */}
               <Route path="/distributor" element={<DistributorHome />} />
-              <Route path="/orders" element={<Orders />} />
-              <Route path="/orders/:id" element={<OrderDetail />} />
-              <Route path="/direct-orders" element={<DirectOrders />} />
-              <Route path="/inventory" element={<Inventory />} />
+              <Route path="/orders" element={activeWorkspace === "DISTRIBUTOR" ? <Orders /> : <Navigate to="/" replace />} />
+              <Route path="/orders/:id" element={activeWorkspace === "DISTRIBUTOR" ? <OrderDetail /> : <Navigate to="/" replace />} />
+              <Route path="/direct-orders" element={activeWorkspace === "DISTRIBUTOR" ? <DirectOrders /> : <Navigate to="/" replace />} />
+              <Route path="/inventory" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorInventory /> : <Navigate to="/" replace />} />
               <Route path="/distributor/deliveries" element={<DistributorSelfDelivery />} />
               <Route path="/distributor/demand" element={<DistributorDemandReceipt />} />
               <Route path="/distributor/finance" element={<DistributorFinanceDashboard />} />
-              <Route path="/customer-loyalty" element={<CustomerLoyalty />} />
-              <Route path="/gift-inventory" element={<GiftInventory />} />
-              <Route path="/marketing-cards" element={<MarketingCards />} />
+              <Route path="/customer-loyalty" element={activeWorkspace === "DISTRIBUTOR" ? <CustomerLoyalty /> : <Navigate to="/" replace />} />
+              <Route path="/gift-inventory" element={activeWorkspace === "DISTRIBUTOR" ? <GiftInventory /> : <Navigate to="/" replace />} />
+              <Route path="/marketing-cards" element={activeWorkspace === "DISTRIBUTOR" ? <MarketingCards /> : <Navigate to="/" replace />} />
 
               {/* ── Fallback ─────────────────────────────────────────────── */}
               <Route

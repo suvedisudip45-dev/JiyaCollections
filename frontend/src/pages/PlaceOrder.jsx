@@ -1,5 +1,5 @@
 /* eslint-disable no-unused-vars */
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
@@ -60,8 +60,13 @@ const PlaceOrder = () => {
     state: "Bagmati Province",
     country: "Nepal",
   });
-  const [locationPriceQuote, setLocationPriceQuote] = useState(null);
-  const [locationPriceStatus, setLocationPriceStatus] = useState("idle");
+  const [locationPriceResult, setLocationPriceResult] = useState({
+    key: null,
+    status: "idle",
+    quote: null,
+    error: "",
+  });
+  const [locationPriceRetry, setLocationPriceRetry] = useState(0);
 
   const [comboBundlePurchase, setComboBundlePurchase] = useState(() => {
     if (location.state?.comboBundlePurchase) return location.state.comboBundlePurchase;
@@ -83,19 +88,28 @@ const PlaceOrder = () => {
     ? Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0) * Number(comboBundlePurchase?.quantity || 1)
     : getCartAmount();
 
-  const cartPricingItems = Object.entries(cartItems).flatMap(([productId, variants]) =>
+  const cartPricingItems = useMemo(() => Object.entries(cartItems).flatMap(([productId, variants]) =>
     Object.entries(variants || {}).filter(([, quantity]) => Number(quantity) > 0).map(([variantKey, quantity]) => {
       const [size, color] = variantKey.split("-");
       return { productId, size, color: color || "", quantity: Number(quantity) };
     })
-  );
+  ), [cartItems]);
+  const hasComboBundle = Boolean(comboBundleData);
   const checkoutPriceKey = JSON.stringify({
     province: formData.province,
     district: formData.district,
     items: cartPricingItems,
   });
+  const hasMatchingPriceResult = locationPriceResult.key === checkoutPriceKey;
+  const locationPriceQuote = hasMatchingPriceResult ? locationPriceResult.quote : null;
+  const locationPriceStatus = hasMatchingPriceResult
+    ? locationPriceResult.status
+    : !hasComboBundle && cartPricingItems.length > 0
+      ? "loading"
+      : "idle";
+  const locationPriceError = hasMatchingPriceResult ? locationPriceResult.error : "";
   const hasCurrentLocationQuote = Boolean(
-    locationPriceQuote && locationPriceQuote.key === checkoutPriceKey && locationPriceStatus === "ready"
+    locationPriceQuote && locationPriceStatus === "ready"
   );
   const locationPriceByVariant = new Map((hasCurrentLocationQuote ? locationPriceQuote.items : []).map((item) => [
     `${item.productId}|${item.size}|${item.color}`,
@@ -346,14 +360,33 @@ const PlaceOrder = () => {
   }, [backendUrl, formData.city, formData.district, formData.province]);
 
   useEffect(() => {
-    if (comboBundleData || cartPricingItems.length === 0 || !formData.province || !formData.district) {
-      setLocationPriceQuote(null);
-      setLocationPriceStatus(comboBundleData ? "idle" : cartPricingItems.length === 0 ? "idle" : "error");
+    if (hasComboBundle || cartPricingItems.length === 0) {
+      setLocationPriceResult({
+        key: checkoutPriceKey,
+        status: "idle",
+        quote: null,
+        error: "",
+      });
+      return undefined;
+    }
+
+    if (!formData.province?.trim() || !formData.district?.trim()) {
+      setLocationPriceResult({
+        key: checkoutPriceKey,
+        status: "error",
+        quote: null,
+        error: "Select a province and district to verify checkout pricing.",
+      });
       return undefined;
     }
 
     let cancelled = false;
-    setLocationPriceStatus("loading");
+    setLocationPriceResult({
+      key: checkoutPriceKey,
+      status: "loading",
+      quote: null,
+      error: "",
+    });
     axios.post(`${backendUrl}/api/product/resolve-prices`, {
       items: cartPricingItems,
       province: formData.province,
@@ -362,18 +395,35 @@ const PlaceOrder = () => {
     }).then((response) => {
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to resolve the delivery-location price");
       if (!cancelled) {
-        setLocationPriceQuote({ key: checkoutPriceKey, ...response.data });
-        setLocationPriceStatus("ready");
+        setLocationPriceResult({
+          key: checkoutPriceKey,
+          status: "ready",
+          quote: response.data,
+          error: "",
+        });
       }
     }).catch((error) => {
       if (!cancelled) {
-        setLocationPriceQuote(null);
-        setLocationPriceStatus("error");
+        console.error("Failed to verify checkout pricing:", error);
+        setLocationPriceResult({
+          key: checkoutPriceKey,
+          status: "error",
+          quote: null,
+          error: error.response?.data?.message || "Could not reach the server to verify checkout pricing.",
+        });
       }
     });
 
     return () => { cancelled = true; };
-  }, [backendUrl, checkoutPriceKey, comboBundleData?.id]);
+  }, [
+    backendUrl,
+    cartPricingItems,
+    checkoutPriceKey,
+    formData.district,
+    formData.province,
+    hasComboBundle,
+    locationPriceRetry,
+  ]);
 
   // Recalculate fee & loyalty rewards whenever district, province, shippingConfig or loyalty changes
   useEffect(() => {
@@ -561,7 +611,7 @@ const PlaceOrder = () => {
 
     if (!comboBundleData && cartPricingItems.length > 0 && !hasCurrentLocationQuote) {
       toast.error(locationPriceStatus === "error"
-        ? "Unable to verify the price for this delivery location. Please retry before confirming."
+        ? locationPriceError || "Unable to verify the price for this delivery location. Please retry before confirming."
         : "Verifying the delivery-location price. Please wait before confirming.");
       return;
     }
@@ -966,7 +1016,18 @@ const PlaceOrder = () => {
                 {!comboBundleData && cartPricingItems.length > 0 && (
                   <p className={`mt-2 text-[11px] ${locationPriceStatus === "error" ? "text-rose-700" : "text-slate-500"}`}>
                     {locationPriceStatus === "loading" && "Verifying local stock and checkout prices…"}
-                    {locationPriceStatus === "error" && "Price verification failed. Retry before confirming your order."}
+                    {locationPriceStatus === "error" && (
+                      <span>
+                        {locationPriceError || "Price verification failed."}{" "}
+                        <button
+                          type="button"
+                          className="font-semibold underline"
+                          onClick={() => setLocationPriceRetry((retry) => retry + 1)}
+                        >
+                          Retry
+                        </button>
+                      </span>
+                    )}
                     {hasCurrentLocationQuote && (locationPriceQuote.locationDiscountManufacturerId
                       ? "Local hub stock verified; qualifying location discounts are applied."
                       : "No mapped local hub can fulfill the full cart; standard product pricing applies.")}

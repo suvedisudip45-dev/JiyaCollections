@@ -25,7 +25,7 @@ The backend is the real source of truth for:
 - order assignment, shipping, and handoff logic
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
-- location-based discount resolution and resolved manufacturer assignment for checkout
+- location-based discount resolution and distributor hub assignment for checkout
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
@@ -40,7 +40,7 @@ This repo is intentionally split into multiple apps:
 
 - `frontend/` for customer storefront
 - `admin/` for operations
-- `manufacturer/` for fulfillment
+- `manufacturer/` for factory production and the distributor workspace
 - `marketing/` for partner flows
 - `backend/` for business logic and data access
 
@@ -77,8 +77,9 @@ Use status strings and IDs consistent with Prisma and the current service layer.
 ### 1.7 Gift promotion and inventory rules
 
 - Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Keep trigger evaluation in backend services and do not treat UI-selected gifts as authoritative.
-- Each manufacturer distribution is an independently accepted inventory batch. The manufacturer chooses from their own accepted stock at final checklist completion; the backend must claim that exact batch atomically and store it on the order.
-- Manufacturer actions that change an order gift must verify manufacturer ownership. Pack, delivery, return, and loss transitions must be idempotent and must update movement logs with stock in the same transaction.
+- Distributor gift distributions are independently accepted inventory batches. The distributor chooses only from its own accepted stock for distributor hub orders; the backend must claim that exact batch atomically and store it on the order.
+- Distributor actions that change a hub order gift must verify authenticated distributor ownership. Pack, delivery, return, and loss transitions must be idempotent and update distributor movement logs and stock in the same transaction. Legacy manufacturer gift rows remain historical and must not be treated as distributor inventory.
+- Direct hub orders, hub inventory, physical marketing-card stock, and gift stock are distributor features. Direct hub stock reads and deductions must use the distributor inventory ledger; never use `ManufacturerInventory` as a distributor fallback. Keep their routes, permissions, UI access, and admin allocations distributor-scoped.
 - NCM delivery status is authoritative for delivered-gift deduction. Do not mark a gift delivered from optimistic frontend state.
 - Update this guide and the project overview, architecture, schema, and UI docs when gift routes, permissions, states, or lifecycle rules change.
 

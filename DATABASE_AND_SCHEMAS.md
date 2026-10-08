@@ -23,7 +23,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
-| Inventory | `ManufacturerInventory`, `ManufacturerInventoryMovement`, `ManufacturerGiftInventory`, `GiftMovementLog`, `StockLog`, `InboundShipment` | manufacturer-level product and promotion-gift stock with movement history |
+| Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, webhook handling |
@@ -56,7 +56,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Product` | `name`, `description`, `price`, `category`, `subCategory`, `sizes`, `colors`, `variants`, `stockQuantity`, `published` | Stores product catalog and variant inventory |
+| `Product` | `name`, `description`, `price`, `category`, `subCategory`, `sizes`, `colors`, `variants`, `stockQuantity`, `published` | Catalog fields plus a storefront-availability projection of unreserved stock held at active distributor hubs; factory and in-transit stock are excluded |
 | `Category` | `name` | root category |
 | `SubCategory` | `name`, `categoryId` | nested category structure |
 | `Color` | `name`, `nepaliName` | color catalog |
@@ -68,7 +68,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `deliveryJobId`, `assignedGiftId`, `assignedGiftInventoryId`, `giftStatus`, `specialOrder*` | primary order transaction; the admin exchange-list API returns `date` as a decimal string for JSON safety |
+| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; direct distributor orders identify their hub through `distributorId`; admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, `manufacturerId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | allocation between order and manufacturer |
 | `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
@@ -103,6 +103,21 @@ The auth layer is built around `AuthAccount` and related session tables.
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
+Factory receipts from production remain in manufacturer-owned factory locations and are not available to customer checkout. Stock becomes storefront-eligible only when a distributor confirms receipt into an active distributor location. Product-level and variant-level stock fields mirror the sum of unreserved active distributor ledger balances; `InventoryBalance` and its ledger entries remain authoritative.
+
+Bulk distributor replenishment uses a separate `StockTransfer` lifecycle:
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `StockTransfer` | manufacturer/distributor profile IDs, source/destination locations, status, request/review actor and timestamps, five manufacturer preparation-check booleans, preparation actor/time | Distributor demand is admin-approved before becoming actionable in the manufacturer portal. |
+| `StockTransferLine` | transfer/SKU IDs, requested/approved/dispatched/reserved quantities | Admin approval is bounded by the request and current available factory balance. |
+| `StockTransferShipment` | booking mode, carrier/tracking, freight and settlement fields, status/timestamps | Supports NCM, local freight, and direct `SELF_STORE` delivery. Own-store shipments carry zero freight and are immediately received into the distributor ledger location. |
+| `StockTransferReceipt` / `StockTransferReceiptLine` | shipment, receiver/time, good/damaged/missing quantities | Self-store delivery records an idempotent all-good receipt in the same transaction as its ledger movements. |
+
+Every shipment requires saved passing manufacturer checks for product availability,
+quality, requested color, requested size, and packaging. Self-store eligibility
+requires the manufacturer and distributor profiles to share the same account.
+
 ### 3.7 Location-aware pricing and local manufacturer assignment
 
 The schema includes explicit coverage and pricing metadata for Nepal-specific local ordering rules:
@@ -129,12 +144,13 @@ These fields lock the order to the backend-resolved local discount and assigned 
 | `MarketingCampaign` | `marketingPartnerId`, `isOwnStore`, `maxScansPerCustomer`, `targetScopeType`, `benefitConfig`, `requestedQuantity`, `status` | partner or in-house campaign definition; public card scan cap defaults to one |
 | `MarketingCardBatch` | `campaignId`, `batchCode`, `quantity`, `status` | card batch control |
 | `MarketingCard` | `cardCode`, `qrTokenHash`, `partnerId`, `assignedPartnerId`, `assignedOrganization`, `isPublic`, `campaignId`, `batchId`, `exchangeLockRequestId`, `physicalStatus` | individual card instance and optional public/Own Store destination |
-| `MarketingCardOrder` | `cardId`, `orderId`, `manufacturerId` | card-to-order association |
+| `MarketingCardOrder` | `cardId`, `orderId`, nullable `manufacturerId`, nullable `distributorId` | card-to-order association |
+| `MarketingCardAssignment` | `cardId`, nullable `manufacturerId`, nullable `distributorId`, status/receipt fields | stock assignment to a hub; new assignments target distributors |
 | `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `scannedAt`, `assignedOrganization`, `scanWeekIndex`, `activatedAt`, `otpExpiresAt` | customer card ownership and indexed scan-limit data |
 | `MarketingBenefit` | `campaignId`, `benefitType`, `value`, `percentage`, `quantity` | campaign benefit definitions |
 | `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status`, `claimedAt`, `redeemedAt` | claim and redemption lifecycle |
 
-Own Store campaigns may have no marketing partner. Their cards can be tracked as public-to-everyone, assigned to an existing partner, or assigned to a custom organization name without replacing manufacturer distribution. All Own Store cards are free for any logged-in customer to scan without an attached/delivered order; card-code entry and QR scan attempts are recorded in `MarketingCardEvent`. A card is consumed by its first successful QR scan and cannot be scanned again by that account or any other account. The campaign's configurable `maxScansPerCustomer` cap (default one per account for the campaign lifetime) applies across its Own Store cards, in addition to the five-per-campaign weekly cap. Organization-assigned cards also retain a two-per-campaign, per-organization lifetime cap. Customer scans snapshot the assigned organization and a Nepal-time Monday-based calendar-week index. Claimed Own Store discount rewards are stored as `CLAIMED` until checkout atomically changes the redemption to `REDEEMED`.
+Own Store campaigns may have no marketing partner. Their cards can be tracked as public-to-everyone, assigned to an existing partner, or assigned to a custom organization name. Physical campaign card stock is assigned to active distributors and received/attached through distributor-scoped APIs; old manufacturer assignment references remain available for historical records. All Own Store cards are free for any logged-in customer to scan without an attached/delivered order; card-code entry and QR scan attempts are recorded in `MarketingCardEvent`. A card is consumed by its first successful QR scan and cannot be scanned again by that account or any other account. The campaign's configurable `maxScansPerCustomer` cap (default one per account for the campaign lifetime) applies across its Own Store cards, in addition to the five-per-campaign weekly cap. Organization-assigned cards also retain a two-per-campaign, per-organization lifetime cap. Customer scans snapshot the assigned organization and a Nepal-time Monday-based calendar-week index. Claimed Own Store discount rewards are stored as `CLAIMED` until checkout atomically changes the redemption to `REDEEMED`.
 
 ### 3.8 Finance, accounting, and tax
 
@@ -157,16 +173,19 @@ The schema includes a full accounting engine with:
 
 This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
 
-### 3.9 Gift promotions and manufacturer gift stock
+### 3.9 Gift promotions and distributor gift stock
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `GiftCatalog` | `name`, `sku`, `priceValue`, `category`, `isActive` | Reusable physical gift assortment; catalog removal is a soft archive |
 | `LoyaltyTierConfig` | `tierName`, `triggerType`, `minSpendThreshold`, `giftTargetValue`, `isActive` | Configurable `ORDER_VALUE` trigger and gift-value ceiling; loyalty gifts are configured on `CustomerLevel` |
-| `ManufacturerGiftInventory` | `manufacturerId`, `giftId`, `quantityAvailable`, `quantityReserved`, `status` | Each distribution is its own `PENDING_ACCEPTANCE`, `ACCEPTED`, or `REJECTED` batch |
-| `GiftMovementLog` | `manufacturerId`, `giftId`, `orderId`, `movementType`, `quantity` | Operational audit records for allocation, reservation, deduction, restock, and loss |
+| `DistributorGiftInventory` | `distributorId`, `giftId`, `quantityAvailable`, `quantityReserved`, `status` | New hub distribution batches; each is `PENDING_ACCEPTANCE`, `ACCEPTED`, or `REJECTED` |
+| `DistributorGiftMovementLog` | `distributorId`, `giftId`, `orderId`, `movementType`, `quantity` | Audit records for distributor gift allocation, reservation, deduction, restock, and loss |
+| `ManufacturerGiftInventory`, `GiftMovementLog` | legacy manufacturer-owned gift records | Retained for historical data; not used for new distributor hub activity |
 
-An order stores both its gift catalog reference and the exact manufacturer inventory batch reserved for it. Loyalty gift allowances are already represented by `CustomerLevel.giftAmount` and `giftDescription`; eligible rewards are snapshotted into `Order.rewardApplied`. `LoyaltyTierConfig` remains for order-value promotion rules. At final manufacturer checklist completion, the backend verifies eligibility, manufacturer ownership, accepted stock, and gift value, then reserves the selected batch atomically. `giftStatus` progresses through `NONE`, `PENDING_PACKING`, `RESERVED`, and `DELIVERED`, or to `RETURNED` / `LOST` when a protected return decision is recorded. Delivered stock is deducted through the NCM delivery transaction.
+An order stores its gift catalog reference and the exact inventory batch reserved for it, using `assignedDistributorGiftInventoryId` for distributor hub orders while retaining the legacy manufacturer reference for historical orders. Loyalty gift allowances are represented by `CustomerLevel.giftAmount` and `giftDescription`; eligible rewards are snapshotted into `Order.rewardApplied`. At the distributor final checklist, the backend verifies eligibility, distributor ownership, accepted stock, and gift value, then reserves the selected batch atomically. `giftStatus` progresses through `NONE`, `PENDING_PACKING`, `RESERVED`, and `DELIVERED`, or to `RETURNED` / `LOST` when a protected return decision is recorded. Delivered stock is deducted through the NCM delivery transaction.
+
+Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Order.distributorId`. Their product quantities are deducted transactionally from the distributor's ledger-backed stock; these orders do not use `ManufacturerInventory` or manufacturer assignment records.
 
 ## 4. Data Dictionary: Key Enumerations and Status Values
 
@@ -180,7 +199,7 @@ An order stores both its gift catalog reference and the exact manufacturer inven
 
 - `Order.status`: order state from the app, e.g. `Order Placed`, with fulfillment tracking in `fulfillmentStatus`
 - `Order.fulfillmentStatus`: `PENDING_ASSIGNMENT`, `ASSIGNED`, `ACCEPTED`, `MANUFACTURING`, `QUALITY_CHECK`, `PACKED`, `READY_FOR_PICKUP`, `PICKED_UP`, `IN_TRANSIT`, `DELIVERED`, `FAILED`
-- `Order.orderType`: `ONLINE_STORE`, `DIRECT_MANUFACTURER`
+- `Order.orderType`: `ONLINE_STORE`, legacy `DIRECT_MANUFACTURER`, `DIRECT_DISTRIBUTOR`
 
 ### Manufacturer / delivery state
 

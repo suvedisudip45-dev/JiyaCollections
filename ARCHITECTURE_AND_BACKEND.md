@@ -47,10 +47,11 @@ The backend mounts the following major route groups in `backend/server.js`:
 | --- | --- |
 | `/api/auth` | Login, refresh, MFA, OTP, logout |
 | `/api/admin/access` | Access management and RBAC control |
-| `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local assignment logic |
+| `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local pricing |
 | `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
-| `/api/admin/gifts` | Gift catalog, spend-rule configuration, manufacturer distributions, and admin order allocation/lifecycle actions |
-| `/api/manufacturer/gifts` | Manufacturer gift-stock inbox and acceptance/rejection actions; manufacturer lifecycle actions are ownership-scoped |
+| `/api/admin/gifts` | Gift catalog, spend-rule configuration, distributor distributions, and admin return review |
+| `/api/distributor/gifts` | Distributor gift-stock inbox, allocation decisions, order options, and return/loss recording |
+| `/api/distributor` | Distributor direct orders, ledger-backed inventory reads, transfers, delivery, finance, and workspace profile |
 | `/api/notifications` | Notification service endpoints |
 | `/api/user` | User profile / account management |
 | `/api/product` | Product creation, listing, publish toggles, stock adjustments |
@@ -94,15 +95,21 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `GET /api/marketing-cards/admin/cards`
 - `POST /api/marketing-cards/customer/cards/scan`
 - `GET /api/admin/gifts/catalog`, `POST /api/admin/gifts/catalog`, `DELETE /api/admin/gifts/catalog/:id` (archive)
-- `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-manufacturer`
-- `GET /api/manufacturer/gifts/inbound` and `POST /api/manufacturer/gifts/:id/respond`
-- `GET /api/manufacturer/gifts/order-options/:orderId` returns eligible gifts only from the authenticated manufacturer's accepted, available inventory
+- `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-distributor`
+- `GET /api/distributor/gifts/inbound` and `POST /api/distributor/gifts/:id/respond`
+- `GET /api/distributor/gifts/order-options/:orderId` returns eligible gifts only from the authenticated distributor's accepted, available inventory
 - `GET /api/manufacturer-inventory/my/:productId/movements` returns that manufacturer's paginated per-variant stock adjustment history; `POST /api/manufacturer-inventory/update` stores quantity changes and history rows atomically
-- Gift assignment is submitted with final checklist completion through the manufacturer order-assignment status endpoint; delivery deduction is driven by the NCM webhook, and `POST /api/manufacturer/gifts/returned/:orderId` records an explicit returned-or-lost decision
+- `GET/POST/PATCH /api/distributor/orders/direct` list, create, and update direct distributor hub orders; `GET /api/distributor/inventory` reads distributor stock from `InventoryBalance` and `InventoryLedgerEntry`
+- `GET /api/manufacturer-production/dashboard` returns manufacturer-scoped factory balance and completed/inspected production metrics
+- Gift assignment is submitted with final checklist completion through the distributor order-assignment status endpoint; delivery deduction is driven by the NCM webhook, and `POST /api/distributor/gifts/returned/:orderId` records an explicit returned-or-lost decision
 
-Gift assignment is manufacturer-selected and backend-authoritative. Admins configure order-value gift ceilings separately and distribute catalog gifts to manufacturer hubs as pending-acceptance batches. Loyalty gift value and description are configured directly on `CustomerLevel`; the existing backend loyalty calculation places an active tier gift allowance in `rewardApplied` when the order is created. At the final checklist, eligible manufacturers see only accepted local stock whose catalog value is within the highest active reward ceiling. Checklist completion atomically decrements available quantity, increments reserved quantity, links the exact inventory batch to the order, and writes a movement log. NCM delivery consumes the reserved unit. Campaign/product triggers and automatic return-inspection reconciliation remain follow-up work.
+Gift assignment is distributor-selected and backend-authoritative for distributor hub orders. Admins configure order-value gift ceilings separately and distribute catalog gifts to distributors as pending-acceptance batches. Loyalty gift value and description are configured directly on `CustomerLevel`; the backend loyalty calculation places an active tier gift allowance in `rewardApplied` when the order is created. At the final checklist, eligible distributors see only accepted local stock within the highest active reward ceiling. Checklist completion reserves the selected batch atomically, links the exact inventory batch to the order, and writes a distributor movement log. NCM delivery consumes the reserved unit. Legacy manufacturer gift rows remain for historical records; the manufacturer gift-stock routes are no longer mounted.
+
+Direct hub orders are created as `DIRECT_DISTRIBUTOR`, scoped to the authenticated `req.distributorId`, and deduct each selected SKU through the distributor inventory ledger in the same transaction as order and assignment creation. They do not use manufacturer assignments or `ManufacturerInventory`; the manufacturer direct-order API is no longer mounted.
 
 Manufacturer stock quantity edits are captured in the `ManufacturerInventoryMovement` ledger per size/color variant. Each stock-in or stock-out event retains before/after quantity, signed delta, required reason, optional note, authenticated actor, and timestamp in the same database transaction as the current inventory update. This follows established inventory audit practice of retaining adjustment history instead of relying on the latest on-hand balance alone.
+
+Factory production receipts are not storefront inventory. `Product.stockQuantity` and each product variant's available quantity are synchronized only from unreserved balances at active distributor locations. Production completion therefore leaves storefront stock unchanged; dispatched stock remains unavailable while in transit; confirmed good receipt at a distributor makes it available. Allocation reserves distributor balances, and delivery/direct hub fulfillment consumes the reservation and on-hand balance through auditable ledger movements. Cancellation releases the distributor reservation. These transitions, direct hub sales, and evidence-backed distributor stock decreases recalculate the product projection. Startup reconciles the product projection from distributor ledger balances before the API begins listening.
 
 ## 4. Request / Response Lifecycle
 
@@ -146,7 +153,7 @@ The schema includes:
 
 Authorization is enforced through a centralized `authorize` middleware that resolves account permissions from the RBAC service and checks required permission strings such as `product:create`, `order:list_admin`, `delivery:admin_list`, `access:roles_read`, and `marketing_card:admin_manage`.
 
-Own Store campaign creation and public/organization card assignment use the additional `marketing_card:own_store_manage` and `marketing_card:custom_assign` permissions. All Own Store cards are available to any logged-in customer without a delivered-order ownership check; code entry, QR attempts, and successful scans are recorded as card events. The first successful QR scan consumes a card; the backend rejects subsequent scans by both the scanning account and other accounts. The campaign's `maxScansPerCustomer` setting (default one) limits each account across the campaign lifetime, in addition to the weekly campaign cap of five; organization-assigned cards also have a two-per-organization campaign lifetime cap. Manufacturer distribution remains a separate workflow. Customer scan quotas and reward eligibility are enforced in backend services; `POST /api/marketing-cards/customer/claim-reward` claims eligible discount rewards, and `GET /api/marketing-cards/customer/rewards` lists active claims for checkout.
+Own Store campaign creation and public/organization card assignment use the additional `marketing_card:own_store_manage` and `marketing_card:custom_assign` permissions. All Own Store cards are available to any logged-in customer without a delivered-order ownership check; code entry, QR attempts, and successful scans are recorded as card events. The first successful QR scan consumes a card; the backend rejects subsequent scans by both the scanning account and other accounts. The campaign's `maxScansPerCustomer` setting (default one) limits each account across the campaign lifetime, in addition to the weekly campaign cap of five; organization-assigned cards also have a two-per-organization campaign lifetime cap. Physical card stock is assigned to active distributors, with receipt and order attachment performed under distributor context. Customer scan quotas and reward eligibility are enforced in backend services; `POST /api/marketing-cards/customer/claim-reward` claims eligible discount rewards, and `GET /api/marketing-cards/customer/rewards` lists active claims for checkout.
 
 Checkout accepts a single explicit reward choice (`CARD`, `LOYALTY`, or `NONE`). Card discounts are recalculated and validated from the claimed reward on the server, while redemption is changed to `REDEEMED` in the same transaction as order creation. Card and loyalty benefits cannot be stacked; loyalty reward usage is not consumed by an order using a card reward.
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
 import { postDeliveredOrderAccounting, postCustomerReturnAccounting } from "./accountingPostingEngine.js";
+import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -234,64 +235,14 @@ export const updateSelfDeliveryStatus = async ({
       assignmentUpdateData.deliveredAt = now;
       orderUpdateData.payment = true; // Mark payment collected if COD
 
-      // Stock Fulfillment: Release reserved quantity & decrement quantityOnHand in distributor stock location
-      const distributorLocation = await tx.inventoryLocation.findFirst({
-        where: { distributorId, kind: "DISTRIBUTOR", isActive: true },
+      await consumeDistributorOrderInventory({
+        tx,
+        orderId: order.id,
+        distributorId,
+        assignmentId: assignment.id,
+        items: parseJSON(order.items, []),
+        actorId: actorContext.actorId || distributorId,
       });
-
-      if (distributorLocation) {
-        const orderItems = parseJSON(order.items, []);
-        for (const item of orderItems) {
-          const productId = item.productId || item._id || item.id;
-          const sizeKey = normalizeSkuKey(item.size);
-          const colorKey = normalizeSkuKey(item.color);
-          const qty = Number(item.quantity ?? 1);
-
-          const sku = await tx.inventorySku.findFirst({
-            where: { productId, sizeKey, colorKey, isActive: true },
-          });
-
-          if (sku) {
-            const balance = await tx.inventoryBalance.findUnique({
-              where: {
-                locationId_inventorySkuId: {
-                  locationId: distributorLocation.id,
-                  inventorySkuId: sku.id,
-                },
-              },
-            });
-
-            if (balance) {
-              const decrementReserved = Math.min(balance.reservedQuantity, qty);
-              await tx.inventoryBalance.update({
-                where: { id: balance.id },
-                data: {
-                  quantityOnHand: { decrement: qty },
-                  reservedQuantity: { decrement: decrementReserved },
-                },
-              });
-
-              // Create FULFILLMENT ledger entry
-              await tx.inventoryLedgerEntry.create({
-                data: {
-                  inventorySkuId: sku.id,
-                  sourceLocationId: distributorLocation.id,
-                  destinationLocationId: null,
-                  quantity: qty,
-                  movementType: "FULFILLMENT",
-                  inventoryOwner: "PLATFORM",
-                  referenceType: "ORDER",
-                  referenceId: order.id,
-                  idempotencyKey: `dist-fulfill-${assignment.id}-${sku.id}-${crypto.randomBytes(4).toString("hex")}`,
-                  actorId: actorContext.actorId || distributorId,
-                  actorRole: "DISTRIBUTOR",
-                  reason: `Self-delivery completed for Order ${order.id}`,
-                },
-              });
-            }
-          }
-        }
-      }
 
       // Post Delivered Order Accounting entries
       try {

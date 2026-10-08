@@ -3,7 +3,7 @@ import cors from "cors";
 import { randomUUID } from "node:crypto";
 import "dotenv/config";
 import { flushLogs, logger } from "./utils/logger.js";
-import { getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
+import { ALLOWED_CORS_HEADERS, getAllowedOrigins, isOriginAllowed } from "./config/cors.js";
 import connectDB, { prisma } from "./config/db.js";
 import connectCloudinary from "./config/cloudinary.js";
 import { validateJwtConfig } from "./config/jwt.js";
@@ -29,7 +29,6 @@ import manufacturerRouter from "./routes/manufacturerRoute.js";
 import manufacturerInventoryRouter from "./routes/manufacturerInventoryRoute.js";
 import manufacturerProductionRouter from "./routes/manufacturerProductionRoute.js";
 import orderAssignmentRouter from "./routes/orderAssignmentRoute.js";
-import manufacturerDirectOrderRouter from "./routes/manufacturerDirectOrderRoute.js";
 import distributorRouter from "./routes/distributorRoute.js";
 import adminDistributorApplicationRouter from "./routes/adminDistributorApplicationRoute.js";
 import adminDistributorRateRouter, { adminDistributorFinanceRouter } from "./routes/adminDistributorRateRoute.js";
@@ -45,10 +44,11 @@ import authRouter from "./routes/authRoute.js";
 import accessManagementRouter from "./routes/accessManagementRoute.js";
 import locationPricingRouter from "./routes/locationPricingRoute.js";
 import notificationRouter from "./routes/notificationRoute.js";
-import { adminGiftRouter, manufacturerGiftRouter } from "./routes/giftRoute.js";
+import { adminGiftRouter, distributorGiftRouter } from "./routes/giftRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
+import { syncAllProductsStock } from "./services/stockSyncService.js";
 
 // App Config
 const app = express();
@@ -60,6 +60,7 @@ const startServer = async () => {
   if (!connected) throw new Error("Database connection is required before startup.");
   await connectCloudinary();
   await ensureStandardChartOfAccounts();
+  await syncAllProductsStock();
   startSystemAuditOutboxWorker();
 
   app.listen(port, () => {
@@ -95,7 +96,7 @@ const corsOptions = {
     callback(new Error(`CORS: Origin ${origin} not allowed`));
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token', 'adminToken', 'manufacturerToken', 'distributorToken', 'x-requested-with', 'x-correlation-id'],
+  allowedHeaders: ALLOWED_CORS_HEADERS,
   credentials: true,
 };
 
@@ -115,7 +116,7 @@ app.use("/api/admin/access", accessManagementRouter);
 app.use("/api/admin", locationPricingRouter);
 app.use("/api/admin/gifts", adminGiftRouter);
 app.use("/api/notifications", notificationRouter);
-app.use("/api/manufacturer/gifts", manufacturerGiftRouter);
+app.use("/api/distributor/gifts", distributorGiftRouter);
 app.use("/api/user", userRouter);
 app.use("/api/product", productRouter);
 app.use("/api/combo-bundles", comboBundleRouter);
@@ -140,7 +141,6 @@ app.use("/api/manufacturer-inventory", manufacturerInventoryRouter);
 app.use("/api/manufacturer-production", manufacturerProductionRouter);
 app.use("/api/assignment", orderAssignmentRouter);
 app.use("/api/order-assignment", orderAssignmentRouter);
-app.use("/api/manufacturer-order", manufacturerDirectOrderRouter);
 app.use("/api/expense", expenseRouter);
 app.use("/api/delivery", deliveryRouter);
 app.use("/api/delivery-job", deliveryRouter);

@@ -8,6 +8,9 @@ const DistributorApplications = ({ token }) => {
   const [activeTab, setActiveTab] = useState("applications");
   const [status, setStatus] = useState("PENDING_APPROVAL");
   const [applications, setApplications] = useState([]);
+  const [manufacturerRequestStatus, setManufacturerRequestStatus] = useState("REQUESTED");
+  const [manufacturerRequests, setManufacturerRequests] = useState([]);
+  const [manufacturerRequestsLoading, setManufacturerRequestsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatingId, setUpdatingId] = useState("");
@@ -48,6 +51,22 @@ const DistributorApplications = ({ token }) => {
     }
   }, [status, token]);
 
+  const loadManufacturerRequests = useCallback(async () => {
+    setManufacturerRequestsLoading(true);
+    setError("");
+    try {
+      const response = await axios.get(`${backendUrl}/api/admin/distributor-applications`, {
+        params: { status: manufacturerRequestStatus },
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setManufacturerRequests(response.data.applications || []);
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || "Manufacturer distributor requests could not be loaded.");
+    } finally {
+      setManufacturerRequestsLoading(false);
+    }
+  }, [manufacturerRequestStatus, token]);
+
   const loadRates = useCallback(async () => {
     setRatesLoading(true);
     try {
@@ -78,12 +97,13 @@ const DistributorApplications = ({ token }) => {
 
   useEffect(() => {
     if (activeTab === "applications") loadApplications();
+    if (activeTab === "manufacturer-requests") loadManufacturerRequests();
     if (activeTab === "rates") {
       loadApplications();
       loadRates();
     }
     if (activeTab === "settlements") loadSettlements();
-  }, [activeTab, loadApplications, loadRates, loadSettlements]);
+  }, [activeTab, loadApplications, loadManufacturerRequests, loadRates, loadSettlements]);
 
   const reviewApplication = async (application, nextStatus) => {
     setUpdatingId(application.id);
@@ -98,6 +118,26 @@ const DistributorApplications = ({ token }) => {
       await loadApplications();
     } catch (requestError) {
       const msg = requestError.response?.data?.message || "Distributor status could not be updated.";
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setUpdatingId("");
+    }
+  };
+
+  const reviewManufacturerRequest = async (application, nextStatus) => {
+    setUpdatingId(application.id);
+    setError("");
+    try {
+      await axios.patch(
+        `${backendUrl}/api/admin/distributor-applications/${application.id}`,
+        { status: nextStatus },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      toast.success(`Manufacturer distributor request ${nextStatus.toLowerCase()}.`);
+      await loadManufacturerRequests();
+    } catch (requestError) {
+      const msg = requestError.response?.data?.message || "Manufacturer distributor request could not be reviewed.";
       setError(msg);
       toast.error(msg);
     } finally {
@@ -160,7 +200,13 @@ const DistributorApplications = ({ token }) => {
             onClick={() => setActiveTab("applications")}
             className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "applications" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
           >
-            Applications ({applications.length})
+            Distributor applications ({applications.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("manufacturer-requests")}
+            className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "manufacturer-requests" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
+          >
+            Manufacturer requests
           </button>
           <button
             onClick={() => setActiveTab("rates")}
@@ -249,6 +295,88 @@ const DistributorApplications = ({ token }) => {
                           <button disabled={updatingId === application.id} onClick={() => reviewApplication(application, "ACTIVE")} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50">Reactivate</button>
                         )}
                       </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "manufacturer-requests" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-slate-600">
+              Review manufacturers requesting access to operate a distributor hub. Approval creates a separate distributor profile for the same account.
+            </p>
+            <select
+              aria-label="Filter manufacturer distributor requests by status"
+              value={manufacturerRequestStatus}
+              onChange={(event) => setManufacturerRequestStatus(event.target.value)}
+              className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm"
+            >
+              <option value="REQUESTED">Pending review</option>
+              <option value="APPROVED">Approved</option>
+              <option value="REJECTED">Rejected</option>
+            </select>
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+            <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+              <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-600">
+                <tr>
+                  <th className="px-4 py-3">Manufacturer</th>
+                  <th className="px-4 py-3">Contact details</th>
+                  <th className="px-4 py-3">Location</th>
+                  <th className="px-4 py-3">Requested</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {manufacturerRequestsLoading ? (
+                  <tr><td colSpan="6" className="px-4 py-8 text-center text-slate-500">Loading manufacturer requests…</td></tr>
+                ) : manufacturerRequests.length === 0 ? (
+                  <tr><td colSpan="6" className="px-4 py-8 text-center text-slate-500">No manufacturer distributor requests found for this status.</td></tr>
+                ) : manufacturerRequests.map((application) => (
+                  <tr key={application.id} className="hover:bg-slate-50/60 transition-colors">
+                    <td className="px-4 py-3 font-semibold text-slate-900">{application.name}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      <div>{application.account?.email || "—"}</div>
+                      <div className="text-xs text-slate-500">{application.phone || application.account?.phone || "—"}</div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{[application.city, application.address].filter(Boolean).join(", ") || "—"}</td>
+                    <td className="px-4 py-3 text-slate-600">{new Date(application.updatedAt).toLocaleDateString()}</td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                        application.distributorApplicationStatus === "REQUESTED"
+                          ? "bg-amber-50 text-amber-700 border border-amber-200"
+                          : application.distributorApplicationStatus === "APPROVED"
+                          ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                          : "bg-slate-100 text-slate-700 border border-slate-200"
+                      }`}>
+                        {application.distributorApplicationStatus.replaceAll("_", " ")}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {application.distributorApplicationStatus === "REQUESTED" && (
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            disabled={updatingId === application.id}
+                            onClick={() => reviewManufacturerRequest(application, "APPROVED")}
+                            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            disabled={updatingId === application.id}
+                            onClick={() => reviewManufacturerRequest(application, "REJECTED")}
+                            className="rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 shadow-sm transition disabled:opacity-50"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -511,4 +639,3 @@ const DistributorApplications = ({ token }) => {
 };
 
 export default DistributorApplications;
-

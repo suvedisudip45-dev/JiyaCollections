@@ -10,9 +10,17 @@ import {
 test("manufacturer commission is limited to manufacturer-originated phone and hub sales", () => {
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "PHONE_ORDER" }), "MANUFACTURER_DIRECT");
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "HUB_VISIT" }), "MANUFACTURER_DIRECT");
+  assert.equal(classifySaleChannel({ orderType: "DIRECT_DISTRIBUTOR", directOrderType: "PHONE_ORDER" }), "DISTRIBUTOR_DIRECT");
+  assert.equal(classifySaleChannel({ orderType: "DIRECT_DISTRIBUTOR", directOrderType: "HUB_VISIT" }), "DISTRIBUTOR_DIRECT");
   assert.equal(classifySaleChannel({ orderType: "ONLINE_STORE" }), "ONLINE_STORE");
   assert.equal(classifySaleChannel({ orderType: "ADMIN_DIRECT" }), "ADMIN_DIRECT");
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "UNKNOWN" }), "UNKNOWN");
+});
+
+test("distributor direct sales do not qualify for manufacturer commission", () => {
+  assert.equal(isManufacturerCommissionEligible({
+    order: { orderType: "DIRECT_DISTRIBUTOR", directOrderType: "HUB_VISIT", status: "Delivered" },
+  }), false);
 });
 
 test("COGS recognition requires delivery and no confirmed manufacturer return", () => {

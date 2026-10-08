@@ -13,7 +13,10 @@ const parseVariants = (product) => {
 const statusStyle = {
   PENDING_REVIEW: "bg-amber-50 text-amber-800 border-amber-200",
   APPROVED: "bg-blue-50 text-blue-800 border-blue-200",
+  PRE_CHECK_PASSED: "bg-emerald-50 text-emerald-800 border-emerald-200",
+  PRE_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
   IN_PRODUCTION: "bg-indigo-50 text-indigo-800 border-indigo-200",
+  POST_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
   COMPLETED: "bg-emerald-50 text-emerald-800 border-emerald-200",
   REJECTED: "bg-rose-50 text-rose-800 border-rose-200",
 };
@@ -290,31 +293,33 @@ const Production = () => {
 
                   {/* Step Actions */}
                   <div className="flex flex-wrap items-center gap-2 pt-1">
-                    {request.status === "APPROVED" && (
-                      <>
-                        <button
-                          onClick={() => setPreCheckRequest(request)}
-                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] hover:bg-[#dedbd3]/50 text-xs font-bold text-[#171717] transition-colors"
-                        >
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                          Pre-Production Check
-                        </button>
-                        <button
-                          onClick={() => startProduction(request)}
-                          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#171717] hover:bg-[#262626] text-xs font-bold text-white transition-colors"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          Start Production
-                        </button>
-                      </>
+                    {["APPROVED", "PRE_CHECK_FAILED"].includes(request.status) && (
+                      <button
+                        onClick={() => setPreCheckRequest(request)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] hover:bg-[#dedbd3]/50 text-xs font-bold text-[#171717] transition-colors"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                        {request.status === "PRE_CHECK_FAILED" ? "Retry Pre-Production Check" : "Pre-Production Check"}
+                      </button>
                     )}
 
-                    {request.status === "IN_PRODUCTION" && (
+                    {request.status === "PRE_CHECK_PASSED" && (
+                      <button
+                        onClick={() => startProduction(request)}
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#171717] hover:bg-[#262626] text-xs font-bold text-white transition-colors"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        Start Production
+                      </button>
+                    )}
+
+                    {["IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status) && (
                       <button
                         onClick={() => setPostCheckRequest(request)}
                         className="flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 text-xs font-bold text-white transition-colors"
                       >
-                        <CheckCircle2 className="h-3.5 w-3.5" /> Complete QA &amp; Receive Stock
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        {request.status === "POST_CHECK_FAILED" ? "Retry QA & Receive Stock" : "Complete QA & Receive Stock"}
                       </button>
                     )}
                   </div>

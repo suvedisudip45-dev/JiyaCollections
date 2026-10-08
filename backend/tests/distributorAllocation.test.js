@@ -66,11 +66,17 @@ test("allocator selects a covered distributor with sufficient aggregate variant 
       updateMany: async () => ({ count: 1 }),
       update: async () => order,
     },
+    product: {
+      findUnique: async () => ({ id: "product-1", variants: [] }),
+      update: async ({ data }) => ({ id: "product-1", ...data }),
+    },
     inventoryBalance: {
-      findMany: async () => [
-        { id: "balance-1", quantityOnHand: 4, reservedQuantity: 0 },
-        { id: "balance-2", quantityOnHand: 3, reservedQuantity: 1 },
-      ],
+      findMany: async ({ select } = {}) => select
+        ? []
+        : [
+            { id: "balance-1", quantityOnHand: 4, reservedQuantity: 0 },
+            { id: "balance-2", quantityOnHand: 3, reservedQuantity: 1 },
+          ],
       updateMany: async ({ where, data }) => {
         reserved.push({ id: where.id, quantity: data.reservedQuantity.increment });
         return { count: 1 };

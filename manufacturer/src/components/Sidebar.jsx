@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -22,6 +22,46 @@ import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 const Sidebar = () => {
   const { stats, availableWorkspaces, manufacturer, distributor, activeWorkspace, token } = useManufacturer();
   const [applying, setApplying] = useState(false);
+  const [pendingPreparationCount, setPendingPreparationCount] = useState(0);
+  const previousPreparationCount = useRef(null);
+
+  useEffect(() => {
+    if (activeWorkspace !== "MANUFACTURER" || !token) {
+      setPendingPreparationCount(0);
+      previousPreparationCount.current = null;
+      return undefined;
+    }
+    let isMounted = true;
+    let failureShown = false;
+    const refreshDemandCount = async () => {
+      try {
+        const response = await axios.get(`${backendUrl}/api/stock-transfers/manufacturer`, {
+          headers: { token },
+          params: { limit: 1 },
+        });
+        if (isMounted) {
+          const count = Number(response.data.pendingPreparationCount || 0);
+          if (previousPreparationCount.current !== null && count > previousPreparationCount.current) {
+            toast.info("A new distributor demand was approved. Open Distributor Demands to inspect and prepare it.");
+          }
+          previousPreparationCount.current = count;
+          setPendingPreparationCount(count);
+          failureShown = false;
+        }
+      } catch (error) {
+        if (isMounted && !failureShown) {
+          toast.error(error.response?.data?.message || "Could not refresh approved distributor demands.");
+          failureShown = true;
+        }
+      }
+    };
+    refreshDemandCount();
+    const interval = window.setInterval(refreshDemandCount, 60000);
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, [activeWorkspace, token]);
 
   const hasDistributorRole =
     availableWorkspaces?.some((w) => (typeof w === "string" ? w : w.code) === "DISTRIBUTOR") ||
@@ -201,8 +241,13 @@ const Sidebar = () => {
             <NavLink to="/bulk-transfers" className={navLinkStyle}>
               <div className="flex items-center gap-3">
                 <Truck className="w-4 h-4" />
-                <span>Factory Dispatch</span>
+                <span>Distributor Demands</span>
               </div>
+              {pendingPreparationCount > 0 && (
+                <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                  {pendingPreparationCount}
+                </span>
+              )}
             </NavLink>
 
             <NavLink to="/pickup-profile" className={navLinkStyle}>

@@ -11,6 +11,7 @@ import { validateProductionRequestInput } from "../services/manufacturerProducti
 import {
   validateAdminProductionPlan,
   validatePostProductionChecklist,
+  summarizeManufacturerProductionDashboard,
   validatePreProductionChecklist,
 } from "../services/manufacturerProductionWorkflowService.js";
 
@@ -33,6 +34,47 @@ const actorContext = (req) => ({
   userAgent: req.headers["user-agent"] || null,
   correlationId: req.correlationId || null,
 });
+
+export const getManufacturerProductionDashboard = async (req, res) => {
+  try {
+    const [factoryBalances, productionRequests] = await Promise.all([
+      prisma.inventoryBalance.findMany({
+        where: {
+          location: {
+            kind: "FACTORY",
+            manufacturerId: req.manufacturerId,
+            inventoryOwner: "PLATFORM",
+            isActive: true,
+          },
+          inventorySku: { isActive: true },
+        },
+        select: {
+          inventorySkuId: true,
+          quantityOnHand: true,
+          reservedQuantity: true,
+          inventorySku: { select: { productId: true } },
+        },
+      }),
+      prisma.manufacturerProductionRequest.findMany({
+        where: { manufacturerId: req.manufacturerId },
+        select: {
+          status: true,
+          lines: { select: { actualQuantity: true, damagedQuantity: true } },
+        },
+      }),
+    ]);
+    return res.json({
+      success: true,
+      dashboard: summarizeManufacturerProductionDashboard({ factoryBalances, productionRequests }),
+    });
+  } catch (error) {
+    console.error("getManufacturerProductionDashboard error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load manufacturer production dashboard.",
+    });
+  }
+};
 
 const getProductVariants = (product) => {
   const variants = parseArray(product.variants);

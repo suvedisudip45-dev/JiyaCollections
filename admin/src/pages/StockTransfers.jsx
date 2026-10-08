@@ -49,7 +49,7 @@ const StockTransfers = ({ token }) => {
           ? transfer.lines.map((line) => ({ lineId: line.id, approvedQuantity: Number(approvals[transfer.id]?.[line.id] ?? line.requestedQuantity) }))
           : undefined,
       }, { headers: { token } });
-      toast.success(status === "APPROVED" ? "Transfer quantities approved." : "Transfer request rejected.");
+      toast.success(status === "APPROVED" ? "Demand approved and published to the manufacturer's factory portal." : "Transfer request rejected.");
       await loadTransfers();
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not review the transfer.");
@@ -91,8 +91,8 @@ const StockTransfers = ({ token }) => {
       <header className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold text-slate-900">Bulk stock transfers</h1>
-            <p className="mt-1 text-sm text-slate-500">Review requests, reconcile uncertain NCM bookings, and monitor freight pending admin settlement.</p>
+            <h1 className="text-xl font-semibold text-slate-900">Distributor demand approvals</h1>
+            <p className="mt-1 text-sm text-slate-500">Approve or reject distributor product demands. Approved quantities are published to the manufacturer factory portal for inspection, packaging, and delivery.</p>
           </div>
           <label className="text-sm text-slate-600">
             Status

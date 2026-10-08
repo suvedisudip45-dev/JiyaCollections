@@ -4,6 +4,7 @@ import {
   validateAdminProductionPlan,
   validatePostProductionChecklist,
   validatePreProductionChecklist,
+  summarizeManufacturerProductionDashboard,
 } from "../services/manufacturerProductionWorkflowService.js";
 
 const requestedLines = [
@@ -50,6 +51,79 @@ test("pre-production check passes only when every required gate is true", () => 
     qualitySamplePassed: 1,
     colorShadeMatched: true,
   }), /must be true or false/);
+});
+
+test("pre-production check accepts the existing client field names and normalizes them", () => {
+  const checklist = validatePreProductionChecklist({
+    fabricCheckPassed: true,
+    sampleCheckPassed: true,
+    colorShadeCheckPassed: true,
+    notes: "Verified",
+  });
+
+  assert.deepEqual(checklist, {
+    fabricPassed: true,
+    qualitySamplePassed: true,
+    colorShadeMatched: true,
+    notes: "Verified",
+    passed: true,
+  });
+});
+
+test("manufacturer dashboard separates factory stock, inspected output, accepted goods, and damage", () => {
+  const dashboard = summarizeManufacturerProductionDashboard({
+    factoryBalances: [
+      {
+        inventorySkuId: "sku-1",
+        quantityOnHand: 7,
+        reservedQuantity: 2,
+        inventorySku: { productId: "product-1" },
+      },
+      {
+        inventorySkuId: "sku-2",
+        quantityOnHand: 4,
+        reservedQuantity: 0,
+        inventorySku: { productId: "product-1" },
+      },
+      {
+        inventorySkuId: "sku-3",
+        quantityOnHand: 0,
+        reservedQuantity: 0,
+        inventorySku: { productId: "product-2" },
+      },
+    ],
+    productionRequests: [
+      {
+        status: "COMPLETED",
+        lines: [
+          { actualQuantity: 10, damagedQuantity: 1 },
+          { actualQuantity: 5, damagedQuantity: 0 },
+        ],
+      },
+      {
+        status: "POST_CHECK_FAILED",
+        lines: [{ actualQuantity: 8, damagedQuantity: 3 }],
+      },
+      {
+        status: "IN_PRODUCTION",
+        lines: [{ actualQuantity: null, damagedQuantity: 0 }],
+      },
+    ],
+  });
+
+  assert.deepEqual(dashboard, {
+    factoryProductCount: 1,
+    factorySkuCount: 2,
+    factoryUnitsOnHand: 11,
+    factoryUnitsAvailable: 9,
+    factoryUnitsReserved: 2,
+    producedUnits: 23,
+    goodUnitsProduced: 14,
+    damagedUnits: 4,
+    completedBatches: 1,
+    failedQaBatches: 1,
+    activeBatches: 2,
+  });
 });
 
 test("post-production counts cover each requested variant and exclude damaged units from good stock", () => {

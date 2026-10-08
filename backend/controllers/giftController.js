@@ -4,10 +4,13 @@ import {
   saveGiftCatalog,
   listLoyaltyTierConfigs,
   saveLoyaltyTierConfig,
-  assignGiftToManufacturer,
+  assignGiftToDistributor,
   getEligibleManufacturerGiftOptions,
+  getDistributorGiftOptions,
   getManufacturerGiftInventory,
+  getDistributorGiftInventory,
   respondToGiftAllocation,
+  respondToDistributorGiftAllocation,
   onOrderReturned,
 } from "../services/giftService.js";
 
@@ -56,10 +59,10 @@ export const saveTierConfig = async (req, res) => {
   }
 };
 
-export const createManufacturerGiftDistribution = async (req, res) => {
+export const createDistributorGiftDistribution = async (req, res) => {
   try {
-    const inventory = await assignGiftToManufacturer(req.body || {});
-    res.json({ success: true, message: "Gift stock assigned to manufacturer.", inventory });
+    const inventory = await assignGiftToDistributor(req.body || {});
+    res.json({ success: true, message: "Gift stock assigned to distributor.", inventory });
   } catch (error) {
     res.json({ success: false, message: error.message });
   }
@@ -100,6 +103,41 @@ export const getManufacturerOrderGiftOptions = async (req, res) => {
   }
 };
 
+export const getDistributorGiftQueue = async (req, res) => {
+  try {
+    const inventory = await getDistributorGiftInventory(req.distributorId);
+    res.json({ success: true, inventory });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+};
+
+export const respondToDistributorGiftQueue = async (req, res) => {
+  try {
+    const inventory = await respondToDistributorGiftAllocation({
+      inventoryId: req.params.id,
+      distributorId: req.distributorId,
+      decision: req.body.decision,
+      notes: req.body.notes,
+    });
+    res.json({ success: true, message: "Distributor gift response recorded.", inventory });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+};
+
+export const getDistributorOrderGiftOptions = async (req, res) => {
+  try {
+    const result = await getDistributorGiftOptions({
+      orderId: req.params.orderId,
+      distributorId: req.distributorId,
+    });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+};
+
 export const markGiftReturned = async (req, res) => {
   try {
     if (typeof req.body.giftReturned !== "boolean") {
@@ -109,6 +147,22 @@ export const markGiftReturned = async (req, res) => {
       giftReturned: req.body.giftReturned,
       notes: req.body.notes,
       expectedManufacturerId: req.auth?.role === "MANUFACTURER" ? req.manufacturerId : undefined,
+    });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+};
+
+export const markDistributorGiftReturned = async (req, res) => {
+  try {
+    if (typeof req.body.giftReturned !== "boolean") {
+      return res.status(400).json({ success: false, message: "Explicitly indicate whether the gift was returned intact." });
+    }
+    const result = await onOrderReturned(req.params.orderId, {
+      giftReturned: req.body.giftReturned,
+      notes: req.body.notes,
+      expectedDistributorId: req.distributorId,
     });
     res.json({ success: true, result });
   } catch (error) {

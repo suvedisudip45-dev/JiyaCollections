@@ -6,6 +6,8 @@ import {
   ensureInventoryLocation,
 } from "../services/inventoryLedgerService.js";
 import { normalizeDistributorStockDecrease } from "../services/distributorStockService.js";
+import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const actorContext = (req) => ({
   actorId: req.auth?.accountId || null,
@@ -23,6 +25,59 @@ const responseError = (res, error) => {
     message: error.statusCode ? error.message : "Unable to record distributor inventory decrease.",
     ...(error.code ? { code: error.code } : {}),
   });
+};
+
+export const getDistributorInventory = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const location = await prisma.inventoryLocation.findFirst({
+      where: {
+        kind: "DISTRIBUTOR",
+        distributorId: req.distributorId,
+        inventoryOwner: "PLATFORM",
+        isActive: true,
+      },
+      select: { id: true },
+    });
+    if (!location) return res.json(paginatedResponse("inventory", [], pagination, 0));
+
+    const where = {
+      locationId: location.id,
+      inventorySku: { isActive: true, product: { published: true } },
+    };
+    const [balances, total] = await prisma.$transaction([
+      prisma.inventoryBalance.findMany({
+        where,
+        orderBy: [{ inventorySku: { product: { name: "asc" } } }, { inventorySku: { size: "asc" } }, { inventorySku: { color: "asc" } }],
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          inventorySku: {
+            include: {
+              product: {
+                select: { id: true, name: true, image: true, price: true, category: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.inventoryBalance.count({ where }),
+    ]);
+    const inventory = balances.map((balance) => ({
+      inventorySkuId: balance.inventorySkuId,
+      productId: balance.inventorySku.productId,
+      productName: balance.inventorySku.product.name,
+      product: balance.inventorySku.product,
+      size: balance.inventorySku.size,
+      color: balance.inventorySku.color,
+      quantity: balance.quantityOnHand,
+      reservedQty: balance.reservedQuantity,
+      availableQty: Math.max(0, balance.quantityOnHand - balance.reservedQuantity),
+    }));
+    return res.json(paginatedResponse("inventory", inventory, pagination, total));
+  } catch (error) {
+    return responseError(res, error);
+  }
 };
 
 export const decreaseDistributorInventory = async (req, res) => {
@@ -53,7 +108,7 @@ export const decreaseDistributorInventory = async (req, res) => {
       if (!location) throw Object.assign(new Error("Distributor stock location was not found."), { statusCode: 409 });
       const sku = await tx.inventorySku.findFirst({
         where: { id: input.inventorySkuId, isActive: true },
-        select: { id: true, size: true, color: true, product: { select: { name: true } } },
+        select: { id: true, productId: true, size: true, color: true, product: { select: { name: true } } },
       });
       if (!sku) throw Object.assign(new Error("Active inventory SKU not found."), { statusCode: 404 });
 
@@ -106,6 +161,7 @@ export const decreaseDistributorInventory = async (req, res) => {
         actorRole: "DISTRIBUTOR",
         reason: input.reason,
       });
+      await syncProductStock(sku.productId, { client: tx, throwOnError: true });
       await recordSystemAudit(actorContext(req), {
         action: "DISTRIBUTOR_INVENTORY_DECREASE_REPORTED",
         entityType: "InventoryDiscrepancy",

@@ -153,7 +153,7 @@ const MarketingCards = ({ token }) => {
   // Core data
   const [partners, setPartners] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
-  const [manufacturers, setManufacturers] = useState([]);
+  const [distributors, setDistributors] = useState([]);
   const [metrics, setMetrics] = useState(null);
   const [stats, setStats] = useState(null);
 
@@ -162,7 +162,7 @@ const MarketingCards = ({ token }) => {
   const [cardTotal, setCardTotal] = useState(0);
   const [cardTotalPages, setCardTotalPages] = useState(1);
   const [cardPage, setCardPage] = useState(1);
-  const [filters, setFilters] = useState({ partnerId: "", campaignId: "", manufacturerId: "", status: "all", search: "" });
+  const [filters, setFilters] = useState({ partnerId: "", campaignId: "", distributorId: "", status: "all", search: "" });
   const [selected, setSelected] = useState(new Set());
   const [showInvalidate, setShowInvalidate] = useState(false);
 
@@ -170,7 +170,7 @@ const MarketingCards = ({ token }) => {
   const [partner, setPartner] = useState(emptyPartner);
   const [campaign, setCampaign] = useState(createInitialCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
-  const [assignment, setAssignment] = useState({ campaignId: "", manufacturerId: "", quantity: 1 });
+  const [assignment, setAssignment] = useState({ campaignId: "", distributorId: "", quantity: 1 });
   const [organizationAssignment, setOrganizationAssignment] = useState({
     campaignId: "",
     destinationType: "CUSTOM",
@@ -200,16 +200,25 @@ const MarketingCards = ({ token }) => {
   const loadBase = useCallback(async () => {
     setLoading(true);
     try {
-      const [partnerRes, campaignRes, manufacturerRes, metricsRes, statsRes] = await Promise.all([
+      const [partnerRes, campaignRes, distributorRes, metricsRes, statsRes] = await Promise.all([
         axios.get(`${backendUrl}/api/marketing-cards/admin/partners`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/campaigns`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/manufacturer/admin/list`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&limit=100`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/metrics`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/stats`, { headers: { token } }),
       ]);
+      const distributorPages = Number(distributorRes.data.total || 0) > 100
+        ? await Promise.all(Array.from(
+          { length: Math.ceil(Number(distributorRes.data.total) / 100) - 1 },
+          (_, index) => axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&page=${index + 2}&limit=100`, { headers: { token } }),
+        ))
+        : [];
       setPartners(partnerRes.data.partners || []);
       setCampaigns(campaignRes.data.campaigns || []);
-      setManufacturers(manufacturerRes.data.manufacturers || []);
+      setDistributors([
+        ...(distributorRes.data.applications || []),
+        ...distributorPages.flatMap((response) => response.data.applications || []),
+      ].filter((distributor) => distributor.isActive));
       setMetrics(metricsRes.data.metrics || null);
       setStats(statsRes.data.stats || null);
     } catch (err) {
@@ -225,7 +234,7 @@ const MarketingCards = ({ token }) => {
       const params = new URLSearchParams({ page, pageSize: 50 });
       if (f.partnerId) params.set("partnerId", f.partnerId);
       if (f.campaignId) params.set("campaignId", f.campaignId);
-      if (f.manufacturerId) params.set("manufacturerId", f.manufacturerId);
+      if (f.distributorId) params.set("distributorId", f.distributorId);
       if (f.status && f.status !== "all") params.set("status", f.status);
       if (f.search) params.set("search", f.search);
       const res = await axios.get(`${backendUrl}/api/marketing-cards/admin/cards?${params}`, { headers: { token } });
@@ -578,20 +587,20 @@ const MarketingCards = ({ token }) => {
             </div>
           </section>
 
-          {/* Manufacturer breakdown */}
+          {/* Distributor breakdown */}
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
             <div className="border-b border-slate-100 px-5 py-4">
-              <h2 className="text-sm font-black text-slate-900">Manufacturer Card Inventory</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Which manufacturer has how many cards, and their status.</p>
+              <h2 className="text-sm font-black text-slate-900">Distributor Card Inventory</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Which distributor has how many cards, and their status.</p>
             </div>
-            {(stats?.manufacturerBreakdown || []).length === 0 ? (
-              <p className="p-6 text-sm text-slate-500">No cards assigned to manufacturers yet.</p>
+            {(stats?.distributorBreakdown || []).length === 0 ? (
+              <p className="p-6 text-sm text-slate-500">No cards assigned to distributors yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-xs text-left">
                   <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
                     <tr>
-                      <th className="px-5 py-3">Manufacturer</th>
+                      <th className="px-5 py-3">Distributor</th>
                       <th className="px-5 py-3 text-right">Total Assigned</th>
                       <th className="px-5 py-3 text-right">Assigned (Pending)</th>
                       <th className="px-5 py-3 text-right">Available</th>
@@ -601,11 +610,11 @@ const MarketingCards = ({ token }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {(stats?.manufacturerBreakdown || []).map(({ manufacturer, total, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
-                      <tr key={manufacturer.id} className="hover:bg-slate-50/60">
+                    {(stats?.distributorBreakdown || []).map(({ distributor, total, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
+                      <tr key={distributor.id} className="hover:bg-slate-50/60">
                         <td className="px-5 py-3">
-                          <p className="font-bold text-slate-800">{manufacturer.name}</p>
-                          <p className="text-slate-400 text-[10px]">{manufacturer.city || "—"}</p>
+                          <p className="font-bold text-slate-800">{distributor.name}</p>
+                          <p className="text-slate-400 text-[10px]">{distributor.city || "—"}</p>
                         </td>
                         <td className="px-5 py-3 text-right font-black text-slate-900">{fmt(total)}</td>
                         <td className="px-5 py-3 text-right text-amber-700 font-bold">{fmt(ASSIGNED || 0)}</td>
@@ -654,14 +663,14 @@ const MarketingCards = ({ token }) => {
                 {filteredCampaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
               </select>
 
-              {/* Manufacturer filter */}
+              {/* Distributor filter */}
               <select
-                value={filters.manufacturerId}
-                onChange={(e) => handleFilterChange("manufacturerId", e.target.value)}
+                value={filters.distributorId}
+                onChange={(e) => handleFilterChange("distributorId", e.target.value)}
                 className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
               >
-                <option value="">All Manufacturers</option>
-                {manufacturers.filter((m) => m.isActive).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                <option value="">All Distributors</option>
+                {distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name}</option>)}
               </select>
 
               {/* Status filter */}
@@ -747,7 +756,7 @@ const MarketingCards = ({ token }) => {
                         <th className="px-4 py-3">Card Code</th>
                         <th className="px-4 py-3">Partner / Campaign</th>
                         <th className="px-4 py-3">Scope</th>
-                        <th className="px-4 py-3">Manufacturer</th>
+                        <th className="px-4 py-3">Distributor</th>
                         <th className="px-4 py-3">Benefit / Offer</th>
                         <th className="px-4 py-3">Status</th>
                         <th className="px-4 py-3">Created</th>
@@ -773,7 +782,7 @@ const MarketingCards = ({ token }) => {
                               <p className="text-slate-500">{card.campaign?.name || "—"}</p>
                             </td>
                             <td className="px-4 py-3 text-slate-600">{card.campaign?.targetScopeType || "—"}</td>
-                            <td className="px-4 py-3 text-slate-600">{card.assignedManufacturer?.name || <span className="text-slate-300">Unassigned</span>}</td>
+                            <td className="px-4 py-3 text-slate-600">{card.assignedDistributor?.name || <span className="text-slate-300">Unassigned</span>}</td>
                             <td className="px-4 py-3">
                               {card.hasBenefit && card.benefit ? (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800">
@@ -886,7 +895,7 @@ const MarketingCards = ({ token }) => {
               {/* 4. Assign Own Store cards publicly, to a partner, or to a custom organization */}
               <section className="rounded-2xl border border-[#e6c5ba] bg-[#f8f7f4] p-5 shadow-sm">
                 <h2 className="text-sm font-black text-[#171717]">4. Assign Own Store Cards</h2>
-                <p className="mt-0.5 text-xs text-slate-600">Track cards as public, assigned to a Marketing Partner, or assigned to a custom organization. All Own Store cards can be scanned by any signed-in customer. Manufacturer distribution remains separate.</p>
+                <p className="mt-0.5 text-xs text-slate-600">Track cards as public, assigned to a Marketing Partner, or assigned to a custom organization. All Own Store cards can be scanned by any signed-in customer. Distributor stock distribution remains separate.</p>
                 <div className="mt-4 space-y-3">
                   <select
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -973,18 +982,18 @@ const MarketingCards = ({ token }) => {
                 </div>
               </section>
 
-              {/* 5. Assign to Manufacturer */}
+              {/* 5. Assign to Distributor */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">4. Assign Cards to Manufacturer</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Allocate generated cards to manufacturing hubs.</p>
+                <h2 className="text-sm font-black text-slate-900">5. Assign Cards to Distributor</h2>
+                <p className="mt-0.5 text-xs text-slate-500">Allocate generated cards to distributor hubs.</p>
                 <div className="mt-4 space-y-3">
                   <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}>
                     <option value="">Select campaign</option>
                     {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.manufacturerId} onChange={(e) => setAssignment({ ...assignment, manufacturerId: e.target.value })}>
-                    <option value="">Select manufacturer</option>
-                    {manufacturers.filter((m) => m.isActive).map((m) => <option key={m.id} value={m.id}>{m.name} – {m.city}</option>)}
+                  <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.distributorId} onChange={(e) => setAssignment({ ...assignment, distributorId: e.target.value })}>
+                    <option value="">Select distributor</option>
+                    {distributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name} – {distributor.city || distributor.address || "Location not set"}</option>)}
                   </select>
                   <input type="number" min="1" max="5000" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-mono" value={assignment.quantity} onChange={(e) => setAssignment({ ...assignment, quantity: Number(e.target.value) })} />
                   <button disabled={working} onClick={async () => { const r = await submit("/api/marketing-cards/admin/assignments", assignment, "Cards assigned."); if (r) setAssignment({ ...assignment, quantity: 1 }); }} className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-bold text-white disabled:opacity-50">Assign cards</button>

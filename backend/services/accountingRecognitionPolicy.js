@@ -26,6 +26,9 @@ export const classifySaleChannel = (order = {}) => {
   if (orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(directOrderType)) {
     return "MANUFACTURER_DIRECT";
   }
+  if (orderType === "DIRECT_DISTRIBUTOR" && ["PHONE_ORDER", "HUB_VISIT"].includes(directOrderType)) {
+    return "DISTRIBUTOR_DIRECT";
+  }
   if (orderType === "ONLINE_STORE") return "ONLINE_STORE";
   if (orderType === "ADMIN_DIRECT") return "ADMIN_DIRECT";
   return "UNKNOWN";

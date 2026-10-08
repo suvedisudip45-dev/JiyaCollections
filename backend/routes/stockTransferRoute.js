@@ -11,6 +11,7 @@ import {
   receiveStockTransferShipment,
   resolveNcmShipmentBooking,
   reviewStockTransferRequest,
+  updateStockTransferPreparation,
 } from "../controllers/stockTransferController.js";
 import { authenticate, authorize, setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
@@ -50,6 +51,13 @@ stockTransferRouter.get(
   authorize("transfer:manufacturer_read"),
   setManufacturerContext,
   listManufacturerStockTransfers,
+);
+stockTransferRouter.patch(
+  "/:id/preparation",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  updateStockTransferPreparation,
 );
 stockTransferRouter.post(
   "/:id/dispatch",

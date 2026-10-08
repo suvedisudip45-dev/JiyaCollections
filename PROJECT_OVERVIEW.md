@@ -2,9 +2,9 @@
 
 ## 1. Project Summary
 
-Aama Clothings is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, marketing partner campaigns, and delivery/NCM fulfillment workflows.
+Aama Clothings is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, distributor hub operations, marketing partner campaigns, and delivery/NCM fulfillment workflows.
 
-The repository implements a distributed operating model where customer orders are matched to manufacturers, inventory is tracked at the manufacturer level, deliveries are coordinated with Nepal Can Move (NCM), and admin workflows cover finance, access control, product management, inventory, customer returns, and exchange reconciliation.
+The repository separates factory production and replenishment from customer-facing distributor hub fulfillment. Production completion creates factory inventory only; storefront product availability is projected exclusively from unreserved stock in active distributor ledgers, and transfer stock is not sellable until the distributor records receipt. Active distributors with exact delivery-area coverage and sufficient ledger stock receive customer-order assignments, including when a business account also has a manufacturer profile. The manufacturer portal dashboard distinguishes factory stock, produced good units, and damaged units.
 
 ## 2. Technology Stack
 
@@ -29,16 +29,17 @@ The repository implements a distributed operating model where customer orders ar
 - Customer storefront browsing, cart, wishlist, product search, order placement, return/exchange flows, and marketing-card redemption UX.
 - Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
 - Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shipping config, access control, and exchange/return reconciliation.
-- Gift promotion operations across the admin and manufacturer portals: generated gift SKUs, controlled gift categories, configurable order-value rules, loyalty-tier gift allowances, per-hub stock acceptance, manufacturer-selected order gifts, packing verification, and delivery deduction.
-- Manufacturer portal with order acceptance, pickup profile, inventory management, performance, finance, and marketing card handling.
-- Location-aware assignment logic that maps qualifying local manufacturers to customer delivery districts, applies the product discount hierarchy, and reserves stock before final order confirmation.
+- Gift promotion operations across the admin and distributor portals: generated gift SKUs, controlled gift categories, configurable order-value rules, loyalty-tier gift allowances, distributor stock acceptance, distributor-selected order gifts, packing verification, and delivery deduction.
+- Manufacturer portal with production, factory dispatch, pickup profile, performance, and finance; customer-facing hub fulfillment tools are in the distributor workspace.
+- Distributor hub operations for ledger-backed inventory, direct phone/walk-in orders, gift stock, marketing-card receipt and attachment, loyalty customers, and assigned customer-order fulfillment.
+- Location-aware assignment logic that selects active distributors with exact province/district coverage and sufficient distributor-ledger stock, applies the product discount hierarchy, and reserves stock before final order confirmation.
 - Marketing partner portal with login, campaigns, campaign detail, card management, redemption validation, and reporting routes.
 - Delivery and NCM integration for ready-for-pickup, webhook handling, manual handoff recovery, delivery settlements, and return workflows.
 - NCM create-booking flows now preserve explicit failure states such as `submission_failed` / `failed_to_book_courier`, and the frontend must not surface those cases as a successful courier booking.
 - RBAC and auth system with user, admin, manufacturer, and partner roles plus permission checks and session validation.
 - Admin audit history backed by a transactional outbox, with redacted before/after diffs for business changes and reviewable authentication, MFA, rate-limit, refresh-token-reuse, and RBAC-denial security signals.
 - MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, delivery, and local pricing flows.
-- Gift inventory is batch-based and auditable: orders reserve one accepted manufacturer batch atomically, pack/delivery transitions update the gift state, and movement logs record allocation, reservation, deduction, restock, or loss.
+- Distributor gift inventory is batch-based and auditable: orders reserve one accepted distributor batch atomically, pack/delivery transitions update the gift state, and distributor movement logs record allocation, reservation, deduction, restock, or loss. Legacy manufacturer gift records remain for historical orders and are not used for new distributor hub activity.
 
 ### Partially implemented or intentionally gated
 

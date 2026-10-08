@@ -121,7 +121,7 @@ The application exposes modules such as:
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`
-- `/manufacturers`, `/manufacturer-inventory`, `/marketing-cards`
+- `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
@@ -134,32 +134,37 @@ The application exposes modules such as:
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
 - `/audit-history` requires `access:audit_read` and displays paginated actor/action/entity/date/result-filtered system audit records, including authentication and security signals, with before/after diffs and CSV export. Failed/blocked entries are visually distinguished and explicitly described as signals rather than confirmed breaches. Its in-memory query cache is bounded to 20 entries with a 15-second TTL; Refresh clears the cache and reloads the current query.
 - an authenticated visit to `/` redirects to `/orders`; unmatched admin paths render a 404 page with a return-to-orders link
-- `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; manufacturer assignment, batch generation, QR export, and print flows remain available
+- `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; physical stock is assigned to distributors, with batch generation, QR export, and print flows
 - integrates `react-toastify` for action feedback
-- `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and manufacturer stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.
+- `/gift-promotions` provides responsive sections for a name-based-SKU gift catalog with controlled categories, order-value rules, and distributor stock distribution; route access uses the existing `loyalty:level_manage` permission. Loyalty gift descriptions and value caps are edited directly in `/loyalty-levels`.
 - `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
 - the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
+- `/distributor-applications` separates regular distributor sign-up applications from manufacturer requests for distributor access; manufacturer requests are listed from `/api/admin/distributor-applications` and approved or rejected through its review endpoint
 
-## 4. Manufacturer Portal (`manufacturer/`)
+## 4. Manufacturer and Distributor Portal (`manufacturer/`)
 
-The manufacturer app is a separate React app with a protected main layout. Its route list includes:
+The `manufacturer/` app serves separate manufacturer and distributor workspaces,
+selected through `activeWorkspace` and protected by backend role permissions.
+Factory production and replenishment stay in the manufacturer workspace; hub
+inventory, direct hub sales, customer-order fulfillment, gift stock, and
+marketing-card stock are distributor-only. Its route list includes:
 
 | Route | Purpose |
 | --- | --- |
 | `/` | Dashboard |
-| `/orders` | Order queue |
-| `/orders/:id` | Detailed order workflow |
-| `/direct-orders` | Direct manufacturer orders |
-| `/inventory` | Stock and fulfillment inventory, reasoned variant adjustments, and manufacturer-scoped stock movement history |
+| `/orders` | Assigned customer-order queue (distributor workspace only) |
+| `/orders/:id` | Distributor customer-order fulfillment workflow |
+| `/direct-orders` | Distributor direct hub orders (distributor workspace only) |
+| `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
 | `/collaborations` | Collaboration items |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |
 | `/finance` | Manufacturer finance data |
-| `/customer-loyalty` | Customer loyalty and promotion view |
-| `/gift-inventory` | Incoming gift stock acceptance/rejection and available/reserved quantities |
-| `/marketing-cards` | Card assignment and processing |
+| `/customer-loyalty` | Distributor customer loyalty and promotion view |
+| `/gift-inventory` | Distributor gift-stock acceptance/rejection and available/reserved quantities |
+| `/marketing-cards` | Distributor card receipt and processing |
 
-Manufacturer order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action.
+These hub pages are gated to `activeWorkspace === "DISTRIBUTOR"`; they are not manufacturer features. Distributor order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action. Historical manufacturer gift/card/order records remain available in storage but new hub activity uses distributor ownership and backend authorization.
 
 ## 5. Marketing Portal (`marketing/`)
 
@@ -209,6 +214,10 @@ This portal is clearly structured around the backend `marketing-cards` router an
 2. The provider loads manufacturer context and verifies a valid token.
 3. Orders, inventory, and pickup configuration are managed via manufacturer-specific pages.
 4. The orders page shows a manufacturer-scoped queue of incoming customer returns with pickup state and NCM charge payer.
+5. The production pre-check sends `fabricPassed`, `qualitySamplePassed`, and `colorShadeMatched` boolean fields; the API also accepts the prior UI field aliases for compatibility.
+6. An approved production request exposes the pre-check; a passed pre-check exposes Start Production; and an in-production request exposes post-production QA and stock intake. The post-check submits one actual count per requested size/color variant using the backend checklist contract.
+7. The manufacturer dashboard shows factory products/SKUs and available factory units separately from inspected production and damaged counts. Factory stock does not show as available to customers; that happens only after the distributor receives the transfer.
+8. The **Distributor Demands** page only shows admin-approved distributor requests; its sidebar badge refreshes periodically and announces newly approved demands. Manufacturers must save passing checks for availability, quality, color, size, and packaging before delivery controls unlock. They can choose NCM or local freight, while a transfer between the same account's manufacturer/distributor profiles automatically uses direct own-store delivery with NPR 0 freight.
 
 ### Marketing partner flow
 

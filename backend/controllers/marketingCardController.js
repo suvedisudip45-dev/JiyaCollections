@@ -130,7 +130,7 @@ export const adminGenerateBatch = async (req, res) => {
 export const adminAssignCards = async (req, res) => {
   try {
     const result = await assignCards({ ...req.body, actorId: req.adminId });
-    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the manufacturer.` });
+    return res.json({ success: true, ...result, message: `${result.count} card(s) assigned to the distributor.` });
   } catch (error) { return sendError(res, error); }
 };
 
@@ -144,8 +144,8 @@ export const adminAssignCardsToOrganization = async (req, res) => {
 
 export const adminListCards = async (req, res) => {
   try {
-    const { partnerId, campaignId, manufacturerId, status, page, pageSize, search } = req.query;
-    const result = await listAdminCards({ partnerId, campaignId, manufacturerId, status, page, pageSize, search });
+    const { partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search } = req.query;
+    const result = await listAdminCards({ partnerId, campaignId, manufacturerId, distributorId, status, page, pageSize, search });
     return res.json({ success: true, ...result });
   } catch (error) { return sendError(res, error); }
 };
@@ -174,6 +174,16 @@ export const distributorListCards = async (req, res) => {
       success: true,
       cards: await getDistributorInventory({ distributorId: req.distributorId, status: req.query.status }),
     });
+  } catch (error) { return sendError(res, error); }
+};
+
+export const distributorAttachCardToOrder = async (req, res) => {
+  try {
+    const card = await attachRandomCardToOrder({
+      orderId: req.params.orderId,
+      distributorId: req.distributorId,
+    });
+    return res.json({ success: true, card });
   } catch (error) { return sendError(res, error); }
 };
 

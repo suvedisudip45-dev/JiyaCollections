@@ -22,9 +22,8 @@ import ShippingLabelModal from "../components/ShippingLabelModal";
 import Pagination from "../components/Pagination";
 
 const Orders = () => {
-  const { token, backendUrl, currency, setStats, manufacturer } = useManufacturer();
+  const { token, backendUrl, currency, setStats, distributor } = useManufacturer();
   const [assignments, setAssignments] = useState([]);
-  const [returnCases, setReturnCases] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
@@ -32,12 +31,12 @@ const Orders = () => {
   const [pagination, setPagination] = useState(null);
 
 
-  const manufacturerPickupReadiness = (() => {
-    const branch = (manufacturer?.ncmPickupBranch || "").trim();
-    const pickupAddress = (manufacturer?.pickupAddress || "").trim();
-    const pickupContactName = (manufacturer?.pickupContactName || "").trim();
-    const pickupContactPhone = (manufacturer?.pickupContactPhone || "").trim();
-    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+  const distributorPickupReadiness = (() => {
+    const branch = (distributor?.ncmPickupBranch || "").trim();
+    const pickupAddress = (distributor?.pickupAddress || "").trim();
+    const pickupContactName = (distributor?.pickupContactName || "").trim();
+    const pickupContactPhone = (distributor?.pickupContactPhone || "").trim();
+    const pickupWindow = (distributor?.pickupWindow || "").trim();
 
     const missingFields = [];
     if (!branch) missingFields.push("NCM pickup branch assignment");
@@ -73,9 +72,6 @@ const Orders = () => {
         const list = res.data.assignments || [];
         setAssignments(list);
         setPagination(res.data.pagination || null);
-        const returnsResponse = await axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }).catch(() => null);
-        if (returnsResponse?.data?.success) setReturnCases(returnsResponse.data.returns || []);
-
         const pending = list.filter((a) => a.status === "assigned").length;
         const accepted = list.filter((a) => a.status === "accepted").length;
         const preparing = list.filter((a) => ["preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length;
@@ -209,10 +205,10 @@ const Orders = () => {
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-2">
             <Package className="w-6 h-6 text-emerald-600" />
-            Manufacturing &amp; Fulfillment Orders
+            Distributor Hub Orders
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Produce, package, and dispatch orders assigned to your hub. Print thermal courier slips for delivery fleet.
+            Accept, pack, and dispatch customer orders assigned to your distributor hub. Print courier slips for delivery.
           </p>
         </div>
 
@@ -237,30 +233,12 @@ const Orders = () => {
         </div>
       </div>
 
-      {returnCases.length > 0 && (
-        <section className="border-y border-rose-200 bg-rose-50/70 py-4">
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <h2 className="text-sm font-bold text-rose-950">Incoming customer returns</h2>
-            <span className="text-[11px] font-semibold text-rose-800">{returnCases.length} active</span>
-          </div>
-          <div className="space-y-2">
-            {returnCases.map((record) => (
-              <article key={record.id} className="grid gap-2 border border-rose-200 bg-white p-3 text-xs sm:grid-cols-[1fr_1fr_auto]">
-                <div><p className="font-bold text-slate-900">RMA-{record.id.slice(0, 8).toUpperCase()} · Order #{String(record.orderId || "").slice(0, 8).toUpperCase()}</p><p className="text-slate-500">{record.customerName} · NCM #{record.ncmReturnOrderId || record.originalNcmOrderId || "Pending"}</p></div>
-                <div><p className="text-slate-700">{record.reason}</p><p className="text-slate-500">Pickup: {String(record.returnPickupStatus || record.lifecycleStatus).replace(/_/g, " ")}</p></div>
-                <p className="font-semibold text-slate-800">NCM-reported charge: {record.ncmDeliveryCharge == null ? "Not supplied" : `${currency}${Number(record.ncmDeliveryCharge).toLocaleString()}`} · {record.ncmChargePayer}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-
       {/* Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200">
         {[
           { id: "all", label: "All Assigned Orders", count: tabCounts.all },
           { id: "pending", label: "Pending Acceptance", count: tabCounts.pending, color: "text-rose-600" },
-          { id: "production", label: "In Production / Stitching", count: tabCounts.production },
+          { id: "production", label: "Processing & QA", count: tabCounts.production },
           { id: "ready", label: "Packed & Ready for Courier", count: tabCounts.ready },
           { id: "completed", label: "Delivered / In Transit", count: tabCounts.completed },
           { id: "rejected", label: "Declined", count: tabCounts.rejected },
@@ -313,7 +291,7 @@ const Orders = () => {
           <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
           <p className="font-semibold text-slate-600 text-sm">No orders in this stage</p>
           <p className="text-xs text-slate-400 mt-1">
-            New customer orders routed to your hub will appear here automatically.
+            New customer orders assigned to your distributor hub will appear here automatically.
           </p>
         </div>
       ) : (
@@ -324,9 +302,9 @@ const Orders = () => {
             const address = order.address || {};
             const isSelected = selectedOrderIds.has(item.id);
             const isNewAssigned = item.status === "assigned";
-            const pickupReadyForThisOrder = manufacturerPickupReadiness.isReady;
-            const dispatchWarningText = manufacturerPickupReadiness.missingFields.length
-              ? `Pickup blocked: ${manufacturerPickupReadiness.missingFields[0]} missing.`
+            const pickupReadyForThisOrder = distributorPickupReadiness.isReady;
+            const dispatchWarningText = distributorPickupReadiness.missingFields.length
+              ? `Pickup blocked: ${distributorPickupReadiness.missingFields[0]} missing.`
               : "Dispatch ready: all required pickup details are complete.";
             const benefits = order.fulfillmentBenefits || {};
 
@@ -652,7 +630,7 @@ const Orders = () => {
             </div>
 
             <p className="text-xs text-slate-500">
-              Declining will automatically route this order to the next nearest licensed manufacturer in the proximity network.
+              Declining will return this order for distributor reallocation based on hub coverage and stock.
             </p>
 
             <form onSubmit={handleRejectSubmit} className="space-y-4">

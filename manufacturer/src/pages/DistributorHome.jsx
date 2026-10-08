@@ -49,10 +49,36 @@ const DistributorHome = () => {
     ));
   };
 
+  const availableForRequestLine = (skuId, lineIndex) => {
+    const sku = selectedManufacturer?.stock?.find((item) => item.inventorySkuId === skuId);
+    if (!sku) return 0;
+    const requestedElsewhere = requestLines.reduce((total, line, index) =>
+      index !== lineIndex && line.inventorySkuId === skuId
+        ? total + Math.max(0, Number(line.quantity) || 0)
+        : total, 0);
+    return Math.max(0, sku.availableQuantity - requestedElsewhere);
+  };
+
   const submitRequest = async (event) => {
     event.preventDefault();
     if (!manufacturerId) {
       toast.error("Select a manufacturer.");
+      return;
+    }
+    const requestQuantities = new Map();
+    for (const line of requestLines) {
+      const quantity = Number(line.quantity);
+      if (!line.inventorySkuId || !Number.isSafeInteger(quantity) || quantity < 1) {
+        toast.error("Select a product variant and enter a positive whole-number quantity.");
+        return;
+      }
+      requestQuantities.set(line.inventorySkuId, (requestQuantities.get(line.inventorySkuId) || 0) + quantity);
+    }
+    const exceededSku = selectedManufacturer?.stock?.find((sku) =>
+      (requestQuantities.get(sku.inventorySkuId) || 0) > sku.availableQuantity
+    );
+    if (exceededSku) {
+      toast.error(`Requested quantity for ${exceededSku.productName} (${exceededSku.size} / ${exceededSku.color}) exceeds the manufacturer's available ${exceededSku.availableQuantity} units.`);
       return;
     }
     setSaving(true);
@@ -284,12 +310,14 @@ const DistributorHome = () => {
             <input
               type="number"
               min="1"
+              max={availableForRequestLine(line.inventorySkuId, index)}
               step="1"
               value={line.quantity}
               onChange={(event) => updateRequestLine(index, "quantity", event.target.value)}
               className="rounded-lg border border-slate-300 px-3 py-2"
               aria-label="Requested quantity"
               required
+              disabled={!line.inventorySkuId}
             />
             <button
               type="button"

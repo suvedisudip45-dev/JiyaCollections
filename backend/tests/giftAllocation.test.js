@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   calculateOrderGiftEligibility,
   createGiftSkuFromName,
+  getDistributorGiftOptions,
   getManufacturerGiftOptions,
   normalizeGiftCategory,
 } from "../services/giftService.js";
@@ -108,5 +109,52 @@ test("manufacturer gift options reject orders owned by another hub", async () =>
   await assert.rejects(
     getManufacturerGiftOptions({ orderId: "order-1", manufacturerId: "hub-1", client }),
     /does not belong to this manufacturer/
+  );
+});
+
+test("distributor gift options use only accepted stock owned by the order's distributor", async () => {
+  let inventoryQuery;
+  const client = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        distributorId: "distributor-1",
+        amount: 4000,
+        rewardApplied: { giftAmount: 250, giftDescription: "Loyalty gift" },
+        assignedGift: null,
+      }),
+    },
+    loyaltyTierConfig: { findMany: async () => [] },
+    distributorGiftInventory: {
+      findMany: async (query) => {
+        inventoryQuery = query;
+        return [{
+          id: "stock-1",
+          giftId: "gift-1",
+          quantityAvailable: 2,
+          gift: { id: "gift-1", name: "Cotton Tote", sku: "GFT-COTTON-TOTE", category: "GENERAL", priceValue: 200 },
+        }];
+      },
+    },
+  };
+
+  const result = await getDistributorGiftOptions({ orderId: "order-1", distributorId: "distributor-1", client });
+
+  assert.equal(result.eligible, true);
+  assert.equal(inventoryQuery.where.distributorId, "distributor-1");
+  assert.equal(inventoryQuery.where.status, "ACCEPTED");
+  assert.deepEqual(inventoryQuery.where.quantityAvailable, { gt: 0 });
+  assert.equal(inventoryQuery.where.gift.priceValue.lte, 250);
+  assert.equal(result.options[0].inventoryId, "stock-1");
+});
+
+test("distributor gift options reject orders owned by another hub", async () => {
+  const client = {
+    order: { findUnique: async () => ({ id: "order-1", distributorId: "distributor-2" }) },
+  };
+
+  await assert.rejects(
+    getDistributorGiftOptions({ orderId: "order-1", distributorId: "distributor-1", client }),
+    /does not belong to this distributor/
   );
 });

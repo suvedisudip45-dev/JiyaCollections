@@ -38,7 +38,8 @@ const parseBoolean = (value) => {
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { token, backendUrl, currency, manufacturer } = useManufacturer();
+  const { token, backendUrl, currency, manufacturer, distributor, activeWorkspace } = useManufacturer();
+  const isDistributor = activeWorkspace === "DISTRIBUTOR";
   const [assignment, setAssignment] = useState(null);
   const [loading, setLoading] = useState(true);
   const [packageWeight, setPackageWeight] = useState("");
@@ -160,22 +161,30 @@ const OrderDetail = () => {
 
   const fetchMarketingCardStatus = useCallback(async () => {
     if (!token || !assignment?.order?.id) return;
+    if (!isDistributor) {
+      setMarketingCard(null);
+      return;
+    }
     try {
-      const res = await axios.get(`${backendUrl}/api/marketing-cards/manufacturer/cards?status=all`, { headers: { token } });
+      const res = await axios.get(`${backendUrl}/api/marketing-cards/distributor/cards?status=all`, { headers: { token } });
       const linked = (res.data.cards || []).find((card) => card.orderLink?.orderId === assignment.order.id);
       setMarketingCard(linked || null);
     } catch (error) {
       setMarketingCard(null);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
 
   const fetchGiftOptions = useCallback(async () => {
     const orderId = assignment?.order?.id;
     if (!token || !orderId) return;
+    if (!isDistributor) {
+      setGiftOptions(null);
+      return;
+    }
     setGiftOptionsLoading(true);
     setGiftOptionsError("");
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer/gifts/order-options/${orderId}`, { headers: { token } });
+      const response = await axios.get(`${backendUrl}/api/distributor/gifts/order-options/${orderId}`, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to load eligible gifts.");
       setGiftOptions(response.data);
     } catch (error) {
@@ -185,7 +194,7 @@ const OrderDetail = () => {
     } finally {
       setGiftOptionsLoading(false);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
 
   useEffect(() => {
     fetchAssignment();
@@ -223,7 +232,7 @@ const OrderDetail = () => {
     if (!assignment?.order?.id || marketingCardLoading) return;
     setMarketingCardLoading(true);
     try {
-      const res = await axios.post(`${backendUrl}/api/marketing-cards/manufacturer/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
+      const res = await axios.post(`${backendUrl}/api/marketing-cards/distributor/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
       if (!res.data.success) throw new Error(res.data.message);
       setMarketingCard(res.data.card);
       setChecklist((previous) => ({ ...previous, marketingCard: true, marketingCardId: res.data.card?.card?.cardCode || res.data.card?.cardCode || "attached" }));
@@ -417,11 +426,12 @@ const OrderDetail = () => {
   const isDispatchLocked = ["ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes((assignment.status || "").toLowerCase());
 
   const pickupReadiness = (() => {
-    const branch = (manufacturer?.ncmPickupBranch || "").trim();
-    const address = (manufacturer?.pickupAddress || "").trim();
-    const contactName = (manufacturer?.pickupContactName || "").trim();
-    const contactPhone = (manufacturer?.pickupContactPhone || "").trim();
-    const pickupWindow = (manufacturer?.pickupWindow || "").trim();
+    const fulfillmentProfile = isDistributor ? distributor : manufacturer;
+    const branch = (fulfillmentProfile?.ncmPickupBranch || "").trim();
+    const address = (fulfillmentProfile?.pickupAddress || "").trim();
+    const contactName = (fulfillmentProfile?.pickupContactName || "").trim();
+    const contactPhone = (fulfillmentProfile?.pickupContactPhone || "").trim();
+    const pickupWindow = (fulfillmentProfile?.pickupWindow || "").trim();
 
     const missingFields = [];
     if (!branch) missingFields.push("NCM pickup branch assignment");

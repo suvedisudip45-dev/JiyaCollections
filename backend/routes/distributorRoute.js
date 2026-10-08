@@ -8,7 +8,15 @@ import {
   registerDistributor,
   reviewDistributorApplication,
 } from "../controllers/distributorController.js";
-import { decreaseDistributorInventory } from "../controllers/distributorInventoryController.js";
+import {
+  decreaseDistributorInventory,
+  getDistributorInventory,
+} from "../controllers/distributorInventoryController.js";
+import {
+  createDistributorDirectOrder,
+  getDistributorDirectOrders,
+  updateDistributorDirectOrderStatus,
+} from "../controllers/distributorDirectOrderController.js";
 import {
   createStockTransferRequest,
   receiveStockTransferForRequest,
@@ -51,6 +59,34 @@ distributorRouter.post(
   authorize("distributor:inventory_decrease"),
   setDistributorContext,
   decreaseDistributorInventory,
+);
+distributorRouter.get(
+  "/inventory",
+  authenticate,
+  authorize("distributor:inventory_read"),
+  setDistributorContext,
+  getDistributorInventory,
+);
+distributorRouter.get(
+  "/orders/direct",
+  authenticate,
+  authorize("distributor:direct_order_read"),
+  setDistributorContext,
+  getDistributorDirectOrders,
+);
+distributorRouter.post(
+  "/orders/direct",
+  authenticate,
+  authorize("distributor:direct_order_create"),
+  setDistributorContext,
+  createDistributorDirectOrder,
+);
+distributorRouter.patch(
+  "/orders/direct/status",
+  authenticate,
+  authorize("distributor:direct_order_status_update"),
+  setDistributorContext,
+  updateDistributorDirectOrderStatus,
 );
 
 // Profile & Pickup Readiness Setup
@@ -152,4 +188,3 @@ distributorRouter.patch(
 );
 
 export default distributorRouter;
-

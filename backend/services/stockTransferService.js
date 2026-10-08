@@ -29,6 +29,50 @@ export const normalizeTransferRequestLines = (lines) => {
   });
 };
 
+export const validateTransferRequestAvailability = (requestLines, balances) => {
+  const availableBySku = new Map(balances.map((balance) => [
+    balance.inventorySkuId,
+    Math.max(0, Number(balance.quantityOnHand) - Number(balance.reservedQuantity)),
+  ]));
+  for (const line of requestLines) {
+    const available = availableBySku.get(line.inventorySkuId) || 0;
+    if (line.requestedQuantity > available) {
+      throw fail(
+        `Requested quantity for SKU ${line.inventorySkuId} exceeds the manufacturer's available factory stock (${available}).`,
+        "INSUFFICIENT_FACTORY_STOCK",
+        409,
+      );
+    }
+  }
+  return requestLines;
+};
+
+const TRANSFER_PREPARATION_CHECKS = [
+  "availabilityPassed",
+  "qualityPassed",
+  "colorPassed",
+  "sizePassed",
+  "packagingPassed",
+];
+
+export const normalizeTransferPreparationChecklist = (checklist) => {
+  if (!checklist || typeof checklist !== "object" || Array.isArray(checklist)) {
+    throw fail("A manufacturer preparation checklist is required.");
+  }
+  for (const field of TRANSFER_PREPARATION_CHECKS) {
+    if (typeof checklist[field] !== "boolean") {
+      throw fail(`Preparation checklist field ${field} must be true or false.`);
+    }
+  }
+  return Object.fromEntries(TRANSFER_PREPARATION_CHECKS.map((field) => [field, checklist[field]]));
+};
+
+export const isTransferPreparationComplete = (transfer) =>
+  TRANSFER_PREPARATION_CHECKS.every((field) => transfer[field] === true);
+
+export const isSameProfileOwner = (manufacturerAccountId, distributorAccountId) =>
+  Boolean(manufacturerAccountId && distributorAccountId && manufacturerAccountId === distributorAccountId);
+
 export const normalizeApprovalLines = (lines, transferLines) => {
   if (!Array.isArray(lines) || lines.length !== transferLines.length) {
     throw fail("An approval quantity is required for every requested SKU line.");

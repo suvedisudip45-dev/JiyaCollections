@@ -6,7 +6,12 @@ import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 import { onOrderPacked } from "../services/giftService.js";
-import { assignGiftToOrder, getManufacturerGiftOptions } from "../services/giftService.js";
+import {
+  assignGiftToDistributorOrder,
+  assignGiftToOrder,
+  getDistributorGiftOptions,
+  getManufacturerGiftOptions,
+} from "../services/giftService.js";
 import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
 
@@ -204,7 +209,7 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
         distributor: {
           include: {
             stockLocations: {
-              where: { kind: "DISTRIBUTOR", isActive: true },
+              where: { kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
               include: {
                 balances: {
                   where: { inventorySku: { productId: { in: productIds }, isActive: true } },
@@ -244,7 +249,12 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
         let remaining = requirement.qty;
         const balances = await tx.inventoryBalance.findMany({
           where: {
-            location: { distributorId: selected.id, kind: "DISTRIBUTOR", isActive: true },
+            location: {
+              distributorId: selected.id,
+              kind: "DISTRIBUTOR",
+              inventoryOwner: "PLATFORM",
+              isActive: true,
+            },
             inventorySku: {
               productId: requirement.productId,
               isActive: true,
@@ -282,6 +292,9 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
           });
         }
       }
+      await Promise.all(productIds.map((productId) =>
+        syncProductStock(productId, { client: tx, throwOnError: true })
+      ));
 
       const createdAssignment = await tx.orderAssignment.create({
         data: {
@@ -664,8 +677,11 @@ const updateAssignmentStatus = async (req, res) => {
     if (giftInventoryId && normalizedStatus !== "checklist_complete") {
       return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
     }
+    const distributorOwnsAssignment = Boolean(distributorId && assignment.distributorId === distributorId);
     if (normalizedStatus === "checklist_complete") {
-      const giftOptions = await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
+      const giftOptions = distributorOwnsAssignment
+        ? await getDistributorGiftOptions({ orderId: assignment.orderId, distributorId })
+        : await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
       if (giftOptions.eligible && !giftOptions.alreadyAssigned && giftOptions.options.length > 0 && !giftInventoryId) {
         return res.status(409).json({
           success: false,
@@ -677,7 +693,11 @@ const updateAssignmentStatus = async (req, res) => {
 
     if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
       try {
-        await ensureOrderCardAttached({ orderId: assignment.orderId, manufacturerId });
+        await ensureOrderCardAttached({
+          orderId: assignment.orderId,
+          manufacturerId: distributorOwnsAssignment ? undefined : manufacturerId,
+          distributorId: distributorOwnsAssignment ? distributorId : undefined,
+        });
       } catch (error) {
         return res.status(error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400).json({
           success: false,
@@ -732,12 +752,21 @@ const updateAssignmentStatus = async (req, res) => {
         select: { fulfillmentStatus: true },
       });
       if (giftInventoryId) {
-        await assignGiftToOrder({
-          orderId: assignment.orderId,
-          manufacturerId,
-          inventoryId: giftInventoryId,
-          client: tx,
-        });
+        if (distributorOwnsAssignment) {
+          await assignGiftToDistributorOrder({
+            orderId: assignment.orderId,
+            distributorId,
+            inventoryId: giftInventoryId,
+            client: tx,
+          });
+        } else {
+          await assignGiftToOrder({
+            orderId: assignment.orderId,
+            manufacturerId,
+            inventoryId: giftInventoryId,
+            client: tx,
+          });
+        }
       }
       await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
       await tx.order.update({
@@ -753,7 +782,11 @@ const updateAssignmentStatus = async (req, res) => {
       }, { client: tx });
     });
     if (normalizedStatus === "packed") {
-      await onOrderPacked(assignment.orderId, manufacturerId);
+      await onOrderPacked(
+        assignment.orderId,
+        distributorOwnsAssignment ? undefined : manufacturerId,
+        distributorOwnsAssignment ? distributorId : undefined,
+      );
     }
 
     res.json({ success: true, message: `Status updated to ${status}` });

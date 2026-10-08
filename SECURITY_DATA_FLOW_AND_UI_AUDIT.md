@@ -17,7 +17,7 @@
 1. The storefront requests product, cart, and quote data from the API.
 2. Backend services validate current products, prices, location pricing, discounts, card/loyalty eligibility, and inventory; the client is not authoritative for final price or eligibility.
 3. Order placement writes the order and applicable reservations/financial state through backend services and Prisma transactions.
-4. Assignment and manufacturer fulfillment update order/assignment/inventory state. Relevant changes enqueue a redacted system-audit event in the same transaction.
+4. Online customer fulfillment is assigned to an active, area-matched distributor and updates distributor-ledger inventory. Manufacturer production and replenishment remain separate workflows. Distributor hub actions (direct orders, hub inventory, gift stock, and physical marketing-card stock) require distributor permissions and authenticated distributor context; direct-order stock deductions and gift/card ownership checks are backend-enforced.
 5. Delivery booking and state reconciliation flow through the delivery service and NCM integration/webhooks. Returns and exchanges use approval, inspection, refund/replacement, and carrier workflows; relevant decisions and state changes are audited.
 
 ### Admin changes and audit review
@@ -38,6 +38,8 @@ The audit history now includes:
 - Authenticated RBAC permission denials, including the requested permission codes, method, path without query parameters, actor, and correlation ID.
 
 Events with entity type `SecurityEvent` are **signals for review**, not proof of account compromise or a confirmed breach. A failed login or denied permission can be legitimate user error. The current system does not provide automated incident classification, alert delivery, or forensic attribution.
+
+Hub inventory and promotions are distributor-owned. Distributor routes must derive the acting profile from authenticated workspace context rather than accepting a client-supplied distributor ID. Direct hub-order deductions must remain within the distributor's ledger-backed stock; gift allocation acceptance and order reservation are scoped to that distributor; marketing-card assignment, receipt, and attachment are distributor-scoped. Legacy manufacturer-owned stock records are historical and are not valid fallbacks for distributor inventory.
 
 The Admin Audit History screen supports filtering by result (`SUCCESS`, `FAILED`, `BLOCKED`), actor, entity, action, date, and text search. Red/amber/green result styling distinguishes blocked/failed/success events. The UI explicitly warns that failed or blocked events alone do not establish a breach.
 

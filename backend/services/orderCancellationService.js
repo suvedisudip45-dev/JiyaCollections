@@ -14,6 +14,7 @@ const parseJsonArray = (value) => {
 };
 
 const normalize = (value) => String(value || "").trim().toLowerCase();
+const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
 const cancelledError = (message, code) => Object.assign(new Error(message), { code });
 
@@ -47,36 +48,6 @@ const aggregateOrderItems = (items) => {
   return [...quantities.values()];
 };
 
-const restoreUnhubbedProductStock = async (tx, productId, itemLines) => {
-  const product = await tx.product.findUnique({ where: { id: productId } });
-  if (!product) return null;
-
-  const totalQuantity = itemLines.reduce((sum, item) => sum + item.quantity, 0);
-  const variants = parseJsonArray(product.variants);
-  const hasVariants = variants.length > 0;
-  const restoredVariants = hasVariants
-    ? variants.map((variant) => {
-        const itemQuantity = itemLines
-          .filter((item) => normalize(item.size) === normalize(variant.size) && normalize(item.color) === normalize(variant.color))
-          .reduce((sum, item) => sum + item.quantity, 0);
-        return itemQuantity > 0
-          ? { ...variant, quantity: Number(variant.quantity || 0) + itemQuantity }
-          : variant;
-      })
-    : variants;
-  const newStock = Number(product.stockQuantity || 0) + totalQuantity;
-
-  await tx.product.update({
-    where: { id: productId },
-    data: {
-      stockQuantity: newStock,
-      ...(hasVariants ? { variants: restoredVariants } : {}),
-    },
-  });
-
-  return { productName: product.name, previousQty: Number(product.stockQuantity || 0), newQty: newStock, quantity: totalQuantity };
-};
-
 const releaseManufacturerReservation = async (tx, manufacturerId, item) => {
   const inventory = await tx.manufacturerInventory.findUnique({
     where: { manufacturerId_productId: { manufacturerId, productId: item.productId } },
@@ -104,6 +75,45 @@ const releaseManufacturerReservation = async (tx, manufacturerId, item) => {
     },
   });
   return true;
+};
+
+const releaseDistributorReservation = async (tx, distributorId, item) => {
+  const balances = await tx.inventoryBalance.findMany({
+    where: {
+      location: {
+        distributorId,
+        kind: "DISTRIBUTOR",
+        inventoryOwner: "PLATFORM",
+      },
+      inventorySku: {
+        productId: item.productId,
+        sizeKey: normalizeSkuKey(item.size),
+        colorKey: normalizeSkuKey(item.color),
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  let remaining = item.quantity;
+  for (const balance of balances) {
+    const releaseQuantity = Math.min(remaining, balance.reservedQuantity);
+    if (!releaseQuantity) continue;
+    const updated = await tx.inventoryBalance.updateMany({
+      where: {
+        id: balance.id,
+        reservedQuantity: balance.reservedQuantity,
+        quantityOnHand: { gte: balance.reservedQuantity },
+      },
+      data: { reservedQuantity: { decrement: releaseQuantity } },
+    });
+    if (updated.count !== 1) {
+      throw cancelledError("Distributor stock changed during cancellation. Refresh and try again.", "CANCELLATION_STOCK_CONFLICT");
+    }
+    remaining -= releaseQuantity;
+    if (!remaining) break;
+  }
+  if (remaining) {
+    throw cancelledError("The distributor reservation could not be fully released. Contact support before retrying.", "CANCELLATION_RESERVATION_MISMATCH");
+  }
 };
 
 export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
@@ -150,6 +160,9 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
     for (const item of itemLines) {
       if (assignment?.manufacturerId && !order.specialOrder) {
         await releaseManufacturerReservation(tx, assignment.manufacturerId, item);
+      }
+      if (assignment?.distributorId) {
+        await releaseDistributorReservation(tx, assignment.distributorId, item);
       }
       const lines = productLines.get(item.productId) || [];
       lines.push(item);
@@ -200,11 +213,8 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
     }
 
     for (const [productId, lines] of productLines) {
-      const hubs = await tx.manufacturerInventory.count({ where: { productId } });
       const before = await tx.product.findUnique({ where: { id: productId }, select: { stockQuantity: true, name: true } });
-      const stockChange = hubs > 0
-        ? await syncProductStock(productId, { client: tx, throwOnError: true })
-        : await restoreUnhubbedProductStock(tx, productId, lines);
+      const stockChange = await syncProductStock(productId, { client: tx, throwOnError: true });
       if (stockChange) {
         await tx.stockLog.create({
           data: {

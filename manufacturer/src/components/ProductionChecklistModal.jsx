@@ -22,9 +22,9 @@ export const PreProductionChecklistModal = ({ request, token, onClose, onSuccess
       const response = await axios.patch(
         `${backendUrl}/api/manufacturer/production/${request.id}/pre-check`,
         {
-          fabricCheckPassed: fabricPassed,
-          sampleCheckPassed: samplePassed,
-          colorShadeCheckPassed: colorShadePassed,
+          fabricPassed,
+          qualitySamplePassed: samplePassed,
+          colorShadeMatched: colorShadePassed,
           notes: notes.trim() || undefined,
         },
         { headers: { token } }
@@ -172,13 +172,14 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
   const [stitchingPassed, setStitchingPassed] = useState(true);
   const [qualityPassed, setQualityPassed] = useState(true);
   const [colorPassed, setColorPassed] = useState(true);
+  const [sizeCountVerified, setSizeCountVerified] = useState(true);
   const [lines, setLines] = useState(() => {
     return (request.lines || []).map((line) => ({
       lineId: line.id,
       size: line.size,
       color: line.color,
-      requestedQuantity: line.requestedQuantity || 0,
-      actualQuantity: line.actualQuantity || line.requestedQuantity || 0,
+      requestedQuantity: line.quantity ?? line.requestedQuantity ?? 0,
+      actualQuantity: line.actualQuantity ?? line.quantity ?? line.requestedQuantity ?? 0,
       damagedQuantity: line.damagedQuantity || 0,
     }));
   });
@@ -198,13 +199,15 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
       const response = await axios.patch(
         `${backendUrl}/api/manufacturer/production/${request.id}/post-check`,
         {
-          stitchingCheckPassed: stitchingPassed,
-          qualityCheckPassed: qualityPassed,
-          colorCheckPassed: colorPassed,
-          lines: lines.map((l) => ({
-            lineId: l.lineId,
-            actualQuantity: l.actualQuantity,
-            damagedQuantity: l.damagedQuantity,
+          stitchingPassed,
+          qualityPassed,
+          colorPassed,
+          sizeCountVerified,
+          actualCounts: lines.map((line) => ({
+            size: line.size,
+            color: line.color,
+            quantity: line.actualQuantity,
+            damagedQuantity: line.damagedQuantity,
           })),
           notes: notes.trim() || undefined,
         },
@@ -222,6 +225,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
 
   const totalActual = lines.reduce((sum, l) => sum + l.actualQuantity, 0);
   const totalDamaged = lines.reduce((sum, l) => sum + l.damagedQuantity, 0);
+  const totalGood = totalActual - totalDamaged;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4 overflow-y-auto">
@@ -241,7 +245,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
           {/* Quality check toggles */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
             <button
               type="button"
               onClick={() => setStitchingPassed(!stitchingPassed)}
@@ -274,14 +278,25 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
               <p className="text-[11px] font-bold">Final Color/Wash QA</p>
               <p className="text-[10px] opacity-80 mt-0.5">{colorPassed ? "Passed" : "Failed"}</p>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setSizeCountVerified(!sizeCountVerified)}
+              className={`p-3 rounded-xl border text-left transition-all ${
+                sizeCountVerified ? "bg-[#171717] text-white border-[#171717]" : "bg-[#ffffff] text-[#575757] border-[#dedbd3]"
+              }`}
+            >
+              <p className="text-[11px] font-bold">Size/Color Counts</p>
+              <p className="text-[10px] opacity-80 mt-0.5">{sizeCountVerified ? "Verified" : "Not Verified"}</p>
+            </button>
           </div>
 
           {/* Size/Color quantity table */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-bold text-[#171717]">Actual Produced vs. Damaged Units</label>
+              <label className="text-xs font-bold text-[#171717]">Production Counts by Size/Color</label>
               <span className="text-[11px] text-[#575757]">
-                Total Good: <strong className="text-[#171717]">{totalActual}</strong> • Damaged: <strong className="text-rose-600">{totalDamaged}</strong>
+                Good units: <strong className="text-[#171717]">{totalGood}</strong> • Damaged: <strong className="text-rose-600">{totalDamaged}</strong>
               </span>
             </div>
 
@@ -291,7 +306,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
                   <tr>
                     <th className="p-2.5">Variant</th>
                     <th className="p-2.5">Target</th>
-                    <th className="p-2.5">Good Units (Actual)</th>
+                    <th className="p-2.5">Total Produced</th>
                     <th className="p-2.5">Damaged / Scrap</th>
                   </tr>
                 </thead>
@@ -306,6 +321,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
                         <input
                           type="number"
                           min="0"
+                          max={line.requestedQuantity}
                           value={line.actualQuantity}
                           onChange={(e) => updateLine(idx, "actualQuantity", e.target.value)}
                           className="w-20 p-1.5 border border-[#dedbd3] rounded-lg text-xs font-semibold focus:outline-none focus:border-[#171717]"
@@ -315,6 +331,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
                         <input
                           type="number"
                           min="0"
+                          max={line.actualQuantity}
                           value={line.damagedQuantity}
                           onChange={(e) => updateLine(idx, "damagedQuantity", e.target.value)}
                           className="w-20 p-1.5 border border-[#dedbd3] rounded-lg text-xs font-semibold text-rose-600 focus:outline-none focus:border-rose-600"

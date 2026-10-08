@@ -2,6 +2,7 @@ import express from "express";
 import {
   completeProduction,
   createProductionRequest,
+  getManufacturerProductionDashboard,
   getProductionProducts,
   listProductionRequests,
   reviewProductionRequest,
@@ -11,6 +12,7 @@ import { authenticate, authorize, setManufacturerContext } from "../middleware/u
 
 const router = express.Router();
 
+router.get("/dashboard", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, getManufacturerProductionDashboard);
 router.get("/products", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, getProductionProducts);
 router.get("/requests", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, listProductionRequests);
 router.post("/requests", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, createProductionRequest);

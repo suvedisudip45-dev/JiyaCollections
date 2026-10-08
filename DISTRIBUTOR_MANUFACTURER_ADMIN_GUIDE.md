@@ -85,6 +85,8 @@ are not a promise that every role has every listed grant by default.
   to the manufacturer profile until an admin reviews it through
   `/api/admin/distributor-applications`; approval activates/provisions the
   linked distributor profile and grants the account the `DISTRIBUTOR` role.
+  In Distributor Management, these requests appear in the dedicated
+  **Manufacturer requests** tab, separate from distributor sign-up applications.
   A dual-role account continues to log in with MANUFACTURER as its primary
   workspace, while authenticated requests carry both active workspace roles
   and profiles.
@@ -151,11 +153,13 @@ transfer service.
 | `ManufacturerProductionRequest`, `ManufacturerProductionRequestLine` | Admin production order or legacy manufacturer proposal, SKU variants/planned and actual quantities, fabric/GSM, target date and batch plan, pre/post QA checklists, approved COGS/MOQ/delivery cost, notes and lifecycle timestamps. |
 | `ManufacturerSettlementRequest` | Manufacturer-requested production or logistics payout, idempotency key, amount, status, reviewing admin, payment account and settlement timestamps. |
 | `ManufacturerInventoryCostLayer`, `ManufacturerInventoryCostAllocation` | Track produced quantity and unit costs by production batch/variant; reserve/consume/release quantities for shipment or customer-order fulfillment. |
-| `Order` | Customer purchase: items/address JSON, amount/payment/order status, fulfillment status, order type, manufacturer assignment references and optional gift/marketing-card/letter relations. |
-| `OrderAssignment` | One manufacturer assignment per customer order; statuses from `PENDING_ACCEPTANCE` through `READY_FOR_PICKUP`/`PICKED_UP`, or `REJECTED`. |
+| `Order` | Customer purchase: items/address JSON, amount/payment/order status, fulfillment status, order type, manufacturer or distributor ownership, and optional gift/marketing-card/letter relations. |
+| `OrderAssignment` | Customer order assignment; the owning manufacturer or distributor is explicit, with statuses from `PENDING_ACCEPTANCE` through `READY_FOR_PICKUP`/`PICKED_UP`, or `REJECTED`. |
 | `GiftCatalog` | Gift SKU/name/category/value/description and active flag. |
-| `ManufacturerGiftInventory` | Manufacturer's accepted/awaiting/rejected allocated gift quantity and reserved quantity. |
-| `GiftMovementLog` | Gift allocation/reservation/deduction/restock/loss/damage/rejection events and quantities. |
+| `DistributorGiftInventory` | Distributor's accepted/awaiting/rejected allocated gift quantity and reserved quantity for hub orders. |
+| `DistributorGiftMovementLog` | Distributor gift allocation/reservation/deduction/restock/loss events and quantities. |
+| `ManufacturerGiftInventory`, `GiftMovementLog` | Legacy manufacturer-owned gift stock and movement history retained for historical records; not used for new distributor hub activity. |
+| `MarketingCardAssignment` | Card stock allocation with distributor ownership for current hub flows; manufacturer ownership remains nullable for historical records. |
 | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard` | Campaign configuration; generated card batches; unique card/QR token, manufacturer or partner assignment, benefit, and physical state. |
 | `MarketingCardAssignment`, `MarketingCardReceipt`, `MarketingCardOrder`, `MarketingCardEvent` | Assignment history, manufacturer receipt confirmation, card-to-order attachment, and event history. |
 | `Story`, `StoryLetter`, `LetterTemplate`, `LetterTemplateVersion`, `CustomerStoryAssignment`, `LetterDelivery` | Admin-managed letter content/versioning and customer/order-specific reservation, rendering, printing, packing, shipment and delivery statuses. |
@@ -183,7 +187,10 @@ transfer service.
    whole-number `quantity`. Variant labels are resolved to active inventory
    SKUs by the server.
 3. The API checks that the distributor is active, the manufacturer is active,
-   each SKU/product is valid, and a platform-owned factory location exists.
+   each SKU/product is valid, a platform-owned factory location exists, and
+   each requested quantity is no greater than the SKU's current unreserved
+   factory balance. The API repeats this check in the request transaction;
+   catalog values and browser-side quantity limits are only guidance.
 4. It creates a `StockTransfer` in `PENDING_ADMIN_APPROVAL`, with a
    `StockTransferLine` for each requested SKU and the distributor's own
    destination location. Request creation uses a serializable transaction.
@@ -200,22 +207,30 @@ transfer service.
    approved.
 4. Rejected requests get approved quantity zeroed and enter `REJECTED`. Approval
    records the reviewing account/time and moves the transfer to `APPROVED`.
+   The approved demand then appears in the manufacturer's **Distributor
+   Demands** page; unapproved requests are not shown in the manufacturer queue.
 
 ### Step 4: Manufacturer dispatches the approved goods
 
-1. Manufacturer checks `GET /api/stock-transfers/manufacturer`.
-2. Manufacturer dispatches with
-   `POST /api/manufacturer/stock-requests/:id/dispatch`, selecting `NCM` or
-   `LOCAL_LOGISTICS`; the existing carrier-specific endpoints remain available.
-3. The manual path requires an `Idempotency-Key`, carrier name, optional
+1. Manufacturer checks `GET /api/stock-transfers/manufacturer` and records a
+   passing preparation checklist at
+   `PATCH /api/stock-transfers/:id/preparation`: current product availability,
+   quality inspection, requested color, requested size, and packaging. Every
+   check must be explicitly saved as passed before shipment booking.
+2. Manufacturer dispatches approved quantities, selecting NCM or local freight.
+   The local path requires an `Idempotency-Key`, carrier name, optional
    tracking/external reference/freight, and lines/quantities. It checks the
    request belongs to the logged-in manufacturer and that quantities remain
    approved/available.
-4. Dispatch moves units out of the factory stock and into in-transit stock using
+3. Dispatch moves units out of the factory stock and into in-transit stock using
    ledger entries; cost layers may also be allocated to shipment lines.
-5. `StockTransferShipment` records the carrier/booking, tracking data, freight,
+4. `StockTransferShipment` records the carrier/booking, tracking data, freight,
    and shipment state. NCM booking and uncertain booking outcomes have a
    separate admin-resolution endpoint.
+5. If the distributor and manufacturer profiles belong to the same account,
+   the portal automatically selects own-store delivery. This bypasses NCM and
+   local freight, records NPR 0 freight, and atomically dispatches and receives
+   good units into that distributor's inventory location.
 
 ### Step 5: Distributor records receipt
 
@@ -393,28 +408,44 @@ Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
 ### Gifts
 
 Admins manage gift catalog and loyalty tiers, and allocate gift inventory to a
-manufacturer. Manufacturer allocations start `PENDING_ACCEPTANCE`; the
-manufacturer accepts or rejects. Gift units can be selected for an eligible
-order, reserved when packed, deducted on delivery, and restocked or recorded
-lost when returned.
+distributor. Distributor allocations start `PENDING_ACCEPTANCE`; the
+distributor accepts or rejects. Gift units can be selected for an eligible
+distributor hub order from that distributor's accepted stock, reserved when
+packed, deducted on delivery, and restocked or recorded lost when returned.
+Manufacturer gift records are retained for history, but new hub allocations and
+orders are distributor-scoped.
 
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /admin/gifts/catalog`, `POST /admin/gifts/catalog`, `DELETE /admin/gifts/catalog/:id` | Admin | `loyalty:level_manage` | Maintain catalog. |
 | `GET/POST /admin/gifts/tiers` | Admin | `loyalty:level_manage` | Maintain loyalty tier rules. |
-| `POST /admin/gifts/assign-manufacturer` | Admin | `loyalty:level_manage` | Allocate gifts to manufacturer inventory. |
-| `GET /manufacturer/gifts/inbound` | Manufacturer | `manufacturer:hub_gift_record` | View allocations awaiting/recorded by manufacturer. |
-| `POST /manufacturer/gifts/:id/respond` | Manufacturer | `manufacturer:hub_gift_record` | Accept or reject allocation. |
-| `GET /manufacturer/gifts/order-options/:orderId` | Manufacturer | `manufacturer:assignment_status_update` | See gift options for an order. |
+| `POST /admin/gifts/assign-distributor` | Admin | `loyalty:level_manage` | Allocate gifts to distributor inventory. |
+| `GET /distributor/gifts/inbound` | Distributor | `distributor:hub_gifts_read` | View allocations awaiting/recorded by distributor. |
+| `POST /distributor/gifts/:id/respond` | Distributor | `distributor:hub_gift_record` | Accept or reject allocation. |
+| `GET /distributor/gifts/order-options/:orderId` | Distributor | `distributor:assignment_status_update` | See eligible gift options for an own order. |
 | `POST /admin/gifts/returned/:orderId` | Admin | `returns:admin_review` | Record returned gift outcome. |
-| `POST /manufacturer/gifts/returned/:orderId` | Manufacturer | `manufacturer:delivery_return` | Record gift return/loss from manufacturer workflow. |
+| `POST /distributor/gifts/returned/:orderId` | Distributor | `distributor:delivery_return` | Record gift return/loss in the distributor workflow. |
+
+Direct hub orders and hub stock are likewise distributor-only. The distributor
+portal reads ledger-backed stock at `GET /api/distributor/inventory`, creates
+orders at `POST /api/distributor/orders/direct`, and updates their status at
+`PATCH /api/distributor/orders/direct/status`. Their item deductions, order
+creation, and distributor-owned assignment are transactional. No
+`ManufacturerInventory` fallback is used for these flows.
+
+| Method and path | Actor | Permission | Action |
+|---|---|---|---|
+| `GET /api/distributor/inventory` | Distributor | `distributor:inventory_read` | Read available ledger stock at the active hub. |
+| `GET /api/distributor/orders/direct` | Distributor | `distributor:direct_order_read` | List the active hub's direct orders. |
+| `POST /api/distributor/orders/direct` | Distributor | `distributor:direct_order_create` | Create direct order and deduct the active hub's ledger stock transactionally. |
+| `PATCH /api/distributor/orders/direct/status` | Distributor | `distributor:direct_order_status_update` | Update an order owned by the active distributor. |
 
 ### Marketing cards
 
 Admin manages marketing partners, campaigns, batches, card assignment/invalidation
-and metrics. Cards are assigned to manufacturers with receipt confirmation;
-manufacturers can record receipt, update card status in bulk, and attach eligible
-cards to orders. Card states include `GENERATED`, `ASSIGNED`, `RECEIVED`,
+and metrics. Physical card stock is assigned to active distributors with receipt
+confirmation; distributors can record receipt, update card status in bulk, and
+attach eligible cards to orders. Card states include `GENERATED`, `ASSIGNED`, `RECEIVED`,
 `AVAILABLE`, `RESERVED`, `ATTACHED`, and `CANCELLED`. Customer and partner
 endpoints handle linking/scanning/redeeming; they are downstream of admin's
 campaign/card setup.
@@ -427,16 +458,17 @@ Admin API prefix: `/api/marketing-cards/admin/*`; key operations include
 own-store campaign/assignment routes use `marketing_card:own_store_manage` or
 `marketing_card:custom_assign`.
 
-Manufacturer operations include:
+Distributor operations include:
 
-- `GET /api/marketing-cards/manufacturer/cards`
-- `POST /api/marketing-cards/manufacturer/cards/bulk-status`
-- `POST /api/marketing-cards/manufacturer/cards/:cardId/receive`
-- `POST /api/marketing-cards/manufacturer/orders/:orderId/attach`
+- `GET /api/marketing-cards/distributor/cards`
+- `POST /api/marketing-cards/distributor/cards/bulk-status`
+- `POST /api/marketing-cards/distributor/cards/:cardId/receive`
+- `POST /api/marketing-cards/distributor/orders/:orderId/attach`
 
-All require `marketing_card:manufacturer_manage` and manufacturer context.
+All require `marketing_card:distributor_manage` and distributor context.
 Marketing-card assignment and receipt use the related assignment/receipt tables,
-and card/order attachment is unique per card and per order.
+and card/order attachment is unique per card and per order. The old
+manufacturer-owned routes are no longer mounted; legacy records remain intact.
 
 ### Letters
 
@@ -523,7 +555,7 @@ story/template delivery records.
   - Instant toggle for **"With VAT (13%)"** vs. **"Without VAT"**.
   - Interactive **"Ask for Settlement"** modal for payout disbursement requests.
 - **Admin Distributor Management (`admin/src/pages/DistributorApplications.jsx`)**:
-  - Multi-tab management for partner application approvals, custom negotiated delivery rate cards & incentives configuration, and distributor settlement payout review & execution.
+  - Separate review queues for new distributor applications and manufacturer requests to add distributor access, plus custom negotiated delivery rate cards & incentives and distributor settlement payout review & execution.
 
 ## 10. Source references
 
@@ -543,4 +575,3 @@ story/template delivery records.
 - Request/receipt normalization and transfer states: [`backend/services/stockTransferService.js`](./backend/services/stockTransferService.js)
 - Distributor self-delivery & returns: [`backend/services/distributorSelfDeliveryService.js`](./backend/services/distributorSelfDeliveryService.js)
 - Distributor finance & rate cards: [`backend/services/distributorFinanceService.js`](./backend/services/distributorFinanceService.js) and [`backend/services/distributorRateCardService.js`](./backend/services/distributorRateCardService.js)
-
