@@ -144,8 +144,8 @@ const CITY_PROXIMITY = {
 const normalize = (city) => (city || "").toLowerCase().trim();
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
-const distributorHasStock = (distributor, requirements) => requirements.every((requirement) => {
-  const available = (distributor.stockLocations || [])
+const getDistributorAvailableStock = (distributor, requirement) =>
+  (distributor.stockLocations || [])
     .flatMap((location) => location.balances || [])
     .filter((balance) =>
       balance.inventorySku?.productId === requirement.productId &&
@@ -153,8 +153,19 @@ const distributorHasStock = (distributor, requirements) => requirements.every((r
       normalizeSkuKey(balance.inventorySku?.colorKey || balance.inventorySku?.color) === normalizeSkuKey(requirement.color)
     )
     .reduce((total, balance) => total + Math.max(0, balance.quantityOnHand - balance.reservedQuantity), 0);
-  return available >= requirement.qty;
-});
+
+const getStockShortages = (distributor, requirements) => requirements
+  .map((requirement) => ({
+    productId: requirement.productId,
+    size: requirement.size,
+    color: requirement.color,
+    requiredQuantity: requirement.qty,
+    availableQuantity: getDistributorAvailableStock(distributor, requirement),
+  }))
+  .filter((item) => item.availableQuantity < item.requiredQuantity);
+
+const distributorHasStock = (distributor, requirements) =>
+  getStockShortages(distributor, requirements).length === 0;
 
 export const runAllocationEngine = async (orderId, actorContext = {}) => {
   const actor = {
@@ -198,45 +209,89 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
     }
     const requirements = [...requirementsBySku.values()];
     const productIds = [...new Set(requirements.map((item) => item.productId))];
-    const locations = await prisma.distributorLocation.findMany({
+    const distributors = await prisma.distributor.findMany({
       where: {
-        province: location.province,
-        district: location.district,
+        status: "ACTIVE",
         isActive: true,
-        distributor: { status: "ACTIVE", isActive: true },
       },
       include: {
-        distributor: {
+        locations: { where: { isActive: true } },
+        stockLocations: {
+          where: { kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
           include: {
-            stockLocations: {
-              where: { kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
-              include: {
-                balances: {
-                  where: { inventorySku: { productId: { in: productIds }, isActive: true } },
-                  include: { inventorySku: true },
-                },
-              },
+            balances: {
+              where: { inventorySku: { productId: { in: productIds }, isActive: true } },
+              include: { inventorySku: true },
             },
           },
         },
       },
     });
-    const candidateMap = new Map(locations.map(({ distributor }) => [distributor.id, distributor]));
+    if (!distributors.length) {
+      return {
+        success: false,
+        code: "NO_ACTIVE_DISTRIBUTOR",
+        message: "There are no active distributors available for allocation.",
+      };
+    }
     const customerCity = normalize(address.city || address.district);
     const nearbyCities = CITY_PROXIMITY[customerCity] || [];
-    const candidates = [...candidateMap.values()]
-      .filter((distributor) => distributorHasStock(distributor, requirements))
-      .sort((left, right) => {
-        const score = (distributor) => {
-          const city = normalize(distributor.city);
-          return city === customerCity && city ? 2 : nearbyCities.includes(city) ? 1 : 0;
-        };
-        return score(right) - score(left) || left.id.localeCompare(right.id);
-      });
+    const stockedCandidates = distributors.filter((distributor) => distributorHasStock(distributor, requirements));
+    const hasExactCoverage = (distributor) => (distributor.locations || []).some((serviceArea) => {
+      const serviceLocation = canonicalizeNepalLocation(serviceArea.province, serviceArea.district);
+      return serviceArea.isActive !== false &&
+        serviceLocation?.province === location.province &&
+        serviceLocation?.district === location.district;
+    });
+    const hasProvinceMatch = (distributor) => {
+      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+      return registeredLocation?.province === location.province ||
+        (distributor.locations || []).some((serviceArea) => {
+          const serviceLocation = canonicalizeNepalLocation(serviceArea.province, serviceArea.district);
+          return serviceArea.isActive !== false && serviceLocation?.province === location.province;
+        });
+    };
+    const locationCandidates = stockedCandidates.filter(hasExactCoverage);
+    const provinceCandidates = stockedCandidates.filter((distributor) =>
+      !hasExactCoverage(distributor) && hasProvinceMatch(distributor)
+    );
+    const nationwideCandidates = stockedCandidates.filter((distributor) =>
+      !hasExactCoverage(distributor) && !hasProvinceMatch(distributor)
+    );
+    const compareNearby = (left, right) => {
+      const score = (distributor) => {
+        const city = normalize(distributor.city);
+        return city === customerCity && city ? 2 : nearbyCities.includes(city) ? 1 : 0;
+      };
+      return score(right) - score(left) || left.id.localeCompare(right.id);
+    };
+    const compareRating = (left, right) =>
+      Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
+      Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
+      left.id.localeCompare(right.id);
+    const candidates = locationCandidates.length
+      ? locationCandidates.sort(compareNearby)
+      : provinceCandidates.length
+        ? provinceCandidates.sort(compareNearby)
+        : nationwideCandidates.sort(compareRating);
     const selected = candidates[0];
     if (!selected) {
-      return { success: false, message: "No approved distributor covering this district has all requested variants in stock." };
+      const stockShortages = distributors.map((distributor) => ({
+        distributor: distributor.name,
+        shortages: getStockShortages(distributor, requirements),
+      }));
+      return {
+        success: false,
+        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
+        message: "No active distributor has enough available distributor-ledger stock for every requested variant. Check available stock (on hand minus reserved) and replenish the missing variants.",
+        stockShortages,
+      };
     }
+    const allocationTier = locationCandidates.includes(selected)
+      ? "exact district"
+      : provinceCandidates.includes(selected)
+        ? "same province"
+        : "review-ranked nationwide";
 
     const assignment = await prisma.$transaction(async (tx) => {
       const claimed = await tx.order.updateMany({
@@ -301,7 +356,7 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
           orderId,
           distributorId: selected.id,
           status: "assigned",
-          notes: `Auto-allocated to ${selected.name} for ${location.district}; all requested variants were in stock.`,
+          notes: `Auto-allocated to ${selected.name} by ${allocationTier} priority for ${location.district}; all requested variants were in stock.`,
         },
       });
       await tx.order.update({ where: { id: orderId }, data: { assignmentId: createdAssignment.id } });
@@ -315,6 +370,7 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
           distributorId: selected.id,
           assignmentId: createdAssignment.id,
           allocationMode: "distributor_hub",
+          allocationTier,
         },
       }, { client: tx });
       return createdAssignment;
@@ -342,7 +398,12 @@ const assignOrder = async (req, res) => {
         distributor: result.distributor?.name,
       });
     } else {
-      res.json({ success: false, message: result.message });
+      res.json({
+        success: false,
+        message: result.message,
+        ...(result.code ? { code: result.code } : {}),
+        ...(result.stockShortages ? { stockShortages: result.stockShortages } : {}),
+      });
     }
   } catch (error) {
     console.error("assignOrder error:", error);
@@ -468,6 +529,46 @@ const getMyAssignments = async (req, res) => {
   } catch (error) {
     console.error("getMyAssignments error:", error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+const getUnassignedOrders = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const where = {
+      assignmentId: null,
+      orderType: { in: ["ONLINE_STORE", "ADMIN_DIRECT"] },
+      status: { not: "Cancelled" },
+    };
+    const [orders, total] = await prisma.$transaction([
+      prisma.order.findMany({
+        where,
+        orderBy: { date: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        select: {
+          id: true,
+          items: true,
+          address: true,
+          amount: true,
+          status: true,
+          orderType: true,
+          fulfillmentStatus: true,
+          date: true,
+        },
+      }),
+      prisma.order.count({ where }),
+    ]);
+    const serializedOrders = orders.map((order) => ({
+      ...order,
+      items: parseJSON(order.items, []),
+      address: parseJSON(order.address, {}),
+      date: Number(order.date),
+    }));
+    return res.json(paginatedResponse("orders", serializedOrders, pagination, total));
+  } catch (error) {
+    console.error("getUnassignedOrders error:", error);
+    return res.status(500).json({ success: false, message: "Unassigned customer orders could not be loaded." });
   }
 };
 
@@ -1014,6 +1115,7 @@ const manualAssign = async (req, res) => {
 export {
   assignOrder,
   getMyAssignments,
+  getUnassignedOrders,
   getAssignmentById,
   acceptOrder,
   rejectOrder,

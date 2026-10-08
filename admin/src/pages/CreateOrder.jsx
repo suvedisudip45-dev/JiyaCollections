@@ -787,7 +787,12 @@ const CreateOrder = ({ token }) => {
       });
 
       if (res.data.success) {
-        toast.success(`Order created successfully! (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+        const orderMessage = res.data.message || "Order created successfully.";
+        if (res.data.allocation?.status === "PENDING_ASSIGNMENT") {
+          toast.warning(`${orderMessage} (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+        } else {
+          toast.success(`${orderMessage} (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+        }
         
         // Store created order object for immediate printing modal
         setCreatedOrderForPrint(res.data.order);

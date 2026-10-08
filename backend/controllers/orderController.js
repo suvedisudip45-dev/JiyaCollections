@@ -28,6 +28,34 @@ import { campaignMatchesOrder } from "../services/marketingCardService.js";
 // global variables
 const deliveryCharge = 50;
 
+const allocateOrderToDistributor = async (orderId, source, req) => {
+  const result = await runAllocationEngine(orderId, {
+    actorId: req.auth?.accountId || null,
+    actorRole: req.auth?.role || "SYSTEM",
+    portalSource: source,
+    ipAddress: req.ip || null,
+    userAgent: req.headers["user-agent"] || null,
+    correlationId: req.correlationId || null,
+  });
+
+  if (!result.success) {
+    console.warn(`[Allocation] ${source} order ${orderId} remains unassigned: ${result.message}`);
+    return {
+      status: "PENDING_ASSIGNMENT",
+      message: result.message,
+    };
+  }
+
+  return {
+    status: "ASSIGNED",
+    assignmentId: result.assignment.id,
+    distributor: {
+      id: result.distributor.id,
+      name: result.distributor.name,
+    },
+  };
+};
+
 const buildOrderListItem = (order) => {
   const parsedReward = (() => {
     if (!order?.rewardApplied) return null;
@@ -104,6 +132,8 @@ const buildOrderListItem = (order) => {
     directNotes: order.directNotes,
     delivery: order.deliveryOrder || null,
     deliveryOrder: order.deliveryOrder || null,
+    distributorReview: order.distributorReview || null,
+    assignedDistributorId: order.assignedDistributorId || order.distributorId || null,
     totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
   };
 };
@@ -768,18 +798,14 @@ const placeOrder = async (req, res) => {
       }
     }
 
-    // Trigger allocation engine asynchronously (non-blocking)
-    if (!createdOrder.assignmentId) runAllocationEngine(createdOrder.id).then((result) => {
-      if (!result.success) {
-        console.warn(`[Allocation] Order ${createdOrder.id} could not be auto-assigned: ${result.message}`);
-      } else {
-        console.log(`[Allocation] Order ${createdOrder.id} assigned to distributor ${result.assignment?.distributorId}`);
-      }
-    }).catch((err) => {
-      console.error("[Allocation] Engine error:", err);
+    const allocation = await allocateOrderToDistributor(createdOrder.id, "STOREFRONT", req);
+    res.json({
+      success: true,
+      message: allocation.status === "ASSIGNED"
+        ? "Order placed and assigned to a distributor."
+        : `Order placed, but distributor assignment is pending: ${allocation.message}`,
+      allocation,
     });
-
-    res.json({ success: true, message: "Order Placed Successfully" });
 
   } catch (error) {
     console.log(error);
@@ -798,25 +824,24 @@ const placeOrder = async (req, res) => {
 const allOrders = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
-    const orderInclude = {
-        deliveryOrder: {
-          select: {
-            id: true,
-            ncmOrderId: true,
-            state: true,
-            ncmStatus: true,
-            vendorReference: true,
-            originBranchName: true,
-            destinationBranchName: true,
-            pickedUpAt: true,
-            deliveredAt: true,
-          },
-        },
-      };
     const [rawOrders, total] = await prisma.$transaction([
       prisma.order.findMany({
         orderBy: { date: "desc" },
-        include: orderInclude,
+        include: {
+          deliveryOrder: {
+            select: {
+              id: true,
+              ncmOrderId: true,
+              state: true,
+              ncmStatus: true,
+              vendorReference: true,
+              originBranchName: true,
+              destinationBranchName: true,
+              pickedUpAt: true,
+              deliveredAt: true,
+            },
+          },
+        },
         skip: pagination.skip,
         take: pagination.limit,
       }),
@@ -868,26 +893,45 @@ const userOrders = async (req, res) => {
         where,
         orderBy: { date: "desc" },
         include: {
-        deliveryOrder: {
-          select: {
-            id: true,
-            ncmOrderId: true,
-            state: true,
-            ncmStatus: true,
-            vendorReference: true,
-            originBranchName: true,
-            destinationBranchName: true,
-            pickedUpAt: true,
-            deliveredAt: true,
+          deliveryOrder: {
+            select: {
+              id: true,
+              ncmOrderId: true,
+              state: true,
+              ncmStatus: true,
+              vendorReference: true,
+              originBranchName: true,
+              destinationBranchName: true,
+              pickedUpAt: true,
+              deliveredAt: true,
+            },
           },
-        },
+          distributorReview: {
+            select: {
+              id: true,
+              rating: true,
+              comment: true,
+              updatedAt: true,
+              distributor: { select: { name: true } },
+            },
+          },
         },
         skip: pagination.skip,
         take: pagination.limit,
       }),
       prisma.order.count({ where }),
     ]);
-    const orders = rawOrders.map((item) => buildOrderListItem(item));
+    const assignments = rawOrders.length
+      ? await prisma.orderAssignment.findMany({
+          where: { orderId: { in: rawOrders.map((item) => item.id) } },
+          select: { orderId: true, distributorId: true },
+        })
+      : [];
+    const distributorByOrderId = new Map(assignments.map((assignment) => [assignment.orderId, assignment.distributorId]));
+    const orders = rawOrders.map((item) => buildOrderListItem({
+      ...item,
+      assignedDistributorId: item.distributorId || distributorByOrderId.get(item.id) || null,
+    }));
     res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
@@ -1378,22 +1422,14 @@ const adminCreateOrder = async (req, res) => {
       }
     }
 
-    // Trigger smart allocation engine asynchronously
-    runAllocationEngine(newOrder.id)
-      .then((result) => {
-        if (!result.success) {
-          console.warn(`[Allocation] Admin Order ${newOrder.id} could not be auto-assigned: ${result.message}`);
-        } else {
-          console.log(`[Allocation] Admin Order ${newOrder.id} assigned to distributor ${result.assignment?.distributorId}`);
-        }
-      })
-      .catch((err) => {
-        console.error("[Allocation] Engine error on admin order:", err);
-      });
+    const allocation = await allocateOrderToDistributor(newOrder.id, "ADMIN", req);
 
     res.json({
       success: true,
-      message: "Order created successfully",
+      message: allocation.status === "ASSIGNED"
+        ? "Order created and assigned to a distributor."
+        : `Order created, but distributor assignment is pending: ${allocation.message}`,
+      allocation,
       orderId: newOrder.id,
       order: {
         ...newOrder,

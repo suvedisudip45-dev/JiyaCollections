@@ -397,6 +397,7 @@ model User {
   marketingCardLinks          MarketingCardCustomer[]      @relation("MarketingCardCustomerUser")
   marketingBenefitRedemptions MarketingBenefitRedemption[]
   orderExchangeRequests       OrderExchangeRequest[]
+  distributorReviews          DistributorReview[]
 }
 
 model Story {
@@ -647,6 +648,7 @@ model Order {
   cancelledByUserId           String?
   marketingCardRequired       Boolean             @default(true)
   deliveryOrder               DeliveryOrder?
+  distributorReview           DistributorReview?
   letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
   marketingCardOrder          MarketingCardOrder?
   exchangeRequests            OrderExchangeRequest[]
@@ -665,6 +667,23 @@ model Order {
   @@index([date])
   @@index([status])
   @@index([payment])
+}
+
+model DistributorReview {
+  id            String      @id @default(uuid())
+  orderId       String      @unique
+  userId        String
+  distributorId String
+  rating        Int
+  comment       String?     @db.Text
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  order         Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  distributor   Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+
+  @@index([distributorId, createdAt])
+  @@index([userId, createdAt])
 }
 
 model Category {
@@ -1636,6 +1655,12 @@ model Distributor {
   phone       String?      @db.VarChar(40)
   address     String?      @db.Text
   city        String?      @db.VarChar(120)
+  province    String?      @db.VarChar(120)
+  district    String?      @db.VarChar(120)
+  qualityRating Float      @default(0)
+  ratingCount   Int        @default(0)
+  street      String?      @db.VarChar(191)
+  landmark    String?      @db.VarChar(191)
   status      String       @default("PENDING_APPROVAL") // PENDING_APPROVAL | ACTIVE | SUSPENDED | REJECTED
   isActive    Boolean      @default(false)
   ncmPickupBranch          String?                   @default("")
@@ -1646,6 +1671,8 @@ model Distributor {
   pickupContactPhone       String?                   @default("")
   pickupWindow             String?                   @default("")
   returnInstructions       String?                   @db.Text
+  contractStartDate        DateTime?
+  contractExpiryDate       DateTime?
   appliedAt   DateTime     @default(now())
   approvedAt  DateTime?
   approvedBy  String?
@@ -1665,6 +1692,7 @@ model Distributor {
   giftInventory          DistributorGiftInventory[]
   giftMovements           DistributorGiftMovementLog[]
   marketingCardOrders    MarketingCardOrder[]
+  reviews                DistributorReview[]
 
   @@index([status, isActive])
 }

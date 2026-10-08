@@ -1,10 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { MapPinned, Save } from "lucide-react";
+import { NEPAL_PROVINCES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL;
 
 const DistributorApplications = ({ token }) => {
+  const { can } = usePermissions();
+  const canEditCoverage = can("distributor:admin_review");
   const [activeTab, setActiveTab] = useState("applications");
   const [status, setStatus] = useState("PENDING_APPROVAL");
   const [applications, setApplications] = useState([]);
@@ -14,6 +20,19 @@ const DistributorApplications = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [updatingId, setUpdatingId] = useState("");
+  const [editingDistributor, setEditingDistributor] = useState(null);
+  const [distributorForm, setDistributorForm] = useState(null);
+  const [distributorNcmBranches, setDistributorNcmBranches] = useState([]);
+  const [distributorCoveredAreas, setDistributorCoveredAreas] = useState([]);
+  const [loadingDistributorBranches, setLoadingDistributorBranches] = useState(false);
+  const [savingDistributorProfile, setSavingDistributorProfile] = useState(false);
+  const [coverageDistributors, setCoverageDistributors] = useState([]);
+  const [coverageAreas, setCoverageAreas] = useState([]);
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const [coverageSaving, setCoverageSaving] = useState(false);
+  const [selectedCoverageDistributorId, setSelectedCoverageDistributorId] = useState("");
+  const [selectedCoverageProvince, setSelectedCoverageProvince] = useState("");
+  const [selectedCoveragePairs, setSelectedCoveragePairs] = useState(new Set());
 
   // Rate Cards state
   const [ratesList, setRatesList] = useState([]);
@@ -34,6 +53,10 @@ const DistributorApplications = ({ token }) => {
   const [settlements, setSettlements] = useState([]);
   const [settlementsLoading, setSettlementsLoading] = useState(false);
   const [settlementExecutingId, setSettlementExecutingId] = useState("");
+  const editDistributorProvince = distributorForm?.province;
+  const editDistributorDistrict = distributorForm?.district;
+  const editDistributorCity = distributorForm?.city;
+  const editDistributorStreet = distributorForm?.street;
 
   const loadApplications = useCallback(async () => {
     setLoading(true);
@@ -67,6 +90,30 @@ const DistributorApplications = ({ token }) => {
     }
   }, [manufacturerRequestStatus, token]);
 
+  const loadCoverage = useCallback(async () => {
+    setCoverageLoading(true);
+    setError("");
+    try {
+      const response = await axios.get(`${backendUrl}/api/admin/distributor-applications/coverage`, {
+        headers: { token },
+      });
+      const activeDistributors = (response.data.distributors || []).filter(
+        (distributor) => distributor.status === "ACTIVE" && distributor.isActive
+      );
+      setCoverageDistributors(activeDistributors);
+      setCoverageAreas(response.data.locations || []);
+      setSelectedCoverageDistributorId((current) =>
+        activeDistributors.some((distributor) => distributor.id === current)
+          ? current
+          : activeDistributors[0]?.id || ""
+      );
+    } catch (requestError) {
+      setError(requestError.response?.data?.message || "Distributor coverage could not be loaded.");
+    } finally {
+      setCoverageLoading(false);
+    }
+  }, [token]);
+
   const loadRates = useCallback(async () => {
     setRatesLoading(true);
     try {
@@ -98,12 +145,78 @@ const DistributorApplications = ({ token }) => {
   useEffect(() => {
     if (activeTab === "applications") loadApplications();
     if (activeTab === "manufacturer-requests") loadManufacturerRequests();
+    if (activeTab === "coverage") loadCoverage();
     if (activeTab === "rates") {
       loadApplications();
       loadRates();
     }
     if (activeTab === "settlements") loadSettlements();
-  }, [activeTab, loadApplications, loadManufacturerRequests, loadRates, loadSettlements]);
+  }, [activeTab, loadApplications, loadManufacturerRequests, loadCoverage, loadRates, loadSettlements]);
+
+  useEffect(() => {
+    const selectedDistributor = coverageDistributors.find(
+      (distributor) => distributor.id === selectedCoverageDistributorId
+    );
+    setSelectedCoveragePairs(new Set(
+      (selectedDistributor?.locations || []).map((location) => `${location.province}|${location.district}`)
+    ));
+  }, [coverageDistributors, selectedCoverageDistributorId]);
+
+  useEffect(() => {
+    const fetchBranches = async () => {
+      if (!editDistributorProvince || !editDistributorDistrict) {
+        setDistributorNcmBranches([]);
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      setLoadingDistributorBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: editDistributorProvince, district: editDistributorDistrict },
+        });
+        const branches = response.data.success ? response.data.branches || [] : [];
+        setDistributorNcmBranches(branches);
+        if (branches.length > 0 && !branches.includes(editDistributorCity)) {
+          setDistributorForm((current) => current ? { ...current, city: branches[0], ncmPickupBranch: branches[0] } : current);
+        }
+      } catch (requestError) {
+        setDistributorNcmBranches([]);
+        setError(requestError.response?.data?.message || "NCM branches could not be loaded.");
+      } finally {
+        setLoadingDistributorBranches(false);
+      }
+    };
+
+    fetchBranches();
+  }, [editDistributorProvince, editDistributorDistrict, editDistributorCity]);
+
+  useEffect(() => {
+    const fetchAreas = async () => {
+      if (!editDistributorCity) {
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: editDistributorCity,
+            district: editDistributorDistrict,
+            province: editDistributorProvince,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setDistributorCoveredAreas(areas);
+        if (areas.length > 0 && !areas.includes(editDistributorStreet)) {
+          setDistributorForm((current) => current ? { ...current, street: areas[0] } : current);
+        }
+      } catch (requestError) {
+        setDistributorCoveredAreas([]);
+        setError(requestError.response?.data?.message || "NCM covered areas could not be loaded.");
+      }
+    };
+
+    fetchAreas();
+  }, [editDistributorCity, editDistributorDistrict, editDistributorProvince, editDistributorStreet]);
 
   const reviewApplication = async (application, nextStatus) => {
     setUpdatingId(application.id);
@@ -125,6 +238,72 @@ const DistributorApplications = ({ token }) => {
     }
   };
 
+  const editDistributor = (application) => {
+    const toDateInput = (value) => value ? new Date(value).toISOString().slice(0, 10) : "";
+    setError("");
+    setEditingDistributor(application);
+    setDistributorForm({
+      name: application.name || "",
+      email: application.account?.email || "",
+      phone: application.phone || application.account?.phone || "",
+      province: application.province || "Bagmati Province",
+      district: application.district || "Kathmandu",
+      city: application.city || application.ncmPickupBranch || "",
+      street: application.street || "",
+      landmark: application.landmark || "",
+      address: application.address || "",
+      ncmPickupBranch: application.ncmPickupBranch || application.city || "",
+      pickupBranchStatus: application.pickupBranchStatus || "UNVERIFIED",
+      pickupAddress: application.pickupAddress || "",
+      pickupContactName: application.pickupContactName || "",
+      pickupContactPhone: application.pickupContactPhone || "",
+      pickupWindow: application.pickupWindow || "",
+      returnInstructions: application.returnInstructions || "",
+      contractStartDate: toDateInput(application.contractStartDate),
+      contractExpiryDate: toDateInput(application.contractExpiryDate),
+    });
+  };
+
+  const saveDistributorProfile = async (event) => {
+    event.preventDefault();
+    if (!editingDistributor || !distributorForm) return;
+    setSavingDistributorProfile(true);
+    setError("");
+    try {
+      const response = await axios.put(
+        `${backendUrl}/api/admin/distributor-applications/${editingDistributor.id}/profile`,
+        {
+          ...distributorForm,
+          ncmPickupBranch: distributorForm.city || distributorForm.ncmPickupBranch,
+          address: distributorForm.address || [
+            distributorForm.street,
+            distributorForm.landmark,
+            distributorForm.city,
+            distributorForm.district,
+            distributorForm.province,
+          ].filter(Boolean).join(", "),
+          pickupAddress: distributorForm.pickupAddress || [
+            distributorForm.street,
+            distributorForm.landmark,
+            distributorForm.city,
+          ].filter(Boolean).join(", "),
+        },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Distributor profile could not be updated.");
+      toast.success("Distributor profile updated.");
+      setEditingDistributor(null);
+      setDistributorForm(null);
+      await loadApplications();
+    } catch (requestError) {
+      const message = requestError.response?.data?.message || requestError.message || "Distributor profile could not be updated.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setSavingDistributorProfile(false);
+    }
+  };
+
   const reviewManufacturerRequest = async (application, nextStatus) => {
     setUpdatingId(application.id);
     setError("");
@@ -142,6 +321,45 @@ const DistributorApplications = ({ token }) => {
       toast.error(msg);
     } finally {
       setUpdatingId("");
+    }
+  };
+
+  const toggleCoveragePair = (province, district) => {
+    const key = `${province}|${district}`;
+    setSelectedCoveragePairs((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const saveCoverage = async () => {
+    if (!selectedCoverageDistributorId) {
+      toast.error("Select an active distributor first.");
+      return;
+    }
+    setCoverageSaving(true);
+    try {
+      const locations = [...selectedCoveragePairs].map((key) => {
+        const [province, district] = key.split("|");
+        return { province, district };
+      });
+      const response = await axios.put(
+        `${backendUrl}/api/admin/distributor-applications/${selectedCoverageDistributorId}/coverage`,
+        { locations },
+        { headers: { token } },
+      );
+      setCoverageDistributors((current) => current.map((distributor) =>
+        distributor.id === selectedCoverageDistributorId
+          ? { ...distributor, locations: response.data.locations || [] }
+          : distributor
+      ));
+      toast.success("Distributor service-area coverage saved.");
+    } catch (requestError) {
+      toast.error(requestError.response?.data?.message || "Distributor coverage could not be saved.");
+    } finally {
+      setCoverageSaving(false);
     }
   };
 
@@ -208,6 +426,14 @@ const DistributorApplications = ({ token }) => {
           >
             Manufacturer requests
           </button>
+          {canEditCoverage && (
+            <button
+              onClick={() => setActiveTab("coverage")}
+              className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "coverage" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
+            >
+              Service-area coverage
+            </button>
+          )}
           <button
             onClick={() => setActiveTab("rates")}
             className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "rates" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
@@ -282,6 +508,9 @@ const DistributorApplications = ({ token }) => {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        {canEditCoverage && (
+                          <button onClick={() => editDistributor(application)} className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">Edit</button>
+                        )}
                         {application.status === "PENDING_APPROVAL" && (
                           <>
                             <button disabled={updatingId === application.id} onClick={() => reviewApplication(application, "ACTIVE")} className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 shadow-sm transition disabled:opacity-50">Approve</button>
@@ -383,6 +612,102 @@ const DistributorApplications = ({ token }) => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {activeTab === "coverage" && canEditCoverage && (
+        <div className="space-y-5 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+            <MapPinned className="h-5 w-5" />
+            Distributor service-area coverage
+          </h2>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-64 flex-1">
+              <label htmlFor="coverage-distributor" className="mb-1 block text-sm font-semibold text-slate-700">
+                Active distributor
+              </label>
+              <select
+                id="coverage-distributor"
+                value={selectedCoverageDistributorId}
+                onChange={(event) => setSelectedCoverageDistributorId(event.target.value)}
+                disabled={coverageLoading || coverageDistributors.length === 0}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                {coverageDistributors.length === 0 && <option value="">No active distributors</option>}
+                {coverageDistributors.map((distributor) => (
+                  <option key={distributor.id} value={distributor.id}>
+                    {distributor.name}{distributor.city ? ` — ${distributor.city}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-56 flex-1">
+              <label htmlFor="coverage-province" className="mb-1 block text-sm font-semibold text-slate-700">
+                Province
+              </label>
+              <select
+                id="coverage-province"
+                value={selectedCoverageProvince}
+                onChange={(event) => setSelectedCoverageProvince(event.target.value)}
+                disabled={coverageLoading}
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Choose a province</option>
+                {coverageAreas.filter((area) => area.type === "PROVINCE").map((province) => (
+                  <option key={province.name} value={province.name}>{province.name}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              onClick={saveCoverage}
+              disabled={coverageLoading || coverageSaving || !selectedCoverageDistributorId}
+              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" />
+              {coverageSaving ? "Saving..." : "Save coverage"}
+            </button>
+          </div>
+
+          <p className="text-sm text-slate-500">
+            Select the exact districts this distributor serves. Checkout allocation also requires the distributor to have every ordered variant in available ledger stock.
+          </p>
+
+          {coverageLoading ? (
+            <p className="py-8 text-center text-sm text-slate-500">Loading distributor coverage...</p>
+          ) : !selectedCoverageDistributorId ? (
+            <p className="rounded-lg bg-amber-50 p-4 text-sm text-amber-800">
+              Approve a distributor before configuring its service area.
+            </p>
+          ) : !selectedCoverageProvince ? (
+            <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
+              Choose a province to manage its covered districts.
+            </p>
+          ) : (
+            <div className="grid max-h-96 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3">
+              {(NEPAL_DISTRICTS_BY_PROVINCE[selectedCoverageProvince] || []).map((district) => {
+                const canonicalDistrict = district === "Nawalparasi West" ? "Parasi" : district;
+                const key = `${selectedCoverageProvince}|${canonicalDistrict}`;
+                const isSupportedLocation = coverageAreas.some(
+                  (area) => area.type === "DISTRICT" && area.name === canonicalDistrict && area.province === selectedCoverageProvince
+                );
+                if (!isSupportedLocation) return null;
+                return (
+                  <label key={key} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={selectedCoveragePairs.has(key)}
+                      onChange={() => toggleCoveragePair(selectedCoverageProvince, canonicalDistrict)}
+                    />
+                    {district}
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-xs text-slate-500">
+            {selectedCoveragePairs.size} district{selectedCoveragePairs.size === 1 ? "" : "s"} selected.
+          </p>
         </div>
       )}
 
@@ -632,6 +957,101 @@ const DistributorApplications = ({ token }) => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {editingDistributor && distributorForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <form onSubmit={saveDistributorProfile} className="max-h-[90vh] w-full max-w-3xl space-y-5 overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Edit distributor profile</h2>
+                <p className="mt-1 text-xs text-slate-500">Update the registration details and NCM pickup information.</p>
+              </div>
+              <button type="button" onClick={() => { setEditingDistributor(null); setDistributorForm(null); }} className="text-sm font-semibold text-slate-500 hover:text-slate-900">Close</button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-700">Business / Contact Name *
+                <input required value={distributorForm.name} onChange={(event) => setDistributorForm((current) => ({ ...current, name: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Login Email *
+                <input required type="email" value={distributorForm.email} onChange={(event) => setDistributorForm((current) => ({ ...current, email: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Official Contact Phone *
+                <input required value={distributorForm.phone} onChange={(event) => setDistributorForm((current) => ({ ...current, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Province *
+                <select required value={distributorForm.province} onChange={(event) => {
+                  const province = event.target.value;
+                  setDistributorForm((current) => ({ ...current, province, district: NEPAL_DISTRICTS_BY_PROVINCE[province]?.[0] || "", city: "", street: "" }));
+                }} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                  {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">District *
+                <select required value={distributorForm.district} onChange={(event) => setDistributorForm((current) => ({ ...current, district: event.target.value, city: "", street: "" }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                  {(NEPAL_DISTRICTS_BY_PROVINCE[distributorForm.province] || []).map((district) => <option key={district} value={district}>{district}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">NCM Town / Branch *
+                <select required value={distributorForm.city} onChange={(event) => setDistributorForm((current) => ({ ...current, city: event.target.value, ncmPickupBranch: event.target.value, street: "" }))} disabled={loadingDistributorBranches || distributorNcmBranches.length === 0} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100">
+                  {distributorForm.city && !distributorNcmBranches.includes(distributorForm.city) && <option value={distributorForm.city}>{distributorForm.city}</option>}
+                  {distributorNcmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                  {!distributorForm.city && <option value="">{loadingDistributorBranches ? "Loading branches..." : "Select NCM Branch"}</option>}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Street / Covered Area *
+                {distributorCoveredAreas.length > 0 ? (
+                  <select required value={distributorForm.street} onChange={(event) => setDistributorForm((current) => ({ ...current, street: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                    {distributorForm.street && !distributorCoveredAreas.includes(distributorForm.street) && <option value={distributorForm.street}>{distributorForm.street}</option>}
+                    {distributorCoveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                ) : (
+                  <input required value={distributorForm.street} onChange={(event) => setDistributorForm((current) => ({ ...current, street: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                )}
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Nearest Landmark / Unit Details *
+                <input required value={distributorForm.landmark} onChange={(event) => setDistributorForm((current) => ({ ...current, landmark: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Full Business / Warehouse Address
+                <input value={distributorForm.address} onChange={(event) => setDistributorForm((current) => ({ ...current, address: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Pickup Warehouse Address
+                <input value={distributorForm.pickupAddress} onChange={(event) => setDistributorForm((current) => ({ ...current, pickupAddress: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Pickup Contact Person
+                <input value={distributorForm.pickupContactName} onChange={(event) => setDistributorForm((current) => ({ ...current, pickupContactName: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Pickup Contact Phone
+                <input value={distributorForm.pickupContactPhone} onChange={(event) => setDistributorForm((current) => ({ ...current, pickupContactPhone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">NCM Pickup Branch Status
+                <select value={distributorForm.pickupBranchStatus} onChange={(event) => setDistributorForm((current) => ({ ...current, pickupBranchStatus: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                  <option value="UNVERIFIED">UNVERIFIED</option>
+                  <option value="VERIFIED">VERIFIED</option>
+                  <option value="REJECTED">REJECTED</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Pickup Availability Window
+                <input value={distributorForm.pickupWindow} onChange={(event) => setDistributorForm((current) => ({ ...current, pickupWindow: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Contract Start Date
+                <input type="date" value={distributorForm.contractStartDate} onChange={(event) => setDistributorForm((current) => ({ ...current, contractStartDate: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Contract Expiry Date
+                <input type="date" value={distributorForm.contractExpiryDate} onChange={(event) => setDistributorForm((current) => ({ ...current, contractExpiryDate: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </label>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">Return &amp; Defect Handling Instructions
+              <textarea rows={3} value={distributorForm.returnInstructions} onChange={(event) => setDistributorForm((current) => ({ ...current, returnInstructions: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" onClick={() => { setEditingDistributor(null); setDistributorForm(null); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
+              <button type="submit" disabled={savingDistributorProfile} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                {savingDistributorProfile ? "Saving..." : "Save profile"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </section>

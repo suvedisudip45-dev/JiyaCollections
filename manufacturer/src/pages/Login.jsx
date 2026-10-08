@@ -45,6 +45,26 @@ const defaultRegisterForm = {
   contractExpiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
 };
 
+const defaultDistributorForm = {
+  name: "",
+  email: "",
+  password: "",
+  phone: "",
+  province: "Bagmati Province",
+  district: "Kathmandu",
+  city: "",
+  street: "",
+  landmark: "",
+  address: "",
+  pickupAddress: "",
+  pickupContactName: "",
+  pickupContactPhone: "",
+  pickupWindow: "",
+  returnInstructions: "",
+  contractStartDate: new Date().toISOString().split("T")[0],
+  contractExpiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+};
+
 const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 
 const Login = () => {
@@ -62,19 +82,15 @@ const Login = () => {
   const [showRegister, setShowRegister] = useState(false);
   const [registrationType, setRegistrationType] = useState("MANUFACTURER");
   const [loginPortal, setLoginPortal] = useState("MANUFACTURER");
-  const [distributorForm, setDistributorForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    phone: "",
-    city: "",
-    address: "",
-  });
+  const [distributorForm, setDistributorForm] = useState(defaultDistributorForm);
   const [registerForm, setRegisterForm] = useState(defaultRegisterForm);
   const [registerLoading, setRegisterLoading] = useState(false);
   const [ncmBranches, setNcmBranches] = useState([]);
   const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+  const [distributorNcmBranches, setDistributorNcmBranches] = useState([]);
+  const [distributorCoveredAreas, setDistributorCoveredAreas] = useState([]);
+  const [loadingDistributorBranches, setLoadingDistributorBranches] = useState(false);
 
   useEffect(() => {
     const updateClock = () => setClock(Date.now());
@@ -147,6 +163,65 @@ const Login = () => {
 
     fetchCoveredAreas();
   }, [backendUrl, registerForm.city, registerForm.district, registerForm.province]);
+
+  useEffect(() => {
+    const fetchDistributorBranches = async () => {
+      if (!distributorForm.province || !distributorForm.district) {
+        setDistributorNcmBranches([]);
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      setLoadingDistributorBranches(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: { province: distributorForm.province, district: distributorForm.district },
+        });
+        const branches = response.data.success ? response.data.branches || [] : [];
+        setDistributorNcmBranches(branches);
+        if (branches.length > 0 && !branches.includes(distributorForm.city)) {
+          setDistributorForm((prev) => ({ ...prev, city: branches[0], street: "" }));
+        } else if (branches.length === 0) {
+          setDistributorForm((prev) => ({ ...prev, city: "", street: "" }));
+        }
+      } catch (error) {
+        setDistributorNcmBranches([]);
+        console.error("Failed to load distributor NCM branches", error);
+      } finally {
+        setLoadingDistributorBranches(false);
+      }
+    };
+
+    fetchDistributorBranches();
+  }, [backendUrl, distributorForm.province, distributorForm.district]);
+
+  useEffect(() => {
+    const fetchDistributorCoveredAreas = async () => {
+      if (!distributorForm.city) {
+        setDistributorCoveredAreas([]);
+        return;
+      }
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
+          params: {
+            branch: distributorForm.city,
+            district: distributorForm.district,
+            province: distributorForm.province,
+          },
+        });
+        const areas = response.data.success ? response.data.coveredAreas || [] : [];
+        setDistributorCoveredAreas(areas);
+        if (areas.length > 0 && !areas.includes(distributorForm.street)) {
+          setDistributorForm((prev) => ({ ...prev, street: areas[0] }));
+        } else if (areas.length === 0) {
+          setDistributorForm((prev) => ({ ...prev, street: "" }));
+        }
+      } catch (error) {
+        setDistributorCoveredAreas([]);
+      }
+    };
+
+    fetchDistributorCoveredAreas();
+  }, [backendUrl, distributorForm.city, distributorForm.district, distributorForm.province]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -301,8 +376,15 @@ const Login = () => {
 
   const handleDistributorRegister = async (e) => {
     e.preventDefault();
-    if (!distributorForm.name.trim() || !distributorForm.city.trim()) {
-      toast.error("Please enter a business name and city.");
+    if (
+      !distributorForm.name.trim() ||
+      !distributorForm.province ||
+      !distributorForm.district ||
+      !distributorForm.city ||
+      !distributorForm.street ||
+      !distributorForm.landmark.trim()
+    ) {
+      toast.error("Please complete the business location, NCM branch, covered area, and landmark.");
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(distributorForm.email.trim())) {
@@ -325,10 +407,24 @@ const Login = () => {
         name: distributorForm.name.trim(),
         email: distributorForm.email.trim().toLowerCase(),
         phone: distributorForm.phone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+        pickupContactPhone: distributorForm.pickupContactPhone.replace(/[^0-9]/g, "").replace(/^0+/, "").replace(/^977/, ""),
+        ncmPickupBranch: distributorForm.city,
+        address: distributorForm.address || [
+          distributorForm.street,
+          distributorForm.landmark,
+          distributorForm.city,
+          distributorForm.district,
+          distributorForm.province,
+        ].filter(Boolean).join(", "),
+        pickupAddress: distributorForm.pickupAddress || [
+          distributorForm.street,
+          distributorForm.landmark,
+          distributorForm.city,
+        ].filter(Boolean).join(", "),
       });
       toast.success(response.data.message || "Distributor application submitted.");
       setShowRegister(false);
-      setDistributorForm({ name: "", email: "", password: "", phone: "", city: "", address: "" });
+      setDistributorForm(defaultDistributorForm);
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to submit distributor application.");
     } finally {
@@ -338,47 +434,107 @@ const Login = () => {
 
   if (showRegister && registrationType === "DISTRIBUTOR") {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100">
-        <form onSubmit={handleDistributorRegister} className="w-full max-w-xl space-y-5 rounded-3xl border border-slate-800 bg-slate-900 p-6 sm:p-9">
-          <div className="flex items-start justify-between gap-4">
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 sm:p-6 text-slate-100">
+        <div className="w-full max-w-4xl rounded-3xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-10">
+          <div className="mb-8 flex items-start justify-between gap-4 border-b border-slate-800 pb-6">
             <div>
               <h2 className="text-2xl font-black text-white">Register as Distributor</h2>
-              <p className="mt-1 text-sm text-slate-400">Applications require admin approval before portal access.</p>
+              <p className="mt-1 text-sm text-slate-400">Complete the same business, Nepal location, NCM and pickup details used for manufacturer registration. Admin approval is required before portal access.</p>
             </div>
             <button type="button" onClick={() => setShowRegister(false)} className="text-sm text-slate-400 hover:text-white">Back to login</button>
           </div>
-          <label className="block text-xs font-semibold text-slate-300">
-            Business / Contact Name *
-            <input required value={distributorForm.name} onChange={(event) => setDistributorForm((prev) => ({ ...prev, name: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-          </label>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block text-xs font-semibold text-slate-300">
-              Email *
-              <input required type="email" value={distributorForm.email} onChange={(event) => setDistributorForm((prev) => ({ ...prev, email: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-            </label>
-            <label className="block text-xs font-semibold text-slate-300">
-              Mobile *
-              <input required type="tel" value={distributorForm.phone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-            </label>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block text-xs font-semibold text-slate-300">
-              City *
-              <input required value={distributorForm.city} onChange={(event) => setDistributorForm((prev) => ({ ...prev, city: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-            </label>
-            <label className="block text-xs font-semibold text-slate-300">
-              Password *
-              <input required type="password" minLength={8} value={distributorForm.password} onChange={(event) => setDistributorForm((prev) => ({ ...prev, password: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-            </label>
-          </div>
-          <label className="block text-xs font-semibold text-slate-300">
-            Address
-            <textarea rows={3} value={distributorForm.address} onChange={(event) => setDistributorForm((prev) => ({ ...prev, address: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
-          </label>
-          <button type="submit" disabled={registerLoading} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
-            {registerLoading ? "Submitting..." : "Submit distributor application"}
-          </button>
-        </form>
+          <form onSubmit={handleDistributorRegister} className="space-y-6 text-sm">
+            <section>
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">1. Business &amp; Authentication Credentials</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block text-xs font-semibold text-slate-300">Business / Contact Name *
+                  <input required value={distributorForm.name} onChange={(event) => setDistributorForm((prev) => ({ ...prev, name: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Official Contact Phone *
+                  <input required type="tel" value={distributorForm.phone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Login Email *
+                  <input required type="email" value={distributorForm.email} onChange={(event) => setDistributorForm((prev) => ({ ...prev, email: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Secure Password *
+                  <input required type="password" minLength={8} value={distributorForm.password} onChange={(event) => setDistributorForm((prev) => ({ ...prev, password: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+            </section>
+
+            <section className="border-t border-slate-800 pt-5">
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">2. Location &amp; Nepal Can Move (NCM) Logistics Integration</h3>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="block text-xs font-semibold text-slate-300">Province *
+                  <select required value={distributorForm.province} onChange={(event) => {
+                    const province = event.target.value;
+                    setDistributorForm((prev) => ({ ...prev, province, district: NEPAL_DISTRICTS_BY_PROVINCE[province]?.[0] || "", city: "", street: "" }));
+                  }} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
+                    {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">District *
+                  <select required value={distributorForm.district} onChange={(event) => setDistributorForm((prev) => ({ ...prev, district: event.target.value, city: "", street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
+                    {(NEPAL_DISTRICTS_BY_PROVINCE[distributorForm.province] || []).map((district) => <option key={district} value={district}>{district}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">NCM Town / Branch *
+                  <select required value={distributorForm.city} disabled={loadingDistributorBranches || distributorNcmBranches.length === 0} onChange={(event) => setDistributorForm((prev) => ({ ...prev, city: event.target.value, street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white disabled:opacity-50">
+                    <option value="">{loadingDistributorBranches ? "Loading branches..." : "Select NCM Branch"}</option>
+                    {distributorNcmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <label className="block text-xs font-semibold text-slate-300">Street / Covered Area *
+                  <select required value={distributorForm.street} disabled={!distributorForm.city || distributorCoveredAreas.length === 0} onChange={(event) => setDistributorForm((prev) => ({ ...prev, street: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white disabled:opacity-50">
+                    <option value="">{distributorForm.city && distributorCoveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select Covered Area"}</option>
+                    {distributorCoveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Nearest Landmark / Unit Details *
+                  <input required value={distributorForm.landmark} onChange={(event) => setDistributorForm((prev) => ({ ...prev, landmark: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Full Business / Warehouse Address
+                  <input value={distributorForm.address} onChange={(event) => setDistributorForm((prev) => ({ ...prev, address: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Warehouse Address (For Courier)
+                  <input value={distributorForm.pickupAddress} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupAddress: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+            </section>
+
+            <section className="border-t border-slate-800 pt-5">
+              <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">3. Dispatch &amp; Handover Details</h3>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="block text-xs font-semibold text-slate-300">Pickup Contact Person
+                  <input value={distributorForm.pickupContactName} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupContactName: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Contact Phone
+                  <input type="tel" value={distributorForm.pickupContactPhone} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupContactPhone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+                <label className="block text-xs font-semibold text-slate-300">Pickup Availability Window
+                  <input value={distributorForm.pickupWindow} onChange={(event) => setDistributorForm((prev) => ({ ...prev, pickupWindow: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+                </label>
+              </div>
+              <label className="mt-4 block text-xs font-semibold text-slate-300">Return &amp; Defect Handling Instructions
+                <textarea rows={2} value={distributorForm.returnInstructions} onChange={(event) => setDistributorForm((prev) => ({ ...prev, returnInstructions: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white" />
+              </label>
+            </section>
+
+            <section className="grid gap-4 border-t border-slate-800 pt-5 sm:grid-cols-2">
+              <label className="block text-xs font-semibold text-slate-300">Contract Start Date
+                <input type="date" value={distributorForm.contractStartDate} onChange={(event) => setDistributorForm((prev) => ({ ...prev, contractStartDate: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+              </label>
+              <label className="block text-xs font-semibold text-slate-300">Contract Expiry Date
+                <input type="date" value={distributorForm.contractExpiryDate} onChange={(event) => setDistributorForm((prev) => ({ ...prev, contractExpiryDate: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
+              </label>
+            </section>
+            <button type="submit" disabled={registerLoading} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
+              {registerLoading ? "Submitting..." : "Submit distributor application"}
+            </button>
+          </form>
+        </div>
       </div>
     );
   }

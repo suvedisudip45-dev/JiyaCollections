@@ -743,7 +743,11 @@ const PlaceOrder = () => {
             if (getProductsData) {
               await getProductsData();
             }
-            toast.success("Order Placed Successfully!");
+            if (response.data.allocation?.status === "PENDING_ASSIGNMENT") {
+              toast.warning(response.data.message || "Order placed, but distributor assignment is pending.");
+            } else {
+              toast.success(response.data.message || "Order placed and assigned successfully.");
+            }
             navigate("/orders");
           } else {
             toast.error(response.data.message);

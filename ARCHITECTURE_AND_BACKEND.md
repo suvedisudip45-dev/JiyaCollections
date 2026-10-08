@@ -82,6 +82,9 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `GET /api/product/list`
 - `POST /api/order/place`
 - `POST /api/order/:orderId/cancel`
+- `GET /api/admin/distributor-applications/coverage` and `PUT /api/admin/distributor-applications/:id/coverage`
+- `PUT /api/admin/distributor-applications/:id/profile` updates the registration profile and linked login email/phone transactionally.
+- `GET /api/order-assignment/admin/unassigned` lists pending customer orders for admin retry through `POST /api/order-assignment/assign`
 - `POST /api/returns/exchange/customer`
 - `GET /api/returns/exchange/admin` (admin exchange list; serializes the related order's `BigInt` date as a decimal string for JSON clients)
 - `POST /api/returns/customer/request` and `GET /api/returns/customer/requests`
@@ -176,11 +179,13 @@ Checkout accepts a single explicit reward choice (`CARD`, `LOYALTY`, or `NONE`).
 - The repo explicitly warns in `backend/notifications/README.md` not to place real secrets in `.env.example` or frontend config.
 - Some notification and incoming-SMS flows are disabled by default and intentionally require manual validation.
 
-### Location-aware pricing and assignment engine
+### Location-aware pricing and distributor assignment
 
-The backend has a server-side local pricing layer that canonicalizes Nepal province/district names, evaluates `ManufacturerLocation` and `LocationProductDiscount` rules, and resolves the effective discount/assigned manufacturer before an order is finalized.
+Pricing and fulfillment are separate decisions. The pricing layer canonicalizes Nepal province/district names and evaluates `ManufacturerLocation` and `LocationProductDiscount` rules to choose an applicable local discount. It does not assign customer orders to manufacturers.
 
-This is intentionally authoritative: the storefront may request a quote, but the backend decides whether a qualifying local manufacturer exists, whether product discount precedence applies, and whether the selected manufacturer still has sufficient stock for the order. The order row stores the chosen manufacturer and a `locationPricingSnapshot` so the checkout remains locked to the actual server-side decision rather than stale client pricing.
+After creating a storefront or admin order, the order API waits for the distributor allocation engine. It considers active distributors with sufficient platform-owned distributor-ledger stock for every requested product variant and quantity, then applies this strict priority: exact active district service coverage; a hub registered in the customer's province or actively covering another district there; any other stocked active hub, ranked by customer-review average and review count. With no reviews yet, nationwide candidates use a stable ID tie-break so allocation can still proceed. Stock reservation and `OrderAssignment` creation are transactional; there is no manufacturer fallback. If allocation fails, the API returns per-variant required and available quantities for active distributors.
+
+Admins configure service districts through the Service-area coverage tab in Distributor Management. Saving coverage replaces that distributor's district list and records the change in the system audit outbox. Customers may submit or edit one distributor rating per delivered order through `POST /api/review/distributor/:orderId`; the endpoint verifies order ownership, delivery, and the assigned hub, then recalculates the distributor's aggregate rating inside the transaction.
 
 A failed NCM courier-booking request must remain in a failed state (`submission_failed`, `failed_to_book_courier`, or equivalent) and must never be converted to a success label by the UI. The backend is the only component allowed to transition the delivery state to a successful carrier booking state.
 

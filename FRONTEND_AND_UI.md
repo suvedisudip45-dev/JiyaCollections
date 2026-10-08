@@ -140,6 +140,8 @@ The application exposes modules such as:
 - `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
 - the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
 - `/distributor-applications` separates regular distributor sign-up applications from manufacturer requests for distributor access; manufacturer requests are listed from `/api/admin/distributor-applications` and approved or rejected through its review endpoint
+- Distributor sign-up uses the manufacturer registration fields for business/contact credentials, province/district, NCM branch and covered area, address, pickup/return details, and contract dates. Admins can edit those stored registration details from each application row; service-district coverage remains editable separately.
+- Distributor Management includes a Service-area coverage tab for assigning active distributors province/district coverage. Allocation prefers stocked exact-district hubs, then stocked same-province hubs, then review-ranked nationwide hubs. The customer Orders page lets customers rate the assigned hub after delivery; order allocation still requires every ordered variant and quantity to be available in distributor-ledger stock.
 
 ## 4. Manufacturer and Distributor Portal (`manufacturer/`)
 
@@ -197,7 +199,7 @@ This portal is clearly structured around the backend `marketing-cards` router an
 3. Checkout uses backend order creation plus shipping/config lookup.
 4. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account). Each card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Own Store code entries and QR scans are tracked, and eligible cards can be claimed on demand.
 5. Checkout offers a mutually exclusive selection between one claimed card reward, the active VIP loyalty reward, or no reward.
-6. `Orders` page reads customer order history and supports cancellation, return requests, and exchange requests with replacement-variant selection.
+6. `Orders` page reads customer order history and supports cancellation, return requests, exchange requests with replacement-variant selection, and verified distributor-hub reviews after delivery.
 7. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
 8. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 

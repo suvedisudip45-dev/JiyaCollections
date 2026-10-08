@@ -19,7 +19,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Domain | Representative models | Purpose |
 | --- | --- | --- |
 | Authentication | `AuthAccount`, `AuthSession`, `Role`, `Permission`, `OtpChallenge`, `AdminTwoFactorChallenge`, `AuthAuditLog` | identity, sessions, RBAC, MFA, audit |
-| Users & profiles | `User`, `Admin`, `Manufacturer`, `MarketingPartner` | customer and portal profiles |
+| Users & profiles | `User`, `Admin`, `Manufacturer`, `Distributor`, `MarketingPartner` | customer and portal profiles |
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
@@ -50,6 +50,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | `User` | `name`, `email`, `phone`, `addresses`, `cartData`, `loyaltyTier` | Customer profile and shopping state |
 | `Admin` | `accountId`, `name`, `email`, `phone`, `role` | Admin account profile |
 | `Manufacturer` | `name`, `city`, `qualityRating`, `pickupBranch`, `commissionStatus`, `contractStatus` | manufacturing network partner |
+| `Distributor` | `name`, linked account email/phone, `province`, `district`, NCM branch/covered-area and pickup details, contract dates, `status`, `qualityRating`, `ratingCount` | distributor application and operational hub profile with customer-review aggregate |
 | `MarketingPartner` | `code`, `name`, `status`, `email`, `passwordHash` | partner for marketing card campaigns |
 
 ### 3.3 Catalog and merchandising
@@ -62,6 +63,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | `Color` | `name`, `nepaliName` | color catalog |
 | `ComboBundle` | `name`, `slug`, `sellingPrice`, `discountPercentage`, `status` | curated product bundles |
 | `Review` | `productId`, `userId`, `rating`, `comment`, `verified` | product reviews |
+| `DistributorReview` | `orderId`, `userId`, `distributorId`, `rating`, `comment` | one verified hub review per delivered customer order; updates the distributor's aggregate rating |
 | `SpecialOffer` | `title`, `startDate`, `endDate`, `discount`, `productIds` | time-bound offers |
 
 ### 3.4 Orders, fulfillment, and delivery
@@ -69,7 +71,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; direct distributor orders identify their hub through `distributorId`; admin exchange-list API returns `date` as a decimal string for JSON safety |
-| `OrderAssignment` | `orderId`, `manufacturerId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | allocation between order and manufacturer |
+| `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; automatic allocation targets distributors |
 | `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
@@ -223,7 +225,7 @@ Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Or
 - An `Order` can be associated with `DeliveryOrder`, `LetterDelivery`, and `MarketingCardOrder` records.
 - `ManufacturerInventory` is keyed by `(manufacturerId, productId)` and tracks both physical stock and reserved stock.
 - Manufacturer portal stock adjustments write one `ManufacturerInventoryMovement` per changed variant in the same transaction as the inventory update. The movement captures prior/current quantities, signed delta, stock-in/out direction, reason, optional note, and actor; the manufacturer history endpoint is scoped to the authenticated manufacturer.
-- `LocationMapping`, `ManufacturerLocation`, and `LocationProductDiscount` create the authoritative local-discount and assignment map for Nepal geography.
+- `LocationMapping` supplies canonical Nepal geography; `ManufacturerLocation` and `LocationProductDiscount` drive local discount selection, while `DistributorLocation` stores service districts used by prioritized customer-order allocation. `DistributorReview` is linked to one delivered `Order` and contributes to its distributor's `qualityRating` and `ratingCount`.
 - `MarketingCampaign` → `MarketingCardBatch` → `MarketingCard` forms the card issuance chain.
 - `OrderExchangeRequest` is the main exchange transaction record and is accompanied by an audit event log (`OrderExchangeEvent`).
 - System-level audit events complement existing domain ledgers and access-management logs; do not replace those records or write directly to the audit log from business request paths. Use the shared audit service so event enqueueing participates in the business transaction.

@@ -75,9 +75,18 @@ are not a promise that every role has every listed grant by default.
   permission check.
 - `/api/admin/access/*` additionally requires the `ADMIN` role and a specific
   access-management permission.
-- Distributor registration creates an application; admin review controls
-  activation. Status values include `PENDING_APPROVAL`, `ACTIVE`, `SUSPENDED`,
-  and `REJECTED`.
+- Distributor registration creates an application with the same business,
+  province/district, NCM branch and covered area, address, pickup contact,
+  return-instruction, and contract-date fields as manufacturer registration.
+  The selected base district is added as the distributor's initial exact
+  `DistributorLocation`; admins can manage additional service districts in the
+  Service-area coverage tab. Admin review controls activation. Status values
+  include `PENDING_APPROVAL`, `ACTIVE`, `SUSPENDED`, and `REJECTED`.
+- Admins can edit the distributor registration profile from Distributor
+  Management. `PUT /api/admin/distributor-applications/:id/profile` updates the
+  account email/phone and stored location, NCM, pickup, and contract fields in
+one audited transaction; changed contact values are marked unverified, and
+service-area districts remain managed separately.
 - Manufacturer registration and admin management support contracts, availability,
   pickup branch details, commission proposals, and quality/performance data.
 - A manufacturer can apply for distributor access through
@@ -90,11 +99,31 @@ are not a promise that every role has every listed grant by default.
   A dual-role account continues to log in with MANUFACTURER as its primary
   workspace, while authenticated requests carry both active workspace roles
   and profiles.
-- New automatic customer-order allocation targets approved distributors with
-  an active `DistributorLocation` matching the customer's canonical province
-  and district. A candidate must have every requested SKU variant available
-  in its distributor inventory balances. The assignment and stock reservation
-  are committed transactionally; no manufacturer is used as a fallback hub.
+- New automatic customer-order allocation requires an active distributor with
+  every requested SKU variant available in its distributor inventory balances.
+  Candidates are prioritized by exact district service coverage, then a hub
+  registered in or actively covering another district in the same province,
+  then customer-review rating across
+  the country. Higher average rating wins; rating count breaks ties. Unrated
+  nationwide hubs remain eligible and are ordered deterministically. Assignment
+  and stock reservation are committed transactionally; no manufacturer is a
+  fallback hub.
+- Configure a distributor's exact service districts in the
+  **Service-area coverage** tab under Distributor Management. The
+  `GET /api/admin/distributor-applications/coverage` endpoint returns active
+  distributors and canonical Nepal province/district options; the
+  `PUT /api/admin/distributor-applications/:id/coverage` endpoint replaces a
+  distributor's coverage list after server-side geography validation. Coverage
+  edits are audited. Storefront and admin order creation wait for the automatic
+  allocation attempt and return an explicit pending reason when no active hub
+  has the required inventory. Existing pending orders can be retried from
+  **Order Allocation & Routing Engine** after inventory is fixed. Retry
+  responses include each affected product variant's required and currently
+  available quantity.
+- Customers can submit or edit one 1-5 star review for each delivered
+  distributor-fulfilled order from the storefront Orders page. The review API
+  verifies customer ownership and delivery, then updates the distributor's
+  aggregate rating used for nationwide fallback routing.
 
 ## 3. Core database tables and schema
 

@@ -7,6 +7,7 @@ import {
   rejectOrder,
   updateAssignmentStatus,
   getAllAssignments,
+  getUnassignedOrders,
   manualAssign,
 } from "../controllers/orderAssignmentController.js";
 import {
@@ -22,6 +23,12 @@ const orderAssignmentRouter = express.Router();
 
 // Internal / Admin
 orderAssignmentRouter.post("/assign", authenticate, authorize("assignment:create"), assignOrder);
+orderAssignmentRouter.get(
+  "/admin/unassigned",
+  authenticate,
+  authorize("assignment:admin_list"),
+  getUnassignedOrders,
+);
 orderAssignmentRouter.get("/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
 orderAssignmentRouter.get("/admin/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
 orderAssignmentRouter.post("/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);

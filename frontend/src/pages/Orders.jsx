@@ -28,6 +28,7 @@ import {
   Box,
   Layers,
   Sparkles,
+  Star,
 } from "lucide-react";
 
 const toCustomerDisplayItems = (items = []) => {
@@ -105,6 +106,9 @@ const Orders = () => {
   const [exchangeRequests, setExchangeRequests] = useState([]);
   const [returnRequests, setReturnRequests] = useState([]);
   const [cancelOrderTarget, setCancelOrderTarget] = useState(null);
+  const [reviewOrderTarget, setReviewOrderTarget] = useState(null);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [exchangeOrderTarget, setExchangeOrderTarget] = useState(null);
   const [exchangeReasonCode, setExchangeReasonCode] = useState("SIZE_OR_FIT");
@@ -235,6 +239,28 @@ const Orders = () => {
       await loadOrderData(true);
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "Unable to cancel this order");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const submitDistributorReview = async (event) => {
+    event.preventDefault();
+    if (!reviewOrderTarget || actionLoading) return;
+    setActionLoading(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/review/distributor/${reviewOrderTarget.id}`,
+        { rating: reviewRating, comment: reviewComment },
+        { headers: { token } }
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Review submission failed");
+      toast.success(response.data.message || "Hub review saved");
+      setReviewOrderTarget(null);
+      setReviewComment("");
+      await loadOrderData(true);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to save your review");
     } finally {
       setActionLoading(false);
     }
@@ -686,6 +712,7 @@ const Orders = () => {
               const activeReturn = orderReturns.find((request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus));
               const canRequestExchange = isDeliveredOrder(order) && !activeExchange;
               const canRequestReturn = isDeliveredOrder(order) && !activeReturn;
+              const canReviewHub = isDeliveredOrder(order) && Boolean(order.assignedDistributorId);
 
               return (
                 <div
@@ -940,6 +967,22 @@ const Orders = () => {
                           Loyalty Saved: -{currency}{order.loyaltyDiscount}
                         </span>
                       )}
+                      {canReviewHub && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReviewOrderTarget(order);
+                            setReviewRating(order.distributorReview?.rating || 5);
+                            setReviewComment(order.distributorReview?.comment || "");
+                          }}
+                          className="text-amber-700 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Star className="w-3.5 h-3.5" />
+                          {order.distributorReview
+                            ? `Rated ${order.distributorReview.rating}/5 · Edit review`
+                            : "Rate your hub"}
+                        </button>
+                      )}
                       <button
                         onClick={() => handleOpenTracking(order)}
                         className="text-slate-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
@@ -975,6 +1018,46 @@ const Orders = () => {
               <textarea required minLength={3} maxLength={1000} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} rows={3} className="mt-1 w-full border border-slate-300 rounded-lg p-3 font-normal" placeholder="Why are you cancelling this order?" />
             </label>
             <div className="flex gap-2"><button type="button" disabled={actionLoading} onClick={() => setCancelOrderTarget(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-xs font-bold">Keep order</button><button type="submit" disabled={actionLoading} className="flex-1 py-2.5 bg-rose-700 text-white rounded-lg text-xs font-bold disabled:opacity-50">{actionLoading ? "Cancelling..." : "Confirm cancellation"}</button></div>
+          </form>
+        </div>
+      )}
+
+      {reviewOrderTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setReviewOrderTarget(null)}>
+          <form onSubmit={submitDistributorReview} onClick={(event) => event.stopPropagation()} className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Rate your delivery hub</h2>
+                <p className="text-xs text-slate-500 mt-1">Order #{reviewOrderTarget.id.slice(0, 8).toUpperCase()}</p>
+              </div>
+              <button type="button" disabled={actionLoading} onClick={() => setReviewOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close review form"><X className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-600">Your verified order rating helps choose a reliable hub when no stocked hub serves the customer’s province.</p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-2">Your rating</label>
+              <div className="flex gap-2" role="radiogroup" aria-label="Hub rating">
+                {[1, 2, 3, 4, 5].map((rating) => (
+                  <button
+                    key={rating}
+                    type="button"
+                    role="radio"
+                    aria-checked={reviewRating === rating}
+                    aria-label={`${rating} star${rating === 1 ? "" : "s"}`}
+                    onClick={() => setReviewRating(rating)}
+                    className={`p-1 rounded focus:outline-none focus:ring-2 focus:ring-amber-400 ${reviewRating >= rating ? "text-amber-500" : "text-slate-300"}`}
+                  >
+                    <Star className="w-7 h-7 fill-current" />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">Review (optional)
+              <textarea maxLength={2000} value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} rows={4} className="mt-1 w-full border border-slate-300 rounded-lg p-3 font-normal" placeholder="Share how your hub handled the order." />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" disabled={actionLoading} onClick={() => setReviewOrderTarget(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-xs font-bold">Cancel</button>
+              <button type="submit" disabled={actionLoading} className="flex-1 py-2.5 bg-slate-900 text-white rounded-lg text-xs font-bold disabled:opacity-50">{actionLoading ? "Saving..." : "Save review"}</button>
+            </div>
           </form>
         </div>
       )}

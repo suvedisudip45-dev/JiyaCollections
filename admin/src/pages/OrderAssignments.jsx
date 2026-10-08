@@ -1,12 +1,18 @@
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { Package, RefreshCw, Search } from "lucide-react";
+import { Package, RefreshCw, RotateCw, Search } from "lucide-react";
 import { backendUrl, currency } from "../App";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const OrderAssignments = ({ token }) => {
+  const { can } = usePermissions();
+  const canRetryAllocation = can("assignment:create");
   const [assignments, setAssignments] = useState([]);
+  const [unassignedOrders, setUnassignedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [retryingOrderId, setRetryingOrderId] = useState("");
+  const [allocationFailures, setAllocationFailures] = useState({});
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
@@ -14,12 +20,16 @@ const OrderAssignments = ({ token }) => {
     if (!token) return;
     setLoading(true);
     try {
-      const assignRes = await axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
-        headers: { token },
-      });
+      const [assignRes, unassignedRes] = await Promise.all([
+        axios.get(`${backendUrl}/api/order-assignment/admin/all`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/order-assignment/admin/unassigned`, { headers: { token } }),
+      ]);
 
       if (assignRes.data.success) {
         setAssignments(assignRes.data.assignments || []);
+      }
+      if (unassignedRes.data.success) {
+        setUnassignedOrders(unassignedRes.data.orders || []);
       }
     } catch {
       toast.error("Failed to load order assignments");
@@ -27,6 +37,44 @@ const OrderAssignments = ({ token }) => {
       setLoading(false);
     }
   }, [token]);
+
+  const retryAllocation = async (orderId) => {
+    setRetryingOrderId(orderId);
+    setAllocationFailures((current) => {
+      const next = { ...current };
+      delete next[orderId];
+      return next;
+    });
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/order-assignment/assign`,
+        { orderId },
+        { headers: { token } },
+      );
+      if (!response.data.success) {
+        setAllocationFailures((current) => ({
+          ...current,
+          [orderId]: {
+            message: response.data.message || "This order could not be assigned.",
+            stockShortages: response.data.stockShortages || [],
+          },
+        }));
+        toast.error(response.data.message || "This order could not be assigned.");
+        return;
+      }
+      setAllocationFailures((current) => {
+        const next = { ...current };
+        delete next[orderId];
+        return next;
+      });
+      toast.success(`Order assigned to ${response.data.distributor || "a distributor"}.`);
+      await fetchAssignmentsData();
+    } catch (requestError) {
+      toast.error(requestError.response?.data?.message || "This order could not be assigned.");
+    } finally {
+      setRetryingOrderId("");
+    }
+  };
 
   useEffect(() => {
     fetchAssignmentsData();
@@ -103,6 +151,68 @@ const OrderAssignments = ({ token }) => {
           ))}
         </div>
       </div>
+
+      <section className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-slate-900">Orders awaiting distributor assignment</h2>
+            <p className="text-xs text-slate-600">Coverage sets routing priority, while available ledger stock is required. Retry after updating coverage or inventory.</p>
+          </div>
+          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
+            {unassignedOrders.length}
+          </span>
+        </div>
+        {loading ? (
+          <p className="py-3 text-center text-xs text-slate-500">Loading pending orders...</p>
+        ) : unassignedOrders.length === 0 ? (
+          <p className="rounded-lg bg-white/70 p-3 text-xs text-slate-500">No customer orders are currently waiting for allocation.</p>
+        ) : (
+          <div className="space-y-2">
+            {unassignedOrders.map((order) => (
+              <div key={order.id} className="rounded-lg bg-white p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-48">
+                    <p className="font-mono text-xs font-bold text-slate-900">#{order.id.slice(-8)}</p>
+                    <p className="text-xs text-slate-600">
+                      {[order.address?.district, order.address?.province || order.address?.state].filter(Boolean).join(", ") || "Destination not set"}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {order.items?.length || 0} line item{order.items?.length === 1 ? "" : "s"} · {currency}{Number(order.amount || 0).toLocaleString()} · {order.fulfillmentStatus || "pending"}
+                    </p>
+                  </div>
+                  {canRetryAllocation && (
+                    <button
+                      type="button"
+                      onClick={() => retryAllocation(order.id)}
+                      disabled={retryingOrderId === order.id}
+                      className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      <RotateCw className={`h-3.5 w-3.5 ${retryingOrderId === order.id ? "animate-spin" : ""}`} />
+                      {retryingOrderId === order.id ? "Retrying..." : "Retry allocation"}
+                    </button>
+                  )}
+                </div>
+                {allocationFailures[order.id] && (
+                  <div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+                    <p>{allocationFailures[order.id].message}</p>
+                    {allocationFailures[order.id].stockShortages.length > 0 && (
+                      <ul className="mt-2 list-disc space-y-1 pl-5">
+                        {allocationFailures[order.id].stockShortages.flatMap((candidate) =>
+                          candidate.shortages.map((shortage) => (
+                            <li key={`${candidate.distributor}-${shortage.productId}-${shortage.size}-${shortage.color}`}>
+                              {candidate.distributor}: product {shortage.productId}, {shortage.size} / {shortage.color} — need {shortage.requiredQuantity}, available {shortage.availableQuantity}.
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">

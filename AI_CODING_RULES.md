@@ -26,6 +26,8 @@ The backend is the real source of truth for:
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
 - location-based discount resolution and distributor hub assignment for checkout
+- distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
+- distributor allocation priority: exact district, same province, then nationwide by verified customer ratings, while requiring distributor-ledger stock at every tier
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
