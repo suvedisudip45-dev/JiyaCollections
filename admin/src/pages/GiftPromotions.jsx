@@ -35,20 +35,12 @@ const GiftPromotions = ({ token }) => {
       const [giftResponse, tierResponse, distributorResponse] = await Promise.all([
         axios.get(`${backendUrl}/api/admin/gifts/catalog`, { headers: { token } }),
         axios.get(`${backendUrl}/api/admin/gifts/tiers`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&limit=100`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/distributor-applications/coverage`, { headers: { token } }),
       ]);
       setGifts(giftResponse.data.gifts || []);
       setTiers(tierResponse.data.tiers || []);
-      const distributorPages = Number(distributorResponse.data.total || 0) > 100
-        ? await Promise.all(Array.from(
-          { length: Math.ceil(Number(distributorResponse.data.total) / 100) - 1 },
-          (_, index) => axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&page=${index + 2}&limit=100`, { headers: { token } }),
-        ))
-        : [];
-      setDistributors([
-        ...(distributorResponse.data.applications || []),
-        ...distributorPages.flatMap((response) => response.data.applications || []),
-      ].filter((distributor) => distributor.isActive));
+      setDistributors((distributorResponse.data.distributors || [])
+        .filter((distributor) => distributor.status === "ACTIVE" && distributor.isActive));
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to load gift promotion data.");
     } finally {

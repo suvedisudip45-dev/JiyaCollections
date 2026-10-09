@@ -8,6 +8,7 @@ import {
   deliveryTypeForNcm,
   generateVendorReference,
   getCarrierBookingAssignmentStatus,
+  isDeliveryOrderOwner,
   normalizeDeliveryStatus,
   parseBoolean,
   webhookIdentifiers,
@@ -71,6 +72,24 @@ test("delivery mapping and event keys are deterministic", () => {
   assert.equal(deliveryTypeForNcm("invalid"), "Door2Door");
   assert.equal(STATUS_MAP.Delivered, "DELIVERED");
   assert.equal(statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }), statusEventKey({ orderId: "77", status: "Delivered", timestamp: "2026-09-16T00:00:00Z", event: "delivery_completed" }));
+});
+
+test("delivery ownership uses distributor assignment for auto-allocated orders", () => {
+  const distributorId = "distributor-1";
+  const order = { distributorId: null, manufacturerId: null };
+  const assignment = { distributorId, manufacturerId: null };
+
+  assert.equal(isDeliveryOrderOwner({ order, assignment, distributorId }), true);
+  assert.equal(isDeliveryOrderOwner({
+    order: { ...order, distributorId: "distributor-2" },
+    assignment,
+    distributorId,
+  }), false);
+  assert.equal(isDeliveryOrderOwner({
+    order,
+    assignment: { distributorId: "distributor-2", manufacturerId: null },
+    distributorId,
+  }), false);
 });
 
 test("NCM vendor reference stays short and deterministic", () => {

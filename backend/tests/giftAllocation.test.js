@@ -124,6 +124,7 @@ test("distributor gift options use only accepted stock owned by the order's dist
         assignedGift: null,
       }),
     },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
     loyaltyTierConfig: { findMany: async () => [] },
     distributorGiftInventory: {
       findMany: async (query) => {
@@ -151,10 +152,43 @@ test("distributor gift options use only accepted stock owned by the order's dist
 test("distributor gift options reject orders owned by another hub", async () => {
   const client = {
     order: { findUnique: async () => ({ id: "order-1", distributorId: "distributor-2" }) },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-2" }) },
   };
 
   await assert.rejects(
     getDistributorGiftOptions({ orderId: "order-1", distributorId: "distributor-1", client }),
     /does not belong to this distributor/
   );
+});
+
+test("distributor gift options accept an auto-allocated order owned through its fulfillment assignment", async () => {
+  let inventoryQuery;
+  const client = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        distributorId: null,
+        amount: 4000,
+        rewardApplied: { giftAmount: 250, giftDescription: "Loyalty gift" },
+        assignedGift: null,
+      }),
+    },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
+    loyaltyTierConfig: { findMany: async () => [] },
+    distributorGiftInventory: {
+      findMany: async (query) => {
+        inventoryQuery = query;
+        return [];
+      },
+    },
+  };
+
+  const result = await getDistributorGiftOptions({
+    orderId: "order-1",
+    distributorId: "distributor-1",
+    client,
+  });
+
+  assert.equal(result.eligible, true);
+  assert.equal(inventoryQuery.where.distributorId, "distributor-1");
 });

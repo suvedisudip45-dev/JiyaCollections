@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   campaignMatchesOrder,
   cardTokenHash,
+  isCardOrderAssignmentOwner,
   normalizeMaxScansPerCustomer,
 } from "../services/marketingCardService.js";
 import {
@@ -42,6 +43,24 @@ test("card token hashing is deterministic and one-way shaped", () => {
   assert.equal(hash, cardTokenHash(token));
   assert.match(hash, /^[a-f0-9]{64}$/);
   assert.notEqual(hash, token);
+});
+
+test("distributor card attachment accepts auto-allocated orders owned by their assignment", () => {
+  const distributorId = "distributor-1";
+  const order = { distributorId: null };
+  const assignment = { distributorId, manufacturerId: null };
+
+  assert.equal(isCardOrderAssignmentOwner({ order, assignment, distributorId }), true);
+  assert.equal(isCardOrderAssignmentOwner({
+    order: { distributorId: "another-distributor" },
+    assignment,
+    distributorId,
+  }), false);
+  assert.equal(isCardOrderAssignmentOwner({
+    order,
+    assignment: { distributorId: "another-distributor", manufacturerId: null },
+    distributorId,
+  }), false);
 });
 
 test("customer scans are blocked while an exchange locks the card", () => {

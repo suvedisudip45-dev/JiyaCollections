@@ -189,8 +189,8 @@ transfer service.
 | `DistributorGiftMovementLog` | Distributor gift allocation/reservation/deduction/restock/loss events and quantities. |
 | `ManufacturerGiftInventory`, `GiftMovementLog` | Legacy manufacturer-owned gift stock and movement history retained for historical records; not used for new distributor hub activity. |
 | `MarketingCardAssignment` | Card stock allocation with distributor ownership for current hub flows; manufacturer ownership remains nullable for historical records. |
-| `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard` | Campaign configuration; generated card batches; unique card/QR token, manufacturer or partner assignment, benefit, and physical state. |
-| `MarketingCardAssignment`, `MarketingCardReceipt`, `MarketingCardOrder`, `MarketingCardEvent` | Assignment history, manufacturer receipt confirmation, card-to-order attachment, and event history. |
+| `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard` | Campaign configuration; generated card batches; unique card/QR token, distributor hub assignment (with legacy manufacturer and partner/organization allocations retained), benefit, and physical state. |
+| `MarketingCardAssignment`, `MarketingCardReceipt`, `MarketingCardOrder`, `MarketingCardEvent` | Assignment history, distributor or legacy manufacturer receipt confirmation, card-to-order attachment, and event history. |
 | `Story`, `StoryLetter`, `LetterTemplate`, `LetterTemplateVersion`, `CustomerStoryAssignment`, `LetterDelivery` | Admin-managed letter content/versioning and customer/order-specific reservation, rendering, printing, packing, shipment and delivery statuses. |
 | `CustomerLetterImage` | Separate uploaded handwritten/customer-letter image record optionally linked to an order. |
 

@@ -52,6 +52,26 @@ export const calculateOrderGiftEligibility = (order = {}, orderValueRules = []) 
   };
 };
 
+export const isDistributorOrderOwner = ({ order, assignment, distributorId }) => Boolean(
+  order &&
+  distributorId &&
+  (!order.distributorId || order.distributorId === distributorId) &&
+  (!assignment?.distributorId || assignment.distributorId === distributorId) &&
+  (order.distributorId === distributorId || assignment?.distributorId === distributorId)
+);
+
+const getOrderAssignment = (client, orderId) => client.orderAssignment.findUnique({
+  where: { orderId },
+  select: { distributorId: true },
+});
+
+const isAssignedDistributor = async (client, order, distributorId) =>
+  isDistributorOrderOwner({
+    order,
+    assignment: await getOrderAssignment(client, order.id),
+    distributorId,
+  });
+
 export const listGiftCatalog = async () => prisma.giftCatalog.findMany({
   where: { isActive: true },
   orderBy: { priceValue: "asc" },
@@ -335,7 +355,9 @@ export const getManufacturerGiftOptions = async ({ orderId, manufacturerId, clie
   export const getDistributorGiftOptions = async ({ orderId, distributorId, client = prisma }) => {
     const order = await client.order.findUnique({ where: { id: orderId }, include: { assignedGift: true } });
     if (!order) throw new Error("Order not found.");
-    if (order.distributorId !== distributorId) throw new Error("Order does not belong to this distributor.");
+    if (!await isAssignedDistributor(client, order, distributorId)) {
+      throw new Error("Order does not belong to this distributor.");
+    }
 
     const orderValueRules = await client.loyaltyTierConfig.findMany({
       where: { isActive: true, triggerType: "ORDER_VALUE" },
@@ -395,7 +417,7 @@ export const getManufacturerGiftOptions = async ({ orderId, manufacturerId, clie
     if (stockClaim.count !== 1) throw new Error("This gift just became unavailable. Refresh the available gifts and choose again.");
 
     const orderClaim = await client.order.updateMany({
-      where: { id: orderId, distributorId, assignedGiftId: null, giftStatus: "NONE" },
+      where: { id: orderId, assignedGiftId: null, giftStatus: "NONE" },
       data: {
         assignedGiftId: selected.giftId,
         assignedDistributorGiftInventoryId: selected.inventoryId,
@@ -462,7 +484,9 @@ export const onOrderPacked = async (orderId, expectedManufacturerId, expectedDis
 
   if (!order?.assignedGiftId) return { order, updated: false, reason: "no gift assigned" };
   if (expectedManufacturerId && order.manufacturerId !== expectedManufacturerId) throw new Error("Order does not belong to this manufacturer.");
-  if (expectedDistributorId && order.distributorId !== expectedDistributorId) throw new Error("Order does not belong to this distributor.");
+  if (expectedDistributorId && !await isAssignedDistributor(prisma, order, expectedDistributorId)) {
+    throw new Error("Order does not belong to this distributor.");
+  }
   if (order.giftStatus === "RESERVED") return { order, updated: false, reason: "gift already reserved" };
   if (order.giftStatus !== "PENDING_PACKING") throw new Error("Gift is not in a packable state.");
 
@@ -475,10 +499,11 @@ export const onOrderPacked = async (orderId, expectedManufacturerId, expectedDis
       return { order: await tx.order.findUnique({ where: { id: orderId }, include: { assignedGift: true } }), updated: false, reason: "gift packing state already changed" };
     }
 
-    if (order.distributorId && order.assignedDistributorGiftInventoryId) {
+    const giftDistributorId = order.distributorId || expectedDistributorId;
+    if (giftDistributorId && order.assignedDistributorGiftInventoryId) {
       await tx.distributorGiftMovementLog.create({
         data: {
-          distributorId: order.distributorId,
+          distributorId: giftDistributorId,
           giftId: order.assignedGiftId,
           orderId,
           movementType: "RESERVED",
@@ -514,10 +539,14 @@ export const applyGiftDeliveryTransition = async (client, orderId, expectedManuf
   if (order.giftStatus === "DELIVERED") return { order, updated: false, reason: "gift already delivered" };
   if (order.giftStatus !== "RESERVED") return { order, updated: false, reason: "gift was not reserved for packing" };
 
-  const distributorGift = Boolean(order.distributorId && order.assignedDistributorGiftInventoryId);
+  const assignment = order.assignedDistributorGiftInventoryId
+    ? await getOrderAssignment(client, orderId)
+    : null;
+  const giftDistributorId = order.distributorId || assignment?.distributorId;
+  const distributorGift = Boolean(giftDistributorId && order.assignedDistributorGiftInventoryId);
   const inventoryUpdate = distributorGift
     ? await client.distributorGiftInventory.updateMany({
-      where: { id: order.assignedDistributorGiftInventoryId, distributorId: order.distributorId, quantityReserved: { gt: 0 } },
+      where: { id: order.assignedDistributorGiftInventoryId, distributorId: giftDistributorId, quantityReserved: { gt: 0 } },
       data: { quantityReserved: { decrement: 1 } },
     })
     : await client.manufacturerGiftInventory.updateMany({
@@ -535,7 +564,7 @@ export const applyGiftDeliveryTransition = async (client, orderId, expectedManuf
   if (distributorGift) {
     await client.distributorGiftMovementLog.create({
       data: {
-        distributorId: order.distributorId,
+        distributorId: giftDistributorId,
         giftId: order.assignedGiftId,
         orderId,
         movementType: "DEDUCTED",
@@ -567,7 +596,9 @@ export const onOrderReturned = async (orderId, { giftReturned = false, notes = "
 
   if (!order?.assignedGiftId) return { order, updated: false, reason: "no gift assigned" };
   if (expectedManufacturerId && order.manufacturerId !== expectedManufacturerId) throw new Error("Order does not belong to this manufacturer.");
-  if (expectedDistributorId && order.distributorId !== expectedDistributorId) throw new Error("Order does not belong to this distributor.");
+  if (expectedDistributorId && !await isAssignedDistributor(tx, order, expectedDistributorId)) {
+    throw new Error("Order does not belong to this distributor.");
+  }
   if (["RETURNED", "LOST"].includes(order.giftStatus)) return { order, updated: false, reason: "gift return already recorded" };
 
   const hasReservation = ["PENDING_PACKING", "RESERVED"].includes(order.giftStatus);
@@ -584,7 +615,8 @@ export const onOrderReturned = async (orderId, { giftReturned = false, notes = "
   }
 
   if (hasReservation || giftReturned) {
-    const distributorGift = Boolean(order.distributorId && order.assignedDistributorGiftInventoryId);
+    const giftDistributorId = order.distributorId || expectedDistributorId;
+    const distributorGift = Boolean(giftDistributorId && order.assignedDistributorGiftInventoryId);
     const where = {
       ...(hasReservation ? { quantityReserved: { gt: 0 } } : {}),
     };
@@ -594,7 +626,7 @@ export const onOrderReturned = async (orderId, { giftReturned = false, notes = "
     };
     const inventoryUpdate = distributorGift
       ? await tx.distributorGiftInventory.updateMany({
-        where: { id: order.assignedDistributorGiftInventoryId, distributorId: order.distributorId, ...where },
+        where: { id: order.assignedDistributorGiftInventoryId, distributorId: giftDistributorId, ...where },
         data,
       })
       : await tx.manufacturerGiftInventory.updateMany({
@@ -604,11 +636,12 @@ export const onOrderReturned = async (orderId, { giftReturned = false, notes = "
     if (inventoryUpdate.count !== 1) throw new Error("Assigned gift inventory is missing or no longer reserved.");
   }
 
-  const distributorGift = Boolean(order.distributorId && order.assignedDistributorGiftInventoryId);
+  const giftDistributorId = order.distributorId || expectedDistributorId;
+  const distributorGift = Boolean(giftDistributorId && order.assignedDistributorGiftInventoryId);
   if (distributorGift) {
     await tx.distributorGiftMovementLog.create({
       data: {
-        distributorId: order.distributorId,
+        distributorId: giftDistributorId,
         giftId: order.assignedGiftId,
         orderId,
         movementType: giftReturned ? "RESTOCKED" : "LOST",

@@ -419,14 +419,19 @@ const parsePackagingMeta = (payload) => {
   return payload;
 };
 
+export const isDeliveryOrderOwner = ({ order, assignment, distributorId, manufacturerId }) => Boolean(
+  order &&
+  assignment &&
+  (
+    (distributorId && assignment.distributorId === distributorId && (!order.distributorId || order.distributorId === distributorId)) ||
+    (manufacturerId && assignment.manufacturerId === manufacturerId && order.manufacturerId === manufacturerId) ||
+    (!distributorId && !manufacturerId)
+  )
+);
+
 export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
-  const isOrderOwner = order && (
-    (distributorId && order.assignedDistributorId === distributorId) ||
-    (manufacturerId && order.manufacturerId === manufacturerId) ||
-    (!distributorId && !manufacturerId)
-  );
-  if (!order || !isOrderOwner) {
+  if (!order) {
     const error = new Error("Order not found or unauthorized");
     error.code = "DELIVERY_NOT_FOUND";
     throw error;
@@ -441,6 +446,11 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   if (!assignment || !isAssignmentOwner) {
     const error = new Error("Fulfillment assignment not found");
     error.code = "DELIVERY_ASSIGNMENT_NOT_FOUND";
+    throw error;
+  }
+  if (!isDeliveryOrderOwner({ order, assignment, distributorId, manufacturerId })) {
+    const error = new Error("Order not found or unauthorized");
+    error.code = "DELIVERY_NOT_FOUND";
     throw error;
   }
 

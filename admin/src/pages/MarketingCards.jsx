@@ -203,22 +203,14 @@ const MarketingCards = ({ token }) => {
       const [partnerRes, campaignRes, distributorRes, metricsRes, statsRes] = await Promise.all([
         axios.get(`${backendUrl}/api/marketing-cards/admin/partners`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/campaigns`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&limit=100`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/distributor-applications/coverage`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/metrics`, { headers: { token } }),
         axios.get(`${backendUrl}/api/marketing-cards/admin/stats`, { headers: { token } }),
       ]);
-      const distributorPages = Number(distributorRes.data.total || 0) > 100
-        ? await Promise.all(Array.from(
-          { length: Math.ceil(Number(distributorRes.data.total) / 100) - 1 },
-          (_, index) => axios.get(`${backendUrl}/api/admin/distributor-applications?status=ACTIVE&page=${index + 2}&limit=100`, { headers: { token } }),
-        ))
-        : [];
       setPartners(partnerRes.data.partners || []);
       setCampaigns(campaignRes.data.campaigns || []);
-      setDistributors([
-        ...(distributorRes.data.applications || []),
-        ...distributorPages.flatMap((response) => response.data.applications || []),
-      ].filter((distributor) => distributor.isActive));
+      setDistributors((distributorRes.data.distributors || [])
+        .filter((distributor) => distributor.status === "ACTIVE" && distributor.isActive));
       setMetrics(metricsRes.data.metrics || null);
       setStats(statsRes.data.stats || null);
     } catch (err) {

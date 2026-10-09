@@ -895,22 +895,25 @@ export const bulkUpdateManufacturerCards = async ({ cardIds, action, manufacture
   });
 };
 
+export const isCardOrderAssignmentOwner = ({ order, assignment, manufacturerId, distributorId }) => Boolean(
+  order &&
+  assignment &&
+  (!manufacturerId || assignment.manufacturerId === manufacturerId) &&
+  (!distributorId || assignment.distributorId === distributorId) &&
+  (!manufacturerId || !order.manufacturerId || order.manufacturerId === manufacturerId) &&
+  (!distributorId || !order.distributorId || order.distributorId === distributorId)
+);
+
 export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distributorId }) => prisma.$transaction(async (tx) => {
   await expireCampaignCards({ db: tx });
   const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
-  if (
-    !order ||
-    (manufacturerId && order.manufacturerId !== manufacturerId) ||
-    (distributorId && order.distributorId !== distributorId)
-  ) throw new Error("Order not found or unauthorized.");
+  if (!order) throw new Error("Order not found or unauthorized.");
+  const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
+  if (!isCardOrderAssignmentOwner({ order, assignment, manufacturerId, distributorId })) {
+    throw new Error("Order not found or unauthorized.");
+  }
   if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");
   if (order.marketingCardOrder) return order.marketingCardOrder;
-  const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
-  if (
-    !assignment ||
-    (manufacturerId && assignment.manufacturerId !== manufacturerId) ||
-    (distributorId && assignment.distributorId !== distributorId)
-  ) throw new Error("Hub assignment not found.");
 
   const inventory = await tx.marketingCard.findMany({
     where: {
