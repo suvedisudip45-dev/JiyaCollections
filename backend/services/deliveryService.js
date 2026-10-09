@@ -565,9 +565,14 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
       where: { id: orderId },
       data: { fulfillmentStatus: "submission_pending" },
     });
-    await tx.orderAssignment.update({
-      where: { id: assignment.id },
+    const assignmentClaim = await tx.orderAssignment.updateMany({
+      where: {
+        id: assignment.id,
+        status: assignment.status,
+        deliveryType: assignment.deliveryType,
+      },
       data: {
+        deliveryType: "NCM",
         notes: JSON.stringify({
           ...existingNotes,
           ...packagingMeta,
@@ -575,6 +580,11 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
         }),
       },
     });
+    if (assignmentClaim.count !== 1) {
+      const error = new Error("The delivery method changed while booking NCM. Refresh and try again.");
+      error.code = "DELIVERY_METHOD_CHANGED";
+      throw error;
+    }
     await createEvent(tx, {
       deliveryOrderId: record.id,
       orderId,

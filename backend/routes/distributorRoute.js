@@ -23,6 +23,7 @@ import {
 } from "../controllers/stockTransferController.js";
 import {
   getAssignedOrders,
+  selectDistributorSelfDelivery,
   updateSelfDeliveryOrderStatus,
   processDistributorOrderReturn,
 } from "../controllers/distributorDeliveryController.js";
@@ -134,6 +135,13 @@ distributorRouter.get(
   authorize("distributor:assignments_read"),
   setDistributorContext,
   getAssignedOrders,
+);
+distributorRouter.post(
+  "/orders/:id/self-delivery",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  selectDistributorSelfDelivery,
 );
 distributorRouter.patch(
   "/orders/:id/status",

@@ -19,12 +19,47 @@ const parseJSON = (val, fallback = []) => {
 
 const normalize = (val) => String(val || "").trim().toLowerCase();
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
+const serializeOrder = (order) => ({
+  ...order,
+  date: order.date == null ? order.date : Number(order.date),
+});
+const SELF_DELIVERY_STATUSES = [
+  "ready_for_pickup",
+  "Ready for Pickup",
+  "dispatched",
+  "Dispatched",
+  "on_the_way",
+  "On the Way",
+  "out_for_delivery",
+  "delivered",
+  "Delivered",
+  "returned",
+  "Returned",
+  "return_requested",
+];
 
 const fail = (message, statusCode = 400, code = "SELF_DELIVERY_ERROR") => {
   const error = new Error(message);
   error.statusCode = statusCode;
   error.code = code;
   return error;
+};
+
+const ensureNoNcmDelivery = async (assignment, client) => {
+  const ncmDelivery = await client.deliveryOrder.findUnique({
+    where: { orderId: assignment.orderId },
+    select: { id: true },
+  });
+  if (ncmDelivery) {
+    throw fail("This order already has an NCM delivery and cannot be handled as self-delivery.", 409, "NCM_DELIVERY_EXISTS");
+  }
+};
+
+const ensureSelfDeliveryAssignment = async (assignment, client) => {
+  if (normalize(assignment.deliveryType || "SELF_DELIVERY") !== "self_delivery") {
+    throw fail("This order is assigned to NCM, not distributor self-delivery.", 409, "NOT_SELF_DELIVERY");
+  }
+  await ensureNoNcmDelivery(assignment, client);
 };
 
 /**
@@ -95,30 +130,43 @@ export const listAssignedDistributorOrders = async ({
   const numLimit = Math.min(100, Math.max(1, Number(limit || 20)));
   const skip = (numPage - 1) * numLimit;
 
-  const where = { distributorId };
+  const where = {
+    distributorId,
+    status: { in: SELF_DELIVERY_STATUSES },
+  };
   if (status && status !== "all") {
     const norm = normalize(status);
-    if (norm === "dispatched") where.status = { in: ["dispatched", "Dispatched"] };
+    if (norm === "assigned") where.status = { in: ["ready_for_pickup", "Ready for Pickup"] };
+    else if (norm === "dispatched") where.status = { in: ["dispatched", "Dispatched"] };
     else if (norm === "on_the_way" || norm === "on the way") where.status = { in: ["on_the_way", "On the Way", "out_for_delivery"] };
     else if (norm === "delivered") where.status = { in: ["delivered", "Delivered"] };
     else if (norm === "returned") where.status = { in: ["returned", "Returned", "return_requested"] };
     else where.status = status;
   }
 
-  const [assignments, total] = await Promise.all([
-    client.orderAssignment.findMany({
-      where,
-      orderBy: { assignedAt: "desc" },
-      skip,
-      take: numLimit,
-      include: {
-        distributor: { select: { id: true, name: true, city: true, phone: true } },
-      },
-    }),
-    client.orderAssignment.count({ where }),
-  ]);
+  const assignments = await client.orderAssignment.findMany({
+    where,
+    orderBy: { assignedAt: "desc" },
+    include: {
+      distributor: { select: { id: true, name: true, city: true, phone: true } },
+    },
+  });
 
-  const orderIds = assignments.map((a) => a.orderId);
+  const assignmentOrderIds = assignments.map((assignment) => assignment.orderId);
+  const ncmDeliveries = assignmentOrderIds.length
+    ? await client.deliveryOrder.findMany({
+        where: { orderId: { in: assignmentOrderIds } },
+        select: { orderId: true },
+      })
+    : [];
+  const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
+  const selfDeliveryAssignments = assignments.filter((assignment) =>
+    normalize(assignment.deliveryType || "SELF_DELIVERY") === "self_delivery" &&
+    !ncmOrderIds.has(assignment.orderId)
+  );
+  const total = selfDeliveryAssignments.length;
+  const pageAssignments = selfDeliveryAssignments.slice(skip, skip + numLimit);
+  const orderIds = pageAssignments.map((assignment) => assignment.orderId);
   const orders = await client.order.findMany({
     where: { id: { in: orderIds } },
     include: {
@@ -127,7 +175,7 @@ export const listAssignedDistributorOrders = async ({
   });
   const orderMap = new Map(orders.map((o) => [o.id, o]));
 
-  const enriched = assignments.map((assignment) => {
+  const enriched = pageAssignments.map((assignment) => {
     const order = orderMap.get(assignment.orderId);
     return {
       assignmentId: assignment.id,
@@ -172,6 +220,120 @@ export const listAssignedDistributorOrders = async ({
   };
 };
 
+export const markDistributorSelfDeliveryReady = async ({
+  distributorId,
+  assignmentIdOrOrderId,
+  actorContext = {},
+  client = prisma,
+} = {}) => {
+  if (!distributorId) throw fail("Distributor ID is required.", 400);
+  if (!assignmentIdOrOrderId) throw fail("Order or Assignment ID is required.", 400);
+
+  const assignment = await client.orderAssignment.findFirst({
+    where: {
+      OR: [{ id: assignmentIdOrOrderId }, { orderId: assignmentIdOrOrderId }],
+      distributorId,
+    },
+  });
+  if (!assignment) throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
+
+  const order = await client.order.findUnique({ where: { id: assignment.orderId } });
+  if (!order) throw fail("Order not found.", 404);
+
+  if (
+    normalize(assignment.status) === "ready_for_pickup" &&
+    normalize(assignment.deliveryType) === "self_delivery"
+  ) {
+    await ensureSelfDeliveryAssignment(assignment, client);
+    return { success: true, duplicate: true, assignment, order: serializeOrder(order) };
+  }
+
+  if (normalize(assignment.status) !== "package_details_complete") {
+    throw fail("Complete package details before selecting distributor self-delivery.", 409, "INVALID_SELF_DELIVERY_STATE");
+  }
+
+  const address = parseJSON(order.address, {});
+  const customerDistrict = normalize(address.district);
+  const distributor = await client.distributor.findUnique({
+    where: { id: distributorId },
+    include: {
+      locations: {
+        where: { isActive: true },
+        select: { district: true },
+      },
+    },
+  });
+  const coveredDistricts = [
+    distributor?.district,
+    ...(distributor?.locations || []).map((location) => location.district),
+  ].map(normalize).filter(Boolean);
+  if (!customerDistrict || !coveredDistricts.includes(customerDistrict)) {
+    throw fail(
+      "Self-delivery is available only when the customer and distributor share a district.",
+      409,
+      "SELF_DELIVERY_DISTRICT_MISMATCH",
+    );
+  }
+
+  await ensureNoNcmDelivery(assignment, client);
+
+  return client.$transaction(async (tx) => {
+    const ncmDelivery = await tx.deliveryOrder.findUnique({
+      where: { orderId: assignment.orderId },
+      select: { id: true },
+    });
+    if (ncmDelivery) {
+      throw fail("This order already has an NCM delivery and cannot be handled as self-delivery.", 409, "NCM_DELIVERY_EXISTS");
+    }
+
+    const claimed = await tx.orderAssignment.updateMany({
+      where: {
+        id: assignment.id,
+        status: assignment.status,
+        deliveryType: assignment.deliveryType,
+      },
+      data: { deliveryType: "SELF_DELIVERY", status: "ready_for_pickup" },
+    });
+    if (claimed.count !== 1) {
+      throw fail("The delivery method changed while you were selecting self-delivery. Refresh and try again.", 409, "DELIVERY_METHOD_CHANGED");
+    }
+
+    const updatedAssignment = {
+      ...assignment,
+      deliveryType: "SELF_DELIVERY",
+      status: "ready_for_pickup",
+    };
+    const updatedOrder = await tx.order.update({
+      where: { id: order.id },
+      data: { fulfillmentStatus: "ready_for_pickup" },
+    });
+
+    await recordSystemAudit(
+      {
+        actorId: actorContext.actorId || distributorId,
+        actorRole: "DISTRIBUTOR",
+        portalSource: "DISTRIBUTOR",
+        ...actorContext,
+      },
+      {
+        action: "DISTRIBUTOR_SELF_DELIVERY_SELECTED",
+        entityType: "Order",
+        entityId: order.id,
+        beforeState: { status: assignment.status, deliveryType: assignment.deliveryType },
+        afterState: { status: updatedAssignment.status, deliveryType: updatedAssignment.deliveryType },
+      },
+      { client: tx },
+    );
+
+    return {
+      success: true,
+      message: "Order is ready for distributor self-delivery.",
+      assignment: updatedAssignment,
+      order: serializeOrder(updatedOrder),
+    };
+  });
+};
+
 /**
  * Update Self-Delivery Status sequentially (Dispatched -> On the Way -> Delivered)
  */
@@ -197,6 +359,7 @@ export const updateSelfDeliveryStatus = async ({
   if (!assignment) {
     throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
   }
+  await ensureSelfDeliveryAssignment(assignment, client);
 
   const transition = validateSelfDeliveryTransition(assignment.status, status);
   if (!transition.valid) {
@@ -283,7 +446,7 @@ export const updateSelfDeliveryStatus = async ({
       success: true,
       message: `Order status successfully updated to '${canonicalStatus}'.`,
       assignment: updatedAssignment,
-      order: updatedOrder,
+      order: serializeOrder(updatedOrder),
     };
   });
 };
@@ -321,6 +484,7 @@ export const processSelfDeliveryReturn = async ({
   if (!assignment) {
     throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
   }
+  await ensureSelfDeliveryAssignment(assignment, client);
 
   const order = await client.order.findUnique({
     where: { id: assignment.orderId },

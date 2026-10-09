@@ -436,7 +436,17 @@ const getMyAssignments = async (req, res) => {
             select: { id: true, name: true, city: true, phone: true, qualityRating: true },
           },
           distributor: {
-            select: { id: true, name: true, city: true, phone: true },
+            select: {
+              id: true,
+              name: true,
+              city: true,
+              phone: true,
+              district: true,
+              locations: {
+                where: { isActive: true },
+                select: { district: true },
+              },
+            },
           },
         },
       }),

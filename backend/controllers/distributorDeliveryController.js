@@ -1,5 +1,6 @@
 import {
   listAssignedDistributorOrders,
+  markDistributorSelfDeliveryReady,
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
@@ -33,6 +34,43 @@ export const getAssignedOrders = async (req, res) => {
       success: false,
       message: error.message || "Failed to list assigned orders.",
       code: error.code || "ASSIGNED_ORDERS_ERROR",
+    });
+  }
+};
+
+/**
+ * POST /api/distributor/orders/:id/self-delivery
+ * Select distributor-managed delivery after package preparation.
+ */
+export const selectDistributorSelfDelivery = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({
+        success: false,
+        message: "An approved distributor profile is required.",
+      });
+    }
+
+    const result = await markDistributorSelfDeliveryReady({
+      distributorId,
+      assignmentIdOrOrderId: req.params.id,
+      actorContext: {
+        actorId: req.auth?.accountId || req.auth?.userId || null,
+        actorRole: req.auth?.role || "DISTRIBUTOR",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("selectDistributorSelfDelivery error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to select distributor self-delivery.",
+      code: error.code || "SELF_DELIVERY_SELECTION_ERROR",
     });
   }
 };

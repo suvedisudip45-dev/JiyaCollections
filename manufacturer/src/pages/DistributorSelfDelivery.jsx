@@ -195,11 +195,11 @@ const DistributorSelfDelivery = () => {
       {/* Orders List */}
       {loading ? (
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-8 text-center text-xs text-[#575757]">
-          Loading allocated self-deliveries...
+          Loading self-delivery orders...
         </div>
       ) : !filteredOrders.length ? (
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-8 text-center text-xs text-[#575757]">
-          No allocated orders found matching filter.
+          No self-delivery orders found matching filter.
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

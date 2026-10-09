@@ -374,8 +374,11 @@ Relevant endpoints:
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
+| `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; the customer district must match the distributor's district or an active coverage district. |
 | `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
 | `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process self-delivery returns, conduct QA, update inventory, and inform Admin. |
+
+At the final package handoff, the distributor can choose self-delivery for a same-district customer or book NCM delivery. Self-delivery orders are tracked in Self-Delivery Management; NCM orders remain in courier tracking and are not shown in that self-delivery list.
 | `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |
 | `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |

@@ -4,6 +4,7 @@ import { prisma } from "../config/db.js";
 import {
   validateSelfDeliveryTransition,
   listAssignedDistributorOrders,
+  markDistributorSelfDeliveryReady,
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
@@ -61,7 +62,8 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
     id: "assign-1",
     orderId: "order-1",
     distributorId: "dist-1",
-    status: "assigned",
+    deliveryType: "SELF_DELIVERY",
+    status: "ready_for_pickup",
     assignedAt: new Date(),
     distributor: { id: "dist-1", name: "Kathmandu Hub", city: "Kathmandu", phone: "9846000000" },
   };
@@ -80,7 +82,7 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
   };
 
   stubMethod(t, prisma.orderAssignment, "findMany", async () => [mockAssignment]);
-  stubMethod(t, prisma.orderAssignment, "count", async () => 1);
+  stubMethod(t, prisma.deliveryOrder, "findMany", async () => []);
   stubMethod(t, prisma.order, "findMany", async () => [mockOrder]);
 
   const result = await listAssignedDistributorOrders({
@@ -94,16 +96,118 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
   assert.equal(result.orders[0].order.amount, 1500);
 });
 
+test("self-delivery listing excludes NCM assignments and legacy NCM bookings", async (t) => {
+  const assignments = [
+    { id: "self-1", orderId: "order-self", deliveryType: "SELF_DELIVERY", status: "delivered" },
+    { id: "ncm-type", orderId: "order-ncm-type", deliveryType: "NCM", status: "delivered" },
+    { id: "ncm-legacy", orderId: "order-ncm-legacy", deliveryType: "SELF_DELIVERY", status: "dispatched" },
+  ];
+  let loadedOrderIds = [];
+
+  stubMethod(t, prisma.orderAssignment, "findMany", async () => assignments);
+  stubMethod(t, prisma.deliveryOrder, "findMany", async () => [{ orderId: "order-ncm-legacy" }]);
+  stubMethod(t, prisma.order, "findMany", async ({ where }) => {
+    loadedOrderIds = where.id.in;
+    return [{ id: "order-self", amount: 1000, address: "{}", items: "[]" }];
+  });
+
+  const result = await listAssignedDistributorOrders({ distributorId: "dist-1" });
+
+  assert.deepEqual(loadedOrderIds, ["order-self"]);
+  assert.deepEqual(result.orders.map((order) => order.orderId), ["order-self"]);
+  assert.equal(result.pagination.total, 1);
+});
+
+test("self-delivery selection requires matching districts and marks the assignment ready", async (t) => {
+  const assignment = {
+    id: "assign-1",
+    orderId: "order-1",
+    distributorId: "dist-1",
+    deliveryType: "NCM",
+    status: "package_details_complete",
+  };
+  const order = {
+    id: "order-1",
+    date: 1791566316000n,
+    address: JSON.stringify({ district: "Kathmandu" }),
+  };
+  let assignmentUpdate;
+  let orderUpdate;
+
+  stubMethod(t, prisma.orderAssignment, "findFirst", async () => assignment);
+  stubMethod(t, prisma.order, "findUnique", async () => order);
+  stubMethod(t, prisma.distributor, "findUnique", async () => ({
+    district: "Kathmandu",
+    locations: [{ district: "Lalitpur" }],
+  }));
+  stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
+  stubMethod(t, prisma, "$transaction", async (callback) => callback({
+    orderAssignment: {
+      updateMany: async ({ data }) => {
+        assignmentUpdate = data;
+        return { count: 1 };
+      },
+    },
+    deliveryOrder: { findUnique: async () => null },
+    order: {
+      update: async ({ data }) => {
+        orderUpdate = data;
+        return { ...order, ...data };
+      },
+    },
+    systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
+  }));
+
+  const result = await markDistributorSelfDeliveryReady({
+    distributorId: "dist-1",
+    assignmentIdOrOrderId: "assign-1",
+  });
+
+  assert.equal(result.success, true);
+  assert.doesNotThrow(() => JSON.stringify(result));
+  assert.equal(result.order.date, 1791566316000);
+  assert.deepEqual(assignmentUpdate, { deliveryType: "SELF_DELIVERY", status: "ready_for_pickup" });
+  assert.deepEqual(orderUpdate, { fulfillmentStatus: "ready_for_pickup" });
+});
+
+test("self-delivery selection rejects orders outside the distributor district", async (t) => {
+  const assignment = {
+    id: "assign-1",
+    orderId: "order-1",
+    distributorId: "dist-1",
+    status: "package_details_complete",
+  };
+  stubMethod(t, prisma.orderAssignment, "findFirst", async () => assignment);
+  stubMethod(t, prisma.order, "findUnique", async () => ({
+    id: "order-1",
+    address: JSON.stringify({ district: "Pokhara" }),
+  }));
+  stubMethod(t, prisma.distributor, "findUnique", async () => ({
+    district: "Kathmandu",
+    locations: [{ district: "Lalitpur" }],
+  }));
+
+  await assert.rejects(
+    markDistributorSelfDeliveryReady({
+      distributorId: "dist-1",
+      assignmentIdOrOrderId: "assign-1",
+    }),
+    { code: "SELF_DELIVERY_DISTRICT_MISMATCH" },
+  );
+});
+
 test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inventory ledger", async (t) => {
   const mockAssignment = {
     id: "assign-1",
     orderId: "order-1",
     distributorId: "dist-1",
+    deliveryType: "SELF_DELIVERY",
     status: "on_the_way",
     assignedAt: new Date(),
   };
   const mockOrder = {
     id: "order-1",
+    date: 1791566316000n,
     status: "On the Way",
     fulfillmentStatus: "out_for_delivery",
     items: JSON.stringify([{ productId: "prod-1", size: "M", color: "Black", quantity: 2 }]),
@@ -117,6 +221,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
   let balanceReadCount = 0;
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
+  stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
   stubMethod(t, prisma, "$transaction", async (cb) =>
     cb({
       order: {
@@ -170,6 +275,8 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
   });
 
   assert.equal(res.success, true);
+  assert.doesNotThrow(() => JSON.stringify(res));
+  assert.equal(res.order.date, 1791566316000);
   assert.equal(res.order.status, "Delivered");
   assert.equal(res.assignment.status, "delivered");
   assert.equal(balanceUpdated, true);
@@ -181,6 +288,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     id: "assign-1",
     orderId: "order-1",
     distributorId: "dist-1",
+    deliveryType: "SELF_DELIVERY",
     status: "delivered",
   };
   const mockOrder = {
@@ -201,6 +309,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const discrepancies = [];
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
+  stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
   stubMethod(t, prisma.order, "findUnique", async () => mockOrder);
   stubMethod(t, prisma, "$transaction", async (cb) =>
     cb({

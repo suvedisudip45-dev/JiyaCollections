@@ -35,6 +35,8 @@ const parseBoolean = (value) => {
   return ["true", "1", "yes", "y"].includes(String(value || "").trim().toLowerCase());
 };
 
+const normalizeDistrict = (value) => String(value || "").trim().toLowerCase();
+
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -50,6 +52,7 @@ const OrderDetail = () => {
   const [packageType, setPackageType] = useState("Box");
   const [isFragile, setIsFragile] = useState(false);
   const [deliveryInstruction, setDeliveryInstruction] = useState("");
+  const [deliveryChoiceState, setDeliveryChoiceState] = useState({ assignmentId: null, value: "NCM" });
   const [actionLoading, setActionLoading] = useState(false);
   const [storyLetter, setStoryLetter] = useState(null);
   const [marketingCard, setMarketingCard] = useState(null);
@@ -291,9 +294,23 @@ const OrderDetail = () => {
     if (!validateChecklist()) return;
     setActionLoading(true);
     try {
+      const useSelfDelivery = isDistributor && selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY";
+      if (useSelfDelivery) {
+        const response = await axios.post(
+          `${backendUrl}/api/distributor/orders/${id}/self-delivery`,
+          {},
+          { headers: { token } }
+        );
+        if (!response.data.success) throw new Error(response.data.message || "Could not select self-delivery.");
+        toast.success(response.data.message || "Order is ready for self-delivery.");
+        await fetchAssignment();
+        return;
+      }
+
       const res = await axios.post(
         `${backendUrl}/api/delivery-job/ready-for-pickup/${id}`,
         {
+          deliveryType: "NCM",
           packagingNotes,
           packageWeight,
           packageDimensions,
@@ -310,8 +327,8 @@ const OrderDetail = () => {
         { headers: { token } }
       );
       if (res.data.success) {
-        toast.success("Courier booking submitted successfully.");
-        fetchAssignment();
+        toast.success("NCM courier booking submitted successfully.");
+        await fetchAssignment();
       }
     } catch (err) {
       const fallbackMessage = err.response?.data?.message || "Failed to book courier with delivery partner.";
@@ -421,6 +438,8 @@ const OrderDetail = () => {
 
   const order = assignment.order;
   const items = order?.items || [];
+  const deliveryChoice = deliveryChoiceState.assignmentId === id ? deliveryChoiceState.value : "NCM";
+  const setDeliveryChoice = (value) => setDeliveryChoiceState({ assignmentId: id, value });
   const delivery = assignment.delivery || null;
   const benefits = order?.fulfillmentBenefits || {};
   const isDispatchLocked = ["ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes((assignment.status || "").toLowerCase());
@@ -471,6 +490,21 @@ const OrderDetail = () => {
   ];
   const workflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
   const workflowIndex = Math.max(0, WORKFLOW_STEPS.findIndex((step) => step.key === workflowStatus));
+  const customerDistrict = normalizeDistrict(order?.address?.district);
+  const distributorDistricts = [
+    assignment.distributor?.district,
+    ...(assignment.distributor?.locations || []).map((location) => location.district),
+  ].map(normalizeDistrict).filter(Boolean);
+  const selfDeliveryAvailable = Boolean(
+    isDistributor &&
+    customerDistrict &&
+    distributorDistricts.includes(customerDistrict)
+  );
+  const deliveryActionLabel = workflowStatus === "package_details_complete"
+    ? isDistributor && selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY"
+      ? "Start self-delivery"
+      : "Book NCM delivery"
+    : "Continue";
   const handleWorkflowNext = async () => {
     if (workflowStatus === "assigned") return handleAccept();
     if (workflowStatus === "accepted") return handleStatusChange("preparing", { stitchingBrandingCompleted: true });
@@ -531,7 +565,7 @@ const OrderDetail = () => {
         currentIndex={workflowIndex}
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
-        nextLabel={workflowStatus === "assigned" ? "Accept production" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? "Letter printed" : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Enter package details" : workflowStatus === "package_details_complete" ? "Call delivery partner" : "Continue"}
+        nextLabel={workflowStatus === "assigned" ? "Accept production" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? "Letter printed" : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Enter package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : "Continue"}
         nextDisabled={workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
         previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
         busy={actionLoading}
@@ -561,7 +595,47 @@ const OrderDetail = () => {
           </button>
         )}
         {workflowStatus === "letter_ready" && <button type="button" onClick={() => setChecklistModalOpen(true)} className="w-full rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-4 text-left text-xs font-semibold text-indigo-950 transition hover:border-indigo-300 hover:bg-indigo-100">Open the final checklist to verify every required item before packing.</button>}
-        {workflowStatus === "package_details_complete" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Package details are complete. The next action will call the delivery partner.</p>}
+        {workflowStatus === "package_details_complete" && isDistributor && (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4">
+            <p className="text-xs font-bold text-emerald-950">Choose how this order will be delivered</p>
+            {selfDeliveryAvailable ? (
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {[
+                  {
+                    value: "SELF_DELIVERY",
+                    title: "Self delivery",
+                    description: "Your distributor hub will deliver and update the order.",
+                  },
+                  {
+                    value: "NCM",
+                    title: "NCM delivery",
+                    description: "Book a courier pickup through the NCM API.",
+                  },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setDeliveryChoice(option.value)}
+                    className={`rounded-xl border p-3 text-left transition ${
+                      deliveryChoice === option.value
+                        ? "border-emerald-700 bg-white ring-1 ring-emerald-700"
+                        : "border-emerald-200 bg-emerald-50 hover:bg-white"
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-slate-900">{option.title}</span>
+                    <span className="mt-1 block text-[11px] text-slate-600">{option.description}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-900">
+                The customer is outside your district, so this order must be sent through NCM.
+              </p>
+            )}
+          </div>
+        )}
+        {workflowStatus === "package_details_complete" && !isDistributor && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Package details are complete. Continue to book delivery with NCM.</p>}
+        {workflowStatus === "ready_for_pickup" && isDistributor && assignment.deliveryType === "SELF_DELIVERY" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Self-delivery selected. Track and complete this order in Self-Delivery Management.</p>}
         {workflowStatus !== "quality_check" && workflowStatus !== "letter_ready" && workflowStatus !== "package_details_complete" && <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-600">{WORKFLOW_STEPS[workflowIndex]?.description}</p>}
       </FulfillmentProgressStepper>
 

@@ -106,6 +106,8 @@ The storefront checkout is designed around server-authoritative pricing rather t
 
 Carrier state labels are also intentionally strict. A failed NCM booking is presented as "Failed to Book Courier" or equivalent failure text instead of the optimistic "Courier Booked" state, and the manufacturer UI uses the same failed-state labels to prevent false-positive booking confirmations.
 
+In the manufacturer portal's distributor workspace, the final order-assignment step offers Self Delivery only when the customer district matches the distributor's own or actively covered district. Self Delivery routes the order to Self-Delivery Management without calling NCM; NCM delivery books through the existing courier API. Self-Delivery Management lists only distributor-handled deliveries, never NCM bookings.
+
 ## 3. Admin Portal (`admin/`)
 
 ### App shell

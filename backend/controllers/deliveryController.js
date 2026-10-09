@@ -71,7 +71,11 @@ export const readyForDelivery = async (req, res) => {
     const delivery = await submitDeliveryToNcm(result.delivery.id);
     res.status(202).json({ success: true, delivery });
   } catch (error) {
-    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code) ? 404 : 400;
+    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code)
+      ? 404
+      : error.code === "DELIVERY_METHOD_CHANGED"
+        ? 409
+        : 400;
     const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
       ? `Failed to book courier. ${error.message}`
       : error.message;
