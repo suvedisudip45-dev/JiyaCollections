@@ -73,6 +73,163 @@ export const isTransferPreparationComplete = (transfer) =>
 export const isSameProfileOwner = (manufacturerAccountId, distributorAccountId) =>
   Boolean(manufacturerAccountId && distributorAccountId && manufacturerAccountId === distributorAccountId);
 
+export const isNcmBranchEligible = ({ branchName, status, activeBranchNames }) => {
+  const normalizedBranch = String(branchName || "").trim().toUpperCase();
+  if (!normalizedBranch || String(status || "").trim().toUpperCase() === "REJECTED") return false;
+  const activeBranches = new Set((activeBranchNames || []).map((name) => String(name || "").trim().toUpperCase()));
+  return activeBranches.has(normalizedBranch);
+};
+
+const cleanPackageField = (value, label, maxLength, { required = false } = {}) => {
+  const normalized = String(value ?? "").trim();
+  if (required && !normalized) throw fail(`${label} is required for NCM booking.`);
+  if (normalized.length > maxLength) throw fail(`${label} cannot exceed ${maxLength} characters.`);
+  return normalized;
+};
+
+export const normalizeNcmStockTransferPackageDetails = (input = {}) => {
+  const details = input && typeof input === "object" ? input : {};
+  const weight = Number(details.packageWeight ?? details.weight);
+  if (!Number.isFinite(weight) || weight < 0.1 || weight > 1000) {
+    throw fail("Package weight must be between 0.1 and 1000 kg.");
+  }
+  if (details.isFragile !== undefined && typeof details.isFragile !== "boolean") {
+    throw fail("Fragile must be true or false.");
+  }
+  return {
+    packageWeight: weight,
+    packageType: cleanPackageField(details.packageType, "Package type", 64, { required: true }),
+    productType: cleanPackageField(details.productType, "Product type", 120, { required: true }),
+    productDescription: cleanPackageField(details.productDescription, "Product description", 300, { required: true }),
+    packageDimensions: cleanPackageField(details.packageDimensions, "Package dimensions", 120, { required: true }),
+    isFragile: details.isFragile === true,
+    deliveryInstruction: cleanPackageField(details.deliveryInstruction ?? details.instruction, "Delivery instructions", 480),
+    packagingNotes: cleanPackageField(details.packagingNotes, "Packaging notes", 500),
+  };
+};
+
+export const buildNcmStockTransferPayload = ({ transfer, packageDetails }) => {
+  const packageDescription = [
+    packageDetails.productType,
+    packageDetails.productDescription,
+    `Package: ${packageDetails.packageType}`,
+    `Dimensions: ${packageDetails.packageDimensions}`,
+    packageDetails.isFragile ? "Fragile" : "",
+    packageDetails.packagingNotes ? `Packaging: ${packageDetails.packagingNotes}` : "",
+    `Stock transfer ${transfer.id.slice(-8)}`,
+  ].filter(Boolean).join(" | ").slice(0, 500);
+  const instruction = [
+    packageDetails.deliveryInstruction,
+    "No COD collection.",
+  ].filter(Boolean).join(" ").slice(0, 500);
+
+  return {
+    name: transfer.distributor.name,
+    phone: transfer.distributor.phone,
+    phone2: "",
+    cod_charge: "0",
+    address: transfer.distributor.address,
+    fbranch: transfer.manufacturer.ncmPickupBranch,
+    branch: transfer.distributor.ncmPickupBranch,
+    package: packageDescription,
+    instruction,
+    delivery_type: "Door2Door",
+    weight: String(packageDetails.packageWeight),
+  };
+};
+
+export const isPositiveLocalFreightCharge = (value) => {
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0;
+};
+
+export const normalizeNcmOrderId = (value) => {
+  const id = String(value ?? "").trim();
+  if (!/^\d+$/.test(id)) return null;
+  const numericId = Number(id);
+  return Number.isSafeInteger(numericId) && numericId > 0 ? String(numericId) : null;
+};
+
+export const extractNcmOrderId = (payload) => {
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.result,
+    payload?.order,
+    payload?.data?.order,
+    payload?.result?.order,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    for (const key of ["orderid", "order_id", "id"]) {
+      const orderId = normalizeNcmOrderId(candidate[key]);
+      if (orderId) return orderId;
+    }
+  }
+  return null;
+};
+
+export const latestNcmStockTransferStatus = (statusResponse, detailResponse) => {
+  const statusRows = Array.isArray(statusResponse?.data) ? statusResponse.data : [];
+  const latestStatus = String(statusRows[0]?.status || detailResponse?.data?.last_delivery_status || "").trim();
+  return latestStatus || null;
+};
+
+export const normalizeNcmStockTransferStatusHistory = (statusResponse) => {
+  if (!Array.isArray(statusResponse?.data)) return [];
+  return statusResponse.data
+    .map((entry) => ({
+      status: String(entry?.status || "").trim().slice(0, 191),
+      addedAt: String(entry?.added_time || "").trim().slice(0, 64) || null,
+    }))
+    .filter((entry) => entry.status)
+    .slice(0, 50);
+};
+
+export const normalizeNcmStockTransferEvent = (status = "", event = "") => {
+  const normalize = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedStatus = normalize(status);
+  const normalizedEvent = normalize(event);
+  const combined = `${normalizedEvent} ${normalizedStatus}`.trim();
+  if (
+    combined.includes("delivery completed") ||
+    combined.includes("delivery complete") ||
+    combined.includes("delivered")
+  ) {
+    return { status: "Delivered", rank: 6, custodyConfirmed: true };
+  }
+  if (combined.includes("return")) {
+    return { status: "Returned", rank: 7, custodyConfirmed: false };
+  }
+  if (combined.includes("sent for delivery") || combined.includes("out for delivery")) {
+    return { status: "Sent for Delivery", rank: 5, custodyConfirmed: true };
+  }
+  if (combined.includes("order arrived") || combined.includes("arrived")) {
+    return { status: "Arrived", rank: 4, custodyConfirmed: true };
+  }
+  if (combined.includes("dispatched") || combined.includes("dispached") || combined.includes("in transit")) {
+    return { status: "Dispatched", rank: 3, custodyConfirmed: true };
+  }
+  if (combined.includes("pickup completed") || combined.includes("pickup complete") || combined.includes("picked up")) {
+    return { status: "Pickup Complete", rank: 2, custodyConfirmed: true };
+  }
+  if (combined.includes("pickup order created") || combined.includes("sent for pickup") || combined.includes("drop off order created")) {
+    return { status: "Pickup Order Created", rank: 1, custodyConfirmed: false };
+  }
+  return {
+    status: String(status || event || "").trim().slice(0, 191),
+    rank: 0,
+    custodyConfirmed: false,
+  };
+};
+
+export const shouldAdvanceNcmStockTransferStatus = (currentStatus, incomingStatus) =>
+  normalizeNcmStockTransferEvent(incomingStatus).rank >= normalizeNcmStockTransferEvent(currentStatus).rank;
+
 export const normalizeApprovalLines = (lines, transferLines) => {
   if (!Array.isArray(lines) || lines.length !== transferLines.length) {
     throw fail("An approval quantity is required for every requested SKU line.");

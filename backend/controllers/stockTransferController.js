@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
@@ -17,13 +18,30 @@ import {
   normalizeShipmentReceiptLines,
   normalizeTransferPreparationChecklist,
   normalizeTransferRequestLines,
+  buildNcmStockTransferPayload,
+  extractNcmOrderId,
+  latestNcmStockTransferStatus,
+  normalizeNcmStockTransferEvent,
+  normalizeNcmOrderId,
+  normalizeNcmStockTransferStatusHistory,
+  normalizeNcmStockTransferPackageDetails,
+  isNcmBranchEligible,
+  shouldAdvanceNcmStockTransferStatus,
   isTransferPreparationComplete,
   isSameProfileOwner,
+  isPositiveLocalFreightCharge,
   planCostLayerAllocations,
   remainingApprovedQuantity,
   validateTransferRequestAvailability,
 } from "../services/stockTransferService.js";
-import { createOrderOnce, getShippingRate } from "../services/ncmClient.js";
+import {
+  createOrderOnce,
+  getNcmResponseRejection,
+  getOrder,
+  getOrderStatus,
+  getShippingRate,
+  requestOrderReturnOnce,
+} from "../services/ncmClient.js";
 
 const fail = (message, code = "INVALID_STOCK_TRANSFER", statusCode = 400) =>
   Object.assign(new Error(message), { code, statusCode });
@@ -32,13 +50,23 @@ const MAX_PAGE_SIZE = 100;
 
 const transferInclude = {
   manufacturer: { select: { id: true, name: true, phone: true, city: true, pickupAddress: true, pickupContactName: true, pickupContactPhone: true, ncmPickupBranch: true, pickupBranchStatus: true } },
-  distributor: { select: { id: true, name: true, phone: true, address: true, city: true } },
+  distributor: { select: { id: true, name: true, phone: true, address: true, city: true, ncmPickupBranch: true, pickupBranchStatus: true } },
   lines: {
     include: {
       inventorySku: { include: { product: { select: { id: true, name: true } } } },
       shipmentLines: {
         include: {
-          shipment: { select: { id: true, status: true, bookingMode: true, deliveryPartner: true, trackingNumber: true, externalReference: true, freightCharge: true, freightSettlementStatus: true, createdAt: true, dispatchedAt: true, deliveredAt: true } },
+          shipment: { select: {
+            id: true, status: true, bookingMode: true, deliveryPartner: true,
+            trackingNumber: true, externalReference: true, ncmOrderId: true,
+            freightCharge: true, freightSettlementStatus: true, packageWeight: true,
+            packageType: true, productType: true, productDescription: true,
+            packageDimensions: true, isFragile: true, deliveryInstruction: true,
+            packagingNotes: true, ncmStatus: true, ncmStatusHistory: true,
+            ncmPaymentStatus: true, ncmLastSyncedAt: true, ncmLastEventAt: true,
+            ncmReturnStatus: true, ncmReturnReason: true, ncmReturnRequestedAt: true,
+            createdAt: true, dispatchedAt: true, deliveredAt: true,
+          } },
           receiptLines: { include: { receipt: { select: { id: true, receivedAt: true, receivedBy: true, notes: true, status: true } } } },
           costLayerAllocations: { include: { costLayer: { select: { id: true, unitCogs: true, unitDeliveryCost: true } } } },
         },
@@ -56,6 +84,7 @@ const transferInclude = {
       },
       receipts: { orderBy: { receivedAt: "desc" }, include: { lines: true } },
       discrepancies: { orderBy: { createdAt: "desc" } },
+      events: { orderBy: [{ occurredAt: "desc" }, { receivedAt: "desc" }] },
     },
   },
   discrepancies: { orderBy: { createdAt: "desc" } },
@@ -156,7 +185,17 @@ const loadTransfer = (tx, id) => tx.stockTransfer.findUnique({
   where: { id },
   include: {
     manufacturer: { select: { id: true, name: true, phone: true, city: true, pickupAddress: true, pickupContactName: true, pickupContactPhone: true, ncmPickupBranch: true, pickupBranchStatus: true } },
-    distributor: { select: { id: true, name: true, phone: true, address: true, city: true } },
+    distributor: {
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        address: true,
+        city: true,
+        ncmPickupBranch: true,
+        pickupBranchStatus: true,
+      },
+    },
     lines: { include: { inventorySku: { include: { product: { select: { id: true, name: true } } } } } },
     shipments: { select: { id: true } },
   },
@@ -208,13 +247,26 @@ const normalizeFreightCharge = (value) => {
   return amount.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 };
 
-const shipmentHashPayload = ({ bookingMode, deliveryPartner, trackingNumber, externalReference, freightCharge, weight, lines }) => ({
+const shipmentHashPayload = ({
+  bookingMode,
+  deliveryPartner,
+  trackingNumber,
+  externalReference,
+  freightCharge,
+  packageDetails,
+  originBranch = null,
+  destinationBranch = null,
+  lines,
+}) => ({
   bookingMode,
   deliveryPartner: deliveryPartner || null,
   trackingNumber: trackingNumber || null,
   externalReference: externalReference || null,
   freightCharge: freightCharge === null ? null : String(freightCharge),
-  weight: weight ?? null,
+  weight: packageDetails?.packageWeight ?? null,
+  packageDetails: packageDetails ?? null,
+  originBranch,
+  destinationBranch,
   lines: [...lines]
     .map(({ stockTransferLineId, quantity }) => ({ stockTransferLineId, quantity }))
     .sort((left, right) => left.stockTransferLineId.localeCompare(right.stockTransferLineId)),
@@ -422,6 +474,7 @@ const createTransferShipment = async (tx, transfer, {
   externalReference = null,
   freightCharge = null,
   initialStatus = "PREPARING",
+  packageDetails = null,
 }) => tx.stockTransferShipment.create({
   data: {
     stockTransferId: transfer.id,
@@ -432,6 +485,16 @@ const createTransferShipment = async (tx, transfer, {
     trackingNumber,
     externalReference,
     freightCharge,
+    ...(packageDetails ? {
+      packageWeight: packageDetails.packageWeight,
+      packageType: packageDetails.packageType,
+      productType: packageDetails.productType,
+      productDescription: packageDetails.productDescription,
+      packageDimensions: packageDetails.packageDimensions,
+      isFragile: packageDetails.isFragile,
+      deliveryInstruction: packageDetails.deliveryInstruction || null,
+      packagingNotes: packageDetails.packagingNotes || null,
+    } : {}),
     status: initialStatus,
     ...(initialStatus === "BOOKING_PENDING" ? {} : { bookedAt: new Date() }),
     lines: {
@@ -700,7 +763,12 @@ export const listManufacturerStockTransfers = async (req, res) => {
 export const listAdminStockTransfers = async (req, res) => {
   try {
     const status = clean(req.query.status).toUpperCase();
-    const where = status ? { status } : {};
+    const bookingMode = clean(req.query.bookingMode).toUpperCase();
+    if (bookingMode && bookingMode !== "NCM") throw fail("Booking mode filter is invalid.");
+    const where = {
+      ...(status ? { status } : {}),
+      ...(bookingMode ? { shipments: { some: { bookingMode } } } : {}),
+    };
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
     const [transfers, total] = await prisma.$transaction([
@@ -827,6 +895,9 @@ export const dispatchManualStockTransfer = async (req, res) => {
     if (!deliveryPartner || deliveryPartner.length > 191) throw fail("A manual shipment carrier name is required.");
     if (trackingNumber?.length > 191 || externalReference?.length > 191) throw fail("Shipment tracking details are too long.");
     const freightCharge = normalizeFreightCharge(req.body?.freightCharge);
+    if (!isPositiveLocalFreightCharge(freightCharge)) {
+      throw fail("Local logistics requires a positive manufacturer-paid freight charge.", "LOCAL_FREIGHT_REQUIRED", 400);
+    }
     const outcome = await prisma.$transaction(async (tx) => {
       const transfer = await loadTransfer(tx, req.params.id);
       if (!transfer || transfer.manufacturerId !== req.manufacturerId) throw fail("Stock transfer not found.", "TRANSFER_NOT_FOUND", 404);
@@ -922,7 +993,7 @@ export const bookNcmStockTransfer = async (req, res) => {
     }
     const idempotencyKey = requestKeyFor(req);
     if (!idempotencyKey || idempotencyKey.length > 140) throw fail("Provide a valid Idempotency-Key for this NCM booking.");
-    const weight = Number(req.body?.weight ?? 1);
+    const packageDetails = normalizeNcmStockTransferPackageDetails(req.body?.packageDetails || req.body);
     const requestedLines = normalizeDispatchRequestLines(req.body?.lines, transfer.lines);
     const fullIdempotencyKey = `${transfer.id}:ncm:${idempotencyKey}`;
     const requestHash = buildShipmentRequestHash(shipmentHashPayload({
@@ -931,7 +1002,10 @@ export const bookNcmStockTransfer = async (req, res) => {
       trackingNumber: null,
       externalReference: null,
       freightCharge: null,
-      weight,
+      weight: packageDetails.packageWeight,
+      packageDetails,
+      originBranch: transfer.manufacturer.ncmPickupBranch,
+      destinationBranch: transfer.distributor.ncmPickupBranch,
       lines: requestedLines,
     }));
     const existingShipment = await prisma.stockTransferShipment.findUnique({
@@ -946,18 +1020,67 @@ export const bookNcmStockTransfer = async (req, res) => {
         bookingPending: ["BOOKING_PENDING", "BOOKING_UNKNOWN"].includes(existingShipment.status),
       });
     }
-    if (!Number.isFinite(weight) || weight <= 0 || weight > 1000) throw fail("Shipment weight must be greater than 0 and no more than 1000 kg.");
-    if (!transfer.manufacturer.ncmPickupBranch || transfer.manufacturer.pickupBranchStatus !== "VERIFIED") {
-      throw fail("Verify the manufacturer's NCM pickup branch before using NCM. Manual booking is still available.", "NCM_PICKUP_BRANCH_UNVERIFIED", 409);
+    const branchNames = [
+      clean(transfer.manufacturer.ncmPickupBranch).toUpperCase(),
+      clean(transfer.distributor.ncmPickupBranch).toUpperCase(),
+    ];
+    const activeBranches = await prisma.ncmBranch.findMany({
+      where: { name: { in: branchNames }, isActive: true },
+      select: { name: true },
+    });
+    const activeBranchNames = activeBranches.map(({ name }) => name);
+    if (!isNcmBranchEligible({
+      branchName: transfer.manufacturer.ncmPickupBranch,
+      status: transfer.manufacturer.pickupBranchStatus,
+      activeBranchNames,
+    })) {
+      const rejected = String(transfer.manufacturer.pickupBranchStatus || "").toUpperCase() === "REJECTED";
+      throw fail(
+        rejected
+          ? "The manufacturer's NCM pickup branch was rejected. Ask an administrator to assign a valid branch."
+          : "The manufacturer's NCM pickup branch is missing from the active NCM branch catalog. Sync the NCM branches or choose manual booking.",
+        rejected ? "NCM_PICKUP_BRANCH_REJECTED" : "NCM_PICKUP_BRANCH_UNAVAILABLE",
+        409,
+      );
     }
-    if (!transfer.distributor.city || !transfer.distributor.address || !transfer.distributor.phone) {
-      throw fail("The distributor profile needs a city, address, and phone number for NCM delivery.", "NCM_DESTINATION_INCOMPLETE", 409);
+    if (!isNcmBranchEligible({
+      branchName: transfer.distributor.ncmPickupBranch,
+      status: transfer.distributor.pickupBranchStatus,
+      activeBranchNames,
+    })) {
+      const rejected = String(transfer.distributor.pickupBranchStatus || "").toUpperCase() === "REJECTED";
+      throw fail(
+        rejected
+          ? "The distributor's NCM destination branch was rejected. Ask an administrator to assign a valid branch."
+          : "The distributor's NCM destination branch is missing from the active NCM branch catalog. Sync the NCM branches or choose manual booking.",
+        rejected ? "NCM_DESTINATION_BRANCH_REJECTED" : "NCM_DESTINATION_BRANCH_UNAVAILABLE",
+        409,
+      );
+    }
+    const branchVerifiedAt = new Date();
+    const branchVerificationUpdates = [
+      ...(transfer.manufacturer.pickupBranchStatus !== "VERIFIED" ? [
+        prisma.manufacturer.update({
+          where: { id: transfer.manufacturer.id },
+          data: { pickupBranchStatus: "VERIFIED", pickupBranchVerifiedAt: branchVerifiedAt },
+        }),
+      ] : []),
+      ...(transfer.distributor.pickupBranchStatus !== "VERIFIED" ? [
+        prisma.distributor.update({
+          where: { id: transfer.distributor.id },
+          data: { pickupBranchStatus: "VERIFIED", pickupBranchVerifiedAt: branchVerifiedAt },
+        }),
+      ] : []),
+    ];
+    if (branchVerificationUpdates.length) await prisma.$transaction(branchVerificationUpdates);
+    if (!transfer.distributor.address || !transfer.distributor.phone) {
+      throw fail("The distributor profile needs an address and phone number for NCM delivery.", "NCM_DESTINATION_INCOMPLETE", 409);
     }
     let rateResponse;
     try {
       rateResponse = await getShippingRate({
         creation: transfer.manufacturer.ncmPickupBranch,
-        destination: transfer.distributor.city,
+        destination: transfer.distributor.ncmPickupBranch,
         type: "Door2Door",
       });
     } catch (error) {
@@ -1000,6 +1123,7 @@ export const bookNcmStockTransfer = async (req, res) => {
         bookingRequestHash: requestHash,
         deliveryPartner: "NCM",
         freightCharge,
+        packageDetails,
         initialStatus: "BOOKING_PENDING",
       });
       await allocateShipmentCostLayers(tx, current, shipment, { reserve: true });
@@ -1010,24 +1134,19 @@ export const bookNcmStockTransfer = async (req, res) => {
       return res.json({ success: true, ...prepared, bookingPending: ["BOOKING_PENDING", "BOOKING_UNKNOWN"].includes(prepared.shipment.status) });
     }
 
-    const ncmPayload = {
-      name: transfer.distributor.name,
-      phone: transfer.distributor.phone,
-      phone2: "",
-      cod_charge: "0",
-      address: transfer.distributor.address,
-      fbranch: transfer.manufacturer.ncmPickupBranch,
-      branch: transfer.distributor.city,
-      package: `Bulk stock transfer ${transfer.id}`,
-      vref_id: `BT-${prepared.shipment.id}`,
-      instruction: "Platform stock transfer. No COD collection.",
-      delivery_type: "Door2Door",
-      weight: String(weight),
-    };
+    const ncmPayload = buildNcmStockTransferPayload({ transfer, packageDetails });
 
     let ncmResponse;
     try {
       ncmResponse = await createOrderOnce(ncmPayload);
+      const rejection = getNcmResponseRejection(ncmResponse.data);
+      if (rejection) {
+        throw Object.assign(new Error(`NCM rejected the booking: ${rejection}`), {
+          code: "NCM_BOOKING_REJECTED",
+          httpStatus: 400,
+          response: ncmResponse.data,
+        });
+      }
     } catch (error) {
       const isDefinitiveRejection = [400, 401, 403, 404, 422].includes(Number(error.httpStatus));
       await prisma.$transaction(async (tx) => {
@@ -1054,8 +1173,8 @@ export const bookNcmStockTransfer = async (req, res) => {
       });
     }
 
-    const ncmOrderId = ncmResponse.data?.orderid ?? ncmResponse.data?.id;
-    if (ncmOrderId === null || ncmOrderId === undefined || String(ncmOrderId).trim() === "") {
+    const ncmOrderId = extractNcmOrderId(ncmResponse.data);
+    if (!ncmOrderId) {
       await prisma.stockTransferShipment.update({
         where: { id: prepared.shipment.id, status: "BOOKING_PENDING" },
         data: { status: "BOOKING_UNKNOWN" },
@@ -1070,25 +1189,331 @@ export const bookNcmStockTransfer = async (req, res) => {
       });
       const current = await loadTransfer(tx, transfer.id);
       if (!shipment || shipment.status !== "BOOKING_PENDING") {
-        throw fail("NCM booking is recorded but its stock dispatch needs administrator reconciliation.", "NCM_BOOKING_FINALIZATION_REQUIRED", 202);
+        throw fail("NCM booking is recorded but needs administrator reconciliation.", "NCM_BOOKING_FINALIZATION_REQUIRED", 202);
       }
-      await dispatchShipmentStock(tx, current, shipment, current.lines, actorFor(req), { releaseReservations: true });
-      return tx.stockTransferShipment.update({
+      const booked = await tx.stockTransferShipment.update({
         where: { id: shipment.id },
         data: {
-          status: "DISPATCHED",
-          externalReference: String(ncmOrderId).slice(0, 191),
+          status: "BOOKED",
+          ncmOrderId,
+          externalReference: ncmOrderId,
           trackingNumber: clean(ncmResponse.data?.tracking_number || ncmResponse.data?.trackingNumber) || null,
           bookedAt: new Date(),
-          dispatchedAt: new Date(),
           freightCharge,
         },
         include: { lines: true },
       });
+      await tx.stockTransferShipmentEvent.create({
+        data: {
+          shipmentId: shipment.id,
+          eventKey: ncmShipmentEventKey(shipment.id, "BOOKING_CONFIRMED", ncmOrderId, ""),
+          source: "NCM_BOOKING",
+          eventType: "BOOKING_CONFIRMED",
+          status: "BOOKED",
+          payload: { orderId: ncmOrderId },
+          occurredAt: booked.bookedAt,
+        },
+      });
+      return booked;
     }, { isolationLevel: "Serializable" });
     return res.status(201).json({ success: true, shipment: finalized, replayed: false, codCharge: "0.00" });
   } catch (error) {
     return respondError(res, error, "bookNcmStockTransfer");
+  }
+};
+
+const loadNcmShipmentForAction = async (req, { adminOnly = false } = {}) => {
+  const shipment = await prisma.stockTransferShipment.findUnique({
+    where: { id: req.params.shipmentId },
+    include: { stockTransfer: { select: { manufacturerId: true, distributorId: true } } },
+  });
+  const isAdmin = req.adminId ||
+    String(req.auth?.role || "").toUpperCase() === "ADMIN" ||
+    req.auth?.roles?.includes("ADMIN");
+  const isParticipant =
+    (req.manufacturerId && shipment?.stockTransfer.manufacturerId === req.manufacturerId) ||
+    (req.distributorId && shipment?.stockTransfer.distributorId === req.distributorId);
+  if (
+    !shipment ||
+    shipment.bookingMode !== "NCM" ||
+    (adminOnly ? !isAdmin : !isAdmin && !isParticipant)
+  ) {
+    throw fail("NCM shipment not found.", "SHIPMENT_NOT_FOUND", 404);
+  }
+  const ncmOrderId = normalizeNcmOrderId(shipment.ncmOrderId || shipment.externalReference);
+  if (!ncmOrderId) {
+    throw fail("This shipment has no confirmed NCM order ID to query.", "NCM_ORDER_ID_MISSING", 409);
+  }
+  return { shipment, ncmOrderId: Number(ncmOrderId) };
+};
+
+const parseNcmEventDate = (value) => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const ncmShipmentEventKey = (shipmentId, event, status, timestamp) => crypto
+  .createHash("sha256")
+  .update([shipmentId, event || "", status || "", timestamp || ""].join("|"))
+  .digest("hex");
+
+export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "NCM_WEBHOOK" }) => {
+  const orderId = String(ncmId || "").trim();
+  if (!orderId) return false;
+  const shipment = await prisma.stockTransferShipment.findFirst({
+    where: {
+      bookingMode: "NCM",
+      OR: [{ ncmOrderId: orderId }, { externalReference: orderId }],
+    },
+    select: { id: true },
+  });
+  if (!shipment) return false;
+
+  const event = String(payload.event || "NCM_STATUS_CHANGED").trim().slice(0, 191);
+  const normalized = normalizeNcmStockTransferEvent(payload.status, payload.event);
+  const status = normalized.status || null;
+  const occurredAt = parseNcmEventDate(payload.timestamp);
+  const eventKey = ncmShipmentEventKey(shipment.id, event, status, payload.timestamp || "");
+  const occurredAtKey = eventKey;
+
+  const webhookResult = await prisma.$transaction(async (tx) => {
+    const current = await tx.stockTransferShipment.findUnique({
+      where: { id: shipment.id },
+      include: { lines: true },
+    });
+    if (!current || current.bookingMode !== "NCM") return null;
+
+    const insertedEvent = await tx.stockTransferShipmentEvent.createMany({
+      data: [{
+        shipmentId: current.id,
+        eventKey: occurredAtKey,
+        source,
+        eventType: event,
+        status,
+        payload: {
+          orderId,
+          status: payload.status || null,
+          event: payload.event || null,
+          timestamp: payload.timestamp || null,
+        },
+        occurredAt,
+      }],
+      skipDuplicates: true,
+    });
+    if (!insertedEvent.count) {
+      return {
+        shipmentId: current.id,
+        shipmentStatus: current.status,
+        ncmStatus: current.ncmStatus,
+        duplicate: true,
+        stockMovementApplied: false,
+      };
+    }
+
+    let dispatchedAt = current.dispatchedAt;
+    let shipmentStatus = current.status;
+    let stockMovementApplied = false;
+    if (normalized.custodyConfirmed && ["BOOKED", "BOOKING_UNKNOWN"].includes(current.status)) {
+      const transfer = await loadTransfer(tx, current.stockTransferId);
+      if (!transfer) throw fail("Stock transfer not found for NCM pickup event.", "TRANSFER_NOT_FOUND", 404);
+      await dispatchShipmentStock(
+        tx,
+        transfer,
+        current,
+        transfer.lines,
+        { id: null, role: "SYSTEM" },
+        { releaseReservations: true },
+      );
+      dispatchedAt = new Date();
+      shipmentStatus = "DISPATCHED";
+      stockMovementApplied = true;
+    }
+
+    const shouldAdvanceStatus = shouldAdvanceNcmStockTransferStatus(current.ncmStatus || "", status || "");
+    const previousEventAt = current.ncmLastEventAt;
+    const latestEventAt = !previousEventAt || !occurredAt || occurredAt > previousEventAt
+      ? (occurredAt || new Date())
+      : previousEventAt;
+    const history = Array.isArray(current.ncmStatusHistory) ? current.ncmStatusHistory : [];
+    const nextHistory = status
+      ? [{ status, addedAt: (occurredAt || new Date()).toISOString() }, ...history]
+        .slice(0, 50)
+      : history;
+
+    const updated = await tx.stockTransferShipment.update({
+      where: { id: current.id },
+      data: {
+        ...(shouldAdvanceStatus && status ? { ncmStatus: status } : {}),
+        ...(status ? { ncmStatusHistory: nextHistory } : {}),
+        ncmLastSyncedAt: new Date(),
+        ncmLastEventAt: latestEventAt,
+        ...(shipmentStatus !== current.status ? { status: shipmentStatus, dispatchedAt } : {}),
+      },
+      select: { id: true, status: true, ncmStatus: true },
+    });
+    return {
+      shipmentId: updated.id,
+      shipmentStatus: updated.status,
+      ncmStatus: updated.ncmStatus,
+      duplicate: false,
+      stockMovementApplied,
+    };
+  }, { isolationLevel: "Serializable" });
+  return webhookResult || false;
+};
+
+export const syncNcmStockTransferShipment = async (req, res) => {
+  try {
+    const { shipment, ncmOrderId } = await loadNcmShipmentForAction(req, { adminOnly: true });
+    const [detailResponse, statusResponse] = await Promise.all([
+      getOrder(ncmOrderId),
+      getOrderStatus(ncmOrderId),
+    ]);
+    const ncmStatus = latestNcmStockTransferStatus(statusResponse, detailResponse);
+    const ncmStatusHistory = normalizeNcmStockTransferStatusHistory(statusResponse);
+    const detail = detailResponse.data && !Array.isArray(detailResponse.data)
+      ? detailResponse.data
+      : {};
+    const deliveryCharge = detail.delivery_charge === undefined || detail.delivery_charge === null
+      ? null
+      : Number(detail.delivery_charge);
+    if (deliveryCharge !== null && (!Number.isFinite(deliveryCharge) || deliveryCharge < 0)) {
+      throw fail("NCM returned an invalid delivery charge.", "NCM_INVALID_RATE", 502);
+    }
+    if (ncmStatus) {
+      await applyNcmStockTransferWebhook({
+        payload: {
+          order_id: String(ncmOrderId),
+          status: ncmStatus,
+          event: ncmStatus,
+          timestamp: ncmStatusHistory[0]?.addedAt || null,
+        },
+        ncmId: String(ncmOrderId),
+        source: "ADMIN_RECONCILIATION",
+      });
+    }
+    const current = await prisma.stockTransferShipment.findUnique({ where: { id: shipment.id } });
+    if (!current) throw fail("NCM shipment not found.", "SHIPMENT_NOT_FOUND", 404);
+    if (ncmStatusHistory.length) {
+      const orderedHistory = [...ncmStatusHistory].reverse();
+      for (const entry of orderedHistory) {
+        await applyNcmStockTransferWebhook({
+          payload: {
+            order_id: String(ncmOrderId),
+            status: entry.status,
+            event: entry.status,
+            timestamp: entry.addedAt,
+          },
+          ncmId: String(ncmOrderId),
+          source: "ADMIN_RECONCILIATION",
+        });
+      }
+    } else if (ncmStatus) {
+      await applyNcmStockTransferWebhook({
+        payload: {
+          order_id: String(ncmOrderId),
+          status: ncmStatus,
+          event: ncmStatus,
+          timestamp: null,
+        },
+        ncmId: String(ncmOrderId),
+        source: "ADMIN_RECONCILIATION",
+      });
+    }
+    const updated = await prisma.stockTransferShipment.update({
+      where: { id: shipment.id },
+      data: {
+        ...(detail.payment_status ? { ncmPaymentStatus: String(detail.payment_status).slice(0, 64) } : {}),
+        ...(deliveryCharge === null ? {} : {
+          freightCharge: new Prisma.Decimal(deliveryCharge).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+        }),
+        ...(detail.vendor_return === true && ["PENDING", "UNKNOWN"].includes(current.ncmReturnStatus)
+          ? { ncmReturnStatus: "REQUESTED" }
+          : {}),
+        ncmLastSyncedAt: new Date(),
+      },
+    });
+    return res.json({ success: true, shipment: updated });
+  } catch (error) {
+    if (error.code === "NCM_ORDER_ID_MISSING" || error.code === "SHIPMENT_NOT_FOUND" || error.code === "NCM_INVALID_RATE") {
+      return respondError(res, error, "syncNcmStockTransferShipment");
+    }
+    console.error("syncNcmStockTransferShipment error:", error);
+    return res.status(502).json({
+      success: false,
+      message: "NCM tracking could not be refreshed. The last saved carrier status has been kept.",
+      code: error.code || "NCM_STATUS_SYNC_FAILED",
+    });
+  }
+};
+
+export const requestNcmStockTransferReturn = async (req, res) => {
+  let shipment;
+  try {
+    const loaded = await loadNcmShipmentForAction(req);
+    shipment = loaded.shipment;
+    if (!req.manufacturerId || shipment.stockTransfer.manufacturerId !== req.manufacturerId) {
+      throw fail("Only the manufacturer that booked this shipment can request an NCM return.", "NCM_RETURN_FORBIDDEN", 403);
+    }
+    const reason = clean(req.body?.reason);
+    if (!reason || reason.length > 2000) throw fail("Provide an NCM return reason no longer than 2000 characters.");
+    if (["REQUESTED", "PENDING", "UNKNOWN"].includes(shipment.ncmReturnStatus)) {
+      if (shipment.ncmReturnStatus === "REQUESTED") return res.json({ success: true, shipment, replayed: true });
+      throw fail("The NCM return request is unresolved. Refresh tracking before trying again.", "NCM_RETURN_UNRESOLVED", 409);
+    }
+    const claim = await prisma.stockTransferShipment.updateMany({
+      where: { id: shipment.id, ncmReturnStatus: shipment.ncmReturnStatus },
+      data: {
+        ncmReturnStatus: "PENDING",
+        ncmReturnReason: reason,
+        ncmReturnRequestedAt: new Date(),
+      },
+    });
+    if (claim.count !== 1) throw fail("The NCM return state changed; refresh the shipment and retry.", "NCM_RETURN_CONFLICT", 409);
+
+    let response;
+    try {
+      response = await requestOrderReturnOnce({
+        pk: loaded.ncmOrderId,
+        comment: reason,
+      });
+    } catch (error) {
+      const isDefinitiveRejection = [400, 401, 403, 404, 422].includes(Number(error.httpStatus));
+      await prisma.stockTransferShipment.update({
+        where: { id: shipment.id, ncmReturnStatus: "PENDING" },
+        data: { ncmReturnStatus: isDefinitiveRejection ? "FAILED" : "UNKNOWN" },
+      });
+      throw Object.assign(
+        new Error(isDefinitiveRejection
+          ? "NCM rejected the return request. Correct the details or contact the carrier."
+          : "NCM return outcome is uncertain. Refresh tracking before retrying."),
+        { code: isDefinitiveRejection ? "NCM_RETURN_REJECTED" : "NCM_RETURN_UNKNOWN", statusCode: 502 },
+      );
+    }
+
+    const rejection = getNcmResponseRejection(response.data);
+    if (rejection) {
+      await prisma.stockTransferShipment.update({
+        where: { id: shipment.id, ncmReturnStatus: "PENDING" },
+        data: { ncmReturnStatus: "FAILED" },
+      });
+      throw fail(`NCM rejected the return request: ${rejection}`, "NCM_RETURN_REJECTED", 502);
+    }
+    if (response.data?.vendor_return !== true) {
+      await prisma.stockTransferShipment.update({
+        where: { id: shipment.id, ncmReturnStatus: "PENDING" },
+        data: { ncmReturnStatus: "UNKNOWN" },
+      });
+      throw fail("NCM did not confirm the return request. Refresh carrier status before retrying.", "NCM_RETURN_UNKNOWN", 202);
+    }
+    const updated = await prisma.stockTransferShipment.update({
+      where: { id: shipment.id, ncmReturnStatus: "PENDING" },
+      data: { ncmReturnStatus: "REQUESTED" },
+    });
+    return res.status(201).json({ success: true, shipment: updated, replayed: false });
+  } catch (error) {
+    return respondError(res, error, "requestNcmStockTransferReturn");
   }
 };
 
@@ -1270,17 +1695,24 @@ export const resolveNcmShipmentBooking = async (req, res) => {
         where: { id: req.params.shipmentId },
         include: { lines: true },
       });
+      const isUnresolvedBooking = ["BOOKING_PENDING", "BOOKING_UNKNOWN"].includes(currentShipment?.status);
+      const canRepairMissingReference = ["BOOKED", "DISPATCHED", "PARTIALLY_RECEIVED", "DELIVERED", "DISCREPANCY"].includes(currentShipment?.status)
+        && !normalizeNcmOrderId(currentShipment.ncmOrderId || currentShipment.externalReference);
       const pendingTooRecently = currentShipment?.status === "BOOKING_PENDING"
         && Date.now() - currentShipment.createdAt.getTime() < 5 * 60 * 1000;
       if (
         !currentShipment ||
-        !["BOOKING_PENDING", "BOOKING_UNKNOWN"].includes(currentShipment.status) ||
+        currentShipment.bookingMode !== "NCM" ||
+        (!isUnresolvedBooking && !(outcome === "BOOKED" && canRepairMissingReference)) ||
         pendingTooRecently
       ) {
-        throw fail("Only an unresolved NCM booking can be reconciled.", "SHIPMENT_STATE_CONFLICT", 409);
+        throw fail("Only an unresolved NCM booking or a dispatched/received NCM shipment missing its carrier ID can be reconciled.", "SHIPMENT_STATE_CONFLICT", 409);
       }
       const transfer = await loadTransfer(tx, currentShipment.stockTransferId);
       if (!transfer) throw fail("Stock transfer not found.", "TRANSFER_NOT_FOUND", 404);
+      if (outcome === "NOT_BOOKED" && !isUnresolvedBooking) {
+        throw fail("A dispatched shipment cannot be marked as not booked.", "SHIPMENT_STATE_CONFLICT", 409);
+      }
       if (outcome === "NOT_BOOKED") {
         await releaseNcmReservations(tx, transfer, currentShipment, req.auth.accountId);
         return tx.stockTransferShipment.update({
@@ -1289,21 +1721,41 @@ export const resolveNcmShipmentBooking = async (req, res) => {
           include: { lines: true },
         });
       }
-      const externalReference = clean(req.body?.externalReference);
-      if (!externalReference || externalReference.length > 191) throw fail("Provide the confirmed NCM order reference.");
-      await dispatchShipmentStock(tx, transfer, currentShipment, transfer.lines, actorFor(req), { releaseReservations: true });
-      return tx.stockTransferShipment.update({
+      const ncmOrderId = normalizeNcmOrderId(req.body?.externalReference);
+      if (!ncmOrderId) throw fail("Provide the numeric NCM order ID confirmed in the carrier portal.");
+      const conflictingShipment = await tx.stockTransferShipment.findFirst({
+        where: { ncmOrderId, id: { not: currentShipment.id } },
+        select: { id: true },
+      });
+      if (conflictingShipment) {
+        throw fail("That NCM order ID is already linked to another shipment.", "NCM_ORDER_ID_CONFLICT", 409);
+      }
+      const booked = await tx.stockTransferShipment.update({
         where: { id: currentShipment.id },
         data: {
-          status: "DISPATCHED",
-          externalReference,
-          trackingNumber: clean(req.body?.trackingNumber) || null,
+          ...(isUnresolvedBooking ? { status: "BOOKED" } : {}),
+          ncmOrderId,
+          externalReference: ncmOrderId,
+          trackingNumber: clean(req.body?.trackingNumber) || currentShipment.trackingNumber,
           freightCharge: normalizeFreightCharge(req.body?.freightCharge) ?? currentShipment.freightCharge,
           bookedAt: currentShipment.bookedAt || new Date(),
-          dispatchedAt: new Date(),
         },
         include: { lines: true },
       });
+      if (isUnresolvedBooking) {
+        await tx.stockTransferShipmentEvent.create({
+          data: {
+            shipmentId: currentShipment.id,
+            eventKey: ncmShipmentEventKey(currentShipment.id, "BOOKING_CONFIRMED", ncmOrderId, ""),
+            source: "ADMIN_RECONCILIATION",
+            eventType: "BOOKING_CONFIRMED",
+            status: "BOOKED",
+            payload: { orderId: ncmOrderId },
+            occurredAt: booked.bookedAt,
+          },
+        });
+      }
+      return booked;
     }, { isolationLevel: "Serializable" });
     return res.json({ success: true, shipment });
   } catch (error) {

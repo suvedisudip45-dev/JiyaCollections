@@ -15,6 +15,7 @@ import {
   webhookIdentifiers,
 } from "../services/deliveryService.js";
 import { postNcmRemittanceAccounting } from "../services/accountingPostingEngine.js";
+import { applyNcmStockTransferWebhook } from "./stockTransferController.js";
 
 
 const webhookSecret = process.env.NCM_WEBHOOK_SECRET || "";
@@ -27,7 +28,7 @@ const safeCompare = (left, right) => {
 };
 
 const isWebhookAuthorized = (req) => {
-  if (!webhookSecret) return true;
+  if (!webhookSecret) return process.env.NODE_ENV !== "production";
   const authHeader = req.get("authorization") || "";
   const tokenFromAuth = authHeader.startsWith("Token ")
     ? authHeader.slice(6).trim()
@@ -42,12 +43,7 @@ const isWebhookAuthorized = (req) => {
     req.body?.secret ||
     req.body?.token;
 
-  if (!provided) {
-    const userAgent = req.get("user-agent") || "";
-    if (userAgent.includes("NCM-Webhook")) return true;
-    return false;
-  }
-  return safeCompare(provided, webhookSecret) || provided === webhookSecret;
+  return safeCompare(provided, webhookSecret);
 };
 
 export const readyForDelivery = async (req, res) => {
@@ -97,9 +93,44 @@ export const readyForDeliveryByAssignment = async (req, res) => {
   return readyForDelivery(req, res);
 };
 
+export const adminRequestNcmDeliveryByAssignment = async (req, res) => {
+  try {
+    const assignment = await prisma.orderAssignment.findUnique({ where: { id: req.params.id } });
+    if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+    const result = await prepareReadyDelivery({
+      orderId: assignment.orderId,
+      adminId: req.adminId,
+      packageWeight: req.body.packageWeight,
+      packageDimensions: req.body.packageDimensions,
+      packagingNotes: req.body.packagingNotes,
+      productType: req.body.productType,
+      productDescription: req.body.productDescription,
+      packageType: req.body.packageType,
+      isFragile: req.body.isFragile,
+      deliveryInstruction: req.body.deliveryInstruction,
+      instruction: req.body.instruction,
+    });
+    if (result.alreadySubmitted) {
+      return res.json({ success: true, delivery: result.delivery, duplicate: true });
+    }
+    const delivery = await submitDeliveryToNcm(result.delivery.id);
+    return res.status(202).json({ success: true, delivery });
+  } catch (error) {
+    const status = ["DELIVERY_NOT_FOUND", "DELIVERY_ASSIGNMENT_NOT_FOUND"].includes(error.code)
+      ? 404
+      : error.code === "DELIVERY_METHOD_CHANGED"
+        ? 409
+        : 400;
+    const userMessage = typeof error.code === "string" && error.code.startsWith("NCM_") || error.code === "NCM_SUBMISSION_UNKNOWN"
+      ? `Failed to book courier. ${error.message}`
+      : error.message;
+    return res.status(status).json({ success: false, message: userMessage, code: error.code || "DELIVERY_FAILED" });
+  }
+};
+
 export const requestReturn = async (req, res) => {
   try {
-    const result = await requestDeliveryReturn({ deliveryId: req.body.deliveryId, manufacturerId: req.manufacturerId, reason: req.body.reason });
+    const result = await requestDeliveryReturn({ deliveryId: req.body.deliveryId, manufacturerId: req.manufacturerId, distributorId: req.distributorId, reason: req.body.reason });
     res.json({ success: true, return: result });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -126,10 +157,22 @@ export const receiveWebhook = async (req, res) => {
     return res.status(400).json({ status: "bad_request", success: false, message: "Invalid webhook payload" });
   }
 
-  res.status(202).json({ status: "received", success: true, accepted: true });
-  storeAndApplyWebhook(req.body).catch((error) => {
+  try {
+    const result = await storeAndApplyWebhook(req.body, { onStockTransferStatus: applyNcmStockTransferWebhook });
+    const identifiers = webhookIdentifiers(req.body);
+    const matchedIdentifiers = new Set((result.updated || []).map((entry) => entry.ncmId));
+    return res.status(200).json({
+      status: "received",
+      success: true,
+      accepted: true,
+      duplicate: result.duplicate,
+      updates: result.updated,
+      unmatchedOrderIds: identifiers.filter((identifier) => !matchedIdentifiers.has(identifier)),
+    });
+  } catch (error) {
     console.error("NCM webhook processing failed:", error.message);
-  });
+    return res.status(500).json({ status: "error", success: false, message: "Webhook status could not be saved. NCM may retry." });
+  }
 };
 
 export const receiveOrderStatusWebhook = (req, res) => receiveWebhook(req, res);

@@ -6,11 +6,7 @@ import {
   getBranches,
   getNcmBranchName,
   getNcmBranchRows,
-  getBulkOrderStatuses,
   createCodTransferTicket,
-  getOrder,
-  getOrderComments,
-  getOrderStatus,
   getShippingRate,
   requestOrderReturn,
   shippingRateTypeForNcm,
@@ -337,7 +333,15 @@ const normalizePackagingMeta = (source = {}) => {
     packageType,
     isFragile,
     deliveryInstruction: instruction,
+    packageWeight: data.packageWeight ?? "",
+    packageDimensions: String(data.packageDimensions || "").trim(),
+    packagingNotes: String(data.packagingNotes || "").trim(),
   };
+};
+
+export const normalizePackageWeight = (value) => {
+  const weight = Number.parseFloat(String(value ?? "").trim());
+  return Number.isFinite(weight) && weight > 0 ? weight : null;
 };
 
 export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingMeta = {}, itemsOverride = null }) => {
@@ -376,12 +380,16 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
   const packageType = String(packagingMeta.packageType || meta.packageType || "Box").trim() || "Box";
   const isFragile = packagingMeta.isFragile !== undefined ? parseBoolean(packagingMeta.isFragile) : meta.isFragile;
   const instruction = String(packagingMeta.deliveryInstruction ?? packagingMeta.instruction ?? address.deliveryInstruction ?? "").trim();
+  const packageDimensions = String(packagingMeta.packageDimensions || meta.packageDimensions || "").trim();
+  const packagingNotes = String(packagingMeta.packagingNotes || meta.packagingNotes || "").trim();
 
   const packageDescription = [
     productType,
     productDescription,
     packageType,
+    packageDimensions ? `Dimensions: ${packageDimensions}` : "",
     isFragile ? "Fragile" : "Standard",
+    packagingNotes ? `Inspection/packaging: ${packagingNotes}` : "",
   ].filter(Boolean).join(" | ").slice(0, 500);
   const vendorReference = generateVendorReference({ order, assignment });
 
@@ -399,6 +407,8 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
     productDescription,
     packageType,
     isFragile,
+    packageDimensions,
+    packagingNotes,
     instruction,
     packageDescription,
     vendorReference,
@@ -429,7 +439,7 @@ export const isDeliveryOrderOwner = ({ order, assignment, distributorId, manufac
   )
 );
 
-export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
+export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, adminId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) {
     const error = new Error("Order not found or unauthorized");
@@ -441,7 +451,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   const isAssignmentOwner = assignment && (
     (distributorId && assignment.distributorId === distributorId) ||
     (manufacturerId && assignment.manufacturerId === manufacturerId) ||
-    (!distributorId && !manufacturerId)
+    (adminId && !distributorId && !manufacturerId)
   );
   if (!assignment || !isAssignmentOwner) {
     const error = new Error("Fulfillment assignment not found");
@@ -454,7 +464,11 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     throw error;
   }
 
-  await ensureOrderCardAttached({ orderId, manufacturerId, distributorId });
+  await ensureOrderCardAttached({
+    orderId,
+    manufacturerId: assignment.manufacturerId || manufacturerId,
+    distributorId: assignment.distributorId || distributorId,
+  });
 
   const existingNotes = parsePackagingMeta(assignment.notes);
   const packagingMeta = {
@@ -470,13 +484,60 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     packagingChecklist: packagingChecklist ?? existingNotes.packagingChecklist ?? null,
   };
 
+  const isAdminRequest = Boolean(adminId && !distributorId && !manufacturerId);
+  const normalizedWeight = normalizePackageWeight(packagingMeta.packageWeight);
+  if (isAdminRequest && (
+    !normalizedWeight ||
+    !String(packagingMeta.packageDimensions || "").trim() ||
+    !String(packagingMeta.productType || "").trim() ||
+    !String(packagingMeta.productDescription || "").trim() ||
+    !String(packagingMeta.packageType || "").trim()
+  )) {
+    const error = new Error("Product type, product description, package type, package weight, and package dimensions are required before NCM booking.");
+    error.code = "DELIVERY_PACKAGE_DETAILS_REQUIRED";
+    throw error;
+  }
+  const effectiveWeight = normalizedWeight || normalizePackageWeight(existingNotes.packageWeight) || 1;
+  packagingMeta.packageWeight = effectiveWeight;
+
+  let effectiveAssignment = assignment;
+  if (isAdminRequest) {
+    const currentStatus = String(assignment.status || "").toLowerCase();
+    if (!["packed", "package_details_complete", "ready_for_pickup"].includes(currentStatus)) {
+      const error = new Error("The fulfillment hub must pack and quality-check this order before admin can request NCM delivery.");
+      error.code = "DELIVERY_INVALID_STATE";
+      throw error;
+    }
+    if (currentStatus === "packed") {
+      const packageTransition = validateFulfillmentTransition({
+        currentStatus,
+        nextStatus: "package_details_complete",
+        notes: assignment.notes,
+        packageData: packagingMeta,
+      });
+      if (!packageTransition.valid) {
+        const error = new Error(packageTransition.message);
+        error.code = "DELIVERY_INVALID_STATE";
+        throw error;
+      }
+      effectiveAssignment = await prisma.orderAssignment.update({
+        where: { id: assignment.id },
+        data: { status: "package_details_complete", notes: JSON.stringify(packagingMeta) },
+      });
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { fulfillmentStatus: "package_details_complete" },
+      });
+    }
+  }
+
   const transition = validateFulfillmentTransition({
-    currentStatus: assignment.status,
+    currentStatus: effectiveAssignment.status,
     nextStatus: "ready_for_pickup",
-    notes: assignment.notes,
+    notes: effectiveAssignment.notes,
     packageData: packagingMeta,
   });
-  if (!transition.valid && assignment.status !== "ready_for_pickup") {
+  if (!transition.valid && effectiveAssignment.status !== "ready_for_pickup") {
     const error = new Error(transition.message);
     error.code = "DELIVERY_INVALID_STATE";
     throw error;
@@ -498,19 +559,21 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     return { delivery: existing, alreadySubmitted: true };
   }
 
-  const isPacked = VALID_READY_STATES.has(assignment.status);
-  const isRetryingHandoff = assignment.status === "ready_for_pickup" && existing && ["SUBMISSION_PENDING", "SUBMISSION_FAILED"].includes(existing.state);
+  const isPacked = VALID_READY_STATES.has(effectiveAssignment.status);
+  const isRetryingHandoff = effectiveAssignment.status === "ready_for_pickup" && existing && ["SUBMISSION_PENDING", "SUBMISSION_FAILED"].includes(existing.state);
   if (!isPacked && !isRetryingHandoff) {
-    const error = new Error(`Order must be packed before delivery submission; current state is ${assignment.status}`);
+    const error = new Error(`Order must be packed before delivery submission; current state is ${effectiveAssignment.status}`);
     error.code = "DELIVERY_INVALID_STATE";
     throw error;
   }
 
-  const activeDistributor = distributorId ? await prisma.distributor.findUnique({ where: { id: distributorId } }) : null;
-  const activeManufacturer = manufacturerId ? await prisma.manufacturer.findUnique({ where: { id: manufacturerId } }) : null;
+  const assignedDistributorId = effectiveAssignment.distributorId || distributorId || null;
+  const assignedManufacturerId = effectiveAssignment.manufacturerId || manufacturerId || null;
+  const activeDistributor = assignedDistributorId ? await prisma.distributor.findUnique({ where: { id: assignedDistributorId } }) : null;
+  const activeManufacturer = assignedManufacturerId ? await prisma.manufacturer.findUnique({ where: { id: assignedManufacturerId } }) : null;
   const originEntity = activeDistributor || activeManufacturer;
 
-  const input = buildDeliveryInput({ order, assignment, manufacturer: originEntity, packagingMeta });
+  const input = buildDeliveryInput({ order, assignment: effectiveAssignment, manufacturer: originEntity, packagingMeta });
 
   logger.info("Prepared NCM delivery payload", {
     orderId,
@@ -538,17 +601,19 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
             packageDescription: input.packageDescription,
             itemAmount: input.itemAmount,
             codAmount: input.codAmount,
-            packageWeight: Math.max(0.1, Number(packageWeight || existing.packageWeight || 1)),
-            assignmentId: assignment.id,
-            manufacturerId: manufacturerId || null,
+            packageWeight: effectiveWeight,
+            assignmentId: effectiveAssignment.id,
+            manufacturerId: assignedManufacturerId,
+            distributorId: assignedDistributorId,
             lastSyncError: null,
           },
         })
       : await tx.deliveryOrder.create({
           data: {
             orderId,
-            assignmentId: assignment.id,
-            manufacturerId: manufacturerId || null,
+            assignmentId: effectiveAssignment.id,
+            manufacturerId: assignedManufacturerId,
+            distributorId: assignedDistributorId,
             state: "SUBMISSION_PENDING",
             deliveryType: input.deliveryType,
             packageDescription: input.packageDescription,
@@ -556,7 +621,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
             destinationBranchName: input.destination,
             itemAmount: input.itemAmount,
             codAmount: input.codAmount,
-            packageWeight: Math.max(0.1, Number(packageWeight || 1)),
+            packageWeight: effectiveWeight,
             vendorReference: input.vendorReference,
           },
         });
@@ -568,15 +633,13 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     const assignmentClaim = await tx.orderAssignment.updateMany({
       where: {
         id: assignment.id,
-        status: assignment.status,
-        deliveryType: assignment.deliveryType,
+        status: effectiveAssignment.status,
+        deliveryType: effectiveAssignment.deliveryType,
       },
       data: {
         deliveryType: "NCM",
         notes: JSON.stringify({
-          ...existingNotes,
           ...packagingMeta,
-          packageWeight: Number(packageWeight || existing?.packageWeight || 1),
         }),
       },
     });
@@ -588,11 +651,11 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     await createEvent(tx, {
       deliveryOrderId: record.id,
       orderId,
-      source: "MANUFACTURER",
+      source: adminId ? "ADMIN" : distributorId ? "DISTRIBUTOR" : "MANUFACTURER",
       eventType: "READY_TO_DELIVER",
-      fromState: existing?.state || assignment.status,
+      fromState: existing?.state || effectiveAssignment.status,
       toState: "SUBMISSION_PENDING",
-      actorId: manufacturerId,
+      actorId: adminId || distributorId || manufacturerId,
       idempotencyKey: `READY_TO_DELIVER:${record.id}:${record.packageVersion}`,
     });
     return record;
@@ -618,13 +681,18 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     error.code = "ORDER_CANCELLED";
     throw error;
   }
-  const manufacturer = await prisma.manufacturer.findUnique({ where: { id: delivery.manufacturerId } });
+  const manufacturer = delivery.manufacturerId
+    ? await prisma.manufacturer.findUnique({ where: { id: delivery.manufacturerId } })
+    : null;
+  const distributor = delivery.distributorId
+    ? await prisma.distributor.findUnique({ where: { id: delivery.distributorId } })
+    : null;
   const assignment = await prisma.orderAssignment.findUnique({ where: { orderId: delivery.orderId } });
   const assignmentNotes = parsePackagingMeta(assignment?.notes);
   const input = buildDeliveryInput({
     order,
     assignment,
-    manufacturer,
+    manufacturer: distributor || manufacturer,
     packagingMeta: assignmentNotes,
   });
   const priorAttempts = await prisma.ncmRequestAttempt.findMany({
@@ -699,6 +767,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
       deliveryId: delivery.id,
       orderId: delivery.orderId,
       manufacturerId: delivery.manufacturerId,
+      distributorId: delivery.distributorId,
       fbranch: ncmPayload.fbranch,
       branch: ncmPayload.branch,
       delivery_type: ncmPayload.delivery_type,
@@ -760,7 +829,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
           customerDeliveryCharge: rateValue,
           ncmCreatedAt: new Date(),
           lastSyncedAt: new Date(),
-          nextSyncAt: new Date(Date.now() + 15 * 60 * 1000),
+          nextSyncAt: null,
           lastSyncError: null,
         },
       });
@@ -829,12 +898,42 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   }
 };
 
-export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
+export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockTransferStatus = null }) => {
   const ids = webhookIdentifiers(payload);
   const results = [];
   for (const ncmId of ids) {
     const trimmedId = String(ncmId || "").trim();
     if (!trimmedId) continue;
+    const stockTransferShipment = await prisma.stockTransferShipment.findFirst({
+      where: {
+        bookingMode: "NCM",
+        OR: [{ ncmOrderId: trimmedId }, { externalReference: trimmedId }],
+      },
+      select: { id: true },
+    });
+    if (stockTransferShipment) {
+      const handled = onStockTransferStatus
+        ? await onStockTransferStatus({ payload, ncmId: trimmedId, source })
+        : false;
+      if (handled) {
+        results.push({
+          ncmId: trimmedId,
+          stockTransferShipment: true,
+          ...(typeof handled === "object" ? handled : {}),
+        });
+        continue;
+      }
+      const ncmStatus = String(payload.status || payload.event || "").trim().slice(0, 191);
+      await prisma.stockTransferShipment.update({
+        where: { id: stockTransferShipment.id },
+        data: {
+          ...(ncmStatus ? { ncmStatus } : {}),
+          ncmLastSyncedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        },
+      });
+      results.push({ ncmId: trimmedId, stockTransferShipment: true });
+      continue;
+    }
     const appliedReturnStatus = await applyCustomerReturnNcmStatus({
       ncmOrderId: trimmedId,
       status: payload.status,
@@ -915,7 +1014,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
       const deliveryUpdateData = {
         ncmStatus: canonicalStatus,
         lastSyncedAt: new Date(),
-        nextSyncAt: new Date(Date.now() + 30 * 60 * 1000),
+        nextSyncAt: null,
         ...(deliveryState !== "EXTERNAL_STATUS_UNMAPPED" ? { state: deliveryState } : {}),
         ...(deliveryState === "PICKUP_CONFIRMED" ? { pickedUpAt: new Date() } : {}),
         ...(deliveryState === "DELIVERED" ? { deliveredAt: new Date() } : {}),
@@ -975,6 +1074,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
             deliveryOrderId: delivery.id,
             orderId: delivery.orderId,
             manufacturerId: delivery.manufacturerId,
+            distributorId: delivery.distributorId,
             state: "RETURN_REQUESTED",
             returnReason: payload.reason || payload.message || "NCM reported a returned delivery",
             ncmReturnComment: payload.comment || payload.reason || payload.message || null,
@@ -1061,12 +1161,17 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK" }) => {
       return record;
     });
 
-    results.push(updated);
+    results.push({
+      ncmId: trimmedId,
+      deliveryOrder: true,
+      deliveryState,
+      ncmStatus: canonicalStatus,
+    });
   }
   return results;
 };
 
-export const storeAndApplyWebhook = async (payload) => {
+export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = null } = {}) => {
   // Handle test webhooks sent from NCM Vendor Portal
   if (
     payload.test === true ||
@@ -1084,40 +1189,48 @@ export const storeAndApplyWebhook = async (payload) => {
     timestamp: payload.timestamp,
     event: payload.event,
   });
+  let duplicate = false;
+  const occurredAt = payload.timestamp ? new Date(payload.timestamp) : null;
 
   try {
     await prisma.ncmWebhookEvent.create({
       data: {
         eventKey,
         event: payload.event || null,
-        orderId: payload.order_id ? String(payload.order_id) : null,
-        orderIds: payload.order_ids || null,
+        orderId: ids[0] || null,
+        orderIds: payload.order_ids || ids,
         status: payload.status || null,
-        timestamp: payload.timestamp ? new Date(payload.timestamp) : null,
+        timestamp: occurredAt && !Number.isNaN(occurredAt.getTime()) ? occurredAt : null,
         payloadJson: sanitizePayload(payload),
       },
     });
   } catch (error) {
     if (error.code === "P2002") {
-      // Event already recorded; re-apply in case order was created after previous webhook attempt
-      const updated = await applyNcmStatus({ payload });
-      return { duplicate: true, updated };
+      duplicate = true;
+    } else {
+      throw error;
     }
-    throw error;
   }
 
   try {
-    const updated = await applyNcmStatus({ payload });
+    const updated = await applyNcmStatus({ payload, onStockTransferStatus });
     await prisma.ncmWebhookEvent.update({
       where: { eventKey },
-      data: { processingStatus: "PROCESSED", processedAt: new Date() },
+      data: { processingStatus: "PROCESSED", processedAt: new Date(), processingError: null },
     });
-    return { duplicate: false, updated };
+    return { duplicate, updated };
   } catch (error) {
-    await prisma.ncmWebhookEvent.update({
-      where: { eventKey },
-      data: { processingStatus: "FAILED", processingError: error.message },
-    }).catch(() => {});
+    try {
+      await prisma.ncmWebhookEvent.update({
+        where: { eventKey },
+        data: { processingStatus: "FAILED", processingError: error.message },
+      });
+    } catch (recordError) {
+      logger.error("Failed to record NCM webhook processing error", {
+        eventKey,
+        error: recordError.message,
+      });
+    }
     throw error;
   }
 };
@@ -1175,71 +1288,12 @@ export const storeOrderCommentWebhook = async (payload) => {
 };
 
 export const reconcileDelivery = async (deliveryId) => {
-  const delivery = await prisma.deliveryOrder.findUnique({ where: { id: deliveryId } });
-  if (!delivery?.ncmOrderId) throw new Error("Delivery has no NCM order ID");
-  const [detail, statuses, commentsResponse] = await Promise.all([
-    getOrder(delivery.ncmOrderId),
-    getOrderStatus(delivery.ncmOrderId),
-    getOrderComments(delivery.ncmOrderId),
-  ]);
-  const latest = Array.isArray(statuses.data) ? statuses.data[0] : null;
-  if (latest?.status) await applyNcmStatus({ payload: { order_id: delivery.ncmOrderId, status: latest.status, timestamp: latest.added_time, event: "NCM_POLL_STATUS" }, source: "NCM_POLL" });
-  const deliveryCharge = Number(detail.data?.delivery_charge ?? delivery.ncmDeliveryCharge ?? 0);
-  const codAmount = Number(detail.data?.cod_charge ?? delivery.codAmount ?? 0);
-  const paymentStatus = detail.data?.payment_status || null;
-  const codCollected = ["completed", "paid", "received", "success"].includes(String(paymentStatus || "").toLowerCase())
-    ? codAmount
-    : 0;
-  const existingSettlement = await prisma.deliveryFinancialSettlement.findUnique({ where: { deliveryOrderId: delivery.id } });
-  const nextSettlementState = ["REQUESTED", "SETTLED"].includes(existingSettlement?.settlementState)
-    ? existingSettlement.settlementState
-    : codCollected > 0 ? "COD_RECEIVED" : "PENDING";
-  await prisma.deliveryFinancialSettlement.upsert({
-    where: { deliveryOrderId: delivery.id },
-    create: {
-      deliveryOrderId: delivery.id,
-      ncmOrderId: delivery.ncmOrderId,
-      codExpected: codAmount,
-      deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-      deliveryFeeActual: deliveryCharge,
-      codCollected,
-      settlementState: nextSettlementState,
-    },
-    update: {
-      ncmOrderId: delivery.ncmOrderId,
-      codExpected: codAmount,
-      deliveryFeeActual: deliveryCharge,
-      codCollected,
-      settlementState: nextSettlementState,
-    },
+  const delivery = await prisma.deliveryOrder.findUnique({
+    where: { id: deliveryId },
+    include: { events: { orderBy: { occurredAt: "desc" } } },
   });
-
-  const comments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-  for (const comment of comments) {
-    const commentsText = String(comment.comments || "").trim();
-    if (!commentsText) continue;
-    const eventKey = statusEventKey({
-      orderId: String(delivery.ncmOrderId),
-      status: commentsText,
-      timestamp: comment.added_time || "",
-      event: "order.comment.created",
-    });
-    await prisma.deliveryComment.create({
-      data: {
-        deliveryOrderId: delivery.id,
-        ncmOrderId: delivery.ncmOrderId,
-        comments: commentsText,
-        addedBy: String(comment.addedBy || "NCM").slice(0, 150),
-        addedAt: comment.added_time ? new Date(comment.added_time) : null,
-        payloadJson: sanitizePayload(comment),
-        eventKey,
-      },
-    }).catch((error) => {
-      if (error.code !== "P2002") logger.warn("NCM comment persistence notice", { error: error.message });
-    });
-  }
-
-  return prisma.deliveryOrder.update({ where: { id: delivery.id }, data: { lastSyncedAt: new Date(), nextSyncAt: new Date(Date.now() + 30 * 60 * 1000), ncmPaymentStatus: paymentStatus, ncmDeliveryCharge: deliveryCharge, syncFailureCount: 0, lastSyncError: null } });
+  if (!delivery) throw new Error("Delivery not found");
+  return delivery;
 };
 
 export const requestCodSettlement = async ({ bankName, bankAccountName, bankAccountNumber }) => {
@@ -1248,33 +1302,27 @@ export const requestCodSettlement = async ({ bankName, bankAccountName, bankAcco
 };
 
 export const reconcileActiveDeliveries = async () => {
-  const active = await prisma.deliveryOrder.findMany({
+  return prisma.deliveryOrder.findMany({
     where: { ncmOrderId: { not: null }, state: { in: ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"] } },
-    select: { id: true, ncmOrderId: true },
+    include: { events: { orderBy: { occurredAt: "desc" }, take: 10 } },
+    orderBy: { updatedAt: "desc" },
     take: 100,
   });
-  if (!active.length) return [];
-  const statusResponse = await getBulkOrderStatuses(active.map((item) => item.ncmOrderId));
-  const result = statusResponse.data?.result || {};
-  for (const item of active) {
-    if (result[String(item.ncmOrderId)]) {
-      await applyNcmStatus({ payload: { order_id: item.ncmOrderId, status: result[String(item.ncmOrderId)], event: "NCM_BULK_STATUS" }, source: "NCM_POLL" });
-    }
-  }
-  return active;
 };
 
-export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason }) => {
+export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, distributorId, reason }) => {
   const delivery = await prisma.deliveryOrder.findUnique({
     where: { id: deliveryId },
     include: { order: { select: { paymentMethod: true, payment: true } } },
   });
-  if (!delivery || delivery.manufacturerId !== manufacturerId || !delivery.ncmOrderId) throw new Error("Delivery not found or not eligible for return");
+  const ownsDelivery = (manufacturerId && delivery?.manufacturerId === manufacturerId) ||
+    (distributorId && delivery?.distributorId === distributorId);
+  if (!delivery || !ownsDelivery || !delivery.ncmOrderId) throw new Error("Delivery not found or not eligible for return");
   const existing = await prisma.deliveryReturn.findUnique({ where: { deliveryOrderId: deliveryId } });
   if (existing) return existing;
   const response = await requestOrderReturn({ pk: delivery.ncmOrderId, comment: reason });
   return runTransaction(async (tx) => {
-    const returned = await tx.deliveryReturn.create({ data: { deliveryOrderId: deliveryId, orderId: delivery.orderId, manufacturerId, returnReason: reason, ncmReturnComment: reason, ncmReturnRequestedAt: new Date(), state: "RETURN_REQUESTED" } });
+    const returned = await tx.deliveryReturn.create({ data: { deliveryOrderId: deliveryId, orderId: delivery.orderId, manufacturerId: delivery.manufacturerId, distributorId: delivery.distributorId, returnReason: reason, ncmReturnComment: reason, ncmReturnRequestedAt: new Date(), state: "RETURN_REQUESTED" } });
     await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested", returnedAt: new Date() } });
     await tx.order.update({
       where: { id: delivery.orderId },
@@ -1303,7 +1351,7 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, reason
         varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
       },
     });
-    await createEvent(tx, { deliveryOrderId: deliveryId, orderId: delivery.orderId, source: "MANUFACTURER", eventType: "RETURN_REQUESTED", fromState: delivery.state, toState: "RETURN_REQUESTED", actorId: manufacturerId, payloadJson: response.data, idempotencyKey: `RETURN_REQUESTED:${deliveryId}` });
+    await createEvent(tx, { deliveryOrderId: deliveryId, orderId: delivery.orderId, source: distributorId ? "DISTRIBUTOR" : "MANUFACTURER", eventType: "RETURN_REQUESTED", fromState: delivery.state, toState: "RETURN_REQUESTED", actorId: distributorId || manufacturerId, payloadJson: response.data, idempotencyKey: `RETURN_REQUESTED:${deliveryId}` });
     return returned;
   });
 };

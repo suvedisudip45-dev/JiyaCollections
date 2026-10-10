@@ -72,11 +72,19 @@ The auth layer is built around `AuthAccount` and related session tables.
 | --- | --- | --- |
 | `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `paymentMethod`, `fulfillmentStatus`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; direct distributor orders identify their hub through `distributorId`; admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; automatic allocation targets distributors |
-| `DeliveryOrder` | `orderId`, `manufacturerId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | carrier package record |
+| `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
 | `NcmRequestAttempt` | `deliveryOrderId`, `operation`, `requestUrl`, `result`, `httpStatus` | idempotent request tracking |
 | `NcmWebhookEvent` | `eventKey`, `event`, `orderId`, `status`, `payloadJson` | webhook ingestion |
+
+For distributor-assigned customer orders, admins can enter package details and
+request NCM booking from Order Assignments. Confirmed booking data and webhook
+status changes are persisted on the delivery and related order records.
+Customer-order status reads use this database state rather than polling NCM's
+status/detail APIs. The webhook is acknowledged after event and status
+persistence. NCM delivery charges are platform/admin settlement amounts, not
+manufacturer or distributor payables.
 
 ### 3.5 Returns and exchange management
 
@@ -87,7 +95,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, returned `items`, `replacementItems`, `priceDifference`, NCM leg IDs/charges, stock reservation timestamps | exchange lifecycle and replacement-stock control |
 | `OrderExchangeEvent` | `exchangeRequestId`, `eventType`, `fromStatus`, `toStatus`, `metadata` | audit trail for exchange state transitions |
 | `ReturnExchangeNcmAttempt` | optional return/exchange ID, operation, request/response JSON, HTTP status, result, error, idempotency key | durable NCM request history |
-| `DeliveryReturn` | `deliveryOrderId`, `orderId`, `manufacturerId`, `state`, `returnReason`, `inspectionResult` | return-inspection record |
+| `DeliveryReturn` | `deliveryOrderId`, `orderId`, optional `manufacturerId`/`distributorId`, `state`, `returnReason`, `inspectionResult` | return-inspection record owned by the assigned fulfillment hub |
 
 ### 3.6.1 System audit and transactional outbox
 
@@ -113,12 +121,15 @@ Bulk distributor replenishment uses a separate `StockTransfer` lifecycle:
 | --- | --- | --- |
 | `StockTransfer` | manufacturer/distributor profile IDs, source/destination locations, status, request/review actor and timestamps, five manufacturer preparation-check booleans, preparation actor/time | Distributor demand is admin-approved before becoming actionable in the manufacturer portal. |
 | `StockTransferLine` | transfer/SKU IDs, requested/approved/dispatched/reserved quantities | Admin approval is bounded by the request and current available factory balance. |
-| `StockTransferShipment` | booking mode, carrier/tracking, freight and settlement fields, status/timestamps | Supports NCM, local freight, and direct `SELF_STORE` delivery. Own-store shipments carry zero freight and are immediately received into the distributor ledger location. |
+| `StockTransferShipment` | booking mode, carrier/tracking, dedicated `ncmOrderId`, NCM package type/product/weight/dimensions/instructions/fragility/packaging notes, freight and settlement fields, NCM status/history/payment/sync/event and return-request fields, status/timestamps | Supports NCM, local freight, and direct `SELF_STORE` delivery. NCM package details are persisted for the audit trail; type and dimensions are serialized into NCM's documented `package` string rather than sent as unsupported request fields. Own-store shipments carry zero freight and are immediately received into the distributor ledger location. NCM booking is `BOOKED`; factory stock remains reserved until a pickup/custody webhook or admin reconciliation moves it to transit. Carrier delivery remains separate from receipt/inventory state. NCM freight is held for platform/admin settlement, not manufacturer/distributor payables. |
+| `StockTransferShipmentEvent` | shipment ID, unique provider-event key, source, event type/status, sanitized payload, provider occurrence and receive timestamps | Durable, idempotent NCM booking/status timeline; event insertion and first custody inventory movement commit in the same transaction. |
 | `StockTransferReceipt` / `StockTransferReceiptLine` | shipment, receiver/time, good/damaged/missing quantities | Self-store delivery records an idempotent all-good receipt in the same transaction as its ledger movements. |
 
 Every shipment requires saved passing manufacturer checks for product availability,
 quality, requested color, requested size, and packaging. Self-store eligibility
 requires the manufacturer and distributor profiles to share the same account.
+NCM shipment returns record the manufacturer's request state/reason and carrier
+status; a return request does not itself receive, inspect, or restock goods.
 
 ### 3.7 Location-aware pricing and local manufacturer assignment
 

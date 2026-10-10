@@ -81,9 +81,9 @@ const OrderDetail = () => {
     qualityCheck: false,
   });
 
-  const fetchAssignment = useCallback(async () => {
+  const fetchAssignment = useCallback(async (silent = false) => {
     if (!token) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const res = await axios.get(`${backendUrl}/api/order-assignment/my`, {
         headers: { token },
@@ -139,14 +139,16 @@ const OrderDetail = () => {
             });
           }
         } else {
-          toast.error("Assignment not found");
-          navigate("/orders");
+          if (!silent) {
+            toast.error("Assignment not found");
+            navigate("/orders");
+          }
         }
       }
-    } catch (err) {
-      toast.error("Failed to load assignment details");
+    } catch {
+      if (!silent) toast.error("Failed to load assignment details");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [id, token, backendUrl, navigate]);
 
@@ -203,6 +205,12 @@ const OrderDetail = () => {
     fetchAssignment();
     fetchStoryLetterStatus();
   }, [fetchAssignment, fetchStoryLetterStatus]);
+
+  useEffect(() => {
+    if (!assignment?.delivery?.ncmOrderId || ["DELIVERED", "RETURN_REQUESTED"].includes(assignment.delivery.state)) return undefined;
+    const interval = setInterval(() => fetchAssignment(true), 30000);
+    return () => clearInterval(interval);
+  }, [assignment?.delivery?.ncmOrderId, assignment?.delivery?.state, fetchAssignment]);
 
   useEffect(() => {
     fetchMarketingCardStatus();

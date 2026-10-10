@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { RotateCw } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 
 const requestKey = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -41,6 +42,14 @@ const DistributorHome = () => {
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    const refreshWhenFocused = () => {
+      if (document.visibilityState === "visible") loadData();
+    };
+    window.addEventListener("focus", refreshWhenFocused);
+    return () => window.removeEventListener("focus", refreshWhenFocused);
   }, [loadData]);
 
   const updateRequestLine = (index, field, value) => {
@@ -340,9 +349,21 @@ const DistributorHome = () => {
       </form>
 
       <section className="space-y-4">
-        <div>
-          <h3 className="text-lg font-semibold text-slate-900">Your transfer requests</h3>
-          <p className="mt-1 text-sm text-slate-500">Good units received are added to your sellable location. Damaged and missing units are tracked separately for review.</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900">Your transfer requests</h3>
+            <p className="mt-1 text-sm text-slate-500">Good units received are added to your sellable location. Damaged and missing units are tracked separately for review.</p>
+          </div>
+          <button
+            type="button"
+            onClick={loadData}
+            disabled={loading}
+            className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+            aria-label="Refresh transfer and NCM status"
+            title="Refresh transfer and NCM status"
+          >
+            <RotateCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
         </div>
         {loading ? <div className="rounded-xl bg-white p-6 text-sm text-slate-500">Loading transfers…</div> : transfers.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">No stock transfer requests yet.</div>
@@ -352,6 +373,12 @@ const DistributorHome = () => {
               <div>
                 <h4 className="font-semibold text-slate-900">{transfer.manufacturer?.name || "Manufacturer"} · {transfer.id.slice(-8)}</h4>
                 <p className="mt-1 text-xs text-slate-500">Requested {new Date(transfer.requestedAt).toLocaleString()}</p>
+                <p className="mt-1 text-xs text-slate-600">
+                  NCM destination branch: {transfer.distributor?.ncmPickupBranch || "Not configured"}
+                  {transfer.distributor?.pickupBranchStatus
+                    ? ` · ${transfer.distributor.pickupBranchStatus}`
+                    : ""}
+                </p>
                 {transfer.adminNote && <p className="mt-2 text-sm text-slate-600">Admin note: {transfer.adminNote}</p>}
               </div>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span>
@@ -364,9 +391,56 @@ const DistributorHome = () => {
                       {shipment.deliveryPartner || shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}
                     </div>
                     <div className="text-slate-500">
-                      {shipment.trackingNumber || shipment.externalReference ? `Tracking/reference: ${shipment.trackingNumber || shipment.externalReference}` : "Tracking reference pending"}
+                      {shipment.trackingNumber || shipment.ncmOrderId || shipment.externalReference ? `Tracking/reference: ${shipment.trackingNumber || shipment.ncmOrderId || shipment.externalReference}` : "Tracking reference pending"}
                     </div>
                   </div>
+                  {shipment.bookingMode === "NCM" && (
+                    <div className="mt-2 space-y-2">
+                      {shipment.packageType && (
+                        <p className="text-xs text-slate-600">
+                          Package: {shipment.productType} · {shipment.productDescription} · {shipment.packageType} · {shipment.packageDimensions} · {shipment.packageWeight} kg
+                          {shipment.isFragile ? " · Fragile" : ""}
+                          {shipment.deliveryInstruction ? ` · Instructions: ${shipment.deliveryInstruction}` : ""}
+                          {shipment.packagingNotes ? ` · Packaging notes: ${shipment.packagingNotes}` : ""}
+                        </p>
+                      )}
+                      <p className="text-xs text-slate-600">
+                        Route: {transfer.manufacturer?.ncmPickupBranch || "origin not set"} → {transfer.distributor?.ncmPickupBranch || "destination not set"}
+                        {transfer.distributor?.pickupBranchStatus === "UNVERIFIED"
+                          ? " · Booking verifies a destination matching the active NCM catalog."
+                          : ""}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        NCM tracking status: {shipment.ncmStatus || "awaiting carrier update"}
+                        {shipment.ncmPaymentStatus ? ` · Carrier payment: ${shipment.ncmPaymentStatus}` : ""}
+                        {shipment.ncmLastSyncedAt ? ` · Updated ${new Date(shipment.ncmLastSyncedAt).toLocaleString()}` : ""}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        NCM return request: {shipment.ncmReturnStatus || "NOT_REQUESTED"}
+                        {shipment.ncmReturnRequestedAt ? ` · ${new Date(shipment.ncmReturnRequestedAt).toLocaleString()}` : ""}
+                        {shipment.ncmReturnReason ? ` · ${shipment.ncmReturnReason}` : ""}
+                        . Only the NCM vendor can submit a return request; a carrier return status is not confirmation of physical receipt. Record and inspect any returned stock through the receipt checklist.
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        NCM delivery charge: NPR {shipment.freightCharge ?? "not quoted"} · platform/admin settlement only, not a payable to the distributor or manufacturer ({(shipment.freightSettlementStatus || "PENDING_ADMIN_SETTLEMENT").replaceAll("_", " ")}).
+                      </p>
+                      {shipment.status === "BOOKED" && <p className="text-xs font-medium text-amber-800">NCM accepted the booking and is awaiting carrier pickup confirmation.</p>}
+                      {shipment.ncmStatus === "Delivered" && <p className="text-xs font-medium text-emerald-800">NCM reports carrier delivery. Inspect the goods and record receipt QA below; this confirmation does not add stock until you submit the receipt.</p>}
+                      {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) && (
+                        <ul className="space-y-1 text-xs text-slate-600" aria-label="NCM status history">
+                          {(shipment.events?.length ? shipment.events.map((entry) => ({
+                            status: entry.status || entry.eventType,
+                            addedAt: entry.occurredAt || entry.receivedAt,
+                            key: entry.id,
+                          })) : shipment.ncmStatusHistory).slice(0, 10).map((entry, index) => (
+                            <li key={entry.key || `${entry.status}-${entry.addedAt || index}`}>
+                              {entry.status}{entry.addedAt ? ` · ${new Date(entry.addedAt).toLocaleString()}` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                   {shipment.status === "BOOKING_UNKNOWN" && (
                     <p className="mt-2 text-sm text-amber-800">Carrier booking is being reconciled by the platform administrator; this shipment is locked against duplicate dispatch.</p>
                   )}

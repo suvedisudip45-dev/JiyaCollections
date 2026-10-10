@@ -108,6 +108,35 @@ Carrier state labels are also intentionally strict. A failed NCM booking is pres
 
 In the manufacturer portal's distributor workspace, the final order-assignment step offers Self Delivery only when the customer district matches the distributor's own or actively covered district. Self Delivery routes the order to Self-Delivery Management without calling NCM; NCM delivery books through the existing courier API. Self-Delivery Management lists only distributor-handled deliveries, never NCM bookings.
 
+For distributor-assigned customer orders, the admin Order Assignments detail
+opens the same package-details workflow used by the fulfillment portal
+(product/package type, description, delivery instructions, weight, dimensions,
+fragile handling, and quality/packaging notes). Admins can request NCM delivery
+after package details are complete. Customer-order booking and tracking state
+is stored in the backend; NCM webhook updates are applied before acknowledging
+the webhook, and admin/distributor/manufacturer views read the persisted status
+instead of repeatedly querying NCM. NCM delivery charges are settled by the
+platform/admin and are not partner payables.
+
+For bulk distributor stock transfers, manufacturer and distributor views show
+the persisted NCM event timeline, while only admins can explicitly reconcile
+against the NCM order detail/status APIs. Booking acceptance is shown as booked,
+not dispatched; manufacturer stock stays reserved until pickup/custody is
+confirmed. The manufacturer NCM booking form requires package type, product
+type/contents, measured weight, dimensions, and offers delivery instructions,
+fragile handling, and packaging notes. The backend stores these details with
+the shipment and maps them onto NCM's documented `package`, `instruction`, and
+`weight` fields; dimensions and package type are not sent as unsupported fields.
+Admins, manufacturers, and distributors can see the saved package details.
+The portals also display the NCM route and branch verification state; a
+destination matching the active NCM catalog is verified by the backend at
+booking, while rejected or unavailable branches remain ineligible.
+Carrier delivery is separate from distributor receipt and inspection.
+The manufacturer can request a carrier return with a reason. The UI distinguishes
+NCM's return request from physical receipt: returned stock remains subject to
+the distributor receipt checklist and inspection. NCM charges are identified as
+platform/admin settlement, never payable to the manufacturer or distributor.
+
 ## 3. Admin Portal (`admin/`)
 
 ### App shell

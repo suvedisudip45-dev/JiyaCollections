@@ -112,6 +112,21 @@ Direct hub orders are created as `DIRECT_DISTRIBUTOR`, scoped to the authenticat
 
 Distributor customer-order delivery is selected after package details are complete. A distributor may choose self-delivery only when an active distributor district or coverage district matches the customer's district; that choice moves the assignment into the self-delivery workflow without creating an NCM delivery. Choosing NCM records `deliveryType = NCM` and submits through the existing NCM integration. Self-Delivery Management only lists self-delivery assignments and excludes assignments with an NCM delivery record, including legacy records.
 
+Admins can submit package details from Order Assignments and request NCM
+delivery for a distributor-assigned order. The request uses the assigned hub's
+pickup branch and the standard NCM order-creation contract. Customer-order
+carrier status is updated from NCM webhooks and persisted in the database;
+customer-order reads do not poll NCM status/detail APIs. Webhook success is
+returned only after the event and status update have been saved. NCM delivery
+charges are platform/admin settlement amounts, not partner payables.
+
+Manufacturer-to-distributor stock-transfer booking resolves the destination
+branch from the distributor profile and validates origin and destination
+against active `NcmBranch` records. A catalog-matched branch marked
+`UNVERIFIED` is promoted to `VERIFIED` during booking; explicitly rejected or
+unavailable branches remain blocked. The booking query must select the same
+branch and status fields displayed in portal shipment views.
+
 Manufacturer stock quantity edits are captured in the `ManufacturerInventoryMovement` ledger per size/color variant. Each stock-in or stock-out event retains before/after quantity, signed delta, required reason, optional note, authenticated actor, and timestamp in the same database transaction as the current inventory update. This follows established inventory audit practice of retaining adjustment history instead of relying on the latest on-hand balance alone.
 
 Factory production receipts are not storefront inventory. `Product.stockQuantity` and each product variant's available quantity are synchronized only from unreserved balances at active distributor locations. Production completion therefore leaves storefront stock unchanged; dispatched stock remains unavailable while in transit; confirmed good receipt at a distributor makes it available. Allocation reserves distributor balances, and delivery/direct hub fulfillment consumes the reservation and on-hand balance through auditable ledger movements. Cancellation releases the distributor reservation. These transitions, direct hub sales, and evidence-backed distributor stock decreases recalculate the product projection. Startup reconciles the product projection from distributor ledger balances before the API begins listening.
@@ -191,6 +206,24 @@ Admins configure service districts through the Service-area coverage tab in Dist
 
 A failed NCM courier-booking request must remain in a failed state (`submission_failed`, `failed_to_book_courier`, or equivalent) and must never be converted to a success label by the UI. The backend is the only component allowed to transition the delivery state to a successful carrier booking state.
 
+Bulk stock-transfer NCM bookings use the documented `/api/v1/order/create`
+payload; the optional NCM `vref_id` is omitted because NCM rejects the full
+internal transfer identifier as too long. A confirmed NCM order ID is retained
+as the shipment's dedicated NCM order ID and compatibility external reference.
+Booking acceptance is `BOOKED`, with factory inventory and cost-layer quantities
+reserved until the first pickup/custody event. That event atomically moves stock
+to transit and consumes its reservations once; carrier delivery remains
+separate from distributor receipt, inspection, and ledger posting. Shipment
+webhook events are persisted idempotently, and normal manufacturer/distributor
+tracking reads the database. Only admin reconciliation calls NCM status/detail
+APIs and can recover a missed custody event. Production webhook authentication
+requires the configured secret; `User-Agent` is not authentication. The
+manufacturer can request an NCM return through the
+documented vendor return endpoint; only NCM's vendor-return response confirms
+that request, and returned units still require a distributor receipt/inspection.
+The NCM freight quote and later carrier charge remain platform/admin settlement
+data, not manufacturer or distributor payables.
+
 ## 6. Third-Party Integrations
 
 | Integration | Current usage |
@@ -198,7 +231,7 @@ A failed NCM courier-booking request must remain in a failed state (`submission_
 | Cloudinary | Product media, contract uploads, partner media, uploaded assets |
 | Stripe | Payment processing integration |
 | Razorpay | Payment processing integration |
-| Nepal Can Move (NCM) | Delivery order creation, webhook status updates, handoff reconciliation |
+| Nepal Can Move (NCM) | Customer delivery creation, webhook status updates, bulk stock-transfer booking/tracking/returns, and handoff reconciliation |
 | RabbitMQ | Notification worker pipeline and durable queue setup |
 | SMTP / Sparrow SMS | Notification worker configuration for email and SMS delivery |
 | MySQL | Primary transactional database |

@@ -9,7 +9,9 @@ import {
   listDistributorStockTransfers,
   listManufacturerStockTransfers,
   receiveStockTransferShipment,
+  requestNcmStockTransferReturn,
   resolveNcmShipmentBooking,
+  syncNcmStockTransferShipment,
   reviewStockTransferRequest,
   updateStockTransferPreparation,
 } from "../controllers/stockTransferController.js";
@@ -52,6 +54,13 @@ stockTransferRouter.get(
   setManufacturerContext,
   listManufacturerStockTransfers,
 );
+stockTransferRouter.post(
+  "/manufacturer/shipments/:shipmentId/ncm-return",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  requestNcmStockTransferReturn,
+);
 stockTransferRouter.patch(
   "/:id/preparation",
   authenticate,
@@ -78,6 +87,12 @@ stockTransferRouter.get(
   authenticate,
   authorize("transfer:admin_read"),
   listAdminStockTransfers,
+);
+stockTransferRouter.post(
+  "/admin/shipments/:shipmentId/ncm-sync",
+  authenticate,
+  authorize("transfer:admin_read"),
+  syncNcmStockTransferShipment,
 );
 stockTransferRouter.get(
   "/admin/discrepancies",

@@ -442,6 +442,10 @@ const getMyAssignments = async (req, res) => {
               city: true,
               phone: true,
               district: true,
+              ncmPickupBranch: true,
+              pickupAddress: true,
+              pickupContactName: true,
+              pickupContactPhone: true,
               locations: {
                 where: { isActive: true },
                 select: { district: true },
@@ -938,7 +942,16 @@ const getAllAssignments = async (req, res) => {
           },
         },
           distributor: {
-            select: { id: true, name: true, city: true, phone: true },
+            select: {
+              id: true,
+              name: true,
+              city: true,
+              phone: true,
+              ncmPickupBranch: true,
+              pickupAddress: true,
+              pickupContactName: true,
+              pickupContactPhone: true,
+            },
           },
         },
       }),
@@ -1042,7 +1055,16 @@ const getAssignmentById = async (req, res) => {
           },
         },
         distributor: {
-          select: { id: true, name: true, city: true, phone: true },
+          select: {
+            id: true,
+            name: true,
+            city: true,
+            phone: true,
+            ncmPickupBranch: true,
+            pickupAddress: true,
+            pickupContactName: true,
+            pickupContactPhone: true,
+          },
         },
       },
     });

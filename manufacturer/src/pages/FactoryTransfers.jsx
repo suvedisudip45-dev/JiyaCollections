@@ -21,6 +21,19 @@ const checklistReady = (transfer, draft) => {
     effectiveChecklist[field] === transfer[field]
   );
 };
+const initialNcmPackageDetails = (transfer) => {
+  const products = [...new Set(transfer.lines.map((line) => line.inventorySku?.product?.name).filter(Boolean))];
+  return {
+    packageType: "Carton",
+    productType: "Apparel",
+    productDescription: products.length ? `Bulk clothing shipment: ${products.join(", ")}`.slice(0, 300) : "",
+    packageWeight: "",
+    packageDimensions: "",
+    deliveryInstruction: "",
+    isFragile: false,
+    packagingNotes: "",
+  };
+};
 
 const FactoryTransfers = () => {
   const { token } = useManufacturer();
@@ -31,6 +44,7 @@ const FactoryTransfers = () => {
   const [carrierDetails, setCarrierDetails] = useState({});
   const [quantities, setQuantities] = useState({});
   const [checklistDrafts, setChecklistDrafts] = useState({});
+  const [ncmReturnReasons, setNcmReturnReasons] = useState({});
 
   const loadTransfers = useCallback(async () => {
     setLoading(true);
@@ -48,7 +62,15 @@ const FactoryTransfers = () => {
     loadTransfers();
   }, [loadTransfers]);
 
-  const setMode = (transferId, mode) => setBookingMode((current) => ({ ...current, [transferId]: mode }));
+  const setMode = (transfer, mode) => {
+    setBookingMode((current) => ({ ...current, [transfer.id]: mode }));
+    if (mode === "NCM") {
+      setCarrierDetails((current) => ({
+        ...current,
+        [transfer.id]: { ...initialNcmPackageDetails(transfer), ...(current[transfer.id] || {}) },
+      }));
+    }
+  };
   const updateCarrier = (transferId, field, value) => setCarrierDetails((current) => ({
     ...current,
     [transferId]: { ...(current[transferId] || {}), [field]: value },
@@ -61,6 +83,29 @@ const FactoryTransfers = () => {
     ...current,
     [transferId]: { ...(current[transferId] || {}), [field]: checked },
   }));
+
+  const requestNcmReturn = async (shipment) => {
+    const reason = String(ncmReturnReasons[shipment.id] || "").trim();
+    if (!reason) {
+      toast.error("Enter a reason for the NCM return request.");
+      return;
+    }
+    setSavingId(shipment.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/stock-transfers/manufacturer/shipments/${shipment.id}/ncm-return`,
+        { reason },
+        { headers: { token } },
+      );
+      toast.success("NCM return request submitted. Track carrier updates before recording receipt.");
+      await loadTransfers();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not request the NCM return.");
+      await loadTransfers();
+    } finally {
+      setSavingId("");
+    }
+  };
 
   const saveChecklist = async (transfer) => {
     const checklist = { ...checklistFromTransfer(transfer), ...(checklistDrafts[transfer.id] || {}) };
@@ -103,6 +148,25 @@ const FactoryTransfers = () => {
       toast.error("Enter the manual carrier name.");
       return;
     }
+    if (mode === "NCM") {
+      const requiredPackageFields = [
+        ["packageType", "package type"],
+        ["productType", "product type"],
+        ["productDescription", "package contents / description"],
+        ["packageWeight", "package weight"],
+        ["packageDimensions", "package dimensions"],
+      ];
+      const missingField = requiredPackageFields.find(([field]) => !String(details[field] ?? "").trim());
+      const weight = Number(details.packageWeight);
+      if (missingField) {
+        toast.error(`Enter the ${missingField[1]} for this NCM shipment.`);
+        return;
+      }
+      if (!Number.isFinite(weight) || weight < 0.1 || weight > 1000) {
+        toast.error("Package weight must be between 0.1 and 1000 kg.");
+        return;
+      }
+    }
     setSavingId(transfer.id);
     try {
       const url = mode === "SELF_STORE"
@@ -119,7 +183,18 @@ const FactoryTransfers = () => {
               trackingNumber: details.trackingNumber,
               externalReference: details.externalReference,
               freightCharge: details.freightCharge || null,
-            } : { weight: Number(details.weight || 1) }),
+            } : {
+              packageDetails: {
+                packageType: details.packageType,
+                productType: details.productType,
+                productDescription: details.productDescription,
+                packageWeight: Number(details.packageWeight),
+                packageDimensions: details.packageDimensions,
+                deliveryInstruction: details.deliveryInstruction,
+                isFragile: Boolean(details.isFragile),
+                packagingNotes: details.packagingNotes,
+              },
+            }),
           };
       const response = await axios.post(url, payload, {
         headers: { token, "Idempotency-Key": newIdempotencyKey() },
@@ -160,6 +235,15 @@ const FactoryTransfers = () => {
             <div>
               <h3 className="font-semibold text-slate-900">{transfer.distributor?.name || "Distributor"} · {transfer.id.slice(-8)}</h3>
               <p className="mt-1 text-xs text-slate-500">Requested {new Date(transfer.requestedAt).toLocaleString()}</p>
+              <p className="mt-1 text-xs text-slate-600">
+                NCM destination: {transfer.distributor?.ncmPickupBranch || "Not configured"}
+                {transfer.distributor?.pickupBranchStatus
+                  ? ` · ${transfer.distributor.pickupBranchStatus}`
+                  : ""}
+                {transfer.distributor?.pickupBranchStatus === "UNVERIFIED"
+                  ? " · If this branch is in the active NCM catalog, booking will verify it automatically."
+                  : ""}
+              </p>
               {transfer.status === "APPROVED" && <p className="mt-2 text-sm font-medium text-emerald-800">Admin approved this demand. Complete product checks before preparing delivery.</p>}
               {transfer.adminNote && <p className="mt-2 text-sm text-slate-600">Admin note: {transfer.adminNote}</p>}
             </div>
@@ -230,7 +314,7 @@ const FactoryTransfers = () => {
               <div className="flex flex-wrap items-center gap-4">
                 <label className="text-sm font-medium text-slate-700">
                   Booking method
-                  <select value={transfer.isOwnStore ? "SELF_STORE" : bookingMode[transfer.id] || "MANUAL"} onChange={(event) => setMode(transfer.id, event.target.value)} disabled={transfer.isOwnStore} className="ml-2 rounded-lg border border-slate-300 px-2 py-1.5 disabled:bg-emerald-50">
+                  <select value={transfer.isOwnStore ? "SELF_STORE" : bookingMode[transfer.id] || "MANUAL"} onChange={(event) => setMode(transfer, event.target.value)} disabled={transfer.isOwnStore} className="ml-2 rounded-lg border border-slate-300 px-2 py-1.5 disabled:bg-emerald-50">
                     {transfer.isOwnStore ? (
                       <option value="SELF_STORE">Own distributor store · NPR 0</option>
                     ) : (
@@ -244,10 +328,48 @@ const FactoryTransfers = () => {
                 {transfer.isOwnStore ? (
                   <p className="text-sm font-medium text-emerald-800">Delivery is automatically routed to your own distributor store. Freight charge: NPR 0.</p>
                 ) : (bookingMode[transfer.id] || "MANUAL") === "NCM" ? (
-                  <label className="text-sm text-slate-600">
-                    Package weight (kg)
-                    <input type="number" min="0.1" max="1000" step="0.1" value={carrierDetails[transfer.id]?.weight || 1} onChange={(event) => updateCarrier(transfer.id, "weight", event.target.value)} className="ml-2 w-24 rounded-lg border border-slate-300 px-2 py-1.5" />
-                  </label>
+                  <div className="w-full rounded-xl border border-slate-200 bg-white p-4">
+                    <h4 className="font-semibold text-slate-900">NCM package and delivery details</h4>
+                    <p className="mb-3 mt-1 text-xs text-slate-500">
+                      Destination branch: {transfer.distributor?.ncmPickupBranch || "Not configured"}. NCM accepts package description, instructions, and weight. Package type and dimensions are included in the description; no undocumented NCM fields are sent.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <label className="text-xs font-medium text-slate-700">
+                        Package type *
+                        <select value={carrierDetails[transfer.id]?.packageType || "Carton"} onChange={(event) => updateCarrier(transfer.id, "packageType", event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                          {["Carton", "Box", "Polybag", "Envelope", "Other"].map((type) => <option key={type} value={type}>{type}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium text-slate-700">
+                        Product type *
+                        <input required maxLength={120} value={carrierDetails[transfer.id]?.productType || ""} onChange={(event) => updateCarrier(transfer.id, "productType", event.target.value)} placeholder="e.g. Apparel" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="text-xs font-medium text-slate-700">
+                        Package weight (kg) *
+                        <input required type="number" min="0.1" max="1000" step="0.1" value={carrierDetails[transfer.id]?.packageWeight ?? ""} onChange={(event) => updateCarrier(transfer.id, "packageWeight", event.target.value)} placeholder="e.g. 2.5" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="text-xs font-medium text-slate-700 sm:col-span-2">
+                        Package contents / description *
+                        <textarea required maxLength={300} rows={2} value={carrierDetails[transfer.id]?.productDescription || ""} onChange={(event) => updateCarrier(transfer.id, "productDescription", event.target.value)} placeholder="Describe the stock in this package" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="text-xs font-medium text-slate-700">
+                        Package dimensions (L × W × H cm) *
+                        <input required maxLength={120} value={carrierDetails[transfer.id]?.packageDimensions || ""} onChange={(event) => updateCarrier(transfer.id, "packageDimensions", event.target.value)} placeholder="e.g. 40 x 30 x 25 cm" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="text-xs font-medium text-slate-700 sm:col-span-2">
+                        Delivery instructions
+                        <textarea maxLength={480} rows={2} value={carrierDetails[transfer.id]?.deliveryInstruction || ""} onChange={(event) => updateCarrier(transfer.id, "deliveryInstruction", event.target.value)} placeholder="Instructions for NCM delivery staff" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="text-xs font-medium text-slate-700 sm:col-span-2">
+                        Packaging notes
+                        <textarea maxLength={500} rows={2} value={carrierDetails[transfer.id]?.packagingNotes || ""} onChange={(event) => updateCarrier(transfer.id, "packagingNotes", event.target.value)} placeholder="e.g. Waterproof wrapping; quality checked" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                      </label>
+                      <label className="flex items-center gap-2 self-center text-sm text-slate-700">
+                        <input type="checkbox" checked={Boolean(carrierDetails[transfer.id]?.isFragile)} onChange={(event) => updateCarrier(transfer.id, "isFragile", event.target.checked)} className="h-4 w-4 accent-amber-600" />
+                        Mark package as fragile
+                      </label>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <input
@@ -277,7 +399,7 @@ const FactoryTransfers = () => {
                   </>
                 )}
                 <button onClick={() => dispatch(transfer)} disabled={savingId === transfer.id || !checklistReady(transfer, checklistDrafts[transfer.id])} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
-                  {savingId === transfer.id ? "Processing..." : transfer.isOwnStore ? "Deliver to own store" : (bookingMode[transfer.id] || "MANUAL") === "NCM" ? "Book NCM and dispatch" : "Record local freight and dispatch"}
+                  {savingId === transfer.id ? "Processing..." : transfer.isOwnStore ? "Deliver to own store" : (bookingMode[transfer.id] || "MANUAL") === "NCM" ? "Book NCM shipment" : "Record local freight and dispatch"}
                 </button>
               </div>
               {!transfer.isOwnStore && <p className="mt-3 text-xs text-slate-500">Local freight paid by the manufacturer is recorded for admin settlement. A successful NCM booking creates a stock transit movement only after NCM confirms it; uncertain bookings hold stock until admin review.</p>}
@@ -290,8 +412,59 @@ const FactoryTransfers = () => {
                 {shipment.deliveryPartner || shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}
                 {shipment.externalReference && ` · Reference ${shipment.externalReference}`}
                 {shipment.trackingNumber && ` · Tracking ${shipment.trackingNumber}`}
-                {shipment.freightCharge !== null && shipment.freightCharge !== undefined && ` · Freight NPR ${shipment.freightCharge}`}
+                {shipment.bookingMode === "NCM" && ` · NCM status ${shipment.ncmStatus || "awaiting carrier update"}`}
+                {shipment.bookingMode === "NCM" && shipment.packageType && ` · ${shipment.packageType} ${shipment.packageDimensions || ""} · ${shipment.packageWeight} kg`}
+                {shipment.bookingMode === "NCM" && ` · Delivery charge NPR ${shipment.freightCharge ?? "not quoted"} (platform/admin settlement; no manufacturer or distributor payable)`}
                 {shipment.freightSettlementStatus && ` · ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
+                {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
+                {shipment.ncmLastSyncedAt && ` · Carrier update ${new Date(shipment.ncmLastSyncedAt).toLocaleString()}`}
+                {shipment.bookingMode === "NCM" && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-slate-600">
+                      Package: {shipment.productType} · {shipment.productDescription} · {shipment.packageType} · {shipment.packageDimensions} · {shipment.packageWeight} kg
+                      {shipment.isFragile ? " · Fragile" : ""}
+                      {shipment.deliveryInstruction ? ` · Instructions: ${shipment.deliveryInstruction}` : ""}
+                      {shipment.packagingNotes ? ` · Packaging notes: ${shipment.packagingNotes}` : ""}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      NCM return policy: only the NCM vendor can mark an order for return. NCM accepts an optional comment and may add a pending return comment; a request is not confirmation of physical receipt. Record and inspect returned stock through the normal receipt workflow.
+                      {shipment.ncmReturnStatus && ` Return request: ${shipment.ncmReturnStatus.replaceAll("_", " ")}`}
+                      {shipment.ncmReturnRequestedAt && ` · Requested ${new Date(shipment.ncmReturnRequestedAt).toLocaleString()}`}
+                      {shipment.ncmReturnReason && ` · Reason: ${shipment.ncmReturnReason}`}
+                    </p>
+                    {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) && (
+                      <ul className="space-y-1 text-xs text-slate-600" aria-label="NCM status history">
+                        {(shipment.events?.length ? shipment.events.map((entry) => ({
+                          status: entry.status || entry.eventType,
+                          addedAt: entry.occurredAt || entry.receivedAt,
+                          key: entry.id,
+                        })) : shipment.ncmStatusHistory).slice(0, 10).map((entry, index) => (
+                          <li key={entry.key || `${entry.status}-${entry.addedAt || index}`}>
+                            {entry.status}{entry.addedAt ? ` · ${new Date(entry.addedAt).toLocaleString()}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {shipment.status === "BOOKED" && <p className="text-xs font-medium text-amber-800">NCM accepted the booking. Factory stock remains reserved until the pickup webhook confirms carrier custody.</p>}
+                    {shipment.ncmStatus === "Delivered" && <p className="text-xs font-medium text-emerald-800">NCM reports carrier delivery. Distributor inspection and receipt are still required to complete the stock transfer.</p>}
+                    <div className="flex flex-wrap gap-2">
+                      {!["REQUESTED", "PENDING", "UNKNOWN"].includes(shipment.ncmReturnStatus) && (
+                        <>
+                          <input
+                            value={ncmReturnReasons[shipment.id] || ""}
+                            onChange={(event) => setNcmReturnReasons((current) => ({ ...current, [shipment.id]: event.target.value }))}
+                            placeholder="Reason for return"
+                            aria-label="Reason for NCM return"
+                            className="min-w-48 rounded border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                          <button onClick={() => requestNcmReturn(shipment)} disabled={savingId === shipment.id} className="rounded bg-amber-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                            Request NCM return
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {shipment.lines?.some((line) => line.uncostedQuantity > 0) && (
                   <span className="ml-2 text-amber-700">Some legacy units have no linked COGS layer; reconcile before retail cutover.</span>
                 )}

@@ -240,16 +240,16 @@ const DeliveryMonitor = ({ token }) => {
     const term = searchTerm.toLowerCase();
     return rows.filter((row) => {
       const order = row.order || {};
-      const manufacturer = row.manufacturer || {};
+      const hub = row.distributor || row.manufacturer || {};
       const delivery = row.delivery || {};
       const customerName = `${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim();
       const matchesSearch =
         !term ||
         (order.id || row.orderId || "").toLowerCase().includes(term) ||
         customerName.toLowerCase().includes(term) ||
-        (manufacturer.businessName || manufacturer.name || "").toLowerCase().includes(term) ||
-        (manufacturer.city || "").toLowerCase().includes(term) ||
-        (manufacturer.ncmPickupBranch || "").toLowerCase().includes(term) ||
+        (hub.businessName || hub.name || "").toLowerCase().includes(term) ||
+        (hub.city || "").toLowerCase().includes(term) ||
+        (hub.ncmPickupBranch || "").toLowerCase().includes(term) ||
         String(delivery.ncmOrderId || "").includes(term) ||
         (delivery.ncmStatus || "").toLowerCase().includes(term) ||
         (delivery.originBranchName || "").toLowerCase().includes(term) ||
@@ -261,7 +261,7 @@ const DeliveryMonitor = ({ token }) => {
       if (filter === "in_transit") return ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery"].includes((row.status || "").toLowerCase());
       if (filter === "delivered") return (row.status || "").toLowerCase() === "delivered";
       if (filter === "cod") return (order.paymentMethod || "COD") === "COD" || !order.payment;
-      if (filter === "branch") return !(manufacturer.ncmPickupBranch || "").trim();
+      if (filter === "branch") return !(hub.ncmPickupBranch || "").trim();
       if (filter === "delayed") return ["assigned", "accepted", "preparing", "packed"].includes((row.status || "").toLowerCase());
       return true;
     });
@@ -272,7 +272,7 @@ const DeliveryMonitor = ({ token }) => {
     const ready = rows.filter((row) => ["ready_for_pickup", "picked_up", "in_transit"].includes((row.status || "").toLowerCase())).length;
     const inTransit = rows.filter((row) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery"].includes((row.status || "").toLowerCase())).length;
     const cod = rows.filter((row) => (row.order?.paymentMethod || "COD") === "COD" || !row.order?.payment).length;
-    const missingBranch = rows.filter((row) => !(row.manufacturer?.ncmPickupBranch || "").trim()).length;
+    const missingBranch = rows.filter((row) => !((row.distributor || row.manufacturer)?.ncmPickupBranch || "").trim()).length;
     const delivered = rows.filter((row) => (row.status || "").toLowerCase() === "delivered").length;
     return { total, ready, inTransit, cod, missingBranch, delivered };
   }, [rows]);
@@ -283,7 +283,7 @@ const DeliveryMonitor = ({ token }) => {
         <div>
           <h1 className="text-xl sm:text-2xl font-black text-slate-900">Delivery & COD Monitor</h1>
           <p className="text-xs text-slate-500">
-            Live NCM courier tracking — pickup readiness, waybill IDs, branch routes, and COD exposure across all manufacturer hubs.
+            NCM tracking is updated from carrier webhooks and read from the database — including pickup readiness, waybills, branch routes, and COD exposure for fulfillment hubs.
           </p>
         </div>
 
@@ -406,7 +406,7 @@ const DeliveryMonitor = ({ token }) => {
               <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold tracking-wider border-b border-slate-100">
                 <tr>
                   <th className="py-3 px-4">Order</th>
-                  <th className="py-3 px-4">Manufacturer</th>
+                  <th className="py-3 px-4">Fulfillment Hub</th>
                   <th className="py-3 px-4">NCM Courier</th>
                   <th className="py-3 px-4">Branch Route</th>
                   <th className="py-3 px-4">Pickup Branch</th>
@@ -418,11 +418,11 @@ const DeliveryMonitor = ({ token }) => {
               <tbody className="divide-y divide-slate-100">
                 {filteredRows.map((row) => {
                   const order = row.order || {};
-                  const manufacturer = row.manufacturer || {};
+                  const hub = row.distributor || row.manufacturer || {};
                   const delivery = row.delivery || {};
                   const customerName = `${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim() || "Customer";
                   const codAmount = Number(order.amount || 0) || 0;
-                  const branchMissing = !(manufacturer.ncmPickupBranch || "").trim();
+                  const branchMissing = !(hub.ncmPickupBranch || "").trim();
                   const ncmStatusColor = ncmStatusColors[delivery.ncmStatus] || "bg-slate-50 text-slate-600 border-slate-200";
                   const assignmentStatusColor = statusColors[(row.status || "assigned").toLowerCase()] || statusColors.assigned;
                   const hasNcm = !!(delivery.ncmOrderId || delivery.state);
@@ -442,9 +442,9 @@ const DeliveryMonitor = ({ token }) => {
                       </td>
 
                       <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-900">{manufacturer.businessName || manufacturer.name || "Unassigned"}</div>
-                        <div className="text-[11px] text-slate-500">{manufacturer.city || "—"}</div>
-                        <div className="text-[11px] text-slate-500">Rating {manufacturer.qualityRating?.toFixed(1) || "5.0"}</div>
+                        <div className="font-bold text-slate-900">{hub.businessName || hub.name || "Unassigned"}</div>
+                        <div className="text-[11px] text-slate-500">{row.distributor ? "Distributor" : "Manufacturer"} · {hub.city || "—"}</div>
+                        {hub.qualityRating != null && <div className="text-[11px] text-slate-500">Rating {hub.qualityRating.toFixed(1)}</div>}
                       </td>
 
                       {/* NCM Courier Column */}
@@ -467,6 +467,11 @@ const DeliveryMonitor = ({ token }) => {
                             )}
                             {delivery.state && !delivery.ncmStatus && (
                               <span className="text-[10px] text-slate-500 font-mono">{delivery.state}</span>
+                            )}
+                            {delivery.lastSyncedAt && (
+                              <span className="block text-[10px] text-slate-400">
+                                Webhook updated {new Date(delivery.lastSyncedAt).toLocaleString()}
+                              </span>
                             )}
                             {needsHandoffResolution && (
                               <div className="mt-2 space-y-1.5 rounded-md border border-amber-200 bg-amber-50 p-2">
@@ -517,7 +522,7 @@ const DeliveryMonitor = ({ token }) => {
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
-                            <MapPin className="w-3 h-3" /> {manufacturer.ncmPickupBranch}
+                            <MapPin className="w-3 h-3" /> {hub.ncmPickupBranch}
                           </span>
                         )}
                       </td>

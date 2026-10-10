@@ -1922,8 +1922,25 @@ model StockTransferShipment {
   deliveryPartner      String?      @db.VarChar(191)
   trackingNumber       String?      @db.VarChar(191)
   externalReference    String?      @db.VarChar(191)
+  ncmOrderId           String?      @unique @db.VarChar(64)
   freightCharge        Decimal?     @db.Decimal(20, 2)
   freightSettlementStatus String    @default("PENDING_ADMIN_SETTLEMENT") @db.VarChar(64)
+  packageWeight        Decimal?     @db.Decimal(8, 3)
+  packageType          String?      @db.VarChar(64)
+  productType          String?      @db.VarChar(120)
+  productDescription   String?      @db.VarChar(300)
+  packageDimensions    String?      @db.VarChar(120)
+  isFragile            Boolean      @default(false)
+  deliveryInstruction  String?      @db.VarChar(500)
+  packagingNotes       String?      @db.VarChar(500)
+  ncmStatus            String?      @db.VarChar(191)
+  ncmStatusHistory     Json?
+  ncmPaymentStatus     String?      @db.VarChar(64)
+  ncmLastSyncedAt      DateTime?
+  ncmLastEventAt       DateTime?
+  ncmReturnStatus      String       @default("NOT_REQUESTED") @db.VarChar(32)
+  ncmReturnReason      String?      @db.Text
+  ncmReturnRequestedAt DateTime?
   bookedAt             DateTime?
   dispatchedAt         DateTime?
   deliveredAt          DateTime?
@@ -1933,9 +1950,25 @@ model StockTransferShipment {
   lines                StockTransferShipmentLine[]
   receipts             StockTransferReceipt[]
   discrepancies        InventoryDiscrepancy[]
+  events               StockTransferShipmentEvent[]
 
   @@index([stockTransferId, status])
   @@index([trackingNumber])
+}
+
+model StockTransferShipmentEvent {
+  id          String                @id @default(uuid())
+  shipmentId  String
+  eventKey    String                @unique @db.VarChar(191)
+  source      String                @db.VarChar(32)
+  eventType   String                @db.VarChar(191)
+  status      String?               @db.VarChar(191)
+  payload     Json?
+  occurredAt  DateTime?
+  receivedAt  DateTime              @default(now())
+  shipment    StockTransferShipment @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+
+  @@index([shipmentId, occurredAt])
 }
 
 model StockTransferShipmentLine {
@@ -2686,7 +2719,8 @@ model DeliveryOrder {
   id                     String          @id @default(uuid())
   orderId                String          @unique
   assignmentId           String?
-  manufacturerId         String
+  manufacturerId         String?
+  distributorId          String?
   state                  String          @default("READY_TO_DELIVER")
   deliveryType           String          @default("Door2Door")
   packageVersion         Int             @default(1)
@@ -2718,6 +2752,7 @@ model DeliveryOrder {
 
   @@index([state])
   @@index([manufacturerId, state])
+  @@index([distributorId, state])
   @@index([nextSyncAt])
 }
 
@@ -2798,7 +2833,8 @@ model DeliveryReturn {
   id                   String    @id @default(uuid())
   deliveryOrderId      String    @unique
   orderId              String
-  manufacturerId       String
+  manufacturerId        String?
+  distributorId         String?
   state                String    @default("RETURN_REQUESTED")
   returnReason         String
   ncmReturnComment     String?   @db.Text
@@ -2813,6 +2849,7 @@ model DeliveryReturn {
   updatedAt            DateTime  @updatedAt
 
   @@index([manufacturerId, state])
+  @@index([distributorId, state])
   @@index([orderId])
 }
 

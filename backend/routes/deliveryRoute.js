@@ -2,6 +2,7 @@ import express from "express";
 import {
   adminConfirmSettlement,
   adminListDeliveries,
+  adminRequestNcmDeliveryByAssignment,
   adminListSettlements,
   adminSettlementSummary,
   adminRequestSettlement,
@@ -43,6 +44,7 @@ deliveryRouter.post("/ready-for-pickup/:id", authenticate, authorizeAny("distrib
 deliveryRouter.post("/manufacturer/return", authenticate, authorizeAny("distributor:delivery_return", "manufacturer:delivery_return"), setFulfillmentContext, requestReturn);
 deliveryRouter.get("/customer/:id", authenticate, authorize("customer:delivery_read"), getCustomerDelivery);
 deliveryRouter.get("/admin", authenticate, authorize("delivery:admin_list"), adminListDeliveries);
+deliveryRouter.post("/admin/assignment/:id/ncm", authenticate, authorize("assignment:admin_list"), adminRequestNcmDeliveryByAssignment);
 deliveryRouter.get("/admin/settlements", authenticate, authorize("delivery:settlements_read"), adminListSettlements);
 deliveryRouter.get("/admin/settlements/summary", authenticate, authorize("delivery:settlement_summary"), adminSettlementSummary);
 deliveryRouter.post("/admin/settlements/request", authenticate, authorize("delivery:settlement_request"), adminRequestSettlement);

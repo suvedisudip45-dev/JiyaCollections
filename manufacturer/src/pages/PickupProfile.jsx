@@ -99,6 +99,11 @@ const PickupProfile = () => {
                 {profile?.pickupBranchStatus || "UNVERIFIED"}
               </p>
             </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-[#575757]">
+              {profile?.pickupBranchStatus === "REJECTED"
+                ? "This branch was rejected. Contact an administrator to assign another NCM branch."
+                : "NCM booking validates this branch against the active NCM branch catalog and marks it verified when it matches. Pickup address and contact are separate details."}
+            </p>
           </div>
         </div>
 
@@ -192,4 +197,3 @@ const PickupProfile = () => {
 };
 
 export default PickupProfile;
-

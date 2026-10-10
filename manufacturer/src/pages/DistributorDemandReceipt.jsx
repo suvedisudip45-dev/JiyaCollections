@@ -62,6 +62,14 @@ const DistributorDemandReceipt = () => {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    const refreshWhenFocused = () => {
+      if (document.visibilityState === "visible") loadData();
+    };
+    window.addEventListener("focus", refreshWhenFocused);
+    return () => window.removeEventListener("focus", refreshWhenFocused);
+  }, [loadData]);
+
   const updateRequestLine = (index, field, value) => {
     setRequestLines((current) =>
       current.map((line, lineIndex) =>
@@ -334,7 +342,14 @@ const DistributorDemandReceipt = () => {
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl shadow-xs overflow-hidden">
           <div className="p-4 border-b border-[#dedbd3] flex items-center justify-between bg-[#f8f7f4]">
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#171717]">Recent Inbound Transfers</h2>
-            <button onClick={loadData} className="p-1 text-[#575757] hover:text-[#171717] rounded-lg">
+            <button
+              type="button"
+              onClick={loadData}
+              disabled={loading}
+              aria-label="Refresh transfer and NCM status"
+              title="Refresh transfer and NCM status"
+              className="p-1 text-[#575757] hover:text-[#171717] rounded-lg disabled:opacity-50"
+            >
               <RotateCw className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -364,10 +379,20 @@ const DistributorDemandReceipt = () => {
                         <div key={shipment.id} className="p-3 bg-[#f8f7f4] rounded-xl border border-[#dedbd3] space-y-2">
                           <div className="flex items-center justify-between text-xs">
                             <span className="font-semibold text-[#171717]">
-                              Shipment ({shipment.bookingMode || "MANUAL"}) • Tracking: {shipment.carrierTrackingNumber || "N/A"}
+                              Shipment ({shipment.bookingMode || "MANUAL"}) • Tracking: {shipment.trackingNumber || shipment.ncmOrderId || "N/A"}
                             </span>
-                            <span className="text-[11px] text-[#575757]">Status: {shipment.status}</span>
+                            <span className="text-[11px] text-[#575757]">Shipment: {shipment.status.replaceAll("_", " ")}</span>
                           </div>
+                          {shipment.bookingMode === "NCM" && (
+                            <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] text-sky-900">
+                              <p>Carrier status: {shipment.ncmStatus || "Awaiting NCM update"}</p>
+                              <p className="mt-1">
+                                {["DISPATCHED", "PARTIALLY_RECEIVED"].includes(shipment.status)
+                                  ? "Carrier custody is confirmed. Inspect the goods and record the actual good, damaged, and missing counts below."
+                                  : "Receipt becomes available after an NCM custody webhook moves this shipment to DISPATCHED. Carrier delivery status alone does not add stock; distributor inspection and receipt are still required."}
+                              </p>
+                            </div>
+                          )}
 
                           <div className="divide-y divide-[#dedbd3]/60">
                             {shipment.lines?.map((line) => {
@@ -376,6 +401,7 @@ const DistributorDemandReceipt = () => {
                                 0
                               );
                               const remaining = Math.max(0, line.quantity - alreadyReceived);
+                              const canReceive = remaining > 0 && ["DISPATCHED", "PARTIALLY_RECEIVED"].includes(shipment.status);
 
                               return (
                                 <div key={line.id} className="py-2 flex items-center justify-between text-xs">
@@ -387,7 +413,7 @@ const DistributorDemandReceipt = () => {
                                       {line.stockTransferLine?.inventorySku?.size} / {line.stockTransferLine?.inventorySku?.color} • Shipped: {line.quantity} (Remaining to QA: {remaining})
                                     </p>
                                   </div>
-                                  {remaining > 0 ? (
+                                  {canReceive ? (
                                     <button
                                       onClick={() => openReceiptModal(line, shipment.id)}
                                       className="flex items-center gap-1.5 px-3 py-1.5 bg-[#171717] text-white text-[11px] font-bold rounded-lg hover:bg-[#262626] transition-colors"
@@ -397,7 +423,11 @@ const DistributorDemandReceipt = () => {
                                     </button>
                                   ) : (
                                     <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
-                                      <CheckCircle2 className="w-3.5 h-3.5" /> Fully Received
+                                      {remaining > 0 ? (
+                                        <span className="font-medium text-amber-800">Awaiting carrier dispatch confirmation</span>
+                                      ) : (
+                                        <><CheckCircle2 className="w-3.5 h-3.5" /> Fully Received</>
+                                      )}
                                     </span>
                                   )}
                                 </div>

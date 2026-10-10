@@ -203,6 +203,8 @@ export const createOrderComment = ({ orderid, comments }) =>
   requestNcm("/api/v1/comment", { method: "POST", body: { orderid, comments } });
 export const requestOrderReturn = ({ pk, comment }) =>
   requestNcm("/api/v2/vendor/order/return", { method: "POST", body: { pk, comment } });
+export const requestOrderReturnOnce = ({ pk, comment }) =>
+  requestNcmOnce("/api/v2/vendor/order/return", { method: "POST", body: { pk, comment } });
 export const createExchangeOrder = ({ pk }) =>
   requestNcm("/api/v2/vendor/order/exchange-create", { method: "POST", body: { pk } });
 export const redirectOrder = (payload) =>

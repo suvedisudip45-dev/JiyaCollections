@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, requestNcm, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -9,6 +9,7 @@ import {
   generateVendorReference,
   getCarrierBookingAssignmentStatus,
   isDeliveryOrderOwner,
+  normalizePackageWeight,
   normalizeDeliveryStatus,
   parseBoolean,
   webhookIdentifiers,
@@ -167,6 +168,28 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
   assert.equal(input.instruction, "Handle with care and leave at the gate");
 });
 
+test("NCM package description includes dimensions and quality packaging notes", () => {
+  const input = buildDeliveryInput({
+    order: {
+      id: "ord_dimensions",
+      amount: 1500,
+      address: JSON.stringify({ city: "Kathmandu", phone: "9800000000", name: "Ram Shrestha", street: "Boudha" }),
+      items: JSON.stringify([{ name: "Cotton Shirt" }]),
+    },
+    assignment: { id: "assign_dimensions" },
+    manufacturer: { id: "hub_1", ncmPickupBranch: "KTM" },
+    packagingMeta: {
+      packageDimensions: "30 x 20 x 5 cm",
+      packagingNotes: "Ironed and wrapped in waterproof polybag",
+    },
+  });
+
+  assert.match(input.packageDescription, /Dimensions: 30 x 20 x 5 cm/);
+  assert.match(input.packageDescription, /Ironed and wrapped in waterproof polybag/);
+  assert.equal(normalizePackageWeight("0.8 kg"), 0.8);
+  assert.equal(normalizePackageWeight("invalid"), null);
+});
+
 test("packaging fragile values preserve explicit false", () => {
   assert.equal(parseBoolean("false"), false);
   assert.equal(parseBoolean("true"), true);
@@ -232,6 +255,35 @@ test("NCM exchange client uses the documented vendor exchange endpoint and origi
     assert.equal(request.url, "https://ncm.test/api/v2/vendor/order/exchange-create");
     assert.equal(request.options.headers.Authorization, "Token test-server-token");
     assert.deepEqual(JSON.parse(request.options.body), { pk: 747 });
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
+
+test("NCM return client uses the documented vendor return endpoint and payload without retrying", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  let request;
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ order: 747, vendor_return: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await requestOrderReturnOnce({ pk: 747, comment: "Return requested" });
+    assert.equal(result.data.vendor_return, true);
+    assert.equal(request.url, "https://ncm.test/api/v2/vendor/order/return");
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.Authorization, "Token test-server-token");
+    assert.deepEqual(JSON.parse(request.options.body), { pk: 747, comment: "Return requested" });
   } finally {
     global.fetch = originalFetch;
     restoreEnv("NCM_API_TOKEN", originalToken);

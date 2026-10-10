@@ -3,11 +3,14 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 
+const hasNcmOrderId = (value) =>
+  /^\d+$/.test(String(value ?? "")) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
+
 const StockTransfers = ({ token }) => {
   const [transfers, setTransfers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState("");
-  const [filter, setFilter] = useState("PENDING_ADMIN_APPROVAL");
+  const [filter, setFilter] = useState("NCM");
   const [approvals, setApprovals] = useState({});
   const [notes, setNotes] = useState({});
   const [bookingResolution, setBookingResolution] = useState({});
@@ -15,7 +18,7 @@ const StockTransfers = ({ token }) => {
   const loadTransfers = useCallback(async () => {
     setLoading(true);
     try {
-      const params = filter ? { status: filter } : {};
+      const params = filter === "NCM" ? { bookingMode: "NCM" } : filter ? { status: filter } : {};
       const response = await axios.get(`${backendUrl}/api/stock-transfers/admin`, { headers: { token }, params });
       const rows = response.data.transfers || [];
       setTransfers(rows);
@@ -72,10 +75,27 @@ const StockTransfers = ({ token }) => {
         trackingNumber: draft.trackingNumber,
         freightCharge: draft.freightCharge || shipment.freightCharge,
       }, { headers: { token } });
-      toast.success(outcome === "BOOKED" ? "Confirmed NCM booking and dispatched reserved stock." : "Confirmed no NCM booking; factory reservations released.");
+      toast.success(outcome === "BOOKED" ? "Confirmed NCM booking. Factory stock remains reserved until pickup is confirmed." : "Confirmed no NCM booking; factory reservations released.");
       await loadTransfers();
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not reconcile the NCM booking.");
+    } finally {
+      setSavingId("");
+    }
+  };
+
+  const refreshNcmStatus = async (shipment) => {
+    setSavingId(shipment.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/stock-transfers/admin/shipments/${shipment.id}/ncm-sync`,
+        {},
+        { headers: { token } },
+      );
+      toast.success("NCM carrier status reconciled.");
+      await loadTransfers();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not reconcile NCM tracking.");
     } finally {
       setSavingId("");
     }
@@ -98,6 +118,7 @@ const StockTransfers = ({ token }) => {
             Status
             <select value={filter} onChange={(event) => setFilter(event.target.value)} className="ml-2 rounded-lg border border-slate-300 px-3 py-2">
               <option value="">All statuses</option>
+              <option value="NCM">NCM shipments (all statuses)</option>
               {["PENDING_ADMIN_APPROVAL", "APPROVED", "REJECTED", "IN_TRANSIT", "PARTIALLY_RECEIVED", "RECEIVED", "DISCREPANCY", "CANCELLED"].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
             </select>
           </label>
@@ -112,6 +133,11 @@ const StockTransfers = ({ token }) => {
             <div>
               <h2 className="font-semibold text-slate-900">{transfer.manufacturer?.name} → {transfer.distributor?.name}</h2>
               <p className="mt-1 text-xs text-slate-500">Transfer {transfer.id} · requested {new Date(transfer.requestedAt).toLocaleString()}</p>
+              <p className="mt-1 text-xs text-slate-600">
+                NCM route: {transfer.manufacturer?.ncmPickupBranch || "No origin branch"} → {transfer.distributor?.ncmPickupBranch || "No destination branch"}
+                {" · Branch status: "}
+                {transfer.manufacturer?.pickupBranchStatus || "UNVERIFIED"} / {transfer.distributor?.pickupBranchStatus || "UNVERIFIED"}
+              </p>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span>
           </div>
@@ -153,20 +179,73 @@ const StockTransfers = ({ token }) => {
                 <div className="flex flex-wrap justify-between gap-2 text-sm">
                   <span className="font-medium">{shipment.deliveryPartner || shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}</span>
                   <span className="text-slate-600">
-                    {shipment.externalReference && `Reference ${shipment.externalReference} · `}
+                    {(shipment.ncmOrderId || shipment.externalReference) && `Reference ${shipment.ncmOrderId || shipment.externalReference} · `}
                     {shipment.trackingNumber && `Tracking ${shipment.trackingNumber} · `}
-                    Freight {shipment.freightCharge === null ? "not quoted" : `NPR ${shipment.freightCharge}`} · {shipment.freightSettlementStatus.replaceAll("_", " ")}
+                    {shipment.bookingMode === "NCM" ? `NCM status ${shipment.ncmStatus || "awaiting carrier update"} · ` : ""}
+                    {shipment.bookingMode === "NCM" ? "NCM delivery charge" : "Freight"} {shipment.freightCharge === null ? "not quoted" : `NPR ${shipment.freightCharge}`} · {shipment.freightSettlementStatus.replaceAll("_", " ")}
+                    {shipment.bookingMode === "NCM" && ` · platform/admin settlement only`}
+                    {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
+                    {shipment.ncmLastSyncedAt && ` · Updated ${new Date(shipment.ncmLastSyncedAt).toLocaleString()}`}
                   </span>
                 </div>
+                {shipment.bookingMode === "NCM" && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {shipment.packageType && (
+                      <p className="basis-full text-xs text-slate-600">
+                        Package: {shipment.productType} · {shipment.productDescription} · {shipment.packageType} · {shipment.packageDimensions} · {shipment.packageWeight} kg
+                        {shipment.isFragile ? " · Fragile" : ""}
+                        {shipment.deliveryInstruction ? ` · Instructions: ${shipment.deliveryInstruction}` : ""}
+                        {shipment.packagingNotes ? ` · Packaging notes: ${shipment.packagingNotes}` : ""}
+                      </p>
+                    )}
+                    <button onClick={() => refreshNcmStatus(shipment)} disabled={savingId === shipment.id} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold disabled:opacity-50">
+                      {savingId === shipment.id ? "Reconciling..." : "Reconcile with NCM"}
+                    </button>
+                    <span className="text-xs text-slate-500">
+                      NCM return request: {shipment.ncmReturnStatus || "NOT_REQUESTED"}
+                      {shipment.ncmReturnRequestedAt ? ` · ${new Date(shipment.ncmReturnRequestedAt).toLocaleString()}` : ""}
+                      {shipment.ncmReturnReason ? ` · ${shipment.ncmReturnReason}` : ""}
+                    </span>
+                    <p className="basis-full text-xs text-slate-500">
+                      NCM permits only the vendor to mark an order for return; its response does not confirm physical receipt. Returned units still require distributor receipt and inspection. The carrier charge is settled by the platform, not payable to the manufacturer or distributor.
+                    </p>
+                    {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) && (
+                      <ul className="basis-full space-y-1 text-xs text-slate-600" aria-label="NCM status history">
+                        {(shipment.events?.length ? shipment.events.map((entry) => ({
+                          status: entry.status || entry.eventType,
+                          addedAt: entry.occurredAt || entry.receivedAt,
+                          key: entry.id,
+                        })) : shipment.ncmStatusHistory).slice(0, 10).map((entry, index) => (
+                          <li key={entry.key || `${entry.status}-${entry.addedAt || index}`}>
+                            {entry.status}{entry.addedAt ? ` · ${new Date(entry.addedAt).toLocaleString()}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {shipment.status === "BOOKED" && <p className="basis-full text-xs font-medium text-amber-800">Booking accepted; reserved factory stock has not moved to transit until pickup is confirmed.</p>}
+                    {shipment.ncmStatus === "Delivered" && <p className="basis-full text-xs font-medium text-emerald-800">Carrier reports delivery. Distributor receipt and inspection are still outstanding.</p>}
+                  </div>
+                )}
                 {["BOOKING_PENDING", "BOOKING_UNKNOWN"].includes(shipment.status) && shipment.bookingMode === "NCM" && (
                   <div className="mt-3 grid gap-2 sm:grid-cols-4">
-                    <input value={bookingResolution[shipment.id]?.externalReference || ""} onChange={(event) => updateResolution(shipment.id, "externalReference", event.target.value)} placeholder="Confirmed NCM order ID" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input value={bookingResolution[shipment.id]?.externalReference || ""} onChange={(event) => updateResolution(shipment.id, "externalReference", event.target.value)} placeholder="Confirmed numeric NCM order ID" inputMode="numeric" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <input value={bookingResolution[shipment.id]?.trackingNumber || ""} onChange={(event) => updateResolution(shipment.id, "trackingNumber", event.target.value)} placeholder="Tracking number" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="Freight (NPR)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <div className="flex flex-wrap gap-2">
                       <button onClick={() => resolveNcm(shipment, "BOOKED")} disabled={savingId === shipment.id} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white">Confirm booked</button>
                       <button onClick={() => resolveNcm(shipment, "NOT_BOOKED")} disabled={savingId === shipment.id} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold">Confirm not booked</button>
                     </div>
+                  </div>
+                )}
+                {shipment.bookingMode === "NCM" && ["BOOKED", "DISPATCHED", "PARTIALLY_RECEIVED", "DELIVERED", "DISCREPANCY"].includes(shipment.status) && !hasNcmOrderId(shipment.ncmOrderId || shipment.externalReference) && (
+                  <div className="mt-3 grid gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 sm:grid-cols-4">
+                    <p className="text-xs text-amber-900 sm:col-span-4">
+                      This shipment has no NCM order ID saved, so carrier tracking cannot be queried. Confirm its order ID from the NCM portal to link tracking without repeating a stock movement.
+                    </p>
+                    <input value={bookingResolution[shipment.id]?.externalReference || ""} onChange={(event) => updateResolution(shipment.id, "externalReference", event.target.value)} placeholder="Confirmed numeric NCM order ID" inputMode="numeric" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input value={bookingResolution[shipment.id]?.trackingNumber || ""} onChange={(event) => updateResolution(shipment.id, "trackingNumber", event.target.value)} placeholder="Tracking number (optional)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="Freight (NPR)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <button onClick={() => resolveNcm(shipment, "BOOKED")} disabled={savingId === shipment.id} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Link confirmed NCM order</button>
                   </div>
                 )}
               </div>

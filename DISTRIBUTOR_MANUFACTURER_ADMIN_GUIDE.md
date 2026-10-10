@@ -175,6 +175,28 @@ Shipment states additionally cover booking, dispatch, delivery, discrepancy,
 loss, and cancellation outcomes; exact strings are in the Prisma schema and
 transfer service.
 
+NCM booking follows NCM's documented order-creation contract and omits the
+optional `vref_id` (the full internal transfer ID exceeds NCM's accepted length).
+The confirmed NCM order ID is stored in the dedicated shipment field and mirrored
+to the compatibility external reference. Booking acceptance sets `BOOKED` but
+does not move stock: factory quantity, reservations, and cost layers remain
+reserved until the first pickup/custody webhook. That event atomically moves
+stock to transit exactly once. Carrier delivery is a separate NCM status; the
+distributor must still inspect the shipment and record good, damaged, and missing
+quantities through the receipt workflow.
+
+Manufacturer and distributor shipment views show database-persisted NCM events
+and do not poll the carrier. Only admins can explicitly reconcile using
+`POST /api/stock-transfers/admin/shipments/:shipmentId/ncm-sync`; this can also
+recover a missed pickup event. Only the manufacturer that booked the shipment
+can request an NCM return through
+`POST /api/stock-transfers/manufacturer/shipments/:shipmentId/ncm-return`.
+A carrier return request/status does not confirm that goods have physically
+arrived. The NCM delivery charge is tracked for platform/admin settlement and
+must not create a manufacturer or distributor payable.
+The admin stock-transfer view includes an **NCM shipments (all statuses)**
+filter for direct carrier tracking and return-request review.
+
 ### Production, order fulfillment, gifts, marketing cards, and letters
 
 | Table(s) | Purpose |
@@ -247,15 +269,26 @@ transfer service.
    quality inspection, requested color, requested size, and packaging. Every
    check must be explicitly saved as passed before shipment booking.
 2. Manufacturer dispatches approved quantities, selecting NCM or local freight.
-   The local path requires an `Idempotency-Key`, carrier name, optional
-   tracking/external reference/freight, and lines/quantities. It checks the
-   request belongs to the logged-in manufacturer and that quantities remain
+   Before NCM booking, the form requires package type, product type and
+   contents, weight, and dimensions; delivery instructions, fragile handling,
+   and packaging notes are also captured. The backend stores these details and
+   maps them to NCM's documented `package`, `instruction`, and `weight` fields.
+   Package type/dimensions are not sent as undocumented API fields. The local
+   path requires an `Idempotency-Key`, carrier name, optional
+   tracking/external reference/freight, and lines/quantities. Both paths check
+   the request belongs to the logged-in manufacturer and quantities remain
    approved/available.
+   NCM origin and destination branches are checked against the active
+   synchronized NCM branch catalog. A matching `UNVERIFIED` selection is
+   automatically marked verified; an explicitly `REJECTED` branch or a branch
+   absent from the active catalog remains blocked. A street address or pickup
+   contact alone does not establish a carrier branch.
 3. Dispatch moves units out of the factory stock and into in-transit stock using
    ledger entries; cost layers may also be allocated to shipment lines.
-4. `StockTransferShipment` records the carrier/booking, tracking data, freight,
-   and shipment state. NCM booking and uncertain booking outcomes have a
-   separate admin-resolution endpoint.
+4. `StockTransferShipment` records the carrier/booking, package details,
+   tracking data, freight, and shipment state. NCM booking and uncertain
+   booking outcomes have a separate admin-resolution endpoint. Saved package
+   details are visible to admin, manufacturer, and distributor users.
 5. If the distributor and manufacturer profiles belong to the same account,
    the portal automatically selects own-store delivery. This bypasses NCM and
    local freight, records NPR 0 freight, and atomically dispatches and receives
@@ -361,6 +394,12 @@ transfer flow:
      - `GET /api/distributor/orders/assigned`: List orders allocated to the distributor hub.
      - `PATCH /api/distributor/orders/:id/status`: Updates status sequentially (`Dispatched` → `On the Way` → `Delivered`). Upon delivery, reserved inventory balances and on-hand stock are deducted transactionally, recording `FULFILLMENT` ledger entries and booking delivery accounting.
      - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. Customer return records and accounting are posted automatically.
+   - Admins can enter the same package details used by the fulfillment workflow
+     from Order Assignments and request NCM booking for a distributor-assigned
+     order. The confirmed NCM order and carrier webhook events are stored in
+     the database; customer-order tracking reads that state without polling
+     NCM status/detail endpoints. The webhook is acknowledged only after the
+     event and status update are persisted.
 8. Negotiated Charge & Rate Card Engine:
    - Admin and Distributor negotiate per-product delivery fee, return delivery fee, commission rate, and performance bonus/incentive rates via `POST /api/admin/distributor-rates`.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
@@ -377,8 +416,8 @@ Relevant endpoints:
 | `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; the customer district must match the distributor's district or an active coverage district. |
 | `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
 | `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process self-delivery returns, conduct QA, update inventory, and inform Admin. |
-
-At the final package handoff, the distributor can choose self-delivery for a same-district customer or book NCM delivery. Self-delivery orders are tracked in Self-Delivery Management; NCM orders remain in courier tracking and are not shown in that self-delivery list.
+| `POST /api/delivery/admin/assignment/:id/ncm` | Admin | `assignment:admin_list` | Enter/validate package details and request NCM delivery for an assigned order. |
+| `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
 | `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |
 | `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
@@ -436,6 +475,15 @@ Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
 - Freight has a `freightSettlementStatus` on the shipment, initially
   `PENDING_ADMIN_SETTLEMENT`; the routes inspected here do not provide a general
   freight settlement action.
+- NCM freight quotes/charges are platform/admin settlement amounts only. NCM
+  return status, return reason, carrier status, carrier payment status, and
+  event timeline are visible in the admin, distributor, and manufacturer stock
+  transfer views; only the manufacturer can submit the NCM return request.
+- The admin stock-transfer view opens on NCM shipments. If a booking outcome or
+  webhook is uncertain, an administrator can reconcile the carrier booking or
+  carrier status. Booking reconciliation alone does not move stock; pickup
+  confirmation or admin carrier-status reconciliation triggers the same
+  idempotent custody transition.
 
 ### Gifts
 
