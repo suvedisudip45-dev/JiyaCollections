@@ -22,6 +22,8 @@ import { applyGiftDeliveryTransition } from "./giftService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
+const MAX_NCM_WEBHOOK_ORDER_IDS = 100;
+const MAX_NCM_WEBHOOK_PAYLOAD_BYTES = 64 * 1024;
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
 
 const getNcmBranchNames = async () => {
@@ -245,9 +247,21 @@ export const deliveryTypeForNcm = (deliveryType = "Door2Door") => {
 export const statusEventKey = ({ orderId, status, timestamp, event }) =>
   crypto.createHash("sha256").update(JSON.stringify({ orderId, status, timestamp, event })).digest("hex");
 
-const sanitizePayload = (payload) => {
+export const sanitizeNcmWebhookPayload = (payload) => {
+  const sensitiveKey = /(?:token|secret|authorization|password|api[_-]?key)/i;
+  const sanitize = (value, depth = 0) => {
+    if (depth > 12) return "[TRUNCATED]";
+    if (Array.isArray(value)) return value.map((entry) => sanitize(entry, depth + 1));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+        key,
+        sensitiveKey.test(key) ? "[REDACTED]" : sanitize(entry, depth + 1),
+      ]));
+    }
+    return value;
+  };
   if (!payload || typeof payload !== "object") return {};
-  return JSON.parse(JSON.stringify(payload));
+  return sanitize(payload);
 };
 
 export const generateVendorReference = ({ order, assignment }) => {
@@ -303,8 +317,9 @@ export const assignmentStatusFromNcmStatus = (status) => {
   return normalizeDeliveryStatus(status).assignmentStatus;
 };
 
-export const webhookIdentifiers = (payload = {}) => {
-  const values = [
+const webhookIdentifierValues = (payload = {}) => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
+  return [
     payload.order_id,
     payload.orderid,
     payload.orderId,
@@ -312,8 +327,75 @@ export const webhookIdentifiers = (payload = {}) => {
     payload.vendorReference,
     payload.delivery_order_id,
     ...(Array.isArray(payload.order_ids) ? payload.order_ids : []),
-  ];
-  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+};
+
+const isValidWebhookIdentifier = (value) =>
+  (typeof value === "string" && value.trim().length > 0 && value.trim().length <= 191 && !/[\u0000-\u001f\u007f]/.test(value)) ||
+  (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+
+export const webhookIdentifiers = (payload = {}) => {
+  const values = webhookIdentifierValues(payload);
+  return [...new Set(values
+    .filter(isValidWebhookIdentifier)
+    .map((value) => String(value).trim()))];
+};
+
+export const validateNcmWebhookPayload = (payload) => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { valid: false, statusCode: 400, message: "Invalid webhook payload" };
+  }
+  if (payload.order_ids !== undefined && !Array.isArray(payload.order_ids)) {
+    return { valid: false, statusCode: 400, message: "NCM order_ids must be an array" };
+  }
+  if (Array.isArray(payload.order_ids) && payload.order_ids.length > MAX_NCM_WEBHOOK_ORDER_IDS) {
+    return { valid: false, statusCode: 413, message: "NCM webhook contains too many order IDs" };
+  }
+  if (
+    (payload.status !== undefined && payload.status !== null && typeof payload.status !== "string") ||
+    (payload.event !== undefined && payload.event !== null && typeof payload.event !== "string")
+  ) {
+    return { valid: false, statusCode: 400, message: "NCM status and event values must be strings" };
+  }
+  if (!String(payload.status || "").trim() && !String(payload.event || "").trim()) {
+    return { valid: false, statusCode: 400, message: "NCM webhook must include a status or event" };
+  }
+  let serializedPayload;
+  try {
+    serializedPayload = JSON.stringify(payload);
+  } catch {
+    return { valid: false, statusCode: 400, message: "Invalid webhook payload" };
+  }
+  if (Buffer.byteLength(serializedPayload, "utf8") > MAX_NCM_WEBHOOK_PAYLOAD_BYTES) {
+    return { valid: false, statusCode: 413, message: "NCM webhook payload is too large" };
+  }
+  const identifiers = webhookIdentifiers(payload);
+  if (!identifiers.length) {
+    return { valid: false, statusCode: 400, message: "Webhook payload has no valid order ID" };
+  }
+  return {
+    valid: true,
+    identifiers,
+    invalidIdentifierCount: webhookIdentifierValues(payload).filter((value) => !isValidWebhookIdentifier(value)).length,
+  };
+};
+
+const findDeliveryOrdersForNcmId = async (ncmId) => {
+  const numericId = Number(ncmId);
+  const candidates = [];
+  if (/^\d+$/.test(ncmId) && Number.isSafeInteger(numericId) && numericId > 0) {
+    candidates.push({ ncmOrderId: numericId });
+  }
+  candidates.push(
+    { vendorReference: ncmId },
+    { orderId: ncmId },
+    { id: ncmId },
+  );
+  return prisma.deliveryOrder.findMany({
+    where: { OR: candidates },
+    include: { order: { select: { paymentMethod: true, payment: true } } },
+    take: 2,
+  });
 };
 
 const normalizePackagingMeta = (source = {}) => {
@@ -898,20 +980,71 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   }
 };
 
+const findOtherCustomerNcmRecords = async (ncmId) => {
+  if (!/^\d+$/.test(ncmId)) return [];
+  const numericId = Number(ncmId);
+  if (!Number.isSafeInteger(numericId) || numericId <= 0) return [];
+  const [returns, exchanges] = await Promise.all([
+    prisma.customerReturn.findMany({
+      where: {
+        requestKey: { not: null },
+        lifecycleStatus: {
+          in: ["APPROVED_BY_ADMIN", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT"],
+        },
+        OR: [{ originalNcmOrderId: numericId }, { ncmReturnOrderId: numericId }],
+      },
+      select: { id: true },
+      take: 2,
+    }),
+    prisma.orderExchangeRequest.findMany({
+      where: { OR: [{ ncmReturnOrderId: numericId }, { ncmReplacementOrderId: numericId }] },
+      select: { id: true },
+      take: 2,
+    }),
+  ]);
+  return [
+    ...returns.map(({ id }) => ({ type: "customerReturn", id })),
+    ...exchanges.map(({ id }) => ({ type: "orderExchange", id })),
+  ];
+};
+
 export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockTransferStatus = null }) => {
   const ids = webhookIdentifiers(payload);
   const results = [];
   for (const ncmId of ids) {
     const trimmedId = String(ncmId || "").trim();
     if (!trimmedId) continue;
-    const stockTransferShipment = await prisma.stockTransferShipment.findFirst({
+    const stockTransferShipments = await prisma.stockTransferShipment.findMany({
       where: {
         bookingMode: "NCM",
         OR: [{ ncmOrderId: trimmedId }, { externalReference: trimmedId }],
       },
       select: { id: true },
+      take: 2,
     });
-    if (stockTransferShipment) {
+    if (stockTransferShipments.length > 1) {
+      logger.error("Ambiguous NCM webhook identifier matches multiple stock-transfer shipments", {
+        ncmId: trimmedId,
+        shipmentIds: stockTransferShipments.map(({ id }) => id),
+      });
+      results.push({ ncmId: trimmedId, ambiguous: true });
+      continue;
+    }
+    if (stockTransferShipments.length === 1) {
+      const [deliveryOrders, otherCustomerRecords] = await Promise.all([
+        findDeliveryOrdersForNcmId(trimmedId),
+        findOtherCustomerNcmRecords(trimmedId),
+      ]);
+      if (deliveryOrders.length || otherCustomerRecords.length) {
+        logger.error("Ambiguous NCM webhook identifier matches both stock-transfer and customer-delivery records", {
+          ncmId: trimmedId,
+          shipmentId: stockTransferShipments[0].id,
+          deliveryOrderIds: deliveryOrders.map(({ id }) => id),
+          customerRecords: otherCustomerRecords,
+        });
+        results.push({ ncmId: trimmedId, ambiguous: true });
+        continue;
+      }
       const handled = onStockTransferStatus
         ? await onStockTransferStatus({ payload, ncmId: trimmedId, source })
         : false;
@@ -925,13 +1058,22 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       }
       const ncmStatus = String(payload.status || payload.event || "").trim().slice(0, 191);
       await prisma.stockTransferShipment.update({
-        where: { id: stockTransferShipment.id },
+        where: { id: stockTransferShipments[0].id },
         data: {
           ...(ncmStatus ? { ncmStatus } : {}),
           ncmLastSyncedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         },
       });
       results.push({ ncmId: trimmedId, stockTransferShipment: true });
+      continue;
+    }
+    const deliveryOrders = await findDeliveryOrdersForNcmId(trimmedId);
+    if (deliveryOrders.length > 1) {
+      logger.error("Ambiguous NCM webhook identifier matches multiple customer-delivery records", {
+        ncmId: trimmedId,
+        deliveryOrderIds: deliveryOrders.map(({ id }) => id),
+      });
+      results.push({ ncmId: trimmedId, ambiguous: true });
       continue;
     }
     const appliedReturnStatus = await applyCustomerReturnNcmStatus({
@@ -946,29 +1088,11 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
     }
 
     // Resolve delivery order by NCM ID, vendor reference, order ID, or delivery ID.
-    let delivery = null;
-    const numericId = Number(trimmedId);
-    if (Number.isInteger(numericId) && numericId > 0) {
-      delivery = await prisma.deliveryOrder.findFirst({
-        where: { ncmOrderId: numericId },
-        include: { order: { select: { paymentMethod: true, payment: true } } },
-      });
-    }
-    if (!delivery) {
-      delivery = await prisma.deliveryOrder.findFirst({
-        where: {
-          OR: [
-            { vendorReference: trimmedId },
-            { orderId: trimmedId },
-            { id: trimmedId },
-          ],
-        },
-        include: { order: { select: { paymentMethod: true, payment: true } } },
-      });
-    }
+    const delivery = deliveryOrders[0] || null;
 
     if (!delivery) {
-      if (Number.isInteger(numericId) && numericId > 0) {
+      const numericId = Number(trimmedId);
+      if (/^\d+$/.test(trimmedId) && Number.isSafeInteger(numericId) && numericId > 0) {
         const matchedExchange = await applyExchangeNcmStatus({
           ncmOrderId: numericId,
           status: payload.status,
@@ -981,7 +1105,11 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
           continue;
         }
       }
-      logger.warn("Delivery order not found for NCM webhook ID", { ncmId: trimmedId, payload });
+      logger.warn("Delivery order not found for NCM webhook ID", {
+        ncmId: trimmedId,
+        status: typeof payload.status === "string" ? payload.status.slice(0, 191) : null,
+        event: typeof payload.event === "string" ? payload.event.slice(0, 191) : null,
+      });
       continue;
     }
 
@@ -1006,7 +1134,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
         fromState: delivery.state,
         toState: deliveryState,
         ncmStatus: canonicalStatus,
-        payloadJson: sanitizePayload(payload),
+        payloadJson: sanitizeNcmWebhookPayload(payload),
         occurredAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         idempotencyKey: `NCM_STATUS:${eventKey}`,
       });
@@ -1178,7 +1306,10 @@ export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = nu
     payload.test === "true" ||
     String(payload.order_id || "").toUpperCase().startsWith("TEST-")
   ) {
-    logger.info("NCM test webhook received and acknowledged", { payload });
+    logger.info("NCM test webhook received and acknowledged", {
+      event: typeof payload.event === "string" ? payload.event.slice(0, 191) : null,
+      status: typeof payload.status === "string" ? payload.status.slice(0, 191) : null,
+    });
     return { duplicate: false, test: true, updated: [] };
   }
 
@@ -1201,7 +1332,7 @@ export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = nu
         orderIds: payload.order_ids || ids,
         status: payload.status || null,
         timestamp: occurredAt && !Number.isNaN(occurredAt.getTime()) ? occurredAt : null,
-        payloadJson: sanitizePayload(payload),
+        payloadJson: sanitizeNcmWebhookPayload(payload),
       },
     });
   } catch (error) {
@@ -1263,7 +1394,7 @@ export const storeOrderCommentWebhook = async (payload) => {
         comments,
         addedBy: String(payload.addedBy ?? payload.added_by ?? "NCM").slice(0, 150),
         addedAt: addedAt ? new Date(addedAt) : null,
-        payloadJson: sanitizePayload(payload),
+        payloadJson: sanitizeNcmWebhookPayload(payload),
         eventKey,
       },
     });

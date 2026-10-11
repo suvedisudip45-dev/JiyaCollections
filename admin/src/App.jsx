@@ -5,10 +5,11 @@ import { clearAuthTokens } from "./auth/tokenStorage";
 import { PermissionsProvider, usePermissions } from "./auth/PermissionsContext";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
+import Breadcrumbs from "./components/Breadcrumbs";
 import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Add from "./pages/Add";
 import List from "./pages/List";
-import Orders from "./pages/Orders";
+import Orders, { AdminOrderDetail } from "./pages/Orders";
 import Categories from "./pages/Categories";
 import ComboBundles from "./pages/ComboBundles";
 import Collaborations from "./pages/Collaborations";
@@ -182,6 +183,7 @@ const App = () => {
               <Sidebar />
               <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-[#f3f6f4] overflow-x-hidden min-w-0">
                 <div className="max-w-7xl mx-auto">
+                  <Breadcrumbs />
                   <Routes>
                   <Route path="/" element={<Navigate to="/orders" replace />} />
                   <Route path="/finance" element={withPermission("/finance", <FinanceDashboard token={token} />)} />
@@ -207,15 +209,18 @@ const App = () => {
                   <Route path="/create-order" element={withPermission("/create-order", <CreateOrder token={token} />)} />
                   <Route path="/add-order" element={withPermission("/add-order", <CreateOrder token={token} />)} />
                   <Route path="/orders" element={withPermission("/orders", <Orders token={token} />)} />
+                  <Route path="/orders/:orderId" element={withPermission("/orders", <AdminOrderDetail token={token} />)} />
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
+                  <Route path="/manufacturers/:manufacturerId" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
                   <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />
                   <Route path="/manufacturer-inventory" element={withPermission("/manufacturer-inventory", <ManufacturerInventoryMonitor token={token} />)} />
                   <Route path="/manufacturer-production" element={withPermission("/manufacturer-production", <ManufacturerProductionRequests token={token} />)} />
                   <Route path="/distributor-applications" element={withPermission("/distributor-applications", <DistributorApplications token={token} />)} />
                   <Route path="/inventory-ledger" element={withPermission("/inventory-ledger", <InventoryLedgerAudit token={token} />)} />
                   <Route path="/stock-transfers" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
+                  <Route path="/stock-transfers/:transferId" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />

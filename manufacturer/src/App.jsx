@@ -6,6 +6,7 @@ import "react-toastify/dist/ReactToastify.css";
 import { ManufacturerProvider, useManufacturer } from "./context/ManufacturerContext";
 import Navbar from "./components/Navbar";
 import Sidebar from "./components/Sidebar";
+import Breadcrumbs from "./components/Breadcrumbs";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Orders from "./pages/Orders";
@@ -59,6 +60,7 @@ const MainLayout = () => {
         <Sidebar />
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-x-hidden min-w-0">
           <div className="max-w-7xl mx-auto">
+            <Breadcrumbs />
             <Routes>
               {/* ── Manufacturer Portal Routes ──────────────────────────── */}
               <Route
@@ -71,6 +73,7 @@ const MainLayout = () => {
               />
               <Route path="/production" element={<Production />} />
               <Route path="/bulk-transfers" element={<FactoryTransfers />} />
+              <Route path="/bulk-transfers/:transferId" element={<FactoryTransfers />} />
               <Route path="/performance" element={<Performance />} />
               <Route path="/finance" element={<Finance />} />
 
@@ -85,6 +88,7 @@ const MainLayout = () => {
               <Route path="/inventory" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorInventory /> : <Navigate to="/" replace />} />
               <Route path="/distributor/deliveries" element={<DistributorSelfDelivery />} />
               <Route path="/distributor/demand" element={<DistributorDemandReceipt />} />
+              <Route path="/distributor/demand/:transferId" element={<DistributorDemandReceipt />} />
               <Route path="/distributor/finance" element={<DistributorFinanceDashboard />} />
               <Route path="/customer-loyalty" element={activeWorkspace === "DISTRIBUTOR" ? <CustomerLoyalty /> : <Navigate to="/" replace />} />
               <Route path="/gift-inventory" element={activeWorkspace === "DISTRIBUTOR" ? <GiftInventory /> : <Navigate to="/" replace />} />

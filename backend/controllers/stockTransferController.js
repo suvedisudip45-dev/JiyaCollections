@@ -27,6 +27,7 @@ import {
   normalizeNcmStockTransferPackageDetails,
   isNcmBranchEligible,
   shouldAdvanceNcmStockTransferStatus,
+  isStaleNcmStockTransferEvent,
   isTransferPreparationComplete,
   isSameProfileOwner,
   isPositiveLocalFreightCharge,
@@ -1284,6 +1285,17 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
     });
     if (!current || current.bookingMode !== "NCM") return null;
 
+    const latestTimedEvent = await tx.stockTransferShipmentEvent.findFirst({
+      where: {
+        shipmentId: current.id,
+        source: { in: ["NCM_WEBHOOK", "ADMIN_RECONCILIATION"] },
+        occurredAt: { not: null },
+      },
+      orderBy: [{ occurredAt: "desc" }, { receivedAt: "desc" }],
+      select: { occurredAt: true },
+    });
+    const isStaleEvent = isStaleNcmStockTransferEvent(latestTimedEvent?.occurredAt, occurredAt);
+
     const insertedEvent = await tx.stockTransferShipmentEvent.createMany({
       data: [{
         shipmentId: current.id,
@@ -1314,7 +1326,7 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
     let dispatchedAt = current.dispatchedAt;
     let shipmentStatus = current.status;
     let stockMovementApplied = false;
-    if (normalized.custodyConfirmed && ["BOOKED", "BOOKING_UNKNOWN"].includes(current.status)) {
+    if (!isStaleEvent && normalized.custodyConfirmed && ["BOOKED", "BOOKING_UNKNOWN"].includes(current.status)) {
       const transfer = await loadTransfer(tx, current.stockTransferId);
       if (!transfer) throw fail("Stock transfer not found for NCM pickup event.", "TRANSFER_NOT_FOUND", 404);
       await dispatchShipmentStock(
@@ -1322,7 +1334,7 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
         transfer,
         current,
         transfer.lines,
-        { id: null, role: "SYSTEM" },
+        { id: "SYSTEM:NCM_WEBHOOK", role: "SYSTEM" },
         { releaseReservations: true },
       );
       dispatchedAt = new Date();
@@ -1330,14 +1342,25 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
       stockMovementApplied = true;
     }
 
-    const shouldAdvanceStatus = shouldAdvanceNcmStockTransferStatus(current.ncmStatus || "", status || "");
-    const previousEventAt = current.ncmLastEventAt;
-    const latestEventAt = !previousEventAt || !occurredAt || occurredAt > previousEventAt
-      ? (occurredAt || new Date())
-      : previousEventAt;
+    const shouldAdvanceStatus = !isStaleEvent &&
+      shouldAdvanceNcmStockTransferStatus(current.ncmStatus || "", status || "");
+    const latestEventAt = occurredAt && (
+      !latestTimedEvent?.occurredAt || occurredAt > latestTimedEvent.occurredAt
+    )
+      ? occurredAt
+      : latestTimedEvent?.occurredAt || current.ncmLastEventAt;
     const history = Array.isArray(current.ncmStatusHistory) ? current.ncmStatusHistory : [];
     const nextHistory = status
-      ? [{ status, addedAt: (occurredAt || new Date()).toISOString() }, ...history]
+      ? [{
+        status,
+        addedAt: (occurredAt || new Date()).toISOString(),
+      }, ...history]
+        .sort((left, right) => {
+          const leftTimestamp = Date.parse(left.addedAt || "");
+          const rightTimestamp = Date.parse(right.addedAt || "");
+          return (Number.isFinite(rightTimestamp) ? rightTimestamp : 0) -
+            (Number.isFinite(leftTimestamp) ? leftTimestamp : 0);
+        })
         .slice(0, 50)
       : history;
 
@@ -1357,6 +1380,7 @@ export const applyNcmStockTransferWebhook = async ({ payload, ncmId, source = "N
       shipmentStatus: updated.status,
       ncmStatus: updated.ncmStatus,
       duplicate: false,
+      stale: isStaleEvent,
       stockMovementApplied,
     };
   }, { isolationLevel: "Serializable" });

@@ -12,7 +12,7 @@ import {
   storeAndApplyWebhook,
   storeOrderCommentWebhook,
   submitDeliveryToNcm,
-  webhookIdentifiers,
+  validateNcmWebhookPayload,
 } from "../services/deliveryService.js";
 import { postNcmRemittanceAccounting } from "../services/accountingPostingEngine.js";
 import { applyNcmStockTransferWebhook } from "./stockTransferController.js";
@@ -153,21 +153,32 @@ export const receiveWebhook = async (req, res) => {
   }
 
   // 3. Validate body payload
-  if (!req.body || typeof req.body !== "object" || webhookIdentifiers(req.body).length === 0) {
-    return res.status(400).json({ status: "bad_request", success: false, message: "Invalid webhook payload" });
+  const validation = validateNcmWebhookPayload(req.body);
+  if (!validation.valid) {
+    const status = validation.statusCode || 400;
+    return res.status(status).json({
+      status: status === 413 ? "payload_too_large" : "bad_request",
+      success: false,
+      message: validation.message,
+    });
   }
 
   try {
     const result = await storeAndApplyWebhook(req.body, { onStockTransferStatus: applyNcmStockTransferWebhook });
-    const identifiers = webhookIdentifiers(req.body);
     const matchedIdentifiers = new Set((result.updated || []).map((entry) => entry.ncmId));
+    const ambiguousIdentifiers = new Set((result.updated || [])
+      .filter((entry) => entry.ambiguous)
+      .map((entry) => entry.ncmId));
     return res.status(200).json({
       status: "received",
       success: true,
       accepted: true,
       duplicate: result.duplicate,
       updates: result.updated,
-      unmatchedOrderIds: identifiers.filter((identifier) => !matchedIdentifiers.has(identifier)),
+      ambiguousOrderIds: [...ambiguousIdentifiers],
+      invalidOrderIdCount: validation.invalidIdentifierCount,
+      unmatchedOrderIds: validation.identifiers.filter((identifier) =>
+        !matchedIdentifiers.has(identifier) && !ambiguousIdentifiers.has(identifier)),
     });
   } catch (error) {
     console.error("NCM webhook processing failed:", error.message);

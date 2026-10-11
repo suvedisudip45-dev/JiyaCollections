@@ -118,11 +118,20 @@ the webhook, and admin/distributor/manufacturer views read the persisted status
 instead of repeatedly querying NCM. NCM delivery charges are settled by the
 platform/admin and are not partner payables.
 
-For bulk distributor stock transfers, manufacturer and distributor views show
-the persisted NCM event timeline, while only admins can explicitly reconcile
-against the NCM order detail/status APIs. Booking acceptance is shown as booked,
-not dispatched; manufacturer stock stays reserved until pickup/custody is
-confirmed. The manufacturer NCM booking form requires package type, product
+For bulk distributor stock transfers, the manufacturer view shows the end-to-end
+transfer stages (demand, admin approval, factory preparation, carrier custody,
+and distributor receipt QA) separately from each shipment's NCM carrier
+milestones. Every NCM shipment has its own booking outcome, carrier order ID,
+carrier-versus-receipt progress, unit QA totals, and expandable event and package
+details; failed and uncertain booking attempts are distinguished, and return
+requests are offered only for confirmed bookings. Manufacturer and distributor
+views show the persisted NCM event timeline in chronological order, while only
+admins can explicitly reconcile against the NCM order detail/status APIs.
+Manufacturer, admin, and distributor shipment details surface the recent
+provider events and last-update time; a stale event remains visible in event
+history but cannot rewind the current carrier state or trigger custody movement.
+Booking acceptance is shown as booked, not dispatched; manufacturer stock stays
+reserved until pickup/custody is confirmed. The manufacturer NCM booking form requires package type, product
 type/contents, measured weight, dimensions, and offers delivery instructions,
 fragile handling, and packaging notes. The backend stores these details with
 the shipment and maps them onto NCM's documented `package`, `instruction`, and
@@ -189,6 +198,7 @@ marketing-card stock are distributor-only. Its route list includes:
 | `/orders/:id` | Distributor customer-order fulfillment workflow |
 | `/direct-orders` | Distributor direct hub orders (distributor workspace only) |
 | `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
+| `/distributor/demand` | Factory stock requests, inbound carrier/local transfer tracking, and receipt QA |
 | `/collaborations` | Collaboration items |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |
@@ -198,6 +208,15 @@ marketing-card stock are distributor-only. Its route list includes:
 | `/marketing-cards` | Distributor card receipt and processing |
 
 These hub pages are gated to `activeWorkspace === "DISTRIBUTOR"`; they are not manufacturer features. Distributor order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action. Historical manufacturer gift/card/order records remain available in storage but new hub activity uses distributor ownership and backend authorization.
+
+The distributor demand screen loads the factory catalog separately from inbound
+transfer history so a history API error does not hide requestable stock. Its
+factory selector lists only active factories with unreserved ledger quantities
+for active SKUs on published products; each factory's returned `stock` array is
+the SKU variant list used to compose a request. A successfully loaded empty
+selector means there is no eligible factory stock in that catalog response,
+not that a request can be submitted against legacy-only inventory; catalog
+authorization or loading failures are shown separately.
 
 ## 5. Marketing Portal (`marketing/`)
 
@@ -257,6 +276,22 @@ This portal is clearly structured around the backend `marketing-cards` router an
 1. Partner signs in or signs up.
 2. Protected routes ensure partner-only access.
 3. Campaigns and cards are fetched from backend endpoints and manipulated through partner-specific views.
+
+### Operational list and detail pattern
+
+Operational queues use compact, responsive tables to show only identifiers, dates,
+customer or counterparty, product summary, quantity/value, and current status.
+Explicit row actions navigate to dedicated detail routes; state-changing actions
+(such as accepting/rejecting an application or recording receipt QA) remain
+deliberate and are not triggered just by opening a record. Breadcrumbs appear in
+the storefront, admin, manufacturer/distributor, and marketing shells, with parent
+links for navigating back to the relevant list. Admin-created and storefront
+orders retain separate views, with print/selection controls preserved. Manufacturer
+assignment and stock-transfer detail routes retain NCM milestones, preparation
+checks, approval/reconciliation controls, and receipt inspection actions.
+Marketing campaigns link to their existing detail route, while already table-based
+card and redemption lists remain unchanged. Customer-facing order history is not
+an operational queue and retains its dedicated tracking/detail experience.
 
 ## 7. UI-specific implementation details
 

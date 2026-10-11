@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
@@ -7,6 +8,7 @@ const hasNcmOrderId = (value) =>
   /^\d+$/.test(String(value ?? "")) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
 
 const StockTransfers = ({ token }) => {
+  const { transferId } = useParams();
   const [transfers, setTransfers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState("");
@@ -18,7 +20,7 @@ const StockTransfers = ({ token }) => {
   const loadTransfers = useCallback(async () => {
     setLoading(true);
     try {
-      const params = filter === "NCM" ? { bookingMode: "NCM" } : filter ? { status: filter } : {};
+      const params = transferId ? {} : filter === "NCM" ? { bookingMode: "NCM" } : filter ? { status: filter } : {};
       const response = await axios.get(`${backendUrl}/api/stock-transfers/admin`, { headers: { token }, params });
       const rows = response.data.transfers || [];
       setTransfers(rows);
@@ -36,7 +38,7 @@ const StockTransfers = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [filter, token]);
+  }, [filter, token, transferId]);
 
   useEffect(() => {
     loadTransfers();
@@ -111,23 +113,68 @@ const StockTransfers = ({ token }) => {
       <header className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold text-slate-900">Distributor demand approvals</h1>
+            <h1 className="text-xl font-semibold text-slate-900">{transferId ? "Stock Transfer Details" : "Distributor demand approvals"}</h1>
             <p className="mt-1 text-sm text-slate-500">Approve or reject distributor product demands. Approved quantities are published to the manufacturer factory portal for inspection, packaging, and delivery.</p>
           </div>
-          <label className="text-sm text-slate-600">
+          {transferId ? (
+            <Link to="/stock-transfers" className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Back to transfers</Link>
+          ) : <label className="text-sm text-slate-600">
             Status
             <select value={filter} onChange={(event) => setFilter(event.target.value)} className="ml-2 rounded-lg border border-slate-300 px-3 py-2">
               <option value="">All statuses</option>
               <option value="NCM">NCM shipments (all statuses)</option>
               {["PENDING_ADMIN_APPROVAL", "APPROVED", "REJECTED", "IN_TRANSIT", "PARTIALLY_RECEIVED", "RECEIVED", "DISCREPANCY", "CANCELLED"].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
             </select>
-          </label>
+          </label>}
         </div>
       </header>
 
       {loading ? <div className="rounded-xl bg-white p-6 text-sm text-slate-500">Loading transfers…</div> : transfers.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-500">No transfers match this status.</div>
-      ) : transfers.map((transfer) => (
+      ) : (
+        <div className="space-y-4">
+          {!transferId && <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+            <table className="w-full min-w-[760px] text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Transfer / Date</th>
+                  <th className="px-4 py-3">Manufacturer → Distributor</th>
+                  <th className="px-4 py-3">Products / Units</th>
+                  <th className="px-4 py-3">Shipments</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {transfers.map((transfer) => {
+                  const productNames = [...new Set((transfer.lines || []).map((line) => line.inventorySku?.product?.name).filter(Boolean))];
+                  const units = (transfer.lines || []).reduce((sum, line) => sum + Number(line.requestedQuantity || 0), 0);
+                  return (
+                    <tr key={transfer.id} className="hover:bg-slate-50/80">
+                      <td className="px-4 py-3">
+                        <p className="font-mono font-semibold">{transfer.id.slice(-8)}</p>
+                        <p className="mt-1 text-[10px] text-slate-500">{transfer.requestedAt ? new Date(transfer.requestedAt).toLocaleDateString() : "Date unavailable"}</p>
+                      </td>
+                      <td className="px-4 py-3">{transfer.manufacturer?.name || "Manufacturer"} → {transfer.distributor?.name || "Distributor"}</td>
+                      <td className="px-4 py-3">
+                        {productNames.slice(0, 2).join(", ") || "No products"}
+                        {productNames.length > 2 ? ` +${productNames.length - 2} more` : ""}
+                        <span className="ml-1 text-xs text-slate-500">({units} requested)</span>
+                      </td>
+                      <td className="px-4 py-3">{transfer.shipments?.length || 0}</td>
+                      <td className="px-4 py-3"><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span></td>
+                      <td className="px-4 py-3 text-right">
+                        <Link to={`/stock-transfers/${transfer.id}`} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold hover:bg-slate-50">
+                          View / Proceed
+                        </Link>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>}
+          {transfers.map((transfer) => transferId === transfer.id && (
         <article key={transfer.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -161,6 +208,11 @@ const StockTransfers = ({ token }) => {
                     <td>{line.reservedShipmentQuantity}</td>
                   </tr>
                 ))}
+                {transferId && !transfers.some((transfer) => transfer.id === transferId) && (
+                  <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+                    This stock transfer was not found for the selected filter.
+                  </div>
+                )}
               </tbody>
             </table>
           </div>
@@ -211,11 +263,19 @@ const StockTransfers = ({ token }) => {
                     </p>
                     {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) && (
                       <ul className="basis-full space-y-1 text-xs text-slate-600" aria-label="NCM status history">
-                        {(shipment.events?.length ? shipment.events.map((entry) => ({
+                        {[...(shipment.events?.length ? shipment.events.map((entry) => ({
                           status: entry.status || entry.eventType,
                           addedAt: entry.occurredAt || entry.receivedAt,
                           key: entry.id,
-                        })) : shipment.ncmStatusHistory).slice(0, 10).map((entry, index) => (
+                        })) : shipment.ncmStatusHistory || [])]
+                          .sort((left, right) => {
+                            const leftTimestamp = Date.parse(left.addedAt || "");
+                            const rightTimestamp = Date.parse(right.addedAt || "");
+                            return (Number.isFinite(leftTimestamp) ? leftTimestamp : 0) -
+                              (Number.isFinite(rightTimestamp) ? rightTimestamp : 0);
+                          })
+                          .slice(-10)
+                          .map((entry, index) => (
                           <li key={entry.key || `${entry.status}-${entry.addedAt || index}`}>
                             {entry.status}{entry.addedAt ? ` · ${new Date(entry.addedAt).toLocaleString()}` : ""}
                           </li>
@@ -257,7 +317,9 @@ const StockTransfers = ({ token }) => {
             </div>
           )}
         </article>
-      ))}
+          ))}
+        </div>
+      )}
     </section>
   );
 };

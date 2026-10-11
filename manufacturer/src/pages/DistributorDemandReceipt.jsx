@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
@@ -18,9 +19,11 @@ import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
 
 const DistributorDemandReceipt = () => {
-  const { token, manufacturer: distributor } = useManufacturer();
-  const [activeTab, setActiveTab] = useState("demand"); // 'demand' | 'receipts'
+  const { transferId } = useParams();
+  const { token, distributor } = useManufacturer();
+  const [activeTab, setActiveTab] = useState(transferId ? "receipts" : "demand"); // 'demand' | 'receipts'
   const [catalog, setCatalog] = useState([]);
+  const [catalogError, setCatalogError] = useState("");
   const [transfers, setTransfers] = useState([]);
   const [manufacturerId, setManufacturerId] = useState("");
   const [requestLines, setRequestLines] = useState([emptyRow()]);
@@ -45,14 +48,34 @@ const DistributorDemandReceipt = () => {
     setLoading(true);
     try {
       const headers = { token };
-      const [catalogResponse, transferResponse] = await Promise.all([
-        axios.get(`${backendUrl}/api/stock-transfers/catalog`, { headers }),
-        axios.get(`${backendUrl}/api/stock-transfers/distributor`, { headers }),
-      ]);
-      setCatalog(catalogResponse.data.manufacturers || []);
-      setTransfers(transferResponse.data.transfers || []);
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Could not load stock transfer data.");
+      const catalogRequest = axios
+        .get(`${backendUrl}/api/stock-transfers/catalog`, { headers })
+        .then(({ data }) => {
+          const manufacturers = data?.manufacturers;
+          if (!Array.isArray(manufacturers)) {
+            throw new Error("The factory stock catalog returned an invalid response.");
+          }
+          setCatalog(manufacturers);
+          setCatalogError("");
+        })
+        .catch((error) => {
+          const message = error?.response?.data?.message || error?.message || "Could not load available factory stock.";
+          setCatalogError(message);
+          toast.error(message);
+        });
+      const transfersRequest = axios
+        .get(`${backendUrl}/api/stock-transfers/distributor`, { headers })
+        .then(({ data }) => {
+          const listedTransfers = data?.transfers;
+          if (!Array.isArray(listedTransfers)) {
+            throw new Error("The inbound transfer list returned an invalid response.");
+          }
+          setTransfers(listedTransfers);
+        })
+        .catch((error) => {
+          toast.error(error?.response?.data?.message || error?.message || "Could not load inbound transfers.");
+        });
+      await Promise.all([catalogRequest, transfersRequest]);
     } finally {
       setLoading(false);
     }
@@ -192,14 +215,18 @@ const DistributorDemandReceipt = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#dedbd3] pb-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-[#171717]">Stock Demand &amp; Inbound Receipt</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#171717]">{transferId ? "Inbound Transfer Details" : "Stock Demand &amp; Inbound Receipt"}</h1>
           <p className="text-xs text-[#575757] mt-1">
             Request inventory from factories and inspect inbound deliveries at {distributor?.name || "Hub"}.
           </p>
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex items-center gap-1 bg-[#ffffff] p-1 rounded-xl border border-[#dedbd3] self-start sm:self-auto">
+        {transferId ? (
+          <Link to="/distributor/demand" className="rounded-lg border border-[#dedbd3] px-3.5 py-2 text-xs font-bold text-[#171717] hover:bg-[#f8f7f4]">
+            Back to transfers
+          </Link>
+        ) : <div className="flex items-center gap-1 bg-[#ffffff] p-1 rounded-xl border border-[#dedbd3] self-start sm:self-auto">
           <button
             onClick={() => setActiveTab("demand")}
             className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all ${
@@ -222,10 +249,10 @@ const DistributorDemandReceipt = () => {
             <Truck className="w-3.5 h-3.5" />
             Inbound Shipments
           </button>
-        </div>
+        </div>}
       </div>
 
-      {activeTab === "demand" ? (
+      {activeTab === "demand" && !transferId ? (
         /* ================= DEMAND REQUEST VIEW ================= */
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-6 shadow-xs space-y-5">
@@ -236,6 +263,7 @@ const DistributorDemandReceipt = () => {
                 <label className="block text-xs font-semibold text-[#171717] mb-1.5">Select Manufacturer Factory</label>
                 <select
                   value={manufacturerId}
+                  disabled={loading || Boolean(catalogError) || catalog.length === 0}
                   onChange={(e) => {
                     setManufacturerId(e.target.value);
                     setRequestLines([emptyRow()]);
@@ -243,13 +271,23 @@ const DistributorDemandReceipt = () => {
                   className="w-full text-xs p-2.5 rounded-xl border border-[#dedbd3] bg-[#ffffff] text-[#171717] focus:outline-none focus:border-[#171717]"
                   required
                 >
-                  <option value="">-- Choose Factory Partner --</option>
+                  <option value="">
+                    {loading ? "Loading factories..." : catalogError ? "Factory catalog unavailable" : catalog.length ? "-- Choose Factory Partner --" : "No factories with available stock"}
+                  </option>
                   {catalog.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.name} ({m.city || "Nepal"}) • {m.skus?.length || 0} SKU variants available
+                      {m.name} ({m.city || "Nepal"}) • {m.stock?.length || 0} SKU variants available
                     </option>
                   ))}
                 </select>
+                {!loading && catalogError && (
+                  <p className="mt-2 text-xs text-rose-700">{catalogError}</p>
+                )}
+                {!loading && !catalogError && catalog.length === 0 && (
+                  <p className="mt-2 text-xs text-[#575757]">
+                    Factories appear here when they have an active factory location and unreserved stock for published product variants. If stock is expected, ask an administrator to check the factory inventory ledger.
+                  </p>
+                )}
               </div>
 
               {selectedManufacturer && (
@@ -275,7 +313,7 @@ const DistributorDemandReceipt = () => {
                           required
                         >
                           <option value="">-- Select SKU Variant --</option>
-                          {selectedManufacturer.skus?.map((sku) => (
+                          {selectedManufacturer.stock?.map((sku) => (
                             <option key={sku.inventorySkuId} value={sku.inventorySkuId}>
                               {sku.productName} • {sku.size} / {sku.color} (Available: {sku.availableQuantity})
                             </option>
@@ -305,7 +343,7 @@ const DistributorDemandReceipt = () => {
 
                   <button
                     type="submit"
-                    disabled={saving}
+                    disabled={saving || loading || Boolean(catalogError) || !selectedManufacturer}
                     className="w-full mt-4 py-2.5 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors disabled:opacity-50"
                   >
                     {saving ? "Submitting Request..." : "Send Request for Admin Approval"}
@@ -359,18 +397,60 @@ const DistributorDemandReceipt = () => {
           ) : !transfers.length ? (
             <div className="p-8 text-center text-xs text-[#575757]">No transfer requests found.</div>
           ) : (
-            <div className="divide-y divide-[#dedbd3]">
+            <div className="space-y-3">
+              {!transferId && <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-xs">
+                  <thead className="bg-[#f8f7f4] text-[10px] uppercase tracking-wider text-[#575757]">
+                    <tr>
+                      <th className="px-4 py-3">Transfer / Date</th>
+                      <th className="px-4 py-3">Factory</th>
+                      <th className="px-4 py-3">Products</th>
+                      <th className="px-4 py-3 text-center">Shipments</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#dedbd3]">
+                    {transfers.map((transfer) => {
+                      const productNames = [...new Set((transfer.lines || [])
+                        .map((line) => line.inventorySku?.product?.name)
+                        .filter(Boolean))];
+                      return (
+                        <tr key={transfer.id} className="hover:bg-[#f8f7f4]/70">
+                          <td className="px-4 py-3">
+                            <p className="font-mono font-bold text-[#171717]">#{transfer.id.slice(0, 8)}</p>
+                            <p className="mt-1 text-[10px] text-[#575757]">
+                              {transfer.requestedAt ? new Date(transfer.requestedAt).toLocaleDateString() : "Date unavailable"}
+                            </p>
+                          </td>
+                          <td className="px-4 py-3 font-medium text-[#171717]">{transfer.manufacturer?.name || "Factory"}</td>
+                          <td className="px-4 py-3 text-[#575757]">
+                            {productNames.slice(0, 2).join(", ") || "No product details"}
+                            {productNames.length > 2 ? ` +${productNames.length - 2} more` : ""}
+                          </td>
+                          <td className="px-4 py-3 text-center">{transfer.shipments?.length || 0}</td>
+                          <td className="px-4 py-3">
+                            <span className="rounded-full border border-[#dedbd3] bg-white px-2.5 py-1 text-[10px] font-bold uppercase text-[#171717]">
+                              {transfer.status?.replaceAll("_", " ") || "Unknown"}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <Link
+                              to={`/distributor/demand/${transfer.id}`}
+                              className="rounded-lg border border-[#dedbd3] px-3 py-1.5 text-[11px] font-bold text-[#171717] hover:bg-white"
+                            >
+                              View / Receive
+                            </Link>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>}
               {transfers.map((transfer) => (
-                <div key={transfer.id} className="p-5 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div>
-                      <span className="font-bold text-[#171717]">Transfer #{transfer.id.slice(0, 8)}</span>
-                      <span className="text-[#575757] ml-2">from {transfer.manufacturer?.name || "Factory"}</span>
-                    </div>
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border bg-[#f8f7f4] text-[#171717] border-[#dedbd3]">
-                      {transfer.status}
-                    </span>
-                  </div>
+                transferId === transfer.id && (
+                <div key={transfer.id} className="rounded-xl border border-[#dedbd3] bg-white p-4 sm:p-5 space-y-3">
 
                   {/* Transfer Shipments */}
                   {transfer.shipments && transfer.shipments.length > 0 ? (
@@ -386,11 +466,50 @@ const DistributorDemandReceipt = () => {
                           {shipment.bookingMode === "NCM" && (
                             <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] text-sky-900">
                               <p>Carrier status: {shipment.ncmStatus || "Awaiting NCM update"}</p>
-                              <p className="mt-1">
-                                {["DISPATCHED", "PARTIALLY_RECEIVED"].includes(shipment.status)
-                                  ? "Carrier custody is confirmed. Inspect the goods and record the actual good, damaged, and missing counts below."
-                                  : "Receipt becomes available after an NCM custody webhook moves this shipment to DISPATCHED. Carrier delivery status alone does not add stock; distributor inspection and receipt are still required."}
-                              </p>
+                              <p>NCM order ID: {shipment.ncmOrderId || shipment.externalReference || "Not recorded"}</p>
+                              {shipment.ncmLastSyncedAt && (
+                                <p>Last carrier update received: {new Date(shipment.ncmLastSyncedAt).toLocaleString()}</p>
+                              )}
+                              {shipment.ncmStatus === "Delivered" ? (
+                                <p className="mt-1 font-semibold">
+                                  Carrier reports delivered. Inspect the shipment and record good, damaged, and missing units; inventory is not available until receipt QA is submitted.
+                                </p>
+                              ) : (
+                                <p className="mt-1">
+                                  {["DISPATCHED", "PARTIALLY_RECEIVED"].includes(shipment.status)
+                                    ? "Carrier custody is confirmed. Inspect the goods and record the actual good, damaged, and missing counts below."
+                                    : "Receipt becomes available after an NCM custody event moves this shipment to DISPATCHED. Carrier status alone does not add stock; distributor inspection and receipt are still required."}
+                                </p>
+                              )}
+                              {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) ? (
+                                <ol className="mt-2 space-y-1 border-l border-sky-200 pl-3" aria-label="NCM shipment timeline">
+                                  {[...(shipment.events?.length ? shipment.events.map((entry) => ({
+                                    status: entry.status || entry.eventType,
+                                    addedAt: entry.occurredAt || entry.receivedAt,
+                                    key: entry.id,
+                                  })) : shipment.ncmStatusHistory || [])]
+                                    .sort((left, right) => {
+                                      const leftTimestamp = Date.parse(left.addedAt || "");
+                                      const rightTimestamp = Date.parse(right.addedAt || "");
+                                      return (Number.isFinite(leftTimestamp) ? leftTimestamp : 0) -
+                                        (Number.isFinite(rightTimestamp) ? rightTimestamp : 0);
+                                    })
+                                    .slice(-10)
+                                    .map((entry, index) => (
+                                      <li key={entry.key || `${entry.status}-${entry.addedAt || index}`}>
+                                        {entry.status || "Carrier status update"}
+                                        {entry.addedAt ? ` · ${new Date(entry.addedAt).toLocaleString()}` : ""}
+                                      </li>
+                                    ))}
+                                    {transferId && !transfers.some((transfer) => transfer.id === transferId) && (
+                                      <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+                                        This inbound transfer could not be found in your distributor workspace.
+                                      </div>
+                                    )}
+                                </ol>
+                              ) : (
+                                <p className="mt-2">No carrier timeline events have been received yet. Refresh to check for updates.</p>
+                              )}
                             </div>
                           )}
 
@@ -441,7 +560,7 @@ const DistributorDemandReceipt = () => {
                     <p className="text-[11px] text-[#575757] italic">Awaiting factory dispatch.</p>
                   )}
                 </div>
-              ))}
+              )))}
             </div>
           )}
         </div>

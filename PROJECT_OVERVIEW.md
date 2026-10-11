@@ -81,6 +81,7 @@ This repository treats the documentation set as the canonical implementation gui
 The active documentation files are:
 
 - [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md)
+- [PROJECT_DEEP_DIVE_AND_NCM_FLOWS.md](PROJECT_DEEP_DIVE_AND_NCM_FLOWS.md)
 - [ARCHITECTURE_AND_BACKEND.md](ARCHITECTURE_AND_BACKEND.md)
 - [DATABASE_AND_SCHEMAS.md](DATABASE_AND_SCHEMAS.md)
 - [FRONTEND_AND_UI.md](FRONTEND_AND_UI.md)

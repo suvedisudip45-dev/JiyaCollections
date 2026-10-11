@@ -8,8 +8,9 @@ const requestKey = () => globalThis.crypto?.randomUUID?.() || `transfer-${Date.n
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
 
 const DistributorHome = () => {
-  const { token, manufacturer: distributor } = useManufacturer();
+  const { token, distributor } = useManufacturer();
   const [catalog, setCatalog] = useState([]);
+  const [catalogError, setCatalogError] = useState("");
   const [transfers, setTransfers] = useState([]);
   const [manufacturerId, setManufacturerId] = useState("");
   const [requestLines, setRequestLines] = useState([emptyRow()]);
@@ -27,14 +28,34 @@ const DistributorHome = () => {
     setLoading(true);
     try {
       const headers = { token };
-      const [catalogResponse, transferResponse] = await Promise.all([
-        axios.get(`${backendUrl}/api/stock-transfers/catalog`, { headers }),
-        axios.get(`${backendUrl}/api/stock-transfers/distributor`, { headers }),
-      ]);
-      setCatalog(catalogResponse.data.manufacturers || []);
-      setTransfers(transferResponse.data.transfers || []);
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Could not load stock transfers.");
+      const catalogRequest = axios
+        .get(`${backendUrl}/api/stock-transfers/catalog`, { headers })
+        .then(({ data }) => {
+          const manufacturers = data?.manufacturers;
+          if (!Array.isArray(manufacturers)) {
+            throw new Error("The factory stock catalog returned an invalid response.");
+          }
+          setCatalog(manufacturers);
+          setCatalogError("");
+        })
+        .catch((error) => {
+          const message = error?.response?.data?.message || error?.message || "Could not load available factory stock.";
+          setCatalogError(message);
+          toast.error(message);
+        });
+      const transfersRequest = axios
+        .get(`${backendUrl}/api/stock-transfers/distributor`, { headers })
+        .then(({ data }) => {
+          const listedTransfers = data?.transfers;
+          if (!Array.isArray(listedTransfers)) {
+            throw new Error("The inbound transfer list returned an invalid response.");
+          }
+          setTransfers(listedTransfers);
+        })
+        .catch((error) => {
+          toast.error(error?.response?.data?.message || error?.message || "Could not load inbound transfers.");
+        });
+      await Promise.all([catalogRequest, transfersRequest]);
     } finally {
       setLoading(false);
     }
@@ -289,6 +310,7 @@ const DistributorHome = () => {
           Manufacturer
           <select
             value={manufacturerId}
+            disabled={loading || Boolean(catalogError) || catalog.length === 0}
             onChange={(event) => {
               setManufacturerId(event.target.value);
               setRequestLines([emptyRow()]);
@@ -296,9 +318,19 @@ const DistributorHome = () => {
             className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2"
             required
           >
-            <option value="">Choose a manufacturer with available factory stock</option>
+            <option value="">
+              {loading ? "Loading factories..." : catalogError ? "Factory catalog unavailable" : catalog.length ? "Choose a manufacturer with available factory stock" : "No factories with available stock"}
+            </option>
             {catalog.map((item) => <option key={item.id} value={item.id}>{item.name} — {item.city || "Location not listed"}</option>)}
           </select>
+          {!loading && catalogError && (
+            <span className="mt-2 block text-xs text-rose-700">{catalogError}</span>
+          )}
+          {!loading && !catalogError && catalog.length === 0 && (
+            <span className="mt-2 block text-xs text-slate-500">
+              Factories appear here when they have an active factory location and unreserved stock for published product variants. If stock is expected, ask an administrator to check the factory inventory ledger.
+            </span>
+          )}
         </label>
         {requestLines.map((line, index) => (
           <div key={`request-${index}`} className="mb-3 grid gap-3 sm:grid-cols-[1fr_130px_auto]">
@@ -342,7 +374,7 @@ const DistributorHome = () => {
           <button type="button" onClick={() => setRequestLines((current) => [...current, emptyRow()])} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700">
             Add SKU
           </button>
-          <button type="submit" disabled={saving || !catalog.length} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+          <button type="submit" disabled={saving || loading || Boolean(catalogError) || !selectedManufacturer} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
             {saving ? "Submitting..." : "Submit stock request"}
           </button>
         </div>

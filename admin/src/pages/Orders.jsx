@@ -7,7 +7,7 @@ import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import { assets } from "../assets/assets";
 import ShippingLabelModal from "../components/ShippingLabelModal";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 
 const ADMIN_ORDER_STATUSES = [
   "All",
@@ -773,17 +773,45 @@ const Orders = ({ token }) => {
               )}
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+              <table className="w-full min-w-[780px] text-left text-xs">
+                <thead className="bg-gray-50 text-[10px] uppercase tracking-wider text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3">Order / Date</th>
+                    <th className="px-4 py-3">Customer</th>
+                    <th className="px-4 py-3">Products</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
               {filteredAdminOrders.map((order, index) => (
-                <AdminOrderCard
-                  key={order._id || index}
-                  order={order}
-                  isSelected={selectedOrderIds.has(order._id)}
-                  toggleSelect={toggleSelectOrder}
-                  onPrint={setPrintOrdersList}
-                  customerLoyaltyMap={customerLoyaltyMap}
-                />
+                <React.Fragment key={order._id || index}>
+                  <tr className="hover:bg-gray-50/80">
+                    <td className="px-4 py-3">
+                      <input type="checkbox" checked={selectedOrderIds.has(order._id)} onChange={() => toggleSelectOrder(order._id)} aria-label={`Select order ${order._id}`} className="mr-2" />
+                      <span className="font-mono font-bold">#{order._id?.slice(-8).toUpperCase()}</span>
+                      <p className="mt-1 text-[10px] text-gray-500">{new Date(order.date).toLocaleDateString()}</p>
+                    </td>
+                    <td className="px-4 py-3">{`${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim() || "Customer"}</td>
+                    <td className="px-4 py-3">
+                      {(order.items?.[0]?.name || "Product")}{(order.items?.length || 0) > 1 ? ` +${order.items.length - 1} more` : ""}
+                      <span className="ml-1 text-[10px] text-gray-500">({order.items?.reduce((sum, line) => sum + Number(line.quantity || 0), 0) || 0} units)</span>
+                    </td>
+                    <td className="px-4 py-3 font-semibold">{currency} {order.amount || 0}</td>
+                    <td className="px-4 py-3"><span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold ${getStatusBadgeStyle(order.status)}`}>{order.status}</span></td>
+                    <td className="px-4 py-3 text-right">
+                      <button type="button" onClick={() => setPrintOrdersList([order])} className="mr-2 rounded-lg border border-indigo-200 px-2.5 py-1.5 font-semibold text-indigo-700 hover:bg-indigo-50">Print</button>
+                      <Link to={`/orders/${order._id}?source=admin`} state={{ order }} className="rounded-lg bg-indigo-600 px-3 py-1.5 font-bold text-white hover:bg-indigo-700">
+                        View / Proceed
+                      </Link>
+                    </td>
+                  </tr>
+                </React.Fragment>
               ))}
+                </tbody>
+              </table>
             </div>
           )}
         </>
@@ -869,15 +897,46 @@ const Orders = ({ token }) => {
               )}
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+              <table className="w-full min-w-[780px] text-left text-xs">
+                <thead className="bg-gray-50 text-[10px] uppercase tracking-wider text-gray-500">
+                  <tr>
+                    <th className="px-4 py-3">Order / Date</th>
+                    <th className="px-4 py-3">Customer</th>
+                    <th className="px-4 py-3">Products</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Fulfillment</th>
+                    <th className="px-4 py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
               {filteredMonitorOrders.map((order, index) => (
-                <MonitorOrderCard
-                  key={order._id || index}
-                  order={order}
-                  onPrint={setPrintOrdersList}
-                  customerLoyaltyMap={customerLoyaltyMap}
-                />
+                <React.Fragment key={order._id || index}>
+                  <tr className="hover:bg-gray-50/80">
+                    <td className="px-4 py-3">
+                      <span className="font-mono font-bold">#{order._id?.slice(-8).toUpperCase()}</span>
+                      <p className="mt-1 text-[10px] text-gray-500">{new Date(order.date).toLocaleDateString()}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="font-semibold">{`${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim() || "Customer"}</p>
+                      <p className="mt-1 text-[10px] text-gray-500">{order.address?.city || "Destination unavailable"}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      {(order.items?.[0]?.name || "Product")}{(order.items?.length || 0) > 1 ? ` +${order.items.length - 1} more` : ""}
+                      <span className="ml-1 text-[10px] text-gray-500">({order.items?.reduce((sum, line) => sum + Number(line.quantity || 0), 0) || 0} units)</span>
+                    </td>
+                    <td className="px-4 py-3 font-semibold">{currency} {order.amount || 0}</td>
+                    <td className="px-4 py-3"><span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold ${getFulfillmentBadge(order.fulfillmentStatus || "PENDING_ASSIGNMENT")}`}>{getFulfillmentLabel(order.fulfillmentStatus || "PENDING_ASSIGNMENT")}</span></td>
+                    <td className="px-4 py-3 text-right">
+                      <Link to={`/orders/${order._id}?source=monitor`} state={{ order }} className="rounded-lg border border-slate-300 px-3 py-1.5 font-bold text-slate-700 hover:bg-slate-50">
+                        View details
+                      </Link>
+                    </td>
+                  </tr>
+                </React.Fragment>
               ))}
+                </tbody>
+              </table>
             </div>
           )}
         </>
@@ -892,6 +951,94 @@ const Orders = ({ token }) => {
         />
       )}
     </div>
+  );
+};
+
+export const AdminOrderDetail = ({ token }) => {
+  const { orderId } = useParams();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const source = searchParams.get("source") === "monitor" ? "monitor" : "admin";
+  const [order, setOrder] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [printOrdersList, setPrintOrdersList] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    const stateOrder = location.state?.order;
+    if (stateOrder?._id === orderId) {
+      setOrder(stateOrder);
+      setLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    const loadOrder = async () => {
+      setLoading(true);
+      try {
+        const endpoint = source === "monitor" ? "/api/order/list" : "/api/order/admin-list";
+        const response = await axios.post(`${backendUrl}${endpoint}`, {}, { headers: { token } });
+        const match = (response.data.orders || []).find((item) => item._id === orderId);
+        if (!active) return;
+        if (!match) {
+          toast.error("The requested order was not found or is no longer available.");
+          setOrder(null);
+          return;
+        }
+        setOrder(match);
+      } catch (error) {
+        if (active) {
+          toast.error(error.response?.data?.message || error.message || "Could not load order details.");
+          setOrder(null);
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    loadOrder();
+    return () => {
+      active = false;
+    };
+  }, [location.state, orderId, source, token]);
+
+  return (
+    <section className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
+            {source === "monitor" ? "Storefront order" : "Admin-created order"}
+          </p>
+          <h1 className="mt-1 text-xl font-bold text-gray-900">Order #{orderId.slice(-8).toUpperCase()}</h1>
+        </div>
+        <Link to="/orders" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
+          Back to orders
+        </Link>
+      </div>
+      {loading ? (
+        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">Loading order details…</div>
+      ) : !order ? (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">Order details are unavailable.</div>
+      ) : source === "monitor" ? (
+        <MonitorOrderCard order={order} onPrint={setPrintOrdersList} customerLoyaltyMap={{}} />
+      ) : (
+        <AdminOrderCard
+          order={order}
+          isSelected={false}
+          toggleSelect={() => {}}
+          onPrint={setPrintOrdersList}
+          customerLoyaltyMap={{}}
+        />
+      )}
+      {printOrdersList && (
+        <ShippingLabelModal
+          orders={printOrdersList}
+          currency={currency}
+          onClose={() => setPrintOrdersList(null)}
+        />
+      )}
+    </section>
   );
 };
 

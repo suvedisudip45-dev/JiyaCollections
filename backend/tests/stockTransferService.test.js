@@ -9,6 +9,7 @@ import {
   normalizeNcmStockTransferEvent,
   normalizeNcmStockTransferStatusHistory,
   shouldAdvanceNcmStockTransferStatus,
+  isStaleNcmStockTransferEvent,
   normalizeNcmOrderId,
   normalizeNcmStockTransferPackageDetails,
   normalizeApprovalLines,
@@ -221,6 +222,26 @@ test("NCM shipment lifecycle treats booking separately from pickup and ignores s
   assert.equal(shouldAdvanceNcmStockTransferStatus("Delivered", "Pickup Complete"), false);
   assert.equal(shouldAdvanceNcmStockTransferStatus("Pickup Complete", "Dispatched"), true);
   assert.equal(shouldAdvanceNcmStockTransferStatus("BOOKED", "Delivery Completed"), true);
+  assert.equal(isStaleNcmStockTransferEvent("2026-10-10T12:00:00Z", "2026-10-10T11:59:00Z"), true);
+  assert.equal(isStaleNcmStockTransferEvent("2026-10-10T12:00:00Z", null), false);
+  assert.equal(
+    shouldAdvanceNcmStockTransferStatus(
+      "Sent for Pickup",
+      "Pickup Complete",
+      "2026-10-10T12:00:00Z",
+      "2026-10-10T11:59:00Z",
+    ),
+    false,
+  );
+  assert.equal(
+    shouldAdvanceNcmStockTransferStatus(
+      "Sent for Pickup",
+      "Pickup Complete",
+      "invalid timestamp",
+      "2026-10-10T11:59:00Z",
+    ),
+    true,
+  );
 });
 
 test("admin approval is bounded by the requested quantity and covers each line once", () => {

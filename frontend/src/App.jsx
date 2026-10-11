@@ -15,6 +15,7 @@ import PlaceOrder from "./pages/PlaceOrder";
 import Orders from "./pages/Orders";
 import Profile from "./pages/Profile";
 import Navbar from "./components/Navbar";
+import Breadcrumbs from "./components/Breadcrumbs";
 import Footer from "./components/Footer";
 import SearchBar from "./components/SearchBar";
 import { ToastContainer, toast } from "react-toastify";
@@ -39,6 +40,7 @@ const App = () => {
       <Navbar />
       <SearchBar />
       <main className="storefront-main px-3 sm:px-5 lg:px-8">
+        <Breadcrumbs />
         <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/shop" element={<Collection />} />

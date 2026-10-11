@@ -295,7 +295,19 @@ const Orders = () => {
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="overflow-x-auto rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+          <table className="w-full min-w-[850px] text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Order / Date</th>
+                <th className="px-4 py-3">Customer / Destination</th>
+                <th className="px-4 py-3">Products</th>
+                <th className="px-4 py-3">Total</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
           {filteredOrders.map((item) => {
             const order = item.order || {};
             const items = Array.isArray(order.items) ? order.items : [];
@@ -307,69 +319,65 @@ const Orders = () => {
               ? `Pickup blocked: ${distributorPickupReadiness.missingFields[0]} missing.`
               : "Dispatch ready: all required pickup details are complete.";
             const benefits = order.fulfillmentBenefits || {};
-
+            const isExpanded = false;
             return (
-              <div
-                key={item.id}
-                className={`bg-white rounded-2xl border transition-all shadow-xs hover:shadow-md ${
-                  isSelected
-                    ? "border-indigo-500 ring-2 ring-indigo-200"
-                    : isNewAssigned
-                    ? "border-amber-300 ring-2 ring-amber-100"
-                    : "border-slate-200/80"
-                }`}
-              >
-                {/* Order Top Bar */}
-                <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/60 rounded-t-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2.5">
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => toggleSelectOrder(item.id)}
-                      className="rounded text-emerald-600 cursor-pointer w-4 h-4"
-                      title="Select for batch shipping label"
-                    />
-
-                    {isNewAssigned && (
-                      <span className="px-2 py-0.5 bg-amber-500 text-white text-[10px] font-extrabold rounded-md uppercase tracking-wider animate-pulse">
-                        NEW ALLOCATION
-                      </span>
-                    )}
-
-                    <span className="font-mono font-bold text-slate-900">
-                      ORDER #{order.id?.slice(-8).toUpperCase() || item.orderId?.slice(-8).toUpperCase()}
-                    </span>
-                    <span className="text-slate-300">•</span>
-                    <span className="text-slate-500 text-[11px]">
-                      {new Date(item.assignedAt || item.createdAt).toLocaleDateString()}
-                    </span>
-
-                    {item.notes && (
-                      <span className="text-[10px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 max-w-xs truncate">
-                        {item.notes}
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Courier Slip Print Button */}
+              <React.Fragment key={item.id}>
+              <tr className="hover:bg-slate-50/80">
+                <td className="px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelectOrder(item.id)}
+                    aria-label={`Select order ${order.id || item.orderId} for shipping label`}
+                    className="mr-2"
+                  />
+                  <p className="font-mono font-bold text-slate-900">#{(order.id || item.orderId || "").slice(-8).toUpperCase()}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{new Date(item.assignedAt || item.createdAt).toLocaleDateString()}</p>
+                </td>
+                <td className="px-4 py-3">
+                  <p className="font-semibold text-slate-800">{address.name || `${address.firstName || ""} ${address.lastName || ""}`.trim() || "Customer"}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{address.city || "Destination unavailable"}{address.state ? `, ${address.state}` : ""}</p>
+                </td>
+                <td className="px-4 py-3 text-slate-700">
+                  {(items[0]?.name || "Product")}{items.length > 1 ? ` +${items.length - 1} more` : ""}
+                  <span className="ml-1 text-[10px] text-slate-500">({items.reduce((sum, line) => sum + Number(line.quantity || 0), 0)} units)</span>
+                </td>
+                <td className="px-4 py-3 font-semibold">{currency}{order.amount || 0}</td>
+                <td className="px-4 py-3"><StatusBadge status={item.status} deliveryStatus={item.delivery?.ncmStatus} /></td>
+                <td className="px-4 py-3 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setPrintOrdersList([order])}
+                    className="mr-2 rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    Slip
+                  </button>
+                  {item.status === "assigned" && (
                     <button
                       type="button"
-                      onClick={() => setPrintOrdersList([order])}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                      onClick={() => {
+                        setSelectedAssignmentId(item.id);
+                        setRejectModalOpen(true);
+                      }}
+                      className="mr-2 rounded-lg border border-rose-200 px-2.5 py-1.5 font-semibold text-rose-700 hover:bg-rose-50"
                     >
-                      <Printer className="w-3.5 h-3.5 text-slate-500" />
-                      <span>Courier Slip (4×6)</span>
+                      Reject
                     </button>
-
-                    <StatusBadge status={item.status} deliveryStatus={item.delivery?.ncmStatus} />
-                  </div>
-                </div>
-
-                {/* Main Order Content */}
-                <div className="p-5 grid grid-cols-1 md:grid-cols-12 gap-5 text-xs">
-                  {/* Column 1: Ordered Items & Variants (5 cols) */}
-                  <div className="md:col-span-5 space-y-2.5 border-b md:border-b-0 md:border-r border-slate-100 pb-4 md:pb-0 md:pr-4">
+                  )}
+                  <Link
+                    to={`/orders/${item.id}`}
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-1.5 font-bold text-white hover:bg-emerald-800"
+                  >
+                    View / Proceed
+                  </Link>
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr>
+                  <td colSpan={6} className="bg-slate-50/70 p-4">
+                    <div className="rounded-xl border border-slate-200 bg-white shadow-xs">
+                      <div className="p-5 grid grid-cols-1 md:grid-cols-12 gap-5 text-xs">
+                        <div className="md:col-span-5 space-y-2.5 border-b md:border-b-0 md:border-r border-slate-100 pb-4 md:pb-0 md:pr-4">
                     <div className="flex items-center gap-1.5 text-slate-400 uppercase text-[10px] font-bold tracking-wider">
                       <Layers className="w-3.5 h-3.5 text-emerald-600" />
                       <span>Garment Varieties to Produce ({items.length})</span>
@@ -600,8 +608,14 @@ const Orders = () => {
                   </div>
                 </div>
               </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
             );
           })}
+            </tbody>
+          </table>
         </div>
       )}
 

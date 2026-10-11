@@ -227,7 +227,21 @@ export const normalizeNcmStockTransferEvent = (status = "", event = "") => {
   };
 };
 
-export const shouldAdvanceNcmStockTransferStatus = (currentStatus, incomingStatus) =>
+export const isStaleNcmStockTransferEvent = (currentEventAt, incomingEventAt) => {
+  if (!currentEventAt || !incomingEventAt) return false;
+  const currentTimestamp = new Date(currentEventAt).getTime();
+  const incomingTimestamp = new Date(incomingEventAt).getTime();
+  return Number.isFinite(currentTimestamp) &&
+    Number.isFinite(incomingTimestamp) &&
+    incomingTimestamp < currentTimestamp;
+};
+
+export const shouldAdvanceNcmStockTransferStatus = (
+  currentStatus,
+  incomingStatus,
+  currentEventAt = null,
+  incomingEventAt = null,
+) => !isStaleNcmStockTransferEvent(currentEventAt, incomingEventAt) &&
   normalizeNcmStockTransferEvent(incomingStatus).rank >= normalizeNcmStockTransferEvent(currentStatus).rank;
 
 export const normalizeApprovalLines = (lines, transferLines) => {

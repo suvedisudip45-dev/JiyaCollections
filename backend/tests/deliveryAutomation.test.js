@@ -13,6 +13,8 @@ import {
   normalizeDeliveryStatus,
   parseBoolean,
   webhookIdentifiers,
+  validateNcmWebhookPayload,
+  sanitizeNcmWebhookPayload,
   statusEventKey,
 } from "../services/deliveryService.js";
 
@@ -120,6 +122,55 @@ test("NCM webhook variations normalize and resolve all supported identifiers", (
     webhookIdentifiers({ order_id: 4935, vref_id: "NCM9E9A907A74CF", orderId: "internal-order" }),
     ["4935", "internal-order", "NCM9E9A907A74CF"]
   );
+});
+
+test("NCM webhook payload validation bounds bulk IDs and ignores malformed identifiers", () => {
+  const single = validateNcmWebhookPayload({
+    order_id: "123456",
+    status: "Delivered",
+    timestamp: "2024-01-15T10:30:00Z",
+    event: "delivery_completed",
+  });
+  assert.equal(single.valid, true);
+  assert.deepEqual(single.identifiers, ["123456"]);
+  assert.equal(single.invalidIdentifierCount, 0);
+
+  const bulk = validateNcmWebhookPayload({
+    order_ids: ["123456", { unexpected: true }, 123457],
+    status: "Dispatched",
+    event: "order_dispatched",
+  });
+  assert.equal(bulk.valid, true);
+  assert.deepEqual(bulk.identifiers, ["123456", "123457"]);
+  assert.equal(bulk.invalidIdentifierCount, 1);
+
+  const oversized = validateNcmWebhookPayload({
+    order_ids: Array.from({ length: 101 }, (_, index) => String(index + 1)),
+    status: "Dispatched",
+  });
+  assert.equal(oversized.valid, false);
+  assert.equal(oversized.statusCode, 413);
+});
+
+test("NCM webhook payload validation rejects non-string status and event fields", () => {
+  assert.equal(validateNcmWebhookPayload({ order_id: "123", status: 1 }).valid, false);
+  assert.equal(validateNcmWebhookPayload({ order_ids: "123", status: "Delivered" }).valid, false);
+  assert.equal(validateNcmWebhookPayload({ order_id: "123" }).valid, false);
+  assert.deepEqual(webhookIdentifiers({ order_id: { id: "123" }, order_ids: [123] }), ["123"]);
+});
+
+test("stored NCM webhook payloads redact authentication fields", () => {
+  assert.deepEqual(sanitizeNcmWebhookPayload({
+    order_id: "123",
+    status: "Delivered",
+    token: "do-not-store",
+    metadata: { authorization: "do-not-store-either" },
+  }), {
+    order_id: "123",
+    status: "Delivered",
+    token: "[REDACTED]",
+    metadata: { authorization: "[REDACTED]" },
+  });
 });
 
 test("delivery payload auto-fills packaging metadata and keeps it editable", () => {
