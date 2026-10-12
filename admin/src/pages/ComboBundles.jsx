@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import Pagination from "../components/Pagination";
+
+const BUNDLE_PAGE_SIZE = 10;
 
 const emptyForm = {
   categoryId: "",
@@ -77,6 +80,8 @@ const getSharedVariantCount = (products, selectedColors) => {
 
 const ComboBundles = ({ token }) => {
   const [comboBundles, setComboBundles] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [selectedProductIds, setSelectedProductIds] = useState([]);
@@ -87,13 +92,15 @@ const ComboBundles = ({ token }) => {
   const [bannerImageFile, setBannerImageFile] = useState(null);
   const [comboBundleImageFiles, setComboBundleImageFiles] = useState([]);
 
-  const fetchComboBundles = async () => {
+  const fetchComboBundles = async (requestedPage = page) => {
     try {
       const response = await axios.get(`${backendUrl}/api/combo-bundles`, {
-          headers: token ? { token } : {}
+        headers: token ? { token } : {},
+        params: { page: requestedPage, limit: BUNDLE_PAGE_SIZE },
       });
       if (response.data.success) {
         setComboBundles(response.data.comboBundles || []);
+        setPagination(response.data.pagination || null);
       } else {
           toast.error(response.data.message || "Unable to load combo bundles");
       }
@@ -105,7 +112,7 @@ const ComboBundles = ({ token }) => {
 
   const fetchProducts = async () => {
     try {
-      const response = await axios.get(`${backendUrl}/api/product/list?admin=true`, { headers: { token } });
+      const response = await axios.get(`${backendUrl}/api/product/list?admin=true`, { headers: { token }, params: { limit: 50 } });
       if (response.data.success) {
         setProducts(response.data.products || []);
       }
@@ -126,6 +133,9 @@ const ComboBundles = ({ token }) => {
 
   useEffect(() => {
     fetchComboBundles();
+  }, [page]);
+
+  useEffect(() => {
     fetchProducts();
     fetchCategories();
   }, []);
@@ -205,7 +215,8 @@ const ComboBundles = ({ token }) => {
       if (response.data.success) {
         toast.success(response.data.message || "Combo bundle saved");
         resetForm();
-        fetchComboBundles();
+        setPage(1);
+        if (page === 1) fetchComboBundles(1);
       } else {
         toast.error(response.data.message || "Unable to save combo bundle");
       }
@@ -265,7 +276,8 @@ const ComboBundles = ({ token }) => {
       if (response.data.success) {
         toast.success(response.data.message || "Combo bundle removed");
         if (editingId === comboBundle.id) resetForm();
-        fetchComboBundles();
+        setPage(1);
+        if (page === 1) fetchComboBundles(1);
       } else {
         toast.error(response.data.message || "Unable to delete combo bundle");
       }
@@ -555,6 +567,13 @@ const ComboBundles = ({ token }) => {
               ))
             )}
           </div>
+          <Pagination
+            page={pagination?.page || page}
+            totalPages={pagination?.totalPages || 1}
+            total={pagination?.total || comboBundles.length}
+            limit={pagination?.limit || BUNDLE_PAGE_SIZE}
+            onPageChange={setPage}
+          />
         </section>
       </div>
     </div>

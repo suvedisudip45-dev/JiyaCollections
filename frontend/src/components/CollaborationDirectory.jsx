@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import axios from "axios";
 import { ShopContext } from "../context/ShopContext";
+import Pagination from "./Pagination";
+
+const COLLABORATION_PAGE_SIZE = 12;
 
 const getImages = (value) => {
   if (Array.isArray(value)) return value.filter(Boolean);
@@ -20,12 +23,19 @@ const CollaborationDirectory = () => {
   const [collaborations, setCollaborations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    axios.get(`${backendUrl}/api/collaborations/public/products`)
+    axios.get(`${backendUrl}/api/collaborations/public/products`, {
+      params: { page, limit: COLLABORATION_PAGE_SIZE },
+    })
       .then((response) => {
-        if (!cancelled) setCollaborations(response.data.collaborations || []);
+        if (!cancelled) {
+          setCollaborations(response.data.collaborations || []);
+          setPagination(response.data.pagination || null);
+        }
       })
       .catch((loadError) => {
         if (!cancelled) setError(loadError.response?.data?.message || "Unable to load collaboration products.");
@@ -34,7 +44,7 @@ const CollaborationDirectory = () => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [backendUrl]);
+  }, [backendUrl, page]);
 
   return (
     <main className="mx-auto w-full max-w-[1440px] pb-16">
@@ -85,6 +95,14 @@ const CollaborationDirectory = () => {
             })}
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || collaborations.length}
+          limit={pagination?.limit || COLLABORATION_PAGE_SIZE}
+          loading={loading}
+          onPageChange={setPage}
+        />
       </section>
     </main>
   );

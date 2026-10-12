@@ -35,6 +35,11 @@ test('buildOrderListItem preserves required order list fields while removing unn
       pickedUpAt: null,
       deliveredAt: null,
     },
+    distributorAssignment: {
+      initial: { distributorId: 'dist_1', distributorName: 'Initial Hub', assignedAt: '2026-10-10T10:00:00.000Z' },
+      current: { distributorId: 'dist_2', distributorName: 'Current Hub', assignedAt: '2026-10-11T10:00:00.000Z', status: 'assigned' },
+      changed: true,
+    },
     __internal: 'remove-me',
   };
 
@@ -44,6 +49,9 @@ test('buildOrderListItem preserves required order list fields while removing unn
   assert.equal(result.amount, 1200);
   assert.equal(result.items[0].name, 'Tshirt');
   assert.equal(result.deliveryOrder.ncmOrderId, 'N123');
+  assert.equal(result.distributorAssignment.initial.distributorName, 'Initial Hub');
+  assert.equal(result.distributorAssignment.current.distributorName, 'Current Hub');
+  assert.equal(result.distributorAssignment.changed, true);
   assert.equal(result.__internal, undefined);
   assert.equal(result.delivery, result.deliveryOrder);
 });

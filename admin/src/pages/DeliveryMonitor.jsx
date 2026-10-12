@@ -20,6 +20,9 @@ import {
 } from "lucide-react";
 import { backendUrl, currency } from "../App";
 import NcmWebhookMockPanel from "../components/NcmWebhookMockPanel";
+import Pagination from "../components/Pagination";
+
+const DELIVERY_PAGE_SIZE = 10;
 
 const statusColors = {
   assigned: "bg-amber-50 text-amber-700 border-amber-200",
@@ -104,6 +107,8 @@ const CopyableId = ({ value, label }) => {
 const DeliveryMonitor = ({ token }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [filter, setFilter] = useState("all");
   const [settlementSummary, setSettlementSummary] = useState({
@@ -130,11 +135,17 @@ const DeliveryMonitor = ({ token }) => {
     setLoading(true);
     try {
       const [res, summaryRes, accRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/order-assignment/admin/all`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
+          headers: { token },
+          params: { page, limit: DELIVERY_PAGE_SIZE },
+        }),
         axios.get(`${backendUrl}/api/delivery/admin/settlements/summary`, { headers: { token } }),
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }).catch(() => ({ data: { success: false, accounts: [] } })),
       ]);
-      if (res.data.success) setRows(res.data.assignments || []);
+      if (res.data.success) {
+        setRows(res.data.assignments || []);
+        setPagination(res.data.pagination || null);
+      }
       if (summaryRes.data.success) setSettlementSummary(summaryRes.data.summary || {});
       if (accRes.data.success && accRes.data.accounts) {
         setTreasuryAccounts(accRes.data.accounts);
@@ -147,7 +158,7 @@ const DeliveryMonitor = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, page]);
 
   const handleAccountSelect = (accountId) => {
     setSelectedAccountId(accountId);
@@ -576,6 +587,15 @@ const DeliveryMonitor = ({ token }) => {
           </div>
         )}
       </div>
+
+      <Pagination
+        page={pagination?.page || page}
+        totalPages={pagination?.totalPages || 1}
+        total={pagination?.total || rows.length}
+        limit={pagination?.limit || DELIVERY_PAGE_SIZE}
+        loading={loading}
+        onPageChange={setPage}
+      />
 
       {/* Request NCM Settlement Modal */}
       {settlementModalOpen && (

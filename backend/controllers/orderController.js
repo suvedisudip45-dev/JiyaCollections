@@ -134,8 +134,90 @@ const buildOrderListItem = (order) => {
     deliveryOrder: order.deliveryOrder || null,
     distributorReview: order.distributorReview || null,
     assignedDistributorId: order.assignedDistributorId || order.distributorId || null,
+    distributorAssignment: order.distributorAssignment || null,
     totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
   };
+};
+
+const attachDistributorAssignmentHistory = async (orders) => {
+  if (!orders.length) return orders;
+
+  const orderIds = orders.map(({ id }) => id);
+  const [assignments, auditEntries] = await Promise.all([
+    prisma.orderAssignment.findMany({
+      where: { orderId: { in: orderIds } },
+      select: {
+        orderId: true,
+        distributorId: true,
+        assignedAt: true,
+        distributor: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.systemAuditLog.findMany({
+      where: {
+        entityType: "Order",
+        entityId: { in: orderIds },
+        action: "ORDER_AUTO_ASSIGNED",
+        status: "SUCCESS",
+      },
+      orderBy: { createdAt: "asc" },
+      select: { entityId: true, afterState: true, createdAt: true },
+    }),
+  ]);
+  const assignmentByOrderId = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
+  const auditsByOrderId = new Map();
+  const distributorIds = new Set(assignments.map(({ distributorId }) => distributorId).filter(Boolean));
+
+  for (const audit of auditEntries) {
+    const distributorId = audit.afterState?.distributorId;
+    if (!audit.entityId || !distributorId) continue;
+    distributorIds.add(distributorId);
+    const entries = auditsByOrderId.get(audit.entityId) || [];
+    entries.push({ distributorId, assignedAt: audit.createdAt });
+    auditsByOrderId.set(audit.entityId, entries);
+  }
+
+  const distributors = distributorIds.size
+    ? await prisma.distributor.findMany({
+      where: { id: { in: [...distributorIds] } },
+      select: { id: true, name: true },
+    })
+    : [];
+  const distributorById = new Map(distributors.map((distributor) => [distributor.id, distributor]));
+
+  return orders.map((order) => {
+    const auditHistory = auditsByOrderId.get(order.id) || [];
+    const initialAudit = auditHistory[0] || null;
+    const latestAudit = auditHistory[auditHistory.length - 1] || null;
+    const assignment = assignmentByOrderId.get(order.id) || null;
+    const currentDistributorId = assignment?.distributorId || latestAudit?.distributorId || null;
+    const initialDistributorId = initialAudit?.distributorId || null;
+    const currentDistributor = assignment?.distributor || distributorById.get(currentDistributorId) || null;
+    const initialDistributor = distributorById.get(initialDistributorId) || null;
+
+    return {
+      ...order,
+      assignedDistributorId: currentDistributorId,
+      distributorAssignment: {
+        initial: initialDistributorId
+          ? {
+            distributorId: initialDistributorId,
+            distributorName: initialDistributor?.name || null,
+            assignedAt: initialAudit.assignedAt,
+          }
+          : null,
+        current: currentDistributorId
+          ? {
+            distributorId: currentDistributorId,
+            distributorName: currentDistributor?.name || null,
+            assignedAt: assignment?.assignedAt || latestAudit?.assignedAt || null,
+            status: assignment?.status || null,
+          }
+          : null,
+        changed: Boolean(initialDistributorId && currentDistributorId && initialDistributorId !== currentDistributorId),
+      },
+    };
+  });
 };
 
 const parseJsonArray = (value, fallback = []) => {
@@ -824,9 +906,31 @@ const placeOrder = async (req, res) => {
 const allOrders = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
+    const status = String(req.query.status || "").trim();
+    const fulfillmentStatus = String(req.query.fulfillmentStatus || "").trim();
+    const orderId = String(req.query.orderId || "").trim();
+    const search = String(req.query.search || "").trim();
+    const searchWhere = search
+      ? {
+          OR: [
+            { id: { contains: search } },
+            ...["firstName", "lastName", "phone", "city"].map((field) => ({
+              address: { path: [field], string_contains: search },
+            })),
+          ],
+        }
+      : {};
+    const where = {
+      orderType: { not: "ADMIN_DIRECT" },
+      ...(orderId ? { id: orderId } : {}),
+      ...(status && status !== "all" ? { status } : {}),
+      ...(fulfillmentStatus && fulfillmentStatus !== "all" ? { fulfillmentStatus } : {}),
+      ...(!orderId ? searchWhere : {}),
+    };
     const [rawOrders, total] = await prisma.$transaction([
       prisma.order.findMany({
-        orderBy: { date: "desc" },
+        where,
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         include: {
           deliveryOrder: {
             select: {
@@ -845,9 +949,10 @@ const allOrders = async (req, res) => {
         skip: pagination.skip,
         take: pagination.limit,
       }),
-      prisma.order.count(),
+      prisma.order.count({ where }),
     ]);
-    const orders = rawOrders.map((item) => buildOrderListItem(item));
+    const orders = (await attachDistributorAssignmentHistory(rawOrders))
+      .map((item) => buildOrderListItem(item));
     res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);
@@ -862,11 +967,29 @@ const allOrders = async (req, res) => {
 const allAdminOrders = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
-    const where = { orderType: "ADMIN_DIRECT" };
+    const status = String(req.query.status || "").trim();
+    const orderId = String(req.query.orderId || "").trim();
+    const search = String(req.query.search || "").trim();
+    const searchWhere = search
+      ? {
+          OR: [
+            { id: { contains: search } },
+            ...["firstName", "lastName", "phone", "city"].map((field) => ({
+              address: { path: [field], string_contains: search },
+            })),
+          ],
+        }
+      : {};
+    const where = {
+      orderType: "ADMIN_DIRECT",
+      ...(orderId ? { id: orderId } : {}),
+      ...(status && status !== "all" ? { status } : {}),
+      ...(!orderId ? searchWhere : {}),
+    };
     const [rawOrders, total] = await prisma.$transaction([
       prisma.order.findMany({
         where,
-        orderBy: { date: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         include: { deliveryOrder: { select: { id: true, ncmOrderId: true, state: true, ncmStatus: true, vendorReference: true, originBranchName: true, destinationBranchName: true, pickedUpAt: true, deliveredAt: true } } },
         skip: pagination.skip,
         take: pagination.limit,
@@ -891,7 +1014,7 @@ const userOrders = async (req, res) => {
     const [rawOrders, total] = await prisma.$transaction([
       prisma.order.findMany({
         where,
-        orderBy: { date: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         include: {
           deliveryOrder: {
             select: {

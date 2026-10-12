@@ -1,8 +1,11 @@
 import { PrismaClient } from "@prisma/client";
+import { prismaQueryCacheMiddleware } from "../utils/prismaQueryCache.js";
 
 const prisma = new PrismaClient({
   log: ["error"],
 });
+
+prisma.$use(prismaQueryCacheMiddleware);
 
 const connectDB = async () => {
   try {

@@ -49,6 +49,7 @@ import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
 import { syncAllProductsStock } from "./services/stockSyncService.js";
+import { invalidatePrismaQueryCache } from "./utils/prismaQueryCache.js";
 
 // App Config
 const app = express();
@@ -83,6 +84,14 @@ app.use((req, res, next) => {
   res.once("finish", () => {
     const durationMs = Date.now() - start;
     logger.request(req, res, durationMs);
+  });
+  next();
+});
+
+app.use((req, res, next) => {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  res.once("finish", () => {
+    if (res.statusCode >= 200 && res.statusCode < 400) invalidatePrismaQueryCache();
   });
   next();
 });

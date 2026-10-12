@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { generateMonthlyCollaborationInvoices, getCollaborationSalesReport } from "../services/collaborationSalesService.js";
+import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
 
 const safePartnerSelect = { id: true, code: true, name: true, status: true };
 const productInclude = { product: true, partner: { select: safePartnerSelect } };
@@ -14,35 +15,56 @@ const getCollaboration = async (collaborationId, partnerId) => prisma.collaborat
   include: { ...productInclude, termsVersions: { orderBy: { version: "desc" } } },
 });
 
-export const listAdminCollaborationProducts = async (_req, res) => {
+export const listAdminCollaborationProducts = async (req, res) => {
   try {
-    const products = await prisma.collaborationProduct.findMany({
-      orderBy: { updatedAt: "desc" },
-      include: { ...productInclude, termsVersions: { orderBy: { version: "desc" } } },
-    });
-    return res.json({ success: true, products: safeCollabs(products) });
+    const pagination = getPagination(req.query);
+    const [products, total] = await Promise.all([
+      prisma.collaborationProduct.findMany({
+        orderBy: { updatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: { ...productInclude, termsVersions: { orderBy: { version: "desc" } } },
+      }),
+      prisma.collaborationProduct.count(),
+    ]);
+    return res.json(paginatedResponse("products", safeCollabs(products), pagination, total));
   } catch (error) {
     console.error("listAdminCollaborationProducts error:", error);
     return res.status(500).json({ success: false, message: "Unable to load collaboration products." });
   }
 };
 
-export const getAdminCollaborationOptions = async (_req, res) => {
+export const getAdminCollaborationOptions = async (req, res) => {
   try {
-    const [products, partners] = await Promise.all([
+    const pagination = getPagination(req.query);
+    const productWhere = { collaborationLink: null };
+    const partnerWhere = { status: "ACTIVE" };
+    const [products, productTotal, partners, partnerTotal] = await Promise.all([
       prisma.product.findMany({
-        where: { collaborationLink: null },
-        orderBy: { date: "desc" },
+        where: productWhere,
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
         select: { id: true, name: true, price: true, discount: true, published: true, stockQuantity: true, image: true, category: true },
       }),
+      prisma.product.count({ where: productWhere }),
       prisma.marketingPartner.findMany({
-        where: { status: "ACTIVE" },
-        orderBy: { name: "asc" },
+        where: partnerWhere,
+        orderBy: { updatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
         select: safePartnerSelect,
       }),
+      prisma.marketingPartner.count({ where: partnerWhere }),
     ]);
     // Products from options query don't include BigInt date (select projection omits it) — safe to return directly
-    return res.json({ success: true, products, partners });
+    return res.json({
+      success: true,
+      products,
+      partners,
+      productPagination: getPaginationMeta({ ...pagination, total: productTotal }),
+      partnerPagination: getPaginationMeta({ ...pagination, total: partnerTotal }),
+    });
   } catch (error) {
     console.error("getAdminCollaborationOptions error:", error);
     return res.status(500).json({ success: false, message: "Unable to load collaboration options." });
@@ -176,30 +198,37 @@ export const proposeAdminCollaborationTerms = async (req, res) => {
 
 export const listPartnerCollaborationProducts = async (req, res) => {
   try {
-    const products = await prisma.collaborationProduct.findMany({
-      where: { partnerId: req.partnerId },
-      orderBy: { updatedAt: "desc" },
-      include: {
-        product: true,
-        termsVersions: {
-          orderBy: { version: "desc" },
-          select: {
-            version: true,
-            status: true,
-            fixedFeePerUnit: true,
-            retailPrice: true,
-            discountPercentage: true,
-            vatTreatment: true,
-            notes: true,
-            proposedByRole: true,
-            proposedAt: true,
-            respondedByRole: true,
-            respondedAt: true,
+    const pagination = getPagination(req.query);
+    const where = { partnerId: req.partnerId };
+    const [products, total] = await Promise.all([
+      prisma.collaborationProduct.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          product: true,
+          termsVersions: {
+            orderBy: { version: "desc" },
+            select: {
+              version: true,
+              status: true,
+              fixedFeePerUnit: true,
+              retailPrice: true,
+              discountPercentage: true,
+              vatTreatment: true,
+              notes: true,
+              proposedByRole: true,
+              proposedAt: true,
+              respondedByRole: true,
+              respondedAt: true,
+            },
           },
         },
-      },
-    });
-    return res.json({ success: true, products: safeCollabs(products) });
+      }),
+      prisma.collaborationProduct.count({ where }),
+    ]);
+    return res.json(paginatedResponse("products", safeCollabs(products), pagination, total));
   } catch (error) {
     console.error("listPartnerCollaborationProducts error:", error);
     return res.status(500).json({ success: false, message: "Unable to load your collaboration products." });
@@ -344,22 +373,29 @@ export const updateAdminCollaborationListing = async (req, res) => {
   }
 };
 
-export const listPublicCollaborationProducts = async (_req, res) => {
+export const listPublicCollaborationProducts = async (req, res) => {
   try {
-    const collaborations = await prisma.collaborationProduct.findMany({
-      where: {
+    const pagination = getPagination(req.query);
+    const where = {
         listingStatus: "ACTIVE",
         activeTermsVersion: { not: null },
         product: { published: true },
         partner: { status: "ACTIVE" },
-      },
-      orderBy: { publishedAt: "desc" },
-      include: {
-        product: true,
-        partner: { select: { id: true, code: true, name: true } },
-      },
-    });
-    return res.json({ success: true, collaborations: safeCollabs(collaborations) });
+      };
+    const [collaborations, total] = await Promise.all([
+      prisma.collaborationProduct.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          product: true,
+          partner: { select: { id: true, code: true, name: true } },
+        },
+      }),
+      prisma.collaborationProduct.count({ where }),
+    ]);
+    return res.json(paginatedResponse("collaborations", safeCollabs(collaborations), pagination, total));
   } catch (error) {
     console.error("listPublicCollaborationProducts error:", error);
     return res.status(500).json({ success: false, message: "Unable to load collaboration products." });

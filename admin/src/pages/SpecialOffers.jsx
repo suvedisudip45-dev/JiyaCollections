@@ -28,7 +28,7 @@ const SpecialOffers = ({ token }) => {
     try {
       const [offersRes, prodsRes] = await Promise.all([
         axios.get(backendUrl + "/api/offer/list", { headers: { token } }),
-        axios.get(backendUrl + "/api/product/list", { headers: { token } }),
+        axios.get(backendUrl + "/api/product/list", { headers: { token }, params: { limit: 50 } }),
       ]);
 
       if (offersRes.data.success) {

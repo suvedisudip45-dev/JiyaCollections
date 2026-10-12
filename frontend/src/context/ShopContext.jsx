@@ -317,8 +317,8 @@ const ShopContextProvider = (props) => {
     try {
       const response = await axios.get(backendUrl + "/api/product/list", {
         params: locationOverride?.province && locationOverride?.district
-          ? { province: locationOverride.province, district: locationOverride.district }
-          : {},
+          ? { limit: 50, province: locationOverride.province, district: locationOverride.district }
+          : { limit: 50 },
       });
       if (response.data.success) {
         setProducts(response.data.products);

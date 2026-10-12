@@ -21,6 +21,7 @@ import {
 import { backendUrl, currency } from "../App";
 import { NEPAL_PROVINCES, NEPAL_CITIES } from "../data/nepalLocations";
 import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import Pagination from "../components/Pagination";
 
 const defaultFormData = {
   businessName: "",
@@ -50,6 +51,8 @@ const Manufacturers = ({ token }) => {
   const [manufacturers, setManufacturers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [ncmBranches, setNcmBranches] = useState([]);
   const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
@@ -80,16 +83,23 @@ const Manufacturers = ({ token }) => {
     try {
       const res = await axios.get(`${backendUrl}/api/manufacturer/admin/list`, {
         headers: { token },
+        params: {
+          manufacturerId,
+          search: searchTerm.trim() || undefined,
+          page: manufacturerId ? 1 : page,
+          limit: 12,
+        },
       });
       if (res.data.success) {
         setManufacturers(res.data.manufacturers || []);
+        setPagination(res.data.pagination || null);
       }
     } catch (err) {
       toast.error("Failed to load manufacturers");
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, manufacturerId, page, searchTerm]);
 
   // Cascading NCM branches based on province and district
   useEffect(() => {
@@ -471,7 +481,10 @@ const Manufacturers = ({ token }) => {
                 type="text"
                 placeholder="Search manufacturers by business name, city, email..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setPage(1);
+                }}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
               />
             </div>
@@ -816,6 +829,16 @@ const Manufacturers = ({ token }) => {
             </table>
           )}
         </div>
+        {!manufacturerId && (
+          <Pagination
+            page={page}
+            totalPages={pagination?.totalPages || 0}
+            total={pagination?.total || 0}
+            limit={pagination?.limit || 12}
+            onPageChange={setPage}
+            loading={loading}
+          />
+        )}
 
         {/* Register / Edit Partner Modal */}
         {createModalOpen && (

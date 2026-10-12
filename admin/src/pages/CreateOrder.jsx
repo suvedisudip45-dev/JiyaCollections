@@ -136,6 +136,7 @@ const CreateOrder = ({ token }) => {
       setLoadingProducts(true);
       const res = await axios.get(`${backendUrl}/api/product/list`, {
         headers: { token },
+        params: { limit: 50 },
       });
       if (res.data.success) {
         const prods = res.data.products || [];

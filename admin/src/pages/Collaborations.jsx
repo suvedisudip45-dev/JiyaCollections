@@ -4,6 +4,9 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { Check, Handshake, Pause, Play, ReceiptText, Send, X } from "lucide-react";
 import { backendUrl, currency } from "../App";
+import Pagination from "../components/Pagination";
+
+const COLLABORATION_PAGE_SIZE = 10;
 
 const CollaborationCard = ({ collaboration, token, onChange }) => {
   const latestTerms = collaboration.termsVersions?.[0] || null;
@@ -146,16 +149,25 @@ const Collaborations = ({ token }) => {
   const [partnerId, setPartnerId] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const [listResponse, optionsResponse, reportResponse] = await Promise.all([
-        axios.get(`${backendUrl}/api/collaborations/admin/products`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/collaborations/admin/options`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/collaborations/admin/products`, {
+          headers: { token },
+          params: { page, limit: COLLABORATION_PAGE_SIZE },
+        }),
+        axios.get(`${backendUrl}/api/collaborations/admin/options`, {
+          headers: { token },
+          params: { page: 1, limit: 50 },
+        }),
         axios.get(`${backendUrl}/api/collaborations/admin/report`, { headers: { token } }),
       ]);
       setCollaborations(listResponse.data.products || []);
+      setPagination(listResponse.data.pagination || null);
       setProducts(optionsResponse.data.products || []);
       setPartners(optionsResponse.data.partners || []);
       setReport({
@@ -168,7 +180,7 @@ const Collaborations = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [page, token]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -215,7 +227,7 @@ const Collaborations = ({ token }) => {
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Catalog</p>
           <h1 className="mt-1 text-2xl font-black text-slate-900">Collaborations</h1>
         </div>
-        <span className="text-xs font-semibold text-slate-500">{collaborations.length} products</span>
+        <span className="text-xs font-semibold text-slate-500">{pagination?.total || collaborations.length} products</span>
       </header>
 
       <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
@@ -249,6 +261,14 @@ const Collaborations = ({ token }) => {
         ) : collaborations.map((collaboration) => (
           <CollaborationCard key={collaboration.id} collaboration={collaboration} token={token} onChange={fetchData} />
         ))}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || collaborations.length}
+          limit={pagination?.limit || COLLABORATION_PAGE_SIZE}
+          loading={loading}
+          onPageChange={setPage}
+        />
       </section>
 
       <section className="space-y-4 border-t border-slate-200 pt-6">

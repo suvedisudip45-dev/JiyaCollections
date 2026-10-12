@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, Handshake, Send, X } from "lucide-react";
 import { collaborationsApi } from "../../api";
 import { getErrorMessage } from "../../api/client";
+import Pagination from "../../components/common/Pagination";
+
+const COLLABORATION_PAGE_SIZE = 10;
 
 const CollaborationCard = ({ collaboration, onChange }) => {
   const latestTerms = collaboration.termsVersions?.[0] || null;
@@ -99,16 +102,19 @@ const CollaborationsPage = () => {
   const [report, setReport] = useState({ summary: {}, sales: [], invoices: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const [productsResponse, reportResponse] = await Promise.all([
-        collaborationsApi.list(),
+        collaborationsApi.list({ page, limit: COLLABORATION_PAGE_SIZE }),
         collaborationsApi.report(),
       ]);
       setProducts(productsResponse.data.products || []);
+      setPagination(productsResponse.data.pagination || null);
       setReport({
         summary: reportResponse.data.summary || {},
         sales: reportResponse.data.sales || [],
@@ -119,7 +125,7 @@ const CollaborationsPage = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page]);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
@@ -199,6 +205,14 @@ const CollaborationsPage = () => {
           ))}
         </div>
       )}
+      <Pagination
+        page={pagination?.page || page}
+        totalPages={pagination?.totalPages || 1}
+        total={pagination?.total || products.length}
+        limit={pagination?.limit || COLLABORATION_PAGE_SIZE}
+        loading={loading}
+        onPageChange={setPage}
+      />
     </div>
   );
 };

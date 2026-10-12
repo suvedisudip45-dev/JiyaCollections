@@ -4,6 +4,9 @@ import { toast } from "react-toastify";
 import { Layers, Package, RefreshCw, RotateCw, Search, ShieldCheck, Truck, Weight, X } from "lucide-react";
 import { backendUrl, currency } from "../App";
 import { usePermissions } from "../auth/PermissionsContext";
+import Pagination from "../components/Pagination";
+
+const ASSIGNMENT_PAGE_SIZE = 10;
 
 const getAssignmentNotes = (assignment) => {
   try {
@@ -17,6 +20,8 @@ const OrderAssignments = ({ token }) => {
   const { can } = usePermissions();
   const canRetryAllocation = can("assignment:create");
   const [assignments, setAssignments] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [unassignedOrders, setUnassignedOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [retryingOrderId, setRetryingOrderId] = useState("");
@@ -32,12 +37,19 @@ const OrderAssignments = ({ token }) => {
     setLoading(true);
     try {
       const [assignRes, unassignedRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/order-assignment/admin/all`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/order-assignment/admin/unassigned`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
+          headers: { token },
+          params: { page, limit: ASSIGNMENT_PAGE_SIZE, status: statusFilter },
+        }),
+        axios.get(`${backendUrl}/api/order-assignment/admin/unassigned`, {
+          headers: { token },
+          params: { limit: 50 },
+        }),
       ]);
 
       if (assignRes.data.success) {
         setAssignments(assignRes.data.assignments || []);
+        setPagination(assignRes.data.pagination || null);
       }
       if (unassignedRes.data.success) {
         setUnassignedOrders(unassignedRes.data.orders || []);
@@ -47,7 +59,7 @@ const OrderAssignments = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [page, statusFilter, token]);
 
   const retryAllocation = async (orderId) => {
     setRetryingOrderId(orderId);
@@ -129,7 +141,6 @@ const OrderAssignments = ({ token }) => {
   }, [fetchAssignmentsData]);
 
   const filtered = assignments.filter((a) => {
-    if (statusFilter !== "all" && a.status !== statusFilter) return false;
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       const orderId = (a.order?.id || a.id).toLowerCase();
@@ -187,7 +198,7 @@ const OrderAssignments = ({ token }) => {
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setStatusFilter(tab.id)}
+              onClick={() => { setStatusFilter(tab.id); setPage(1); }}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap cursor-pointer transition-all ${
                 statusFilter === tab.id
                   ? "bg-slate-900 text-white"
@@ -379,6 +390,14 @@ const OrderAssignments = ({ token }) => {
             </table>
           </div>
         )}
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || assignments.length}
+          limit={pagination?.limit || ASSIGNMENT_PAGE_SIZE}
+          loading={loading}
+          onPageChange={setPage}
+        />
       </div>
 
       {ncmAssignment && (

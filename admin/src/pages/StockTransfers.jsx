@@ -3,6 +3,9 @@ import { Link, useParams } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import Pagination from "../components/Pagination";
+
+const TRANSFER_PAGE_SIZE = 10;
 
 const hasNcmOrderId = (value) =>
   /^\d+$/.test(String(value ?? "")) && Number.isSafeInteger(Number(value)) && Number(value) > 0;
@@ -13,6 +16,8 @@ const StockTransfers = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState("");
   const [filter, setFilter] = useState("NCM");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [approvals, setApprovals] = useState({});
   const [notes, setNotes] = useState({});
   const [bookingResolution, setBookingResolution] = useState({});
@@ -20,10 +25,15 @@ const StockTransfers = ({ token }) => {
   const loadTransfers = useCallback(async () => {
     setLoading(true);
     try {
-      const params = transferId ? {} : filter === "NCM" ? { bookingMode: "NCM" } : filter ? { status: filter } : {};
+      const params = {
+        page: transferId ? 1 : page,
+        limit: transferId ? 1 : TRANSFER_PAGE_SIZE,
+        ...(transferId ? { transferId } : filter === "NCM" ? { bookingMode: "NCM" } : filter ? { status: filter } : {}),
+      };
       const response = await axios.get(`${backendUrl}/api/stock-transfers/admin`, { headers: { token }, params });
       const rows = response.data.transfers || [];
       setTransfers(rows);
+      setPagination(response.data.pagination || null);
       setApprovals((current) => {
         const next = { ...current };
         for (const transfer of rows) {
@@ -38,7 +48,7 @@ const StockTransfers = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [filter, token, transferId]);
+  }, [filter, page, token, transferId]);
 
   useEffect(() => {
     loadTransfers();
@@ -120,7 +130,7 @@ const StockTransfers = ({ token }) => {
             <Link to="/stock-transfers" className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Back to transfers</Link>
           ) : <label className="text-sm text-slate-600">
             Status
-            <select value={filter} onChange={(event) => setFilter(event.target.value)} className="ml-2 rounded-lg border border-slate-300 px-3 py-2">
+            <select value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1); }} className="ml-2 rounded-lg border border-slate-300 px-3 py-2">
               <option value="">All statuses</option>
               <option value="NCM">NCM shipments (all statuses)</option>
               {["PENDING_ADMIN_APPROVAL", "APPROVED", "REJECTED", "IN_TRANSIT", "PARTIALLY_RECEIVED", "RECEIVED", "DISCREPANCY", "CANCELLED"].map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
@@ -174,6 +184,14 @@ const StockTransfers = ({ token }) => {
               </tbody>
             </table>
           </div>}
+          {!transferId && <Pagination
+            page={pagination?.page || page}
+            totalPages={pagination?.totalPages || 1}
+            total={pagination?.total || transfers.length}
+            limit={pagination?.limit || TRANSFER_PAGE_SIZE}
+            loading={loading}
+            onPageChange={setPage}
+          />}
           {transfers.map((transfer) => transferId === transfer.id && (
         <article key={transfer.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">

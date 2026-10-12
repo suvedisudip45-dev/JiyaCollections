@@ -413,14 +413,27 @@ const registerManufacturerSelf = async (req, res) => {
 const listManufacturers = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
+    const { manufacturerId, search } = req.query;
+    const where = manufacturerId
+      ? { id: manufacturerId }
+      : search
+        ? {
+          OR: [
+            { name: { contains: search } },
+            { email: { contains: search } },
+            { city: { contains: search } },
+          ],
+        }
+        : {};
     const [manufacturers, total] = await prisma.$transaction([
       prisma.manufacturer.findMany({
-        orderBy: { createdAt: "desc" },
+        where,
+        orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         include: { _count: { select: { assignments: true, inventory: true } } },
       }),
-      prisma.manufacturer.count(),
+      prisma.manufacturer.count({ where }),
     ]);
     const safe = manufacturers.map(({ password, ...m }) => ({
       ...m,

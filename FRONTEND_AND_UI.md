@@ -21,6 +21,14 @@ The project uses a multi-app frontend architecture:
 - `axios` for API access
 - localStorage for token persistence and some client state persistence
 
+### List pagination and response caching
+
+Bulk APIs accept `page` and `limit` and return pagination metadata; operational list screens request bounded pages and place recently updated records first where supported. Direct detail pages request the record by ID, so links remain valid regardless of which list page contains the record. The admin manufacturer directory and marketing campaign list now also use bounded server-side pagination and search, alongside the admin Orders and Delivery Monitor, admin Stock Transfers, manufacturer Factory Transfers, and distributor inbound-transfer lists.
+
+Admin monitor order details show the initial distributor from the order-allocation audit history and the current distributor from the active assignment record. If the assignment has changed, both are shown; if the initial audit history is unavailable, the UI says so rather than treating the current distributor as the original. A rejected latest assignment is identified as most recently assigned, not as an active assignment.
+
+All four portals use a bounded in-memory cache for JSON GET responses only (10-second TTL, 100 entries maximum). Keys are scoped by request URL, query parameters, access token and, in the manufacturer portal, active workspace. Successful mutations and auth token changes clear cached responses. Binary downloads bypass this cache. It is browser-memory only, is not shared across tabs/devices, and is intentionally short-lived.
+
 ### Styling setup
 
 The frontend CSS is defined in `frontend/src/index.css` and uses the following design tokens:

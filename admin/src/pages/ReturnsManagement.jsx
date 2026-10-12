@@ -47,7 +47,7 @@ const ReturnsManagement = ({ token }) => {
       const [custRes, suppRes, prodRes, accRes] = await Promise.all([
         axios.get(`${backendUrl}/api/returns/customer/list`, { headers: { token } }),
         axios.get(`${backendUrl}/api/returns/supplier/list`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/product/list`),
+        axios.get(`${backendUrl}/api/product/list`, { params: { limit: 50 } }),
         axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
       ]);
 

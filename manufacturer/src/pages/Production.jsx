@@ -48,7 +48,7 @@ const Production = () => {
     setLoading(true);
     try {
       const [productResponse, requestResponse] = await Promise.all([
-        axios.get(`${backendUrl}/api/manufacturer-production/products`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/manufacturer-production/products`, { headers: { token }, params: { limit: 50 } }),
         axios.get(`${backendUrl}/api/manufacturer-production/requests?limit=50`, { headers: { token } }),
       ]);
       setProducts(productResponse.data.products || []);

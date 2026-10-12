@@ -1,4 +1,5 @@
 import axios from "axios";
+import { clearResponseCache, installResponseCache } from "./responseCache";
 import {
   clearAuthTokens,
   getAccessToken,
@@ -86,6 +87,7 @@ export const installAuthInterceptor = (client = axios, redirectPath = "/login") 
   if (installedClients.has(client)) return;
   installedClients.add(client);
   loginPath = redirectPath;
+  installResponseCache(client, getAccessToken);
 
   client.interceptors.request.use((config) => {
     config.withCredentials = true;
@@ -130,8 +132,14 @@ export const installAuthInterceptor = (client = axios, redirectPath = "/login") 
     }
   );
 
-  window.addEventListener("auth:tokens-updated", scheduleSessionExpiry);
-  window.addEventListener("auth:tokens-cleared", () => window.clearTimeout(expiryTimer));
+  window.addEventListener("auth:tokens-updated", () => {
+    clearResponseCache();
+    scheduleSessionExpiry();
+  });
+  window.addEventListener("auth:tokens-cleared", () => {
+    clearResponseCache();
+    window.clearTimeout(expiryTimer);
+  });
   window.addEventListener("storage", (event) => {
     if (event.key === ACCESS_TOKEN_KEY) {
       if (event.newValue) {

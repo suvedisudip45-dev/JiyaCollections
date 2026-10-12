@@ -24,9 +24,14 @@ import {
 import ProductImageCarousel from "../components/ProductImageCarousel";
 import StructuredDescriptionEditor from "../components/StructuredDescriptionEditor";
 import { transliterateText, parseStructuredDescription } from "../utils/transliteration";
+import Pagination from "../components/Pagination";
+
+const PRODUCT_PAGE_SIZE = 10;
 
 const List = ({ token }) => {
   const [list, setList] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [editingProduct, setEditingProduct] = useState(null);
 
   // Edit Modal State
@@ -78,9 +83,18 @@ const List = ({ token }) => {
     try {
       const response = await axios.get(backendUrl + "/api/product/list", {
         headers: { token },
+        params: {
+          page,
+          limit: PRODUCT_PAGE_SIZE,
+          search: searchQuery.trim() || undefined,
+          category: filterCategory === "all" ? undefined : filterCategory,
+          subcategory: filterSubCategory === "all" ? undefined : filterSubCategory,
+          bestseller: filterBestseller === "all" ? undefined : filterBestseller === "bestseller",
+        },
       });
       if (response.data.success) {
         setList(response.data.products || []);
+        setPagination(response.data.pagination || null);
       } else {
         toast.error(response.data.message);
       }
@@ -424,32 +438,13 @@ const List = ({ token }) => {
 
   useEffect(() => {
     fetchList();
+  }, [token, page, searchQuery, filterCategory, filterSubCategory, filterBestseller]);
+
+  useEffect(() => {
     fetchColorsAndCategories();
-  }, []);
+  }, [token]);
 
-  const filteredList = list.filter((item) => {
-    const q = searchQuery.toLowerCase().trim();
-    const matchSearch =
-      !q ||
-      item.name.toLowerCase().includes(q) ||
-      (item.subCategory && item.subCategory.toLowerCase().includes(q)) ||
-      (item.nepaliName && item.nepaliName.toLowerCase().includes(q));
-
-    const itemCats = item.categories && item.categories.length > 0 ? item.categories : parseArray(item.category);
-    const matchCategory =
-      filterCategory === "all" ||
-      itemCats.some((c) => c.toLowerCase() === filterCategory.toLowerCase());
-
-    const matchSubCategory =
-      filterSubCategory === "all" ||
-      (item.subCategory && item.subCategory.toLowerCase() === filterSubCategory.toLowerCase());
-
-    const matchBestseller =
-      filterBestseller === "all" ||
-      (filterBestseller === "bestseller" ? item.bestseller : !item.bestseller);
-
-    return matchSearch && matchCategory && matchSubCategory && matchBestseller;
-  });
+  const filteredList = list;
 
   return (
     <div className="space-y-5">
@@ -477,13 +472,13 @@ const List = ({ token }) => {
             type="text"
             placeholder="Search by title, Nepali name or subcategory..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
             className="px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs w-full sm:w-64 focus:outline-none focus:border-slate-900 focus:bg-white"
           />
 
           <select
             value={filterCategory}
-            onChange={(e) => setFilterCategory(e.target.value)}
+            onChange={(e) => { setFilterCategory(e.target.value); setPage(1); }}
             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none"
           >
             <option value="all">All Categories</option>
@@ -496,7 +491,7 @@ const List = ({ token }) => {
 
           <select
             value={filterSubCategory}
-            onChange={(e) => setFilterSubCategory(e.target.value)}
+            onChange={(e) => { setFilterSubCategory(e.target.value); setPage(1); }}
             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none"
           >
             <option value="all">All Subcategories</option>
@@ -509,7 +504,7 @@ const List = ({ token }) => {
 
           <select
             value={filterBestseller}
-            onChange={(e) => setFilterBestseller(e.target.value)}
+            onChange={(e) => { setFilterBestseller(e.target.value); setPage(1); }}
             className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none"
           >
             <option value="all">All Best Seller Status</option>
@@ -525,6 +520,7 @@ const List = ({ token }) => {
               setFilterCategory("all");
               setFilterSubCategory("all");
               setFilterBestseller("all");
+              setPage(1);
             }}
             className="text-xs text-rose-600 font-bold hover:underline"
           >
@@ -714,6 +710,13 @@ const List = ({ token }) => {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={pagination?.page || page}
+          totalPages={pagination?.totalPages || 1}
+          total={pagination?.total || list.length}
+          limit={pagination?.limit || PRODUCT_PAGE_SIZE}
+          onPageChange={setPage}
+        />
       </div>
 
       {/* --- EDIT PRODUCT MODAL --- */}

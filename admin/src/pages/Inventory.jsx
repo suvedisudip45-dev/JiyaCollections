@@ -26,7 +26,7 @@ const Inventory = ({ token }) => {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/product/list`, { headers: { token } });
+      const res = await axios.get(`${backendUrl}/api/product/list`, { headers: { token }, params: { limit: 50 } });
       if (res.data.success) {
         setProducts(res.data.products || []);
       }

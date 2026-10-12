@@ -428,7 +428,7 @@ const getMyAssignments = async (req, res) => {
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
         where,
-        orderBy: { assignedAt: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { assignedAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         include: {
@@ -557,7 +557,7 @@ const getUnassignedOrders = async (req, res) => {
     const [orders, total] = await prisma.$transaction([
       prisma.order.findMany({
         where,
-        orderBy: { date: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         select: {
@@ -923,7 +923,7 @@ const getAllAssignments = async (req, res) => {
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
         where,
-        orderBy: { assignedAt: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { assignedAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         include: {

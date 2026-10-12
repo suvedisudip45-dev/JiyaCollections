@@ -620,6 +620,7 @@ model Order {
   paymentMethod               String
   payment                     Boolean             @default(false)
   date                        BigInt
+  updatedAt                   DateTime            @default(now()) @updatedAt
   loyaltyDiscount             Float?              @default(0)
   rewardApplied               Json?
   specialOrder                Boolean             @default(false)
@@ -665,6 +666,7 @@ model Order {
   @@index([manufacturerId])
   @@index([distributorId])
   @@index([date])
+  @@index([updatedAt])
   @@index([status])
   @@index([payment])
 }

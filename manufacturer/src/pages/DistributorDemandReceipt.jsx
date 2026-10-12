@@ -15,8 +15,10 @@ import {
   Building,
 } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
+import Pagination from "../components/Pagination";
 
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
+const TRANSFER_PAGE_SIZE = 10;
 
 const DistributorDemandReceipt = () => {
   const { transferId } = useParams();
@@ -25,6 +27,8 @@ const DistributorDemandReceipt = () => {
   const [catalog, setCatalog] = useState([]);
   const [catalogError, setCatalogError] = useState("");
   const [transfers, setTransfers] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [manufacturerId, setManufacturerId] = useState("");
   const [requestLines, setRequestLines] = useState([emptyRow()]);
   const [receivingLine, setReceivingLine] = useState(null);
@@ -64,13 +68,19 @@ const DistributorDemandReceipt = () => {
           toast.error(message);
         });
       const transfersRequest = axios
-        .get(`${backendUrl}/api/stock-transfers/distributor`, { headers })
+        .get(`${backendUrl}/api/stock-transfers/distributor`, {
+          headers,
+          params: transferId
+            ? { transferId, page: 1, limit: 1 }
+            : { page, limit: TRANSFER_PAGE_SIZE },
+        })
         .then(({ data }) => {
           const listedTransfers = data?.transfers;
           if (!Array.isArray(listedTransfers)) {
             throw new Error("The inbound transfer list returned an invalid response.");
           }
           setTransfers(listedTransfers);
+          setPagination(data.pagination || null);
         })
         .catch((error) => {
           toast.error(error?.response?.data?.message || error?.message || "Could not load inbound transfers.");
@@ -79,7 +89,7 @@ const DistributorDemandReceipt = () => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [page, token, transferId]);
 
   useEffect(() => {
     loadData();
@@ -563,6 +573,14 @@ const DistributorDemandReceipt = () => {
               )))}
             </div>
           )}
+          {!transferId && <Pagination
+            page={pagination?.page || page}
+            totalPages={pagination?.totalPages || 1}
+            total={pagination?.total || transfers.length}
+            limit={pagination?.limit || TRANSFER_PAGE_SIZE}
+            loading={loading}
+            onPageChange={setPage}
+          />}
         </div>
       )}
 

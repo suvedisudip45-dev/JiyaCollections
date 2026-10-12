@@ -714,12 +714,13 @@ export const listDistributorStockTransfers = async (req, res) => {
     await ensureActiveDistributor(prisma, req.distributorId);
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
-    const where = { distributorId: req.distributorId };
+    const where = { distributorId: req.distributorId, ...(req.query.transferId ? { id: String(req.query.transferId) } : {}) };
     const [transfers, total] = await prisma.$transaction([
-      prisma.stockTransfer.findMany({ where, include: transferInclude, orderBy: { requestedAt: "desc" }, skip: (page - 1) * limit, take: limit }),
+      prisma.stockTransfer.findMany({ where, include: transferInclude, orderBy: [{ updatedAt: "desc" }, { requestedAt: "desc" }], skip: (page - 1) * limit, take: limit }),
       prisma.stockTransfer.count({ where }),
     ]);
-    return res.json({ success: true, transfers, page, limit, total });
+    const totalPages = Math.ceil(total / limit);
+    return res.json({ success: true, transfers, page, limit, total, pagination: { page, limit, total, totalPages, hasNextPage: page < totalPages, hasPreviousPage: page > 1 && total > 0 } });
   } catch (error) {
     return respondError(res, error, "listDistributorStockTransfers");
   }
@@ -729,7 +730,11 @@ export const listManufacturerStockTransfers = async (req, res) => {
   try {
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
-    const where = { manufacturerId: req.manufacturerId, status: { not: "PENDING_ADMIN_APPROVAL" } };
+    const where = {
+      manufacturerId: req.manufacturerId,
+      status: { not: "PENDING_ADMIN_APPROVAL" },
+      ...(req.query.transferId ? { id: String(req.query.transferId) } : {}),
+    };
     const [transfers, total, pendingPreparationCount] = await prisma.$transaction([
       prisma.stockTransfer.findMany({
         where,
@@ -737,7 +742,7 @@ export const listManufacturerStockTransfers = async (req, res) => {
           ...transferInclude,
           distributor: { select: { id: true, name: true, phone: true, address: true, city: true, accountId: true } },
         },
-        orderBy: { requestedAt: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { requestedAt: "desc" }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -755,7 +760,8 @@ export const listManufacturerStockTransfers = async (req, res) => {
         city: distributor.city,
       },
     }));
-    return res.json({ success: true, transfers: visibleTransfers, page, limit, total, pendingPreparationCount });
+    const totalPages = Math.ceil(total / limit);
+    return res.json({ success: true, transfers: visibleTransfers, page, limit, total, pagination: { page, limit, total, totalPages, hasNextPage: page < totalPages, hasPreviousPage: page > 1 && total > 0 }, pendingPreparationCount });
   } catch (error) {
     return respondError(res, error, "listManufacturerStockTransfers");
   }
@@ -769,14 +775,16 @@ export const listAdminStockTransfers = async (req, res) => {
     const where = {
       ...(status ? { status } : {}),
       ...(bookingMode ? { shipments: { some: { bookingMode } } } : {}),
+      ...(req.query.transferId ? { id: String(req.query.transferId) } : {}),
     };
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));
     const [transfers, total] = await prisma.$transaction([
-      prisma.stockTransfer.findMany({ where, include: transferInclude, orderBy: { requestedAt: "desc" }, skip: (page - 1) * limit, take: limit }),
+      prisma.stockTransfer.findMany({ where, include: transferInclude, orderBy: [{ updatedAt: "desc" }, { requestedAt: "desc" }], skip: (page - 1) * limit, take: limit }),
       prisma.stockTransfer.count({ where }),
     ]);
-    return res.json({ success: true, transfers, page, limit, total });
+    const totalPages = Math.ceil(total / limit);
+    return res.json({ success: true, transfers, page, limit, total, pagination: { page, limit, total, totalPages, hasNextPage: page < totalPages, hasPreviousPage: page > 1 && total > 0 } });
   } catch (error) {
     return respondError(res, error, "listAdminStockTransfers");
   }

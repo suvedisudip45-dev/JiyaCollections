@@ -3,6 +3,9 @@ import { Link, useParams } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
+import Pagination from "../components/Pagination";
+
+const TRANSFER_PAGE_SIZE = 10;
 
 const newIdempotencyKey = () => globalThis.crypto?.randomUUID?.() || `shipment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const preparationChecks = [
@@ -343,6 +346,8 @@ const FactoryTransfers = () => {
   const { transferId } = useParams();
   const { token } = useManufacturer();
   const [transfers, setTransfers] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState("");
   const [bookingMode, setBookingMode] = useState({});
@@ -354,14 +359,20 @@ const FactoryTransfers = () => {
   const loadTransfers = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await axios.get(`${backendUrl}/api/stock-transfers/manufacturer`, { headers: { token } });
+      const response = await axios.get(`${backendUrl}/api/stock-transfers/manufacturer`, {
+        headers: { token },
+        params: transferId
+          ? { transferId, page: 1, limit: 1 }
+          : { page, limit: TRANSFER_PAGE_SIZE },
+      });
       setTransfers(response.data.transfers || []);
+      setPagination(response.data.pagination || null);
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not load stock transfer requests.");
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [page, token, transferId]);
 
   useEffect(() => {
     loadTransfers();
@@ -578,6 +589,14 @@ const FactoryTransfers = () => {
               </tbody>
             </table>
           </div>}
+          {!transferId && <Pagination
+            page={pagination?.page || page}
+            totalPages={pagination?.totalPages || 1}
+            total={pagination?.total || transfers.length}
+            limit={pagination?.limit || TRANSFER_PAGE_SIZE}
+            loading={loading}
+            onPageChange={setPage}
+          />}
           {transfers.map((transfer) => transferId === transfer.id && (
         <article key={transfer.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-3">

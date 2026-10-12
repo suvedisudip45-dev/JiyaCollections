@@ -7,8 +7,10 @@ import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import { assets } from "../assets/assets";
 import ShippingLabelModal from "../components/ShippingLabelModal";
+import Pagination from "../components/Pagination";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 
+const ORDERS_PAGE_SIZE = 10;
 const ADMIN_ORDER_STATUSES = [
   "All",
   "Order Placed",
@@ -373,10 +375,44 @@ const MonitorOrderCard = ({ order, onPrint, customerLoyaltyMap }) => {
           <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${order.payment ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
             {order.payment ? "Paid" : "COD - Pending"}
           </span>
+          <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-2.5 text-[10px]">
+            <p className="font-bold uppercase tracking-wide text-indigo-700">Distributor assignment</p>
+            {order.distributorAssignment?.initial ? (
+              <p className="mt-1 text-gray-600">
+                Initially assigned to{" "}
+                <span className="font-bold text-gray-900">
+                  {order.distributorAssignment.initial.distributorName || "Distributor name unavailable"}
+                </span>
+              </p>
+            ) : (
+              <p className="mt-1 text-gray-500">Initial distributor history is not available for this order.</p>
+            )}
+            {order.distributorAssignment?.changed && (
+              <p className="mt-1 text-gray-600">
+                {order.distributorAssignment.current?.status === "rejected" ? "Most recently assigned to " : "Currently assigned to "}
+                <span className="font-bold text-gray-900">
+                  {order.distributorAssignment.current?.distributorName || "Distributor name unavailable"}
+                </span>
+                {order.distributorAssignment.current?.status === "rejected" && " (rejected)"}
+              </p>
+            )}
+            {!order.distributorAssignment?.changed && order.distributorAssignment?.current && (
+              <p className="mt-1 text-gray-600">
+                {order.distributorAssignment.current.status === "rejected" ? "Most recently assigned to " : "Current distributor "}
+                <span className="font-bold text-gray-900">
+                  {order.distributorAssignment.current.distributorName || "name unavailable"}
+                </span>
+                {order.distributorAssignment.current.status === "rejected" && " (rejected)"}
+              </p>
+            )}
+            {!order.distributorAssignment?.current && (
+              <p className="mt-1 text-gray-600">No distributor is currently assigned.</p>
+            )}
+          </div>
           {/* Read-only notice */}
           <div className="mt-3 p-2 bg-slate-50 border border-slate-200 rounded-lg text-[10px] text-slate-500 flex items-start gap-1.5">
             <span>🔒</span>
-            <span>Managed by assigned hub. Status changes are made by the manufacturer.</span>
+            <span>Managed by the assigned distributor hub. Fulfillment status changes are recorded in the order history.</span>
           </div>
         </div>
       </div>
@@ -392,10 +428,14 @@ const Orders = ({ token }) => {
   // Admin Orders (admin-created only)
   const [adminOrders, setAdminOrders] = useState([]);
   const [loadingAdmin, setLoadingAdmin] = useState(true);
+  const [adminPage, setAdminPage] = useState(1);
+  const [adminPagination, setAdminPagination] = useState(null);
 
   // All Orders (hub monitor view)
   const [allOrders, setAllOrders] = useState([]);
   const [loadingMonitor, setLoadingMonitor] = useState(false);
+  const [monitorPage, setMonitorPage] = useState(1);
+  const [monitorPagination, setMonitorPagination] = useState(null);
 
   // Shared UI state
   const [selectedStatus, setSelectedStatus] = useState("All");
@@ -424,14 +464,26 @@ const Orders = ({ token }) => {
   };
 
   // Fetch admin-created orders
-  const fetchAdminOrders = async () => {
+  const fetchAdminOrders = async (requestedPage = adminPage) => {
     if (!token) return;
     try {
       setLoadingAdmin(true);
-      const response = await axios.post(backendUrl + "/api/order/admin-list", {}, { headers: { token } });
+      const response = await axios.post(
+        backendUrl + "/api/order/admin-list",
+        {},
+        {
+          headers: { token },
+          params: {
+            page: requestedPage,
+            limit: ORDERS_PAGE_SIZE,
+            status: selectedStatus === "All" ? undefined : selectedStatus,
+            search: searchQuery.trim() || undefined,
+          },
+        },
+      );
       if (response.data.success) {
-        const sorted = (response.data.orders || []).sort((a, b) => Number(b.date) - Number(a.date));
-        setAdminOrders(sorted);
+        setAdminOrders(response.data.orders || []);
+        setAdminPagination(response.data.pagination || null);
       } else {
         toast.error(response.data.message);
       }
@@ -443,14 +495,26 @@ const Orders = ({ token }) => {
   };
 
   // Fetch all orders (hub monitor)
-  const fetchAllOrders = async () => {
+  const fetchAllOrders = async (requestedPage = monitorPage) => {
     if (!token) return;
     try {
       setLoadingMonitor(true);
-      const response = await axios.post(backendUrl + "/api/order/list", {}, { headers: { token } });
+      const response = await axios.post(
+        backendUrl + "/api/order/list",
+        {},
+        {
+          headers: { token },
+          params: {
+            page: requestedPage,
+            limit: ORDERS_PAGE_SIZE,
+            fulfillmentStatus: monitorFulfillmentFilter === "All" ? undefined : monitorFulfillmentFilter,
+            search: monitorSearchQuery.trim() || undefined,
+          },
+        },
+      );
       if (response.data.success) {
-        const sorted = (response.data.orders || []).sort((a, b) => Number(b.date) - Number(a.date));
-        setAllOrders(sorted);
+        setAllOrders(response.data.orders || []);
+        setMonitorPagination(response.data.pagination || null);
       } else {
         toast.error(response.data.message);
       }
@@ -470,7 +534,7 @@ const Orders = ({ token }) => {
       if (activeTab === "monitor") fetchAllOrders();
     }, 15000);
     return () => clearInterval(interval);
-  }, [token, activeTab]);
+  }, [token, activeTab, adminPage, monitorPage, selectedStatus, searchQuery, monitorFulfillmentFilter, monitorSearchQuery]);
 
   // Lazy-load monitor tab
   useEffect(() => {
@@ -494,14 +558,6 @@ const Orders = ({ token }) => {
       return true;
     });
   }, [adminOrders, selectedStatus, searchQuery]);
-
-  const adminStatusCounts = useMemo(() => {
-    const counts = { All: adminOrders.length };
-    ADMIN_ORDER_STATUSES.slice(1).forEach((s) => {
-      counts[s] = adminOrders.filter((o) => o.status === s).length;
-    });
-    return counts;
-  }, [adminOrders]);
 
   const newAdminOrders = useMemo(() => adminOrders.filter((o) => o.status === "Order Placed"), [adminOrders]);
 
@@ -530,21 +586,6 @@ const Orders = ({ token }) => {
       return true;
     });
   }, [allOrders, monitorFulfillmentFilter, monitorSearchQuery]);
-
-  const monitorFulfillmentCounts = useMemo(() => {
-    const websiteOrders = allOrders.filter((order) => {
-      try {
-        const reward = typeof order.rewardApplied === "string" ? JSON.parse(order.rewardApplied) : order.rewardApplied;
-        if (reward && reward.adminCreated === true) return false;
-      } catch {}
-      return order.orderType !== "ADMIN_DIRECT";
-    });
-    const counts = { All: websiteOrders.length };
-    FULFILLMENT_FILTERS.slice(1).forEach((fs) => {
-      counts[fs] = websiteOrders.filter((o) => (o.fulfillmentStatus || "PENDING_ASSIGNMENT") === fs).length;
-    });
-    return counts;
-  }, [allOrders]);
 
   // ── Select/Print helpers ──
   const toggleSelectOrder = (id) => {
@@ -633,7 +674,7 @@ const Orders = ({ token }) => {
       {/* ── Primary Tabs ── */}
       <div className="flex items-center gap-0 mb-5 border-b border-gray-200">
         <button
-          onClick={() => { setActiveTab("admin"); setSelectedStatus("All"); setSearchQuery(""); }}
+          onClick={() => { setActiveTab("admin"); setSelectedStatus("All"); setSearchQuery(""); setAdminPage(1); }}
           className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
             activeTab === "admin"
               ? "border-indigo-600 text-indigo-700 bg-indigo-50/50"
@@ -648,7 +689,7 @@ const Orders = ({ token }) => {
         </button>
 
         <button
-          onClick={() => { setActiveTab("monitor"); setMonitorFulfillmentFilter("All"); setMonitorSearchQuery(""); }}
+          onClick={() => { setActiveTab("monitor"); setMonitorFulfillmentFilter("All"); setMonitorSearchQuery(""); setMonitorPage(1); }}
           className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
             activeTab === "monitor"
               ? "border-indigo-600 text-indigo-700 bg-indigo-50/50"
@@ -693,19 +734,15 @@ const Orders = ({ token }) => {
             <div className="flex flex-wrap items-center gap-1.5">
               {ADMIN_ORDER_STATUSES.map((status) => {
                 const isActive = selectedStatus === status;
-                const count = adminStatusCounts[status] || 0;
                 return (
                   <button
                     key={status}
-                    onClick={() => setSelectedStatus(status)}
+                    onClick={() => { setSelectedStatus(status); setAdminPage(1); }}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                       isActive ? "bg-indigo-600 text-white shadow-sm" : "bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200/60"
                     }`}
                   >
                     <span>{status === "All" ? "All Orders" : status}</span>
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${isActive ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"}`}>
-                      {count}
-                    </span>
                   </button>
                 );
               })}
@@ -721,11 +758,11 @@ const Orders = ({ token }) => {
                   type="text"
                   placeholder="Search by customer name, phone, city, order ID..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => { setSearchQuery(e.target.value); setAdminPage(1); }}
                   className="w-full pl-9 pr-3 py-1.5 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500"
                 />
                 {searchQuery && (
-                  <button onClick={() => setSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs">✕</button>
+                  <button onClick={() => { setSearchQuery(""); setAdminPage(1); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs">✕</button>
                 )}
               </div>
               <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end text-xs">
@@ -744,7 +781,7 @@ const Orders = ({ token }) => {
                   </button>
                 )}
                 <div className="text-gray-500 whitespace-nowrap">
-                  Showing <strong className="text-gray-800">{filteredAdminOrders.length}</strong> of {adminOrders.length}
+                  Showing <strong className="text-gray-800">{filteredAdminOrders.length}</strong> on this page of {adminPagination?.total || adminOrders.length}
                 </div>
               </div>
             </div>
@@ -766,7 +803,7 @@ const Orders = ({ token }) => {
                   : `No orders under "${selectedStatus}". Use "+ Create Order" to add social media or phone orders.`}
               </p>
               {(selectedStatus !== "All" || searchQuery) && (
-                <button onClick={() => { setSelectedStatus("All"); setSearchQuery(""); }}
+                <button onClick={() => { setSelectedStatus("All"); setSearchQuery(""); setAdminPage(1); }}
                   className="mt-3 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-semibold hover:bg-indigo-100">
                   Reset Filters
                 </button>
@@ -814,6 +851,14 @@ const Orders = ({ token }) => {
               </table>
             </div>
           )}
+          <Pagination
+            page={adminPagination?.page || adminPage}
+            totalPages={adminPagination?.totalPages || 1}
+            total={adminPagination?.total || adminOrders.length}
+            limit={adminPagination?.limit || ORDERS_PAGE_SIZE}
+            loading={loadingAdmin}
+            onPageChange={setAdminPage}
+          />
         </>
       )}
 
@@ -836,19 +881,15 @@ const Orders = ({ token }) => {
             <div className="flex flex-wrap items-center gap-1.5">
               {FULFILLMENT_FILTERS.map((fs) => {
                 const isActive = monitorFulfillmentFilter === fs;
-                const count = monitorFulfillmentCounts[fs] || 0;
                 return (
                   <button
                     key={fs}
-                    onClick={() => setMonitorFulfillmentFilter(fs)}
+                    onClick={() => { setMonitorFulfillmentFilter(fs); setMonitorPage(1); }}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                       isActive ? "bg-slate-800 text-white shadow-sm" : "bg-gray-50 hover:bg-gray-100 text-gray-600 border border-gray-200/60"
                     }`}
                   >
                     <span>{fs === "All" ? "All Website Orders" : getFulfillmentLabel(fs)}</span>
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${isActive ? "bg-white/20 text-white" : "bg-gray-200 text-gray-700"}`}>
-                      {count}
-                    </span>
                   </button>
                 );
               })}
@@ -863,14 +904,15 @@ const Orders = ({ token }) => {
                   type="text"
                   placeholder="Search by customer name, phone, city, order ID..."
                   value={monitorSearchQuery}
-                  onChange={(e) => setMonitorSearchQuery(e.target.value)}
+                  onChange={(e) => { setMonitorSearchQuery(e.target.value); setMonitorPage(1); }}
                   className="w-full pl-9 pr-3 py-1.5 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-slate-500"
                 />
                 {monitorSearchQuery && (
-                  <button onClick={() => setMonitorSearchQuery("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs">✕</button>
+                  <button onClick={() => { setMonitorSearchQuery(""); setMonitorPage(1); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs">✕</button>
                 )}
               </div>
-              <p className="text-[10px] text-gray-400 mt-1.5">Showing <strong className="text-gray-700">{filteredMonitorOrders.length}</strong> of {monitorFulfillmentCounts.All} website orders</p>
+                <p className="text-[10px] text-gray-400 mt-1.5">Showing <strong className="text-gray-700">{filteredMonitorOrders.length}</strong> on this page of {monitorPagination?.total || allOrders.length} website orders</p>
+                <p className="text-[10px] text-gray-400">Summary cards below reflect this page; the total above reflects the selected query.</p>
             </div>
           </div>
 
@@ -890,7 +932,7 @@ const Orders = ({ token }) => {
                   : "No website/storefront orders yet. They appear here automatically when customers place orders."}
               </p>
               {(monitorFulfillmentFilter !== "All" || monitorSearchQuery) && (
-                <button onClick={() => { setMonitorFulfillmentFilter("All"); setMonitorSearchQuery(""); }}
+                <button onClick={() => { setMonitorFulfillmentFilter("All"); setMonitorSearchQuery(""); setMonitorPage(1); }}
                   className="mt-3 px-3 py-1.5 bg-slate-50 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-100">
                   Reset Filters
                 </button>
@@ -939,6 +981,14 @@ const Orders = ({ token }) => {
               </table>
             </div>
           )}
+          <Pagination
+            page={monitorPagination?.page || monitorPage}
+            totalPages={monitorPagination?.totalPages || 1}
+            total={monitorPagination?.total || allOrders.length}
+            limit={monitorPagination?.limit || ORDERS_PAGE_SIZE}
+            loading={loadingMonitor}
+            onPageChange={setMonitorPage}
+          />
         </>
       )}
 
@@ -978,7 +1028,10 @@ export const AdminOrderDetail = ({ token }) => {
       setLoading(true);
       try {
         const endpoint = source === "monitor" ? "/api/order/list" : "/api/order/admin-list";
-        const response = await axios.post(`${backendUrl}${endpoint}`, {}, { headers: { token } });
+        const response = await axios.post(`${backendUrl}${endpoint}`, {}, {
+          headers: { token },
+          params: { orderId, page: 1, limit: 1 },
+        });
         const match = (response.data.orders || []).find((item) => item._id === orderId);
         if (!active) return;
         if (!match) {

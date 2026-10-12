@@ -3,6 +3,7 @@ import { prisma } from "../config/db.js";
 import { parseProductCategoryNames, productBelongsToCategory } from "../services/productCategoryRules.js";
 import { calculateComboBundlePrice } from "../services/comboBundleRules.js";
 import { syncProductStock } from "../services/stockSyncService.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const toSlug = (value = "") => {
   const normalized = String(value || "")
@@ -391,25 +392,33 @@ const updateComboBundle = async (req, res) => {
 
 const listComboBundles = async (req, res) => {
   try {
+    const pagination = getPagination(req.query);
     const where = {
       ...(req.query.categoryId ? { categoryId: String(req.query.categoryId) } : {}),
       ...(req.query.status ? { status: String(req.query.status).toUpperCase() } : {}),
     };
-    const comboBundles = await prisma.comboBundle.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      include: {
-          ...(req.query.includeProducts === "false"
-            ? { _count: { select: { products: true } } }
-            : { products: { include: { product: true }, orderBy: { sortOrder: "asc" } } }),
+    const [comboBundles, total] = await Promise.all([
+      prisma.comboBundle.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+        ...(req.query.includeProducts === "false"
+          ? { _count: { select: { products: true } } }
+          : { products: { include: { product: true }, orderBy: { sortOrder: "asc" } } }),
         category: true,
-      },
-    });
+        },
+      }),
+      prisma.comboBundle.count({ where }),
+    ]);
 
-    return res.json({
-      success: true,
-      comboBundles: comboBundles.map((comboBundle) => normalizeComboBundleJson(comboBundle)),
-    });
+    return res.json(paginatedResponse(
+      "comboBundles",
+      comboBundles.map((comboBundle) => normalizeComboBundleJson(comboBundle)),
+      pagination,
+      total,
+    ));
   } catch (error) {
     console.error("listComboBundles error:", error);
     return res.status(500).json({ success: false, message: error.message || "Unable to list combo bundles" });

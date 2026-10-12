@@ -611,8 +611,8 @@ const listProducts = async (req, res) => {
     const requestedCategory = requestedCategoryValue.toLowerCase();
     const requestedSubcategory = String(req.query.subcategory || "").trim().toLowerCase();
     const requestedFeatured = String(req.query.featured || "").trim().toLowerCase();
-    const hasPublicFilters = !isAdmin && (requestedCategory || requestedSubcategory || requestedFeatured);
-
+    const requestedBestseller = String(req.query.bestseller || "").trim().toLowerCase();
+    const search = String(req.query.search || "").trim();
     // Synchronize current stockQuantity & variant stock from ManufacturerInventory
     await syncAllProductsStock();
 
@@ -626,52 +626,63 @@ const listProducts = async (req, res) => {
         { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
       ],
     };
-    if (hasPublicFilters) {
-      if (requestedCategory) {
-        const categoryValue = requestedCategoryValue.replace(/"/g, "");
-        if (categoryValue.toLowerCase() === "unisex") {
-          whereCondition.OR = [
-            { category: { contains: "Unisex" } },
-            { isUnisex: true },
-          ];
+    if (requestedCategory) {
+      const categoryValue = requestedCategoryValue.replace(/"/g, "");
+      if (categoryValue.toLowerCase() === "unisex") {
+        const unisexCondition = { OR: [{ category: { contains: "Unisex" } }, { isUnisex: true }] };
+        if (isAdmin) {
+          Object.assign(whereCondition, unisexCondition);
         } else {
-          whereCondition.category = { contains: categoryValue };
+          whereCondition.AND = [...(whereCondition.AND || []), unisexCondition];
         }
+      } else {
+        whereCondition.category = { contains: categoryValue };
       }
-      if (requestedSubcategory) {
-        whereCondition.subCategory = { contains: requestedSubcategory };
-      }
-      if (requestedFeatured === "new") whereCondition.newInStore = true;
-      if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    }
+    if (requestedSubcategory) whereCondition.subCategory = { contains: requestedSubcategory };
+    if (requestedFeatured === "new") whereCondition.newInStore = true;
+    if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
+    if (requestedBestseller === "true") whereCondition.bestseller = true;
+    if (requestedBestseller === "false") whereCondition.bestseller = false;
+    if (search) {
+      whereCondition.AND = [
+        ...(whereCondition.AND || []),
+        {
+          OR: [
+            { id: { contains: search } },
+            { name: { contains: search } },
+            { nepaliName: { contains: search } },
+            { subCategory: { contains: search } },
+          ],
+        },
+      ];
     }
 
-    const productQuery = isAdmin || hasPublicFilters
-      ? prisma.product.findMany({
+    const [rawProducts, total] = await Promise.all([
+      prisma.product.findMany({
         where: whereCondition,
-        orderBy: { date: "desc" },
+        orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
-      })
-      : prisma.product.findMany({
-        where: whereCondition,
-        orderBy: { date: "desc" },
-      });
-    const [rawProducts, total, allReviews] = await Promise.all([
-      productQuery,
-      prisma.product.count({ where: whereCondition }),
-      prisma.review.findMany({
-        select: { productId: true, rating: true },
       }),
+      prisma.product.count({ where: whereCondition }),
     ]);
+    const reviewStats = rawProducts.length
+      ? await prisma.review.groupBy({
+        by: ["productId"],
+        where: { productId: { in: rawProducts.map((product) => product.id) } },
+        _avg: { rating: true },
+        _count: { _all: true },
+      })
+      : [];
 
-    // Build rating lookup map per product
+    // Build rating lookup map only for products in this page.
     const reviewStatsMap = {};
-    for (const r of allReviews) {
-      if (!reviewStatsMap[r.productId]) {
-        reviewStatsMap[r.productId] = { sum: 0, count: 0 };
-      }
-      reviewStatsMap[r.productId].sum += Number(r.rating) || 5;
-      reviewStatsMap[r.productId].count += 1;
+    for (const stats of reviewStats) {
+      reviewStatsMap[stats.productId] = {
+        sum: Number(stats._avg.rating || 0) * stats._count._all,
+        count: stats._count._all,
+      };
     }
 
     let products = rawProducts.map((item) => {
@@ -713,21 +724,7 @@ const listProducts = async (req, res) => {
       }));
     }
 
-    if (!hasPublicFilters && (requestedCategory || requestedSubcategory || requestedFeatured)) {
-      products = products.filter((product) => {
-        const matchesCategory = !requestedCategory || product.categories.some(
-          (category) => String(category).trim().toLowerCase() === requestedCategory
-        );
-        const matchesSubcategory = !requestedSubcategory || String(product.subCategory || "").trim().toLowerCase() === requestedSubcategory;
-        const matchesFeatured = requestedFeatured !== "new" || product.newInStore;
-        const matchesBestseller = requestedFeatured !== "bestseller" || product.bestseller;
-        return matchesCategory && matchesSubcategory && matchesFeatured && matchesBestseller;
-      });
-    }
-
-    const filteredTotal = products.length;
-
-    res.json(paginatedResponse("products", products, isAdmin ? pagination : { page: 1, limit: filteredTotal || pagination.limit, skip: 0 }, isAdmin ? total : filteredTotal));
+    res.json(paginatedResponse("products", products, pagination, total));
   } catch (error) {
     console.log(error);
     res.json({ success: false, message: error.message });
@@ -992,4 +989,3 @@ export {
   getStockLogs,
   transliterateProductText,
 };
-

@@ -273,6 +273,7 @@ const Categories = ({ token }) => {
       if (sub.category?.name) params.set("category", sub.category.name);
       params.set("subcategory", sub.name);
       params.set("admin", "true");
+      params.set("limit", "50");
 
       const response = await axios.get(`${backendUrl}/api/product/list?${params.toString()}`, {
         headers: { token },

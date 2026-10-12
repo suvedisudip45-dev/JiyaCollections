@@ -34,7 +34,7 @@ export const profileApi = {
 };
 
 export const collaborationsApi = {
-  list: () => api.get("/api/collaborations/partner/products"),
+  list: (params = {}) => api.get("/api/collaborations/partner/products", { params }),
   report: () => api.get("/api/collaborations/partner/report"),
   proposeTerms: (id, data) => api.post(`/api/collaborations/partner/products/${encodeURIComponent(id)}/terms`, data),
   respond: (id, action) => api.post(`/api/collaborations/partner/products/${encodeURIComponent(id)}/respond`, { action }),

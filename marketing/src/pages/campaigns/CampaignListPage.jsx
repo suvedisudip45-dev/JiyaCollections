@@ -8,9 +8,13 @@ import { getErrorMessage } from "../../api/client";
 import Badge from "../../components/common/Badge";
 import Skeleton from "../../components/common/Skeleton";
 import EmptyState from "../../components/common/EmptyState";
+import Pagination from "../../components/common/Pagination";
 
 const CampaignListPage = () => {
   const [campaigns, setCampaigns] = useState([]);
+  const [pagination, setPagination] = useState(null);
+  const [page, setPage] = useState(1);
+  const limit = 12;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState("");
@@ -20,29 +24,26 @@ const CampaignListPage = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await campaignsApi.list({ status: statusFilter !== "all" ? statusFilter : undefined });
+      const res = await campaignsApi.list({
+        status: statusFilter !== "all" ? statusFilter : undefined,
+        search: search.trim() || undefined,
+        page,
+        limit,
+      });
       if (res.data?.success) {
         setCampaigns(res.data.campaigns || []);
+        setPagination(res.data.pagination || null);
       }
     } catch (err) {
       setError(getErrorMessage(err, "Failed to load campaigns."));
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, search, page]);
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
-
-  const filtered = campaigns.filter((c) => {
-    const matchesSearch =
-      c.name.toLowerCase().includes(search.toLowerCase()) ||
-      (c.description && c.description.toLowerCase().includes(search.toLowerCase())) ||
-      (c.targetProvince && c.targetProvince.toLowerCase().includes(search.toLowerCase())) ||
-      (c.targetDistrict && c.targetDistrict.toLowerCase().includes(search.toLowerCase()));
-    return matchesSearch;
-  });
 
   return (
     <div className="space-y-6">
@@ -70,7 +71,10 @@ const CampaignListPage = () => {
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             placeholder="Search campaigns, regions..."
             className="w-full pl-9 pr-4 py-2 text-sm rounded-xl border border-[var(--mp-line)] focus:outline-none focus:ring-2 focus:ring-brand-500 transition-all placeholder:text-[var(--mp-muted)]"
           />
@@ -80,7 +84,10 @@ const CampaignListPage = () => {
           <Filter size={15} className="text-[var(--mp-muted)] hidden sm:block" />
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
             className="w-full sm:w-auto px-3 py-2 text-xs font-semibold rounded-xl border border-[var(--mp-line)] bg-white text-[var(--mp-ink)] focus:outline-none focus:ring-2 focus:ring-brand-500"
           >
             <option value="all">All Statuses</option>
@@ -118,7 +125,7 @@ const CampaignListPage = () => {
       )}
 
       {/* Empty state */}
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && campaigns.length === 0 && (
         <EmptyState
           icon={Megaphone}
           title="No campaigns found"
@@ -131,7 +138,7 @@ const CampaignListPage = () => {
       )}
 
       {/* Campaigns Table */}
-      {!loading && !error && filtered.length > 0 && (
+      {!loading && !error && campaigns.length > 0 && (
         <div className="overflow-x-auto rounded-2xl border border-[var(--mp-line)] bg-white shadow-xs">
           <table className="w-full min-w-[760px] text-left text-xs">
             <thead className="bg-[var(--mp-bg)] text-[10px] uppercase tracking-wider text-[var(--mp-muted)]">
@@ -145,7 +152,7 @@ const CampaignListPage = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--mp-line)]">
-              {filtered.map((campaign) => {
+              {campaigns.map((campaign) => {
                 const target = campaign.targetScopeType === "PROVINCE" && campaign.targetProvince
                   ? campaign.targetProvince
                   : campaign.targetScopeType === "DISTRICT" && campaign.targetDistrict
@@ -175,6 +182,14 @@ const CampaignListPage = () => {
             </tbody>
           </table>
         </div>
+      )}
+      {!loading && !error && (
+        <Pagination
+          page={page}
+          limit={pagination?.limit || limit}
+          total={pagination?.total || 0}
+          onPageChange={setPage}
+        />
       )}
     </div>
   );

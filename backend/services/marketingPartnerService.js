@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { expireCampaignCards } from "./marketingCardService.js";
 import { postMarketingCpaRedemptionAccounting } from "./accountingPostingEngine.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 /**
  * Partner-scoped read-only service functions.
@@ -13,21 +14,47 @@ export const getPartnerById = (partnerId) =>
     select: { id: true, code: true, name: true, description: true, status: true, createdAt: true },
   });
 
-export const getPartnerCampaigns = async ({ partnerId, status } = {}) => {
+export const getPartnerCampaigns = async ({ partnerId, status, page, limit, search } = {}) => {
   await expireCampaignCards();
-  return prisma.marketingCampaign.findMany({
-    where: {
-      marketingPartnerId: partnerId,
-      ...(status && status !== "all" ? { status } : {}),
-    },
-    orderBy: { createdAt: "desc" },
+  const where = {
+    marketingPartnerId: partnerId,
+    ...(status && status !== "all" ? { status } : {}),
+    ...(search
+      ? {
+        OR: [
+          { name: { contains: search } },
+          { description: { contains: search } },
+          { targetProvince: { contains: search } },
+          { targetDistrict: { contains: search } },
+        ],
+      }
+      : {}),
+  };
+  const query = {
+    where,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: {
       _count: {
         select: { cards: true, batches: true, benefits: true },
       },
       benefits: { select: { id: true, name: true, benefitType: true, value: true, percentage: true, status: true, expiresAt: true } },
     },
-  });
+  };
+
+  if (page === undefined && limit === undefined) {
+    return prisma.marketingCampaign.findMany(query);
+  }
+
+  const pagination = getPagination({ page, limit });
+  const [campaigns, total] = await prisma.$transaction([
+    prisma.marketingCampaign.findMany({
+      ...query,
+      skip: pagination.skip,
+      take: pagination.limit,
+    }),
+    prisma.marketingCampaign.count({ where }),
+  ]);
+  return paginatedResponse("campaigns", campaigns, pagination, total);
 };
 
 export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {

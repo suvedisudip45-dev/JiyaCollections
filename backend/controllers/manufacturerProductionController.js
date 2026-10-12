@@ -6,7 +6,7 @@ import { postJournalEntry } from "../services/accountingPostingEngine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
-import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
 import { validateProductionRequestInput } from "../services/manufacturerProductionService.js";
 import {
   validateAdminProductionPlan,
@@ -102,11 +102,18 @@ const validRequestLines = (product, lines) => {
 
 export const getProductionProducts = async (req, res) => {
   try {
-    const products = await prisma.product.findMany({
-      where: { published: true, deletedAt: null },
-      orderBy: { name: "asc" },
-      select: { id: true, name: true, image: true, sizes: true, colors: true, variants: true },
-    });
+    const pagination = getPagination(req.query);
+    const productWhere = { published: true, deletedAt: null };
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where: productWhere,
+        orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+        select: { id: true, name: true, image: true, sizes: true, colors: true, variants: true },
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
     const requests = await prisma.manufacturerProductionRequest.findMany({
       where: { manufacturerId: req.manufacturerId, status: { in: ["PENDING_REVIEW", "APPROVED", "IN_PRODUCTION"] } },
       select: { id: true, productId: true, status: true },
@@ -124,6 +131,7 @@ export const getProductionProducts = async (req, res) => {
         variants: getProductVariants(product),
         activeProductionRequests: activeByProduct.get(product.id) || [],
       })),
+      pagination: getPaginationMeta({ ...pagination, total }),
     });
   } catch (error) {
     console.error("getProductionProducts error:", error);
