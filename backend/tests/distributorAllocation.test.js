@@ -28,6 +28,7 @@ const createDistributor = ({
   name = id,
   province = "Bagmati Province",
   district = "Kathmandu",
+  ncmPickupBranch = "",
   stock = [createBalance(`${id}-balance`, 10)],
   qualityRating = 0,
   ratingCount = 0,
@@ -38,6 +39,7 @@ const createDistributor = ({
   city: district,
   province,
   district,
+  ncmPickupBranch,
   qualityRating,
   ratingCount,
   locations: locations ?? (province && district ? [{ province, district, isActive: true }] : []),
@@ -54,14 +56,37 @@ const createOrder = (id = "order-1") => ({
   items: JSON.stringify([{ productId: "product-1", size: "Medium", color: "Navy Blue", quantity: 2 }]),
 });
 
-const installAllocationMocks = (t, { order = createOrder(), distributors = [] } = {}) => {
+const installAllocationMocks = (t, {
+  order = createOrder(),
+  distributors = [],
+  inactiveInTransaction = [],
+} = {}) => {
   let assignmentData;
+  const stockQueryDistributorIds = [];
   stubMethod(t, prisma.order, "findUnique", async () => order);
   stubMethod(t, prisma.distributor, "findMany", async (args) => {
     assert.deepEqual(args.where, { status: "ACTIVE", isActive: true });
     return distributors;
   });
+  stubMethod(t, prisma.inventoryBalance, "findMany", async ({ where }) => {
+    const distributorIds = where.location.distributorId.in;
+    stockQueryDistributorIds.push(distributorIds);
+    return distributors
+      .filter((distributor) => distributorIds.includes(distributor.id))
+      .flatMap((distributor) => (distributor.stockLocations || [])
+        .flatMap((stockLocation) => stockLocation.balances || [])
+        .map((balance) => ({
+          ...balance,
+          location: { distributorId: distributor.id },
+        })));
+  });
   stubMethod(t, prisma, "$transaction", async (callback) => callback({
+    distributor: {
+      findFirst: async ({ where }) => {
+        const selected = distributors.find((distributor) => distributor.id === where.id);
+        return selected && !inactiveInTransaction.includes(selected.id) ? { id: selected.id } : null;
+      },
+    },
     order: {
       updateMany: async () => ({ count: 1 }),
       update: async () => order,
@@ -86,7 +111,10 @@ const installAllocationMocks = (t, { order = createOrder(), distributors = [] } 
     },
     systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
   }));
-  return { getAssignment: () => assignmentData };
+  return {
+    getAssignment: () => assignmentData,
+    getStockQueryDistributorIds: () => stockQueryDistributorIds,
+  };
 };
 
 test("allocator prefers exact district service coverage among stocked hubs", async (t) => {
@@ -110,6 +138,109 @@ test("allocator prefers exact district service coverage among stocked hubs", asy
   assert.equal(result.success, true);
   assert.equal(result.distributor.id, exactDistrictHub.id);
   assert.equal(getAssignment().distributorId, exactDistrictHub.id);
+});
+
+test("overlapping coverage is resolved by distributor rating", async (t) => {
+  const lowerRatedHub = createDistributor({
+    id: "lower-rated-hub",
+    qualityRating: 3.5,
+    ratingCount: 20,
+  });
+  const higherRatedHub = createDistributor({
+    id: "higher-rated-hub",
+    qualityRating: 4.8,
+    ratingCount: 3,
+  });
+  installAllocationMocks(t, { distributors: [lowerRatedHub, higherRatedHub] });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, higherRatedHub.id);
+});
+
+test("registered district is the default service area when no coverage is configured", async (t) => {
+  const defaultCoverageHub = createDistributor({
+    id: "default-coverage-hub",
+    qualityRating: 2.5,
+    locations: [],
+  });
+  const higherRatedSameProvinceHub = createDistributor({
+    id: "same-province-hub",
+    district: "Lalitpur",
+    qualityRating: 5,
+    locations: [],
+  });
+  installAllocationMocks(t, { distributors: [higherRatedSameProvinceHub, defaultCoverageHub] });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, defaultCoverageHub.id);
+});
+
+test("matching NCM branch is used before a same-province fallback", async (t) => {
+  const matchingBranchHub = createDistributor({
+    id: "branch-hub",
+    province: "Gandaki Province",
+    district: "Kaski",
+    ncmPickupBranch: "Kathmandu",
+    qualityRating: 3,
+  });
+  const provinceHub = createDistributor({
+    id: "province-hub",
+    district: "Lalitpur",
+    ncmPickupBranch: "Lalitpur",
+    qualityRating: 5,
+  });
+  const order = createOrder();
+  order.address = JSON.stringify({
+    province: "Bagmati Province",
+    district: "Kathmandu",
+    ncmBranch: " KATHMANDU ",
+  });
+  installAllocationMocks(t, { order, distributors: [provinceHub, matchingBranchHub] });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, matchingBranchHub.id);
+});
+
+test("same-district hub ranks above a matching NCM branch", async (t) => {
+  const localHub = createDistributor({ id: "same-district-hub", qualityRating: 2 });
+  const branchHub = createDistributor({
+    id: "branch-hub",
+    province: "Gandaki Province",
+    district: "Kaski",
+    ncmPickupBranch: "Kathmandu",
+    qualityRating: 5,
+  });
+  const order = createOrder();
+  order.address = JSON.stringify({
+    province: "Bagmati Province",
+    district: "Kathmandu",
+    ncmBranch: "Kathmandu",
+  });
+  installAllocationMocks(t, { order, distributors: [branchHub, localHub] });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, localHub.id);
+});
+
+test("stock lookup is limited to the highest-priority location tier", async (t) => {
+  const localHub = createDistributor({ id: "local-hub" });
+  const provinceHub = createDistributor({ id: "province-hub", district: "Lalitpur" });
+  const { getStockQueryDistributorIds } = installAllocationMocks(t, {
+    distributors: [provinceHub, localHub],
+  });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, true);
+  assert.deepEqual(getStockQueryDistributorIds(), [[localHub.id]]);
 });
 
 test("allocator falls back to a stocked hub in the same province before other provinces", async (t) => {
@@ -188,4 +319,18 @@ test("allocator returns variant shortages when no active distributor has suffici
       availableQuantity: 1,
     }],
   }]);
+});
+
+test("allocator does not assign an order if the selected distributor became inactive", async (t) => {
+  const distributor = createDistributor({ id: "just-deactivated" });
+  installAllocationMocks(t, {
+    distributors: [distributor],
+    inactiveInTransaction: [distributor.id],
+  });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "DISTRIBUTOR_INACTIVE");
+  assert.match(result.message, /no longer active/i);
 });

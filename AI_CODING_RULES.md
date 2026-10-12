@@ -27,7 +27,7 @@ The backend is the real source of truth for:
 - accounting postings and ledger integrity
 - location-based discount resolution and distributor hub assignment for checkout
 - distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
-- distributor allocation priority: exact district, same province, then nationwide by verified customer ratings, while requiring distributor-ledger stock at every tier
+- distributor allocation requires active distributors with enough distributor-ledger stock and ranks candidates by configured (or default registered) service area, same district, NCM branch, same province, then nationwide; quality rating resolves ties within each tier
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.

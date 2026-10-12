@@ -119,34 +119,12 @@ const buildFulfillmentBenefits = (order, items = []) => {
   };
 };
 
-// ─── NEPAL CITY PROXIMITY MAP ─────────────────────────────────────────────────
-const CITY_PROXIMITY = {
-  kathmandu: ["lalitpur", "bhaktapur", "kirtipur", "madhyapur thimi", "budhanilkantha", "banepa", "dhulikhel"],
-  lalitpur: ["kathmandu", "bhaktapur", "kirtipur", "madhyapur thimi", "godawari"],
-  bhaktapur: ["kathmandu", "lalitpur", "madhyapur thimi", "banepa", "dhulikhel"],
-  pokhara: ["lekhnath", "prithvichowk", "birauta", "syangja", "damauli", "kaski"],
-  lekhnath: ["pokhara", "damauli"],
-  biratnagar: ["itahari", "inaruwa", "dharan", "damak", "belbari", "urlabari"],
-  itahari: ["biratnagar", "dharan", "damak", "inaruwa"],
-  dharan: ["itahari", "biratnagar", "damak"],
-  butwal: ["bhairahawa", "siddharthanagar", "palpa", "sunwal", "tilottama"],
-  bhairahawa: ["butwal", "siddharthanagar", "sunwal"],
-  siddharthanagar: ["bhairahawa", "butwal"],
-  birgunj: ["parwanipur", "simara", "hetauda", "kalaiya"],
-  hetauda: ["birgunj", "makwanpur", "chitwan", "bharatpur"],
-  chitwan: ["bharatpur", "hetauda", "nawalpur", "ratnanagar"],
-  bharatpur: ["chitwan", "hetauda", "ratnanagar", "gaindakot"],
-  nepalgunj: ["kohalpur", "banke", "surkhet"],
-  dhangadhi: ["attariya", "tikapur", "mahendranagar", "kailali"],
-  janakpur: ["dhanusa", "bardibas", "jaleshwor", "mahottari"],
-};
-
-const normalize = (city) => (city || "").toLowerCase().trim();
+const normalizeLocationKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
 const getDistributorAvailableStock = (distributor, requirement) =>
-  (distributor.stockLocations || [])
-    .flatMap((location) => location.balances || [])
+  (distributor.inventoryBalances || (distributor.stockLocations || [])
+    .flatMap((location) => location.balances || []))
     .filter((balance) =>
       balance.inventorySku?.productId === requirement.productId &&
       normalizeSkuKey(balance.inventorySku?.sizeKey || balance.inventorySku?.size) === normalizeSkuKey(requirement.size) &&
@@ -216,15 +194,6 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
       },
       include: {
         locations: { where: { isActive: true } },
-        stockLocations: {
-          where: { kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
-          include: {
-            balances: {
-              where: { inventorySku: { productId: { in: productIds }, isActive: true } },
-              include: { inventorySku: true },
-            },
-          },
-        },
       },
     });
     if (!distributors.length) {
@@ -234,51 +203,115 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
         message: "There are no active distributors available for allocation.",
       };
     }
-    const customerCity = normalize(address.city || address.district);
-    const nearbyCities = CITY_PROXIMITY[customerCity] || [];
-    const stockedCandidates = distributors.filter((distributor) => distributorHasStock(distributor, requirements));
-    const hasExactCoverage = (distributor) => (distributor.locations || []).some((serviceArea) => {
-      const serviceLocation = canonicalizeNepalLocation(serviceArea.province, serviceArea.district);
-      return serviceArea.isActive !== false &&
-        serviceLocation?.province === location.province &&
-        serviceLocation?.district === location.district;
-    });
-    const hasProvinceMatch = (distributor) => {
-      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
-      return registeredLocation?.province === location.province ||
-        (distributor.locations || []).some((serviceArea) => {
-          const serviceLocation = canonicalizeNepalLocation(serviceArea.province, serviceArea.district);
-          return serviceArea.isActive !== false && serviceLocation?.province === location.province;
-        });
-    };
-    const locationCandidates = stockedCandidates.filter(hasExactCoverage);
-    const provinceCandidates = stockedCandidates.filter((distributor) =>
-      !hasExactCoverage(distributor) && hasProvinceMatch(distributor)
-    );
-    const nationwideCandidates = stockedCandidates.filter((distributor) =>
-      !hasExactCoverage(distributor) && !hasProvinceMatch(distributor)
-    );
-    const compareNearby = (left, right) => {
-      const score = (distributor) => {
-        const city = normalize(distributor.city);
-        return city === customerCity && city ? 2 : nearbyCities.includes(city) ? 1 : 0;
-      };
-      return score(right) - score(left) || left.id.localeCompare(right.id);
-    };
+    const customerBranch = normalizeLocationKey(address.ncmBranch || address.ncmPickupBranch);
     const compareRating = (left, right) =>
       Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
       Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
       left.id.localeCompare(right.id);
-    const candidates = locationCandidates.length
-      ? locationCandidates.sort(compareNearby)
-      : provinceCandidates.length
-        ? provinceCandidates.sort(compareNearby)
-        : nationwideCandidates.sort(compareRating);
+    const getCoverageLocations = (distributor) => {
+      const configuredLocations = (distributor.locations || [])
+        .filter((serviceArea) => serviceArea.isActive !== false)
+        .map((serviceArea) => canonicalizeNepalLocation(serviceArea.province, serviceArea.district))
+        .filter(Boolean);
+      if (configuredLocations.length) return configuredLocations;
+      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+      return registeredLocation ? [registeredLocation] : [];
+    };
+    const hasExactCoverage = (distributor) => getCoverageLocations(distributor).some((serviceLocation) =>
+      serviceLocation.province === location.province &&
+      serviceLocation.district === location.district
+    );
+    const hasBranchMatch = (distributor) => customerBranch &&
+      normalizeLocationKey(distributor.ncmPickupBranch) === customerBranch;
+    const hasDistrictMatch = (distributor) => {
+      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+      return registeredLocation?.province === location.province &&
+        registeredLocation?.district === location.district;
+    };
+    const hasProvinceMatch = (distributor) =>
+      getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
+      canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
+
+    const coverageCandidates = distributors.filter(hasExactCoverage);
+    const districtCandidates = distributors.filter((distributor) =>
+      !hasExactCoverage(distributor) && hasDistrictMatch(distributor)
+    );
+    const branchCandidates = distributors.filter((distributor) =>
+      !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
+    );
+    const provinceCandidates = distributors.filter((distributor) =>
+      !hasExactCoverage(distributor) &&
+      !hasDistrictMatch(distributor) &&
+      !hasBranchMatch(distributor) &&
+      hasProvinceMatch(distributor)
+    );
+    const nationwideCandidates = distributors.filter((distributor) =>
+      !hasExactCoverage(distributor) &&
+      !hasDistrictMatch(distributor) &&
+      !hasBranchMatch(distributor) &&
+      !hasProvinceMatch(distributor)
+    );
+    const candidateTiers = [
+      ["service-area coverage", coverageCandidates],
+      ["same district", districtCandidates],
+      ["NCM branch", branchCandidates],
+      ["same province", provinceCandidates],
+      ["review-ranked nationwide", nationwideCandidates],
+    ];
+    let allocationTier = "";
+    let candidates = [];
+    let stockRows = [];
+    for (const [tierName, tierCandidates] of candidateTiers) {
+      if (!tierCandidates.length) continue;
+      const tierStockRows = await prisma.inventoryBalance.findMany({
+        where: {
+          location: {
+            distributorId: { in: tierCandidates.map((distributor) => distributor.id) },
+            kind: "DISTRIBUTOR",
+            inventoryOwner: "PLATFORM",
+            isActive: true,
+          },
+          inventorySku: {
+            isActive: true,
+            OR: requirements.map((requirement) => ({
+              productId: requirement.productId,
+              sizeKey: normalizeSkuKey(requirement.size),
+              colorKey: normalizeSkuKey(requirement.color),
+            })),
+          },
+        },
+        select: {
+          quantityOnHand: true,
+          reservedQuantity: true,
+          location: { select: { distributorId: true } },
+          inventorySku: { select: { productId: true, sizeKey: true, colorKey: true } },
+        },
+      });
+      stockRows = stockRows.concat(tierStockRows);
+      const stockedCandidates = tierCandidates
+        .map((distributor) => ({
+          ...distributor,
+          inventoryBalances: tierStockRows
+            .filter((balance) => balance.location.distributorId === distributor.id),
+        }))
+        .filter((distributor) => distributorHasStock(distributor, requirements))
+        .sort(compareRating);
+      if (stockedCandidates.length) {
+        allocationTier = tierName;
+        candidates = stockedCandidates;
+        break;
+      }
+    }
     const selected = candidates[0];
     if (!selected) {
       const stockShortages = distributors.map((distributor) => ({
         distributor: distributor.name,
-        shortages: getStockShortages(distributor, requirements),
+        shortages: getStockShortages({
+          ...distributor,
+          inventoryBalances: stockRows.filter((balance) =>
+            balance.location.distributorId === distributor.id
+          ),
+        }, requirements),
       }));
       return {
         success: false,
@@ -287,13 +320,17 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
         stockShortages,
       };
     }
-    const allocationTier = locationCandidates.includes(selected)
-      ? "exact district"
-      : provinceCandidates.includes(selected)
-        ? "same province"
-        : "review-ranked nationwide";
-
     const assignment = await prisma.$transaction(async (tx) => {
+      const stillActive = await tx.distributor.findFirst({
+        where: { id: selected.id, status: "ACTIVE", isActive: true },
+        select: { id: true },
+      });
+      if (!stillActive) {
+        throw Object.assign(new Error("The selected distributor is no longer active. Retry the allocation."), {
+          code: "DISTRIBUTOR_INACTIVE",
+          statusCode: 409,
+        });
+      }
       const claimed = await tx.order.updateMany({
         where: { id: orderId, assignmentId: null, status: { not: "Cancelled" } },
         data: { fulfillmentStatus: "assigned", manufacturerId: null },
@@ -376,7 +413,11 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
       return createdAssignment;
     }, { isolationLevel: "Serializable" });
 
-    return { success: true, assignment, distributor: selected };
+    return {
+      success: true,
+      assignment,
+      distributor: distributors.find((distributor) => distributor.id === selected.id),
+    };
   } catch (error) {
     console.error("runAllocationEngine error:", error);
     return { success: false, message: error.message, ...(error.code ? { code: error.code } : {}) };
@@ -428,7 +469,7 @@ const getMyAssignments = async (req, res) => {
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
         where,
-        orderBy: [{ updatedAt: "desc" }, { assignedAt: "desc" }],
+        orderBy: { assignedAt: "desc" },
         skip: pagination.skip,
         take: pagination.limit,
         include: {
@@ -853,6 +894,7 @@ const updateAssignmentStatus = async (req, res) => {
       nextStatus: normalizedStatus,
       notes: assignment.notes,
       packageData: payload,
+      workflowType: distributorOwnsAssignment ? "DISTRIBUTOR" : "MANUFACTURER",
     });
     if (!transition.valid) {
       return res.status(409).json({ success: false, message: transition.message });

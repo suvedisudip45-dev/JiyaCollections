@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -16,6 +16,7 @@ import {
   validateNcmWebhookPayload,
   sanitizeNcmWebhookPayload,
   statusEventKey,
+  validateNcmDeliveryPackageDetails,
 } from "../services/deliveryService.js";
 
 const restoreEnv = (name, value) => {
@@ -239,6 +240,27 @@ test("NCM package description includes dimensions and quality packaging notes", 
   assert.match(input.packageDescription, /Ironed and wrapped in waterproof polybag/);
   assert.equal(normalizePackageWeight("0.8 kg"), 0.8);
   assert.equal(normalizePackageWeight("invalid"), null);
+});
+
+test("NCM package name is limited to the carrier's 50-character maximum", () => {
+  assert.equal(normalizeNcmPackageName("Carton"), "Carton");
+  assert.equal(normalizeNcmPackageName("  "), "Box");
+  assert.equal(normalizeNcmPackageName("Package type ".repeat(6)).length, 50);
+});
+
+test("NCM delivery package fields are rejected when they exceed the 50-character limit", () => {
+  assert.equal(validateNcmDeliveryPackageDetails({
+    productDescription: "A".repeat(50),
+    packageType: "B".repeat(50),
+  }), "B".repeat(50));
+  assert.throws(() => validateNcmDeliveryPackageDetails({
+    productDescription: "A".repeat(51),
+    packageType: "Box",
+  }), (error) => error.code === "NCM_PACKAGE_DESCRIPTION_TOO_LONG");
+  assert.throws(() => validateNcmDeliveryPackageDetails({
+    productDescription: "Clothing item",
+    packageType: "Package ".repeat(7),
+  }), (error) => error.code === "NCM_PACKAGE_NAME_TOO_LONG");
 });
 
 test("packaging fragile values preserve explicit false", () => {

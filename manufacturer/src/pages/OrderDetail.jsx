@@ -107,7 +107,15 @@ const OrderDetail = () => {
           setPackageDimensions(notes.packageDimensions || found.packageDimensions || "");
           setPackagingNotes(notes.packagingNotes || found.packagingNotes || "");
           setProductType(notes.productType || fallbackItem?.productType || fallbackItem?.category || "");
-          setProductDescription(notes.productDescription || fallbackItem?.description || fallbackItem?.productDescription || "");
+          const savedDescription = String(notes.productDescription || "").trim();
+          const fallbackDescription = String(fallbackItem?.name || "").trim();
+          setProductDescription(
+            savedDescription.length > 0 && savedDescription.length <= 50
+              ? savedDescription
+              : fallbackDescription.length > 0 && fallbackDescription.length <= 50
+                ? fallbackDescription
+                : "Clothing item"
+          );
           setPackageType(notes.packageType || "Box");
           setIsFragile(parseBoolean(notes.isFragile));
           setDeliveryInstruction(
@@ -153,6 +161,10 @@ const OrderDetail = () => {
   }, [id, token, backendUrl, navigate]);
 
   const fetchStoryLetterStatus = useCallback(async () => {
+    if (!isDistributor) {
+      setStoryLetter(null);
+      return;
+    }
     if (!token || !assignment?.order?.id) return;
     try {
       const res = await axios.get(`${backendUrl}/api/personalized-letter/${assignment.order.id}`, { headers: { token } });
@@ -162,7 +174,7 @@ const OrderDetail = () => {
     } catch (error) {
       setStoryLetter(null);
     }
-  }, [assignment?.order?.id, backendUrl, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
 
   const fetchMarketingCardStatus = useCallback(async () => {
     if (!token || !assignment?.order?.id) return;
@@ -486,7 +498,7 @@ const OrderDetail = () => {
   const stepOrder = DELIVERY_STEPS.map((s) => s.key);
   const currentStepIdx = stepOrder.indexOf(assignment.status);
 
-  const WORKFLOW_STEPS = [
+  const MANUFACTURER_WORKFLOW_STEPS = [
     { key: "assigned", label: "Accept order", description: "Confirm this assignment for your hub." },
     { key: "accepted", label: "Stitching & branding", description: "Complete tailoring, labels, and branding." },
     { key: "preparing", label: "Quality check", description: "Inspect the finished garment before letter preparation." },
@@ -496,8 +508,24 @@ const OrderDetail = () => {
     { key: "packed", label: "Package details", description: "Record weight, dimensions, type, and handling." },
     { key: "package_details_complete", label: "Call delivery partner", description: "Submit the completed parcel for pickup." },
   ];
-  const workflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
-  const workflowIndex = Math.max(0, WORKFLOW_STEPS.findIndex((step) => step.key === workflowStatus));
+  const DISTRIBUTOR_WORKFLOW_STEPS = [
+    { key: "assigned", label: "Accept order", description: "Confirm this order for your distributor hub." },
+    { key: "accepted", label: "Quality check", description: "Verify the received products, variants, and condition." },
+    { key: "quality_check", label: "Customer letter", description: "Print and include the customer’s required letter." },
+    { key: "letter_ready", label: "Packing checklist", description: "Confirm the order contents, address, and parcel readiness." },
+    { key: "checklist_complete", label: "Pack order", description: "Securely pack and seal the verified order." },
+    { key: "packed", label: "Package details", description: "Enter parcel dimensions and weight; description must be 50 characters or fewer." },
+    { key: "package_details_complete", label: "Book delivery", description: "Choose self-delivery when available or book NCM pickup." },
+  ];
+  const WORKFLOW_STEPS = isDistributor ? DISTRIBUTOR_WORKFLOW_STEPS : MANUFACTURER_WORKFLOW_STEPS;
+  const storedWorkflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
+  const workflowStatus = isDistributor && storedWorkflowStatus === "preparing" ? "accepted" : storedWorkflowStatus;
+  const matchedWorkflowIndex = WORKFLOW_STEPS.findIndex((step) => step.key === workflowStatus);
+  const workflowIndex = matchedWorkflowIndex >= 0
+    ? matchedWorkflowIndex
+    : ["ready_for_pickup", "picked_up", "in_transit", "out_for_delivery", "delivered"].includes(workflowStatus)
+      ? WORKFLOW_STEPS.length - 1
+      : 0;
   const customerDistrict = normalizeDistrict(order?.address?.district);
   const distributorDistricts = [
     assignment.distributor?.district,
@@ -515,15 +543,19 @@ const OrderDetail = () => {
     : "Continue";
   const handleWorkflowNext = async () => {
     if (workflowStatus === "assigned") return handleAccept();
+    if (isDistributor && workflowStatus === "accepted") return handleStatusChange("quality_check");
     if (workflowStatus === "accepted") return handleStatusChange("preparing", { stitchingBrandingCompleted: true });
     if (workflowStatus === "preparing") {
       setChecklist((prev) => ({ ...prev, qualityVerified: true }));
       return handleStatusChange("quality_check", { stitchingBrandingCompleted: true });
     }
     if (workflowStatus === "quality_check") {
-      if (!storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
-      setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
-      return handleStatusChange("letter_ready", { packagingChecklist: { ...checklist, customerLetterIncluded: true, thankYouLetter: true } });
+      if (isDistributor && !storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
+      const letterChecklist = isDistributor
+        ? { ...checklist, customerLetterIncluded: true, thankYouLetter: true }
+        : checklist;
+      if (isDistributor) setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
+      return handleStatusChange("letter_ready", { packagingChecklist: letterChecklist });
     }
     if (workflowStatus === "letter_ready") {
       setGiftOptions(null);
@@ -573,7 +605,7 @@ const OrderDetail = () => {
         currentIndex={workflowIndex}
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
-        nextLabel={workflowStatus === "assigned" ? "Accept production" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? "Letter printed" : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Enter package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : "Continue"}
+        nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : "Continue"}
         nextDisabled={workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
         previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
         busy={actionLoading}
@@ -590,7 +622,7 @@ const OrderDetail = () => {
             </div>
           </div>
         )}
-        {workflowStatus === "quality_check" && (
+        {isDistributor && workflowStatus === "quality_check" && (
           <button type="button" onClick={handlePrintPersonalizedLetter} disabled={actionLoading} className="w-full rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-left transition hover:border-violet-300 hover:bg-violet-100 disabled:opacity-50">
             <span className="flex items-center gap-2 text-sm font-black text-violet-900"><Printer className="h-4 w-4" /> Print compulsory customer letter</span>
             <span className="mt-1 block text-xs text-violet-700">Every customer receives a letter before the order can continue.</span>
@@ -598,8 +630,8 @@ const OrderDetail = () => {
         )}
         {workflowStatus === "assigned" && (
           <button type="button" onClick={handleReject} disabled={actionLoading} className="mt-3 w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-left text-xs font-bold text-rose-800 transition hover:border-rose-300 hover:bg-rose-100 disabled:opacity-50">
-            Reject production assignment
-            <span className="mt-1 block text-[10px] font-normal text-rose-700">Use this only when your hub cannot produce or accept the order.</span>
+            {isDistributor ? "Reject order assignment" : "Reject production assignment"}
+            <span className="mt-1 block text-[10px] font-normal text-rose-700">{isDistributor ? "Use this only when your hub cannot accept or fulfill the order." : "Use this only when your hub cannot produce or accept the order."}</span>
           </button>
         )}
         {workflowStatus === "letter_ready" && <button type="button" onClick={() => setChecklistModalOpen(true)} className="w-full rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-4 text-left text-xs font-semibold text-indigo-950 transition hover:border-indigo-300 hover:bg-indigo-100">Open the final checklist to verify every required item before packing.</button>}
@@ -784,8 +816,10 @@ const OrderDetail = () => {
                 {[
                   ["productVerified", "Product and quantity verified"],
                   ["sizeColorVerified", "Size and color verified"],
-                  ["stitchingVerified", "Stitching completed and inspected"],
-                  ["brandingVerified", "Branding, tags, and labels verified"],
+                  ...(!isDistributor ? [
+                    ["stitchingVerified", "Stitching completed and inspected"],
+                    ["brandingVerified", "Branding, tags, and labels verified"],
+                  ] : []),
                   ["qualityVerified", "Quality check passed"],
                   ["customerLetterIncluded", "Compulsory customer letter included"],
                   ["addressVerified", "Customer address and phone verified"],
@@ -1002,7 +1036,9 @@ const OrderDetail = () => {
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Inspected fabric quality, size labels, stitching, and wrapped in tamper-proof seal.
+                    {isDistributor
+                      ? "Checked the received product, variants, and condition; securely sealed the parcel."
+                      : "Inspected fabric quality, size labels, stitching, and wrapped in a tamper-proof seal."}
                   </p>
                 </div>
               </div>
@@ -1013,10 +1049,12 @@ const OrderDetail = () => {
           <div className={`${workflowStatus === "packed" || workflowStatus === "package_details_complete" ? "" : "hidden"} bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4`}>
             <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              Packaging &amp; Quality Dispatch Parameters
+              {isDistributor ? "Parcel details for delivery" : "Packaging & Quality Dispatch Parameters"}
             </div>
             <p className="text-xs text-slate-500">
-              Ensure proper packaging, tag inspection, and correct box dimensions before handing over to the delivery partner.
+            {isDistributor
+              ? "Confirm the parcel type, short contents description, weight, and dimensions before booking delivery."
+              : "Ensure proper packaging, tag inspection, and correct box dimensions before handing over to the delivery partner."}
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1058,12 +1096,14 @@ const OrderDetail = () => {
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="e.g. Premium cotton shirt with size label and care instructions"
+                  maxLength={50}
+                  placeholder="e.g. Cotton shirt"
                   value={productDescription}
                   disabled={isDispatchLocked}
                   onChange={(e) => setProductDescription(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
+                <p className={`mt-1 text-[10px] ${productDescription.length >= 50 ? "text-rose-600" : "text-slate-500"}`}>{productDescription.length}/50 characters · brief parcel description</p>
               </div>
 
               <div>
@@ -1379,7 +1419,7 @@ const OrderDetail = () => {
               </div>
             )}
 
-            {assignment.status === "packed" && (
+            {isDistributor && assignment.status === "packed" && (
               <div className="space-y-2">
                 <button
                   onClick={handlePrintPersonalizedLetter}
@@ -1469,6 +1509,7 @@ const OrderDetail = () => {
         busy={actionLoading}
         onClose={() => setChecklistModalOpen(false)}
         onConfirm={handleChecklistConfirm}
+        isDistributor={isDistributor}
       />
     </div>
   );

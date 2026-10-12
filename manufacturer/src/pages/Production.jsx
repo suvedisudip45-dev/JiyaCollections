@@ -179,7 +179,7 @@ const Production = () => {
           {[
             ["Per-piece product COGS (Rs)", unitCogs, setUnitCogs, "Standard cost across variants"],
             ["MOQ (Minimum Order Quantity)", minimumOrderQuantity, setMinimumOrderQuantity, "Batch production minimum"],
-            ["Packaging / logistics cost (Rs)", deliveryCost, setDeliveryCost, "Accrued upon delivery"],
+            ["Other charges (Rs)", deliveryCost, setDeliveryCost, "Per delivered unit; included in production cost"],
           ].map(([label, value, setValue, hint]) => (
             <label key={label} className="text-xs font-semibold text-[#171717]">
               {label}

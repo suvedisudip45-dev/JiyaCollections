@@ -388,12 +388,12 @@ const Add = ({ token }) => {
   ];
 
   return (
-    <form onSubmit={onSubmitHandler} className="flex flex-col w-full items-start gap-6 max-w-4xl pb-16">
+    <form onSubmit={onSubmitHandler} className="flex w-full max-w-6xl flex-col items-start gap-6 pb-16">
       {/* Header */}
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-6 bg-slate-900 rounded-full"></span>
-          <h1 className="text-xl font-bold text-slate-900">Add New Garment &amp; Merchandising</h1>
+          <h1 className="font-display text-xl font-bold text-ink-primary">Add New Garment &amp; Merchandising</h1>
         </div>
         <p className="text-xs text-slate-500">
           Enforce visual standards, structured textile details, and unisex storefront discovery.

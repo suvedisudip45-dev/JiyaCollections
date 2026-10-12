@@ -75,7 +75,7 @@ const ManufacturerProductionRequests = ({ token }) => {
   return (
     <div className="space-y-6">
       <header className="flex items-center justify-between gap-3">
-        <div><h1 className="flex items-center gap-2 text-2xl font-black text-slate-900"><Factory className="h-6 w-6 text-emerald-600" /> Manufacturer Production</h1><p className="mt-1 text-sm text-slate-500">Approve product COGS, informational MOQ and delivered-unit overhead before production begins.</p></div>
+        <div><h1 className="flex items-center gap-2 text-2xl font-black text-slate-900"><Factory className="h-6 w-6 text-emerald-600" /> Manufacturer Production</h1><p className="mt-1 text-sm text-slate-500">Approve product COGS, informational MOQ and other charges per delivered unit before production begins.</p></div>
         <button onClick={loadRequests} className="rounded-xl border bg-white p-2.5 text-slate-600" aria-label="Refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /></button>
       </header>
       {loading && requests.length === 0 ? <div className="rounded-2xl border bg-white p-10 text-center text-sm text-slate-500">Loading production requests...</div>
@@ -97,11 +97,11 @@ const ManufacturerProductionRequests = ({ token }) => {
                 <label className="text-xs font-semibold text-slate-600">MOQ (informational)
                   <input type="number" min="1" step="1" value={approvedTerms.minimumOrderQuantity ?? ""} onChange={(event) => setTerm(request.id, "minimumOrderQuantity", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                 </label>
-                <label className="text-xs font-semibold text-slate-600">Overhead / delivered unit ({currency})
+                <label className="text-xs font-semibold text-slate-600">Other charges / delivered unit ({currency})
                   <input type="number" min="0" step="0.01" value={approvedTerms.deliveryCost ?? ""} onChange={(event) => setTerm(request.id, "deliveryCost", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                 </label>
               </div>}
-              {!pending && <p className="mt-3 text-sm text-slate-600">Approved: {currency}{request.approvedUnitCogs ?? request.proposedUnitCogs}/unit · MOQ {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity} · {currency}{request.approvedDeliveryCost ?? request.proposedDeliveryCost} overhead per delivered unit</p>}
+              {!pending && <p className="mt-3 text-sm text-slate-600">Approved: {currency}{request.approvedUnitCogs ?? request.proposedUnitCogs}/unit · MOQ {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity} · {currency}{request.approvedDeliveryCost ?? request.proposedDeliveryCost} other charges per delivered unit</p>}
               {request.manufacturerNote && <p className="mt-3 text-xs text-slate-500">Manufacturer note: {request.manufacturerNote}</p>}
               {request.adminNote && <p className="mt-2 text-xs text-slate-500">Admin note: {request.adminNote}</p>}
               {pending && <>

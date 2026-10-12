@@ -73,3 +73,33 @@ test("allows the complete workflow sequence", () => {
   assert.equal(validateFulfillmentTransition({ currentStatus: "packed", nextStatus: "package_details_complete", packageData: { packageWeight: 1.2, packageDimensions: "30x20x10", packageType: "Box" } }).valid, true);
   assert.equal(validateFulfillmentTransition({ currentStatus: "package_details_complete", nextStatus: "ready_for_pickup", packageData: { packageWeight: 1.2, packageDimensions: "30x20x10", packageType: "Box", packagingChecklist: checklist } }).valid, true);
 });
+
+test("distributor workflow goes from acceptance to quality check without stitching or branding", () => {
+  const result = validateFulfillmentTransition({
+    currentStatus: "accepted",
+    nextStatus: "quality_check",
+    workflowType: "DISTRIBUTOR",
+  });
+
+  assert.equal(result.valid, true);
+});
+
+test("distributor final checklist does not require stitching or branding checks", () => {
+  const result = validateFulfillmentTransition({
+    currentStatus: "letter_ready",
+    nextStatus: "checklist_complete",
+    workflowType: "DISTRIBUTOR",
+    packageData: {
+      packagingChecklist: {
+        productVerified: true,
+        sizeColorVerified: true,
+        qualityVerified: true,
+        customerLetterIncluded: true,
+        addressVerified: true,
+        packagingMaterialsVerified: true,
+      },
+    },
+  });
+
+  assert.equal(result.valid, true);
+});

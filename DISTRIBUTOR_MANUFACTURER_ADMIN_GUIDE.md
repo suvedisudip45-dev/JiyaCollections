@@ -65,6 +65,10 @@ database-backed role/permission administration APIs. The strings in the API
 tables below are the permission codes required by the route declarations; they
 are not a promise that every role has every listed grant by default.
 
+The `MANUFACTURER` role has `manufacturer:inventory_read` for its factory
+inventory and product-level production dashboard. It is a read-only grant;
+inventory changes continue to use their separately protected operations.
+
 ### Operational boundaries
 
 - A manufacturer is scoped to its own `Manufacturer` profile and stock.
@@ -101,11 +105,14 @@ service-area districts remain managed separately.
   and profiles.
 - New automatic customer-order allocation requires an active distributor with
   every requested SKU variant available in its distributor inventory balances.
-  Candidates are prioritized by exact district service coverage, then a hub
-  registered in or actively covering another district in the same province,
-  then customer-review rating across
-  the country. Higher average rating wins; rating count breaks ties. Unrated
-  nationwide hubs remain eligible and are ordered deterministically. Assignment
+  Candidates are prioritized by exact configured service-district coverage.
+  If a distributor has no configured service areas, its registered
+  province/district is used as its coverage. If no stocked candidate covers the
+  customer, allocation falls back by same registered district, matching NCM
+  pickup branch, same province, and finally nationwide. Within each tier,
+  higher distributor quality rating wins, then rating count, then a stable ID
+  tie-break. Routing uses only province, district, and NCM branch; it does not
+  infer proximity from street addresses or free-form city names. Assignment
   and stock reservation are committed transactionally; no manufacturer is a
   fallback hub.
 - Configure a distributor's exact service districts in the
@@ -123,7 +130,7 @@ service-area districts remain managed separately.
 - Customers can submit or edit one 1-5 star review for each delivered
   distributor-fulfilled order from the storefront Orders page. The review API
   verifies customer ownership and delivery, then updates the distributor's
-  aggregate rating used for nationwide fallback routing.
+  aggregate rating used to rank candidates within each eligible location tier.
 
 ## 3. Core database tables and schema
 
@@ -263,6 +270,13 @@ filter for direct carrier tracking and return-request review.
 
 ### Step 4: Manufacturer dispatches the approved goods
 
+In the manufacturer portal, the transfer detail page follows a four-stage
+workflow: review the approved SKU lines and dispatch quantities; open the
+preparation checklist modal and save the five physical checks; choose local
+freight or NCM and submit delivery details; then monitor shipment events and
+await distributor receipt QA. The checklist modal can be dismissed without
+saving, and dispatch remains blocked until all checks have been saved as passed.
+
 1. Manufacturer checks `GET /api/stock-transfers/manufacturer` and records a
    passing preparation checklist at
    `PATCH /api/stock-transfers/:id/preparation`: current product availability,
@@ -349,6 +363,17 @@ authentication and the permission shown.
 | `POST /stock-transfers/:id/ncm-booking` | Manufacturer | `transfer:manufacturer_dispatch` | Book an NCM shipment. |
 | `GET /stock-transfers/admin` | Admin | `transfer:admin_read` | List transfers; optional `status`, `page`, and `limit`. |
 | `GET /stock-transfers/admin/discrepancies` | Admin | `transfer:admin_read` | Review damage/loss discrepancy alerts; supports status, distributorId, page, and limit filters. |
+
+The distributor request screen presents the selected manufacturer's available
+stock as product cards with the product name, featured image, variant count, and
+available unit total. Selecting a product reveals its in-stock size/color SKUs
+and remaining quantities; distributors can add variants from multiple products
+to a request summary before submitting. The catalog response includes the
+product's existing image value as `productImage`; the portal uses its first
+available image URL and falls back to a neutral placeholder when no usable photo
+is available. Submission continues to use the existing
+`manufacturerId` plus `{ inventorySkuId, quantity }` lines contract; server-side
+availability checks and approval workflow are unchanged.
 | `PATCH /stock-transfers/admin/:id/review` | Admin | `transfer:admin_review` | Approve/reject and set per-line approved quantities. |
 | `PATCH /stock-transfers/admin/shipments/:shipmentId/ncm-resolution` | Admin | `transfer:admin_review` | Resolve supported uncertain NCM booking outcomes. |
 | `GET /admin/inventory-ledger` | Admin | `ADMIN` role and `inventory:ledger_read` | Read ledger entries. |
@@ -388,22 +413,32 @@ transfer flow:
 6. Customer orders use `Order` and `OrderAssignment`. Automatic allocation
    targets an approved distributor covering the destination district and holding all
    requested variants in local stock.
-7. Distributor fulfillment provides two delivery channels:
+7. Distributor fulfillment is a dispatch workflow, not a production workflow:
+   accept the order, inspect product/variant quality, include the compulsory
+   customer letter, complete the packing checklist, pack and enter parcel
+   details, then choose self-delivery when eligible or book NCM. Distributor
+   checklist and transition validation do not require stitching or branding
+   checks. The user-entered product description and the NCM `package` field
+   must each be no longer than 50 characters; the backend rejects longer
+   values before making an NCM request.
+8. Distributor fulfillment provides two delivery channels:
    - **NCM Courier Path**: Uses automated NCM booking, carrier tracking, and webhook sync.
    - **Distributor Self-Delivery Path**:
      - `GET /api/distributor/orders/assigned`: List orders allocated to the distributor hub.
      - `PATCH /api/distributor/orders/:id/status`: Updates status sequentially (`Dispatched` → `On the Way` → `Delivered`). Upon delivery, reserved inventory balances and on-hand stock are deducted transactionally, recording `FULFILLMENT` ledger entries and booking delivery accounting.
-     - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. Customer return records and accounting are posted automatically.
+     - Customer return requests remain pending until admin approval. Approved self-delivery returns are routed to the original distributor hub, where the distributor records receipt and QA. The endpoint rejects returns without an approved request.
+     - Approved self-delivery exchange requests are listed for the assigned distributor hub; they do not invoke NCM.
+     - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. The approved customer return record and accounting are updated automatically.
    - Admins can enter the same package details used by the fulfillment workflow
      from Order Assignments and request NCM booking for a distributor-assigned
      order. The confirmed NCM order and carrier webhook events are stored in
      the database; customer-order tracking reads that state without polling
      NCM status/detail endpoints. The webhook is acknowledged only after the
      event and status update are persisted.
-8. Negotiated Charge & Rate Card Engine:
+9. Negotiated Charge & Rate Card Engine:
    - Admin and Distributor negotiate per-product delivery fee, return delivery fee, commission rate, and performance bonus/incentive rates via `POST /api/admin/distributor-rates`.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
-9. Distributor Financial Dashboard & Accounting:
+10. Distributor Financial Dashboard & Accounting:
    - `GET /api/distributor/finance/statement`: Detailed financial dashboard showing itemized transactions, gross earnings, earned incentives/bonuses, admin deductions/charges, VAT breakdown (with toggle for **With VAT [13%]** or **Without VAT**), and payables/receivables balance.
    - `POST /api/distributor/finance/ask-settlement`: Submit settlement payout request to Admin.
    - `PATCH /api/admin/distributor-finance/settle`: Admin executes settlement payout from a financial account, creating double-entry cash transactions and updating dashboard states in real time.
@@ -415,7 +450,9 @@ Relevant endpoints:
 | `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
 | `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; the customer district must match the distributor's district or an active coverage district. |
 | `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
-| `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process self-delivery returns, conduct QA, update inventory, and inform Admin. |
+| `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process QA and inventory movements for an admin-approved self-delivery return request. |
+| `GET /api/returns/customer/manufacturer` | Distributor | `distributor:delivery_return` | List admin-approved return requests assigned to this distributor hub. |
+| `GET /api/returns/exchange/distributor` | Distributor | `distributor:delivery_return` | List admin-approved self-delivery exchange requests assigned to this distributor hub. |
 | `POST /api/delivery/admin/assignment/:id/ncm` | Admin | `assignment:admin_list` | Enter/validate package details and request NCM delivery for an assigned order. |
 | `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
 | `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |
@@ -560,10 +597,13 @@ version used for a delivery.
 For an order, `LetterDelivery` stores the chosen customer/story/template
 references and rendered content/document URL. Its states are
 `RESERVED`, `PRINTED`, `PACKED`, `SHIPPED`, `DELIVERED`, `CANCELLED`, and
-`VOIDED`. The assigned manufacturer checks
-`GET /api/personalized-letter/:orderId` (`manufacturer:letter_status_read`) and
+`VOIDED`. The assigned distributor checks
+`GET /api/personalized-letter/:orderId` (`distributor:letter_status_read`) and
 prints with `POST /api/personalized-letter/:orderId/print`
-(`manufacturer:letter_print`). `CustomerLetterImage` is an independent record
+(`distributor:letter_print`). This print permission is granted only to the
+DISTRIBUTOR role; it is not granted to MANUFACTURER or ADMIN. The endpoint
+validates that the distributor owns the direct order or its active assignment.
+`CustomerLetterImage` is an independent record
 for uploaded handwritten letter images and should not be confused with generated
 story/template delivery records.
 

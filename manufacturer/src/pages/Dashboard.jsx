@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowRight,
   Boxes,
+  CalendarDays,
   Factory,
   MapPin,
   PackageCheck,
@@ -17,9 +18,113 @@ import {
 import { toast } from "react-toastify";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 
+const fetchAllPages = async ({ url, token, recordKey, limit }) => {
+  const headers = { token };
+  const firstResponse = await axios.get(url, { headers, params: { page: 1, limit } });
+  const records = [...(firstResponse.data[recordKey] || [])];
+  const totalPages = Number(firstResponse.data.pagination?.totalPages || 1);
+
+  if (totalPages > 1) {
+    const responses = await Promise.all(
+      Array.from({ length: totalPages - 1 }, (_, index) =>
+        axios.get(url, { headers, params: { page: index + 2, limit } })
+      )
+    );
+    responses.forEach((response) => records.push(...(response.data[recordKey] || [])));
+  }
+
+  return records;
+};
+
+const getProductPortfolio = ({ productionRequests, transfers, inventory }) => {
+  const products = new Map();
+  const getProduct = (productId, productName) => {
+    if (!products.has(productId)) {
+      products.set(productId, {
+        id: productId,
+        name: productName || "Product",
+        requestedAt: null,
+        batches: [],
+        plannedUnits: 0,
+        producedUnits: 0,
+        damagedUnits: 0,
+        distributedUnits: 0,
+        distributors: new Map(),
+        availableUnits: 0,
+        reservedUnits: 0,
+      });
+    }
+    const product = products.get(productId);
+    if (productName) product.name = productName;
+    return product;
+  };
+
+  productionRequests.forEach((request) => {
+    const productId = request.productId || request.product?.id;
+    if (!productId) return;
+    const product = getProduct(productId, request.product?.name || request.productName);
+    const requestedAt = request.requestedAt || request.createdAt;
+    if (requestedAt && (!product.requestedAt || new Date(requestedAt) < new Date(product.requestedAt))) {
+      product.requestedAt = requestedAt;
+    }
+    const plannedUnits = (request.lines || []).reduce((total, line) => total + Number(line.quantity || 0), 0);
+    const actualUnits = (request.lines || []).reduce((total, line) => total + Number(line.actualQuantity || 0), 0);
+    const damagedUnits = (request.lines || []).reduce((total, line) => total + Number(line.damagedQuantity || 0), 0);
+    product.plannedUnits += plannedUnits;
+    product.producedUnits += actualUnits;
+    product.damagedUnits += damagedUnits;
+    product.batches.push({
+      id: request.id,
+      requestedAt,
+      status: request.status,
+      plannedUnits,
+      producedUnits: actualUnits,
+      damagedUnits,
+    });
+  });
+
+  transfers.forEach((transfer) => {
+    (transfer.lines || []).forEach((line) => {
+      const productId = line.inventorySku?.productId || line.inventorySku?.product?.id;
+      if (!productId) return;
+      const product = getProduct(productId, line.inventorySku?.product?.name);
+      const dispatchedUnits = Number(line.dispatchedQuantity || 0);
+      if (!dispatchedUnits) return;
+      product.distributedUnits += dispatchedUnits;
+      const distributorId = transfer.distributor?.id || transfer.distributorId || "unknown";
+      const distributorName = transfer.distributor?.name || "Distributor";
+      const distributor = product.distributors.get(distributorId) || {
+        id: distributorId,
+        name: distributorName,
+        units: 0,
+      };
+      distributor.units += dispatchedUnits;
+      product.distributors.set(distributorId, distributor);
+    });
+  });
+
+  inventory.forEach((item) => {
+    const product = products.get(item.productId);
+    if (!product) return;
+    product.availableUnits = Number(item.availableQty ?? item.quantity ?? 0);
+    product.reservedUnits = Number(item.reservedQty || 0);
+  });
+
+  return [...products.values()]
+    .map((product) => ({
+      ...product,
+      batches: product.batches.sort((left, right) =>
+        new Date(right.requestedAt || 0) - new Date(left.requestedAt || 0)
+      ),
+      distributors: [...product.distributors.values()].sort((left, right) => right.units - left.units),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+};
+
 const Dashboard = () => {
   const { manufacturer, token, activeWorkspace } = useManufacturer();
   const [productionDashboard, setProductionDashboard] = useState(null);
+  const [productPortfolio, setProductPortfolio] = useState([]);
   const [loadingProductionDashboard, setLoadingProductionDashboard] = useState(false);
   const isManufacturerWorkspace = activeWorkspace === "MANUFACTURER";
 
@@ -27,10 +132,29 @@ const Dashboard = () => {
     if (!token || !isManufacturerWorkspace) return;
     setLoadingProductionDashboard(true);
     try {
-      const response = await axios.get(`${backendUrl}/api/manufacturer-production/dashboard`, {
-        headers: { token },
-      });
-      setProductionDashboard(response.data.dashboard);
+      const [dashboardResponse, productionRequests, transfers, inventory] = await Promise.all([
+        axios.get(`${backendUrl}/api/manufacturer-production/dashboard`, { headers: { token } }),
+        fetchAllPages({
+          url: `${backendUrl}/api/manufacturer-production/requests`,
+          token,
+          recordKey: "requests",
+          limit: 50,
+        }),
+        fetchAllPages({
+          url: `${backendUrl}/api/stock-transfers/manufacturer`,
+          token,
+          recordKey: "transfers",
+          limit: 100,
+        }),
+        fetchAllPages({
+          url: `${backendUrl}/api/manufacturer-inventory/my`,
+          token,
+          recordKey: "inventory",
+          limit: 50,
+        }),
+      ]);
+      setProductionDashboard(dashboardResponse.data.dashboard);
+      setProductPortfolio(getProductPortfolio({ productionRequests, transfers, inventory }));
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to load production and factory stock metrics.");
     } finally {
@@ -162,6 +286,78 @@ const Dashboard = () => {
           <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
             Factory inventory is not available to customers. Stock becomes storefront-eligible only after the distributor receives it.
           </p>
+          <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+            <div className="border-b border-slate-100 px-5 py-4">
+              <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Product-wise history</p>
+              <h3 className="mt-1 text-base font-black text-slate-900">Production, distributor dispatch &amp; factory stock</h3>
+              <p className="mt-1 text-xs text-slate-500">Production batch dates and quantities are shown alongside dispatched quantities by distributor and current factory stock.</p>
+            </div>
+            {loadingProductionDashboard && productPortfolio.length === 0 ? (
+              <p className="p-6 text-sm text-slate-500">Loading product history...</p>
+            ) : productPortfolio.length === 0 ? (
+              <p className="p-6 text-sm text-slate-500">No production or distributor dispatch history is available yet.</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {productPortfolio.map((product) => (
+                  <article key={product.id} className="p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 className="font-bold text-slate-900">{product.name}</h4>
+                        <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+                          <CalendarDays className="h-3.5 w-3.5" />
+                          First batch: {product.requestedAt ? new Date(product.requestedAt).toLocaleDateString() : "No production request"}
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-right sm:grid-cols-4">
+                        <div><p className="text-[10px] uppercase text-slate-500">Planned</p><p className="font-bold text-slate-800">{product.plannedUnits.toLocaleString()}</p></div>
+                        <div><p className="text-[10px] uppercase text-slate-500">Produced</p><p className="font-bold text-indigo-700">{Math.max(0, product.producedUnits - product.damagedUnits).toLocaleString()} good</p></div>
+                        <div><p className="text-[10px] uppercase text-slate-500">Dispatched</p><p className="font-bold text-blue-700">{product.distributedUnits.toLocaleString()}</p></div>
+                        <div><p className="text-[10px] uppercase text-slate-500">Factory available</p><p className="font-bold text-emerald-700">{product.availableUnits.toLocaleString()}</p></div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Distributor allocation</p>
+                        {product.distributors.length ? (
+                          <ul className="mt-2 space-y-1.5">
+                            {product.distributors.map((distributor) => (
+                              <li key={distributor.id} className="flex justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                                <span className="font-medium text-slate-700">{distributor.name}</span>
+                                <span className="font-bold text-slate-900">{distributor.units.toLocaleString()} units</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : <p className="mt-2 text-xs text-slate-500">No units dispatched to distributors yet.</p>}
+                        {product.reservedUnits > 0 && <p className="mt-2 text-xs text-amber-700">{product.reservedUnits.toLocaleString()} units currently reserved for shipments.</p>}
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Production batches</p>
+                        {product.batches.length ? (
+                          <ul className="mt-2 space-y-1.5">
+                            {product.batches.map((batch) => (
+                              <li key={batch.id} className="flex flex-wrap justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                                <span className="text-slate-700">
+                                  {batch.requestedAt ? new Date(batch.requestedAt).toLocaleDateString() : "Date unavailable"}
+                                  {" · "}Batch {batch.id.slice(0, 8)}
+                                </span>
+                                <span className="font-medium text-slate-700">
+                                  {batch.producedUnits > 0
+                                    ? `${Math.max(0, batch.producedUnits - batch.damagedUnits).toLocaleString()} good / ${batch.producedUnits.toLocaleString()} produced`
+                                    : `${batch.plannedUnits.toLocaleString()} planned`}
+                                  {" · "}{batch.status.replaceAll("_", " ")}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : <p className="mt-2 text-xs text-slate-500">No production batches recorded.</p>}
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </section>
       )}
 

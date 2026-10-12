@@ -141,7 +141,7 @@ export const processDistributorOrderReturn = async (req, res) => {
     }
 
     const id = req.params.id || req.body.id || req.body.orderId || req.body.assignmentId;
-    const { items, reason, notes, damageType, damageNotes } = req.body;
+    const { items, reason, notes, damageType, damageNotes, returnRequestId } = req.body;
 
     const actorContext = {
       actorId: req.auth?.accountId || req.auth?.userId || null,
@@ -159,6 +159,7 @@ export const processDistributorOrderReturn = async (req, res) => {
       notes,
       damageType,
       damageNotes,
+      returnRequestId,
       actorContext,
     });
 

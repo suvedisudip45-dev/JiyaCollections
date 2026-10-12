@@ -10,6 +10,17 @@ const WORKFLOW_STEPS = [
   "ready_for_pickup",
 ];
 
+const DISTRIBUTOR_WORKFLOW_STEPS = [
+  "assigned",
+  "accepted",
+  "quality_check",
+  "letter_ready",
+  "checklist_complete",
+  "packed",
+  "package_details_complete",
+  "ready_for_pickup",
+];
+
 const normalizeStatus = (value) => String(value || "").trim().toLowerCase();
 
 const parseNotes = (value) => {
@@ -25,15 +36,24 @@ const parseNotes = (value) => {
 
 const isComplete = (value) => value === true;
 
-const getCurrentIndex = (status) => WORKFLOW_STEPS.indexOf(normalizeStatus(status));
+const getWorkflowSteps = (workflowType) =>
+  workflowType === "DISTRIBUTOR" ? DISTRIBUTOR_WORKFLOW_STEPS : WORKFLOW_STEPS;
 
-export const getFulfillmentWorkflow = () => WORKFLOW_STEPS;
+export const getFulfillmentWorkflow = (workflowType = "MANUFACTURER") => getWorkflowSteps(workflowType);
 
-export const validateFulfillmentTransition = ({ currentStatus, nextStatus, notes = {}, packageData = {} }) => {
-  const current = normalizeStatus(currentStatus || "assigned");
+export const validateFulfillmentTransition = ({
+  currentStatus,
+  nextStatus,
+  notes = {},
+  packageData = {},
+  workflowType = "MANUFACTURER",
+}) => {
+  const workflowSteps = getWorkflowSteps(workflowType);
+  let current = normalizeStatus(currentStatus || "assigned");
   const next = normalizeStatus(nextStatus);
-  const currentIndex = getCurrentIndex(current);
-  const nextIndex = getCurrentIndex(next);
+  if (workflowType === "DISTRIBUTOR" && current === "preparing") current = "accepted";
+  const currentIndex = workflowSteps.indexOf(current);
+  const nextIndex = workflowSteps.indexOf(next);
 
   if (next === "rejected" || next === "cancelled") {
     if (current !== "assigned") {
@@ -52,14 +72,14 @@ export const validateFulfillmentTransition = ({ currentStatus, nextStatus, notes
     }
     return {
       valid: false,
-      message: `Complete ${WORKFLOW_STEPS[currentIndex + 1].replace(/_/g, " ")} before moving to ${next.replace(/_/g, " ")}.`,
+      message: `Complete ${workflowSteps[currentIndex + 1].replace(/_/g, " ")} before moving to ${next.replace(/_/g, " ")}.`,
     };
   }
 
   const mergedNotes = { ...parseNotes(notes), ...packageData };
   const checklist = mergedNotes.packagingChecklist || mergedNotes.checklist || {};
 
-  if (next === "quality_check" && mergedNotes.stitchingBrandingCompleted !== true) {
+  if (workflowType !== "DISTRIBUTOR" && next === "quality_check" && mergedNotes.stitchingBrandingCompleted !== true) {
     return { valid: false, message: "Confirm stitching and branding before quality check." };
   }
 
@@ -71,13 +91,12 @@ export const validateFulfillmentTransition = ({ currentStatus, nextStatus, notes
     const requiredChecks = [
       "productVerified",
       "sizeColorVerified",
-      "stitchingVerified",
-      "brandingVerified",
       "qualityVerified",
       "customerLetterIncluded",
       "addressVerified",
       "packagingMaterialsVerified",
     ];
+    if (workflowType !== "DISTRIBUTOR") requiredChecks.splice(2, 0, "stitchingVerified", "brandingVerified");
     const missing = requiredChecks.filter((field) => !isComplete(checklist[field]));
     if (missing.length > 0) {
       return { valid: false, message: `Complete all checklist items before continuing: ${missing.join(", ")}.` };

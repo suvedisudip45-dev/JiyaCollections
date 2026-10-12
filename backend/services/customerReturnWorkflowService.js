@@ -5,10 +5,13 @@ import { syncProductStock } from "./stockSyncService.js";
 import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { applyCollaborationReturnAdjustments } from "./collaborationSalesService.js";
 import { recordSystemAudit } from "./auditService.js";
+import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
   "APPROVED_BY_ADMIN",
+  "DISTRIBUTOR_RETURN_PENDING",
+  "DISTRIBUTOR_RETURN_PROCESSING",
   "SUBMITTING",
   "NCM_SUBMISSION_UNKNOWN",
   "NCM_RETURN_INITIATED",
@@ -124,11 +127,16 @@ const getOrderForRequest = async ({ orderId, customerId }) => {
   if (normalize(order.status) !== "delivered" && order.deliveryOrder?.state !== "DELIVERED") {
     throw fail("Returns can only be requested for delivered orders.", "ORDER_NOT_DELIVERED", 409);
   }
+  const assignment = await prisma.orderAssignment.findUnique({ where: { orderId } });
+  const delivery = resolveReturnExchangeRoute({ assignment, deliveryOrder: order.deliveryOrder });
+  if (!delivery) {
+    throw fail("The delivered order has no supported return route.", "RETURN_ROUTE_UNAVAILABLE", 409);
+  }
   const ncmOrderId = Number(order.deliveryOrder?.ncmOrderId);
-  if (!Number.isInteger(ncmOrderId) || ncmOrderId <= 0) {
+  if (delivery.route === "NCM" && (!Number.isInteger(ncmOrderId) || ncmOrderId <= 0)) {
     throw fail("The original delivery has no NCM order ID, so a carrier return cannot be created.", "NCM_ORDER_ID_MISSING", 409);
   }
-  return { ...order, ncmOrderId };
+  return { ...order, assignment, deliveryRoute: delivery.route, distributorId: delivery.distributorId, ncmOrderId: delivery.route === "NCM" ? ncmOrderId : null };
 };
 
 export const createCustomerReturnRequest = async ({ orderId, customerId, adminId, actorRole = "CUSTOMER", requestKey, reason, items }) => {
@@ -175,6 +183,8 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
         orderId,
         userId: order.userId,
         manufacturerId: order.manufacturerId,
+        distributorId: order.distributorId,
+        deliveryRoute: order.deliveryRoute,
         customerName: user?.name || "Customer",
         customerPhone: user?.phone || String(parseObject(order.address).phone || ""),
         items: processedItems,
@@ -194,7 +204,7 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
       actorId: actorRole === "ADMIN" ? adminId : customerId,
       actorRole,
       reason: normalizedReason,
-      metadata: { items: processedItems, originalNcmOrderId: order.ncmOrderId },
+      metadata: { items: processedItems, originalNcmOrderId: order.ncmOrderId, deliveryRoute: order.deliveryRoute, distributorId: order.distributorId },
       idempotencyKey: `RETURN:${created.id}:REQUESTED`,
     });
     return { returnRecord: created, duplicate: false };
@@ -227,7 +237,9 @@ export const listAdminCustomerReturns = async ({ skip = 0, take = 30, status }) 
 export const listManufacturerCustomerReturns = ({ manufacturerId, distributorId }) => {
   const where = {
     requestKey: { not: null },
-    lifecycleStatus: { in: ["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT", "RECEIVED_AT_WAREHOUSE", "REFUND_PENDING", "REFUNDED"] },
+    lifecycleStatus: { in: distributorId
+      ? ["DISTRIBUTOR_RETURN_PENDING"]
+      : ["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT", "RECEIVED_AT_WAREHOUSE", "REFUND_PENDING", "REFUNDED"] },
   };
   if (distributorId) {
     where.distributorId = distributorId;
@@ -245,6 +257,9 @@ export const submitApprovedCustomerReturn = async ({ returnId, adminId, retry = 
   const submission = await prisma.$transaction(async (tx) => {
     const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
     if (!current) throw fail("Return request not found.", "RETURN_NOT_FOUND", 404);
+    if (current.deliveryRoute === "DISTRIBUTOR") {
+      throw fail("Distributor-delivered returns must be handled by the assigned distributor after admin approval.", "RETURN_NOT_NCM_ROUTE", 409);
+    }
     const allowed = retry
       ? ["NCM_REJECTED", "APPROVED_BY_ADMIN"].includes(current.lifecycleStatus)
       : current.lifecycleStatus === "APPROVED_BY_ADMIN";
@@ -449,29 +464,48 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
     throw fail("Choose approve or reject and provide a decision reason.", "INVALID_RETURN_DECISION");
   }
   if (selected === "APPROVE") {
-    await prisma.$transaction(async (tx) => {
+    const decisionResult = await prisma.$transaction(async (tx) => {
       const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
       if (!current || current.lifecycleStatus !== "PENDING_ADMIN_REVIEW") throw fail("Only pending return requests can be approved.", "RETURN_ALREADY_REVIEWED", 409);
+      const assignment = current.orderId
+        ? await tx.orderAssignment.findUnique({ where: { orderId: current.orderId } })
+        : null;
+      const route = resolveReturnExchangeRoute({
+        assignment,
+        deliveryOrder: current.orderId
+          ? await tx.deliveryOrder.findUnique({ where: { orderId: current.orderId } })
+          : null,
+      });
+      if (!route || (current.deliveryRoute && current.deliveryRoute !== route.route)) {
+        throw fail("The original delivery route has changed or is unavailable. Review the order before approving this return.", "RETURN_ROUTE_CHANGED", 409);
+      }
+      if (route.route === "DISTRIBUTOR" && current.distributorId !== route.distributorId) {
+        throw fail("This return is not assigned to the current distributor. Review the order assignment.", "RETURN_DISTRIBUTOR_MISMATCH", 409);
+      }
+      const approvedStatus = route.route === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN";
       const updated = await tx.customerReturn.updateMany({
         where: { id: returnId, lifecycleStatus: "PENDING_ADMIN_REVIEW" },
         data: {
-          lifecycleStatus: "APPROVED_BY_ADMIN",
+          lifecycleStatus: approvedStatus,
           adminReviewerId: adminId,
           adminNotes: decisionReason,
           approvedAt: new Date(),
           ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT",
+          deliveryRoute: route.route,
+          distributorId: route.distributorId,
         },
       });
       if (updated.count !== 1) throw fail("This return request was reviewed by another admin.", "RETURN_ALREADY_REVIEWED", 409);
       await addReturnEvent(tx, {
         returnId,
-        eventType: "APPROVED_BY_ADMIN",
+        eventType: approvedStatus,
         fromStatus: "PENDING_ADMIN_REVIEW",
-        toStatus: "APPROVED_BY_ADMIN",
+        toStatus: approvedStatus,
         actorId: adminId,
         actorRole: "ADMIN",
         reason: decisionReason,
-        idempotencyKey: `RETURN:${returnId}:APPROVED_BY_ADMIN`,
+        metadata: { deliveryRoute: route.route, distributorId: route.distributorId },
+        idempotencyKey: `RETURN:${returnId}:${approvedStatus}`,
       });
       await recordSystemAudit(actorContext, {
         action: "CUSTOMER_RETURN_APPROVED",
@@ -479,11 +513,17 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
         entityId: returnId,
         beforeState: { lifecycleStatus: current.lifecycleStatus },
         afterState: {
-          lifecycleStatus: "APPROVED_BY_ADMIN",
+          lifecycleStatus: approvedStatus,
+          deliveryRoute: route.route,
+          distributorId: route.distributorId,
           chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT",
         },
       }, { client: tx });
+      return { approvedStatus, route };
     }, { isolationLevel: "Serializable" });
+    if (decisionResult.route.route === "DISTRIBUTOR") {
+      return prisma.customerReturn.findUnique({ where: { id: returnId } });
+    }
     return submitApprovedCustomerReturn({ returnId, adminId, chargePayer });
   }
 

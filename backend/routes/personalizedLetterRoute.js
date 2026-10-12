@@ -1,12 +1,12 @@
 import express from "express";
-import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
 import { getPersonalizedLetterStatus, printPersonalizedLetter } from "../services/personalizedLetterService.js";
 
 const personalizedLetterRouter = express.Router();
 
-personalizedLetterRouter.get("/:orderId", authenticate, authorize("manufacturer:letter_status_read"), setManufacturerContext, async (req, res) => {
+personalizedLetterRouter.get("/:orderId", authenticate, authorize("distributor:letter_status_read"), setDistributorContext, async (req, res) => {
   try {
-    const status = await getPersonalizedLetterStatus(req.params.orderId, req.manufacturerId);
+    const status = await getPersonalizedLetterStatus(req.params.orderId, null, req.distributorId);
     return res.json({ success: true, data: status });
   } catch (error) {
     console.error("getPersonalizedLetterStatus error:", error);
@@ -14,9 +14,9 @@ personalizedLetterRouter.get("/:orderId", authenticate, authorize("manufacturer:
   }
 });
 
-personalizedLetterRouter.post("/:orderId/print", authenticate, authorize("manufacturer:letter_print"), setManufacturerContext, async (req, res) => {
+personalizedLetterRouter.post("/:orderId/print", authenticate, authorize("distributor:letter_print"), setDistributorContext, async (req, res) => {
   try {
-    const result = await printPersonalizedLetter(req.params.orderId, req.manufacturerId, req.body?.idempotencyKey || null);
+    const result = await printPersonalizedLetter(req.params.orderId, null, req.body?.idempotencyKey || null, req.distributorId);
     return res.json(result);
   } catch (error) {
     console.error("printPersonalizedLetter error:", error);

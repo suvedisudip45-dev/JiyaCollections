@@ -6,9 +6,9 @@ import { backendUrl } from "../context/ManufacturerContext";
 
 export const PreProductionChecklistModal = ({ request, token, onClose, onSuccess }) => {
   const [submitting, setSubmitting] = useState(false);
-  const [fabricPassed, setFabricPassed] = useState(true);
-  const [samplePassed, setSamplePassed] = useState(true);
-  const [colorShadePassed, setColorShadePassed] = useState(true);
+  const [fabricPassed, setFabricPassed] = useState(false);
+  const [samplePassed, setSamplePassed] = useState(false);
+  const [colorShadePassed, setColorShadePassed] = useState(false);
   const [notes, setNotes] = useState("");
 
   const handleSubmit = async (e) => {
@@ -76,13 +76,14 @@ export const PreProductionChecklistModal = ({ request, token, onClose, onSuccess
               <button
                 type="button"
                 onClick={() => setFabricPassed(!fabricPassed)}
+                aria-pressed={fabricPassed}
                 className={`px-3 py-1 text-xs font-semibold rounded-lg border transition-all ${
                   fabricPassed
                     ? "bg-[#171717] text-white border-[#171717]"
                     : "bg-[#ffffff] text-[#575757] border-[#dedbd3]"
                 }`}
               >
-                {fabricPassed ? "PASSED" : "FAILED"}
+                {fabricPassed ? "PASSED" : "NOT CHECKED"}
               </button>
             </div>
 
@@ -100,13 +101,14 @@ export const PreProductionChecklistModal = ({ request, token, onClose, onSuccess
               <button
                 type="button"
                 onClick={() => setSamplePassed(!samplePassed)}
+                aria-pressed={samplePassed}
                 className={`px-3 py-1 text-xs font-semibold rounded-lg border transition-all ${
                   samplePassed
                     ? "bg-[#171717] text-white border-[#171717]"
                     : "bg-[#ffffff] text-[#575757] border-[#dedbd3]"
                 }`}
               >
-                {samplePassed ? "PASSED" : "FAILED"}
+                {samplePassed ? "PASSED" : "NOT CHECKED"}
               </button>
             </div>
 
@@ -124,13 +126,14 @@ export const PreProductionChecklistModal = ({ request, token, onClose, onSuccess
               <button
                 type="button"
                 onClick={() => setColorShadePassed(!colorShadePassed)}
+                aria-pressed={colorShadePassed}
                 className={`px-3 py-1 text-xs font-semibold rounded-lg border transition-all ${
                   colorShadePassed
                     ? "bg-[#171717] text-white border-[#171717]"
                     : "bg-[#ffffff] text-[#575757] border-[#dedbd3]"
                 }`}
               >
-                {colorShadePassed ? "PASSED" : "FAILED"}
+                {colorShadePassed ? "PASSED" : "NOT CHECKED"}
               </button>
             </div>
           </div>

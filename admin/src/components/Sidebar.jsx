@@ -1,5 +1,5 @@
 /* eslint-disable no-unused-vars, react/prop-types */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { usePermissions } from "../auth/PermissionsContext";
 import { ADMIN_ROUTE_PERMISSIONS, ADMIN_SECTION_PERMISSIONS } from "../auth/adminRoutePermissions";
@@ -27,18 +27,18 @@ const PermissionNavItem = ({ to, icon, label, indent = false }) => {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12.5px] font-medium transition-all duration-150 group ${
+        `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-150 group ${
           indent ? "ml-3 pl-3" : ""
         } ${
           isActive
-            ? "bg-slate-900 text-white shadow-sm"
-            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
+            ? "bg-brand-50 text-brand-700 shadow-sm ring-1 ring-brand-100"
+            : "text-ink-secondary hover:text-ink-primary hover:bg-surface-subtle"
         }`
       }
     >
       {({ isActive }) => (
         <>
-          <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-700"}`}>
+          <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
             {icon}
           </span>
           <span className="truncate">{label}</span>
@@ -61,11 +61,11 @@ const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [],
     <div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[11.5px] font-semibold uppercase tracking-wide transition-all duration-150 group ${
-          open ? "text-slate-800" : "text-slate-500 hover:text-slate-700 hover:bg-slate-100/60"
+        className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[11px] font-bold uppercase tracking-[0.08em] transition-all duration-150 group ${
+          open ? "text-ink-primary" : "text-ink-muted hover:text-ink-secondary hover:bg-surface-subtle"
         }`}
       >
-        <span className={`w-4 h-4 flex-shrink-0 ${open ? "text-slate-700" : "text-slate-400 group-hover:text-slate-600"}`}>
+        <span className={`w-4 h-4 flex-shrink-0 ${open ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
           {icon}
         </span>
         <span className="flex-1 text-left">{label}</span>
@@ -79,7 +79,7 @@ const SectionGroup = ({ label, icon, children, defaultOpen = false, routes = [],
           transition: "max-height 0.25s ease",
         }}
       >
-        <nav className="mt-1 ml-2 pl-3 border-l border-slate-100 space-y-0.5 pb-1">
+        <nav className="mt-1 ml-2 space-y-0.5 border-l border-border-light pb-1 pl-3">
           {children}
         </nav>
       </div>
@@ -131,13 +131,34 @@ const Icon = {
 };
 
 // ─── Main Sidebar ─────────────────────────────────────────────────────────────
-const Sidebar = () => {
+const Sidebar = ({ isOpen = false, onClose }) => {
   const { can, canAny } = usePermissions();
+  const location = useLocation();
+
+  useEffect(() => {
+    onClose?.();
+  }, [location.pathname, onClose]);
+
   return (
-    <aside className="w-60 shrink-0 bg-white border-r border-slate-200/80 flex flex-col select-none" style={{ height: "calc(100vh - 65px)", position: "sticky", top: "65px" }}>
+    <>
+      {isOpen && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close navigation menu"
+          className="fixed inset-x-0 bottom-0 top-[65px] z-40 bg-slate-950/30 sm:hidden"
+        />
+      )}
+      <aside
+        aria-label="Admin navigation"
+        className={`fixed left-0 top-[65px] z-50 flex w-72 shrink-0 select-none flex-col border-r border-border-light bg-white shadow-elevated transition-transform duration-200 sm:sticky sm:top-[65px] sm:z-auto sm:w-64 sm:shadow-none ${
+          isOpen ? "translate-x-0" : "-translate-x-full sm:translate-x-0"
+        }`}
+        style={{ height: "calc(100vh - 65px)" }}
+      >
 
       {/* Scrollable nav area */}
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1" style={{ scrollbarWidth: "thin", scrollbarColor: "#dfe7e3 transparent" }}>
+          <div className="flex-1 space-y-1 overflow-y-auto overflow-x-hidden px-3 py-4" style={{ scrollbarWidth: "thin", scrollbarColor: "#cbd5e1 transparent" }}>
 
         {canAny(["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read", "access:roles_read", "access:permissions_read", "access:audit_read"]) && (
           <>
@@ -157,7 +178,7 @@ const Sidebar = () => {
 
         {/* ── CATALOG & PRODUCTS ── */}
         <SectionGroup
-          label="Catalog & Products"
+          label="Merchandising"
           icon={Icon.catalog}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.catalog}
           defaultOpen={true}
@@ -188,7 +209,7 @@ const Sidebar = () => {
 
         {/* ── SUPPLY CHAIN ── */}
         <SectionGroup
-          label="Supply Chain"
+          label="Logistics & Supply Chain"
           icon={Icon.supply}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.supply}
           routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory", "/manufacturer-production", "/distributor-applications", "/stock-transfers"]}
@@ -226,7 +247,7 @@ const Sidebar = () => {
 
         {/* ── OPERATIONS ── */}
         <SectionGroup
-          label="Operations"
+          label="Operations & Costing"
           icon={Icon.ops}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.operations}
           routes={["/inventory", "/inventory-ledger", "/cogs", "/shipping"]}
@@ -241,7 +262,7 @@ const Sidebar = () => {
 
         {/* ── FINANCE ── */}
         <SectionGroup
-          label="Finance"
+          label="Finance & Banking"
           icon={Icon.finance}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.finance}
           routes={["/finance", "/treasury", "/assets", "/partners", "/expenses", "/tax", "/returns", "/payables", "/statements"]}
@@ -299,14 +320,14 @@ const Sidebar = () => {
           className={({ isActive }) =>
             `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 group ${
               isActive
-                ? "bg-slate-900 text-white"
-                : "text-slate-500 hover:text-slate-800 hover:bg-slate-100/80"
+                ? "bg-brand-50 text-brand-700"
+                : "text-ink-muted hover:text-ink-primary hover:bg-surface-subtle"
             }`
           }
         >
           {({ isActive }) => (
             <>
-              <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-white" : "text-slate-400 group-hover:text-slate-600"}`}>
+              <span className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-brand-700" : "text-ink-subtle group-hover:text-ink-secondary"}`}>
                 {Icon.lock}
               </span>
               <span>Change Password</span>
@@ -314,16 +335,18 @@ const Sidebar = () => {
           )}
         </NavLink>
 
-        {/* System status badge */}
-        <div className="flex items-center gap-2 px-2 py-1.5 bg-slate-50 rounded-xl">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
-          <div className="text-[11px] leading-tight min-w-0">
-            <p className="font-semibold text-slate-700 truncate">Aama Store Active</p>
-            <p className="text-[10px] text-slate-400">v2.4 Management</p>
+        <div className="flex items-center gap-2 rounded-xl border border-border-light bg-surface-base px-2.5 py-2">
+          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-brand-100 text-brand-700">
+            {Icon.catalog}
+          </div>
+          <div className="min-w-0 text-[11px] leading-tight">
+            <p className="truncate font-semibold text-ink-primary">Aama Clothings</p>
+            <p className="text-[10px] text-ink-muted">Admin workspace</p>
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 };
 

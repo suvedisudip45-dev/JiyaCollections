@@ -461,7 +461,7 @@ const ensureLetterRecords = async (storyId) => {
   return true;
 };
 
-export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerId = null) => {
+export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerId = null, distributorId = null) => {
   if (!orderIdOrAssignmentId) {
     throw new Error("ORDER_NOT_FOUND");
   }
@@ -472,6 +472,7 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
       id: true,
       userId: true,
       manufacturerId: true,
+      distributorId: true,
       status: true,
       amount: true,
     },
@@ -481,7 +482,17 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
     if (manufacturerId && directOrder.manufacturerId && directOrder.manufacturerId !== manufacturerId) {
       throw new Error("PERMISSION_DENIED");
     }
-    return { order: directOrder, orderId: directOrder.id };
+    const assignment = distributorId
+      ? await prisma.orderAssignment.findUnique({
+          where: { orderId: directOrder.id },
+          select: { id: true, distributorId: true, manufacturerId: true, status: true },
+        })
+      : null;
+    const assignedDistributorId = assignment?.distributorId || directOrder.distributorId;
+    if (distributorId && assignedDistributorId !== distributorId) {
+      throw new Error("PERMISSION_DENIED");
+    }
+    return { order: directOrder, orderId: directOrder.id, ...(assignment ? { assignment } : {}) };
   }
 
   const assignment = await prisma.orderAssignment.findUnique({
@@ -490,6 +501,7 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
       id: true,
       orderId: true,
       manufacturerId: true,
+      distributorId: true,
       status: true,
     },
   });
@@ -501,6 +513,9 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
   if (manufacturerId && assignment.manufacturerId !== manufacturerId) {
     throw new Error("PERMISSION_DENIED");
   }
+  if (distributorId && assignment.distributorId !== distributorId) {
+    throw new Error("PERMISSION_DENIED");
+  }
 
   const assignedOrder = await prisma.order.findUnique({
     where: { id: assignment.orderId },
@@ -508,6 +523,7 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
       id: true,
       userId: true,
       manufacturerId: true,
+      distributorId: true,
       status: true,
       amount: true,
     },
@@ -520,10 +536,10 @@ export const resolveOrderReference = async (orderIdOrAssignmentId, manufacturerI
   return { order: assignedOrder, orderId: assignedOrder.id, assignment };
 };
 
-export const getPersonalizedLetterStatus = async (orderId, manufacturerId) => {
+export const getPersonalizedLetterStatus = async (orderId, manufacturerId = null, distributorId = null) => {
   await ensureDefaultStorySeed();
 
-  const { order } = await resolveOrderReference(orderId, manufacturerId);
+  const { order } = await resolveOrderReference(orderId, manufacturerId, distributorId);
 
   const existing = await prisma.letterDelivery.findFirst({
     where: { orderId },
@@ -569,10 +585,10 @@ export const getPersonalizedLetterStatus = async (orderId, manufacturerId) => {
   };
 };
 
-export const printPersonalizedLetter = async (orderId, manufacturerId, idempotencyKey = null) => {
+export const printPersonalizedLetter = async (orderId, manufacturerId = null, idempotencyKey = null, distributorId = null) => {
   await ensureDefaultStorySeed();
 
-  const { order } = await resolveOrderReference(orderId, manufacturerId);
+  const { order } = await resolveOrderReference(orderId, manufacturerId, distributorId);
 
   const existing = await prisma.letterDelivery.findFirst({
     where: {

@@ -623,7 +623,7 @@ const Orders = ({ token }) => {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
         <div>
-          <h2 className="text-2xl font-bold text-gray-800 tracking-tight">Order Management</h2>
+          <h2 className="font-display text-2xl font-bold tracking-tight text-ink-primary">Order Management</h2>
           <p className="text-xs text-gray-500 mt-0.5">
             {activeTab === "admin"
               ? "Manage your manually created orders (Social Media, Phone, Walk-in)."
@@ -677,7 +677,7 @@ const Orders = ({ token }) => {
           onClick={() => { setActiveTab("admin"); setSelectedStatus("All"); setSearchQuery(""); setAdminPage(1); }}
           className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
             activeTab === "admin"
-              ? "border-indigo-600 text-indigo-700 bg-indigo-50/50"
+              ? "border-brand-500 bg-brand-50/70 text-brand-700"
               : "border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50"
           }`}
         >
@@ -692,7 +692,7 @@ const Orders = ({ token }) => {
           onClick={() => { setActiveTab("monitor"); setMonitorFulfillmentFilter("All"); setMonitorSearchQuery(""); setMonitorPage(1); }}
           className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
             activeTab === "monitor"
-              ? "border-indigo-600 text-indigo-700 bg-indigo-50/50"
+              ? "border-brand-500 bg-brand-50/70 text-brand-700"
               : "border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50"
           }`}
         >

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeNcmPackageName } from "./ncmClient.js";
 
 const fail = (message, code = "INVALID_STOCK_TRANSFER", statusCode = 400) =>
   Object.assign(new Error(message), { code, statusCode });
@@ -109,15 +110,6 @@ export const normalizeNcmStockTransferPackageDetails = (input = {}) => {
 };
 
 export const buildNcmStockTransferPayload = ({ transfer, packageDetails }) => {
-  const packageDescription = [
-    packageDetails.productType,
-    packageDetails.productDescription,
-    `Package: ${packageDetails.packageType}`,
-    `Dimensions: ${packageDetails.packageDimensions}`,
-    packageDetails.isFragile ? "Fragile" : "",
-    packageDetails.packagingNotes ? `Packaging: ${packageDetails.packagingNotes}` : "",
-    `Stock transfer ${transfer.id.slice(-8)}`,
-  ].filter(Boolean).join(" | ").slice(0, 500);
   const instruction = [
     packageDetails.deliveryInstruction,
     "No COD collection.",
@@ -131,7 +123,7 @@ export const buildNcmStockTransferPayload = ({ transfer, packageDetails }) => {
     address: transfer.distributor.address,
     fbranch: transfer.manufacturer.ncmPickupBranch,
     branch: transfer.distributor.ncmPickupBranch,
-    package: packageDescription,
+    package: normalizeNcmPackageName(packageDetails.packageType),
     instruction,
     delivery_type: "Door2Door",
     weight: String(packageDetails.packageWeight),

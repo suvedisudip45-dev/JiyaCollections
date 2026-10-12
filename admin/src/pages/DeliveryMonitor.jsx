@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
@@ -10,7 +10,6 @@ import {
   Search,
   AlertTriangle,
   CheckCircle2,
-  Clock3,
   ShieldCheck,
   ArrowRight,
   Copy,
@@ -18,7 +17,7 @@ import {
   Package,
   Navigation,
 } from "lucide-react";
-import { backendUrl, currency } from "../App";
+import { backendUrl } from "../App";
 import NcmWebhookMockPanel from "../components/NcmWebhookMockPanel";
 import Pagination from "../components/Pagination";
 
@@ -289,13 +288,17 @@ const DeliveryMonitor = ({ token }) => {
   }, [rows]);
 
   return (
-    <div className="space-y-6">
+    <div className="admin-page-delivery space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900">Delivery & COD Monitor</h1>
+          <h1 className="font-display text-xl font-bold tracking-tight text-ink-primary sm:text-2xl">Delivery & COD Monitor</h1>
           <p className="text-xs text-slate-500">
             NCM tracking is updated from carrier webhooks and read from the database — including pickup readiness, waybills, branch routes, and COD exposure for fulfillment hubs.
           </p>
+          <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-brand-200 bg-brand-50 px-2.5 py-1 text-[10px] font-semibold text-brand-700">
+            <span className="h-1.5 w-1.5 rounded-full bg-brand-500" />
+            Webhook-updated delivery data
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -335,7 +338,7 @@ const DeliveryMonitor = ({ token }) => {
         ].map(([label, value, note]) => (
           <div key={label} className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
             <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>
-            <p className="mt-2 text-xl font-black text-slate-900">Rs {toMoney(value)}</p>
+            <p className="mt-2 font-mono text-xl font-bold tabular-nums text-ink-primary">Rs {toMoney(value)}</p>
             <p className="mt-1 text-[10px] text-slate-400">{note}</p>
           </div>
         ))}
@@ -414,7 +417,7 @@ const DeliveryMonitor = ({ token }) => {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-600 uppercase text-[10px] font-bold tracking-wider border-b border-slate-100">
+              <thead className="sticky top-0 z-10 border-b border-border-light bg-surface-subtle text-[10px] font-bold uppercase tracking-wider text-ink-secondary">
                 <tr>
                   <th className="py-3 px-4">Order</th>
                   <th className="py-3 px-4">Fulfillment Hub</th>

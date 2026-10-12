@@ -309,6 +309,14 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const discrepancies = [];
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
+  stubMethod(t, prisma.customerReturn, "findFirst", async () => ({
+    id: "return-1",
+    items: JSON.stringify([
+      { productId: "prod-1", size: "M", color: "Black", quantity: 1 },
+      { productId: "prod-2", size: "L", color: "Blue", quantity: 1 },
+    ]),
+    adminNotes: "Approved return",
+  }));
   stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
   stubMethod(t, prisma.order, "findUnique", async () => mockOrder);
   stubMethod(t, prisma, "$transaction", async (cb) =>
@@ -335,8 +343,10 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
         },
       },
       customerReturn: {
-        create: async ({ data }) => ({ id: "ret-1", ...data }),
+        updateMany: async () => ({ count: 1 }),
+        update: async ({ data }) => ({ id: "return-1", ...data }),
       },
+      customerReturnEvent: { create: async () => ({ id: "event-1" }) },
       orderAssignment: {
         update: async () => ({ id: "assign-1", status: "returned" }),
       },
@@ -350,6 +360,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const res = await processSelfDeliveryReturn({
     distributorId: "dist-1",
     assignmentIdOrOrderId: "assign-1",
+    returnRequestId: "return-1",
     items: [
       { productId: "prod-1", size: "M", color: "Black", quantity: 1, condition: "GOOD" },
       { productId: "prod-2", size: "L", color: "Blue", quantity: 1, condition: "DAMAGED" },
@@ -367,6 +378,27 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   assert.equal(movements.find((m) => m.movementType === "DAMAGE").destinationLocationId, "loc-damaged");
   assert.equal(discrepancies.length, 1);
   assert.equal(discrepancies[0].damageType, "STITCH_DAMAGE");
+});
+
+test("self-delivery return QA requires an admin-approved return request", async (t) => {
+  stubMethod(t, prisma.orderAssignment, "findFirst", async () => ({
+    id: "assign-1",
+    orderId: "order-1",
+    distributorId: "dist-1",
+    deliveryType: "SELF_DELIVERY",
+    status: "delivered",
+  }));
+  stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
+
+  await assert.rejects(
+    processSelfDeliveryReturn({
+      distributorId: "dist-1",
+      assignmentIdOrOrderId: "assign-1",
+      items: [{ productId: "prod-1", size: "M", color: "Black", quantity: 1, condition: "GOOD" }],
+      reason: "Customer requested return",
+    }),
+    { code: "RETURN_ADMIN_APPROVAL_REQUIRED" },
+  );
 });
 
 test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {

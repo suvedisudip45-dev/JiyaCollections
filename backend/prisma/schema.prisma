@@ -1133,6 +1133,8 @@ model CustomerReturn {
   orderId           String?
   userId            String?
   manufacturerId    String?
+  distributorId     String?
+  deliveryRoute     String?  @db.VarChar(32)
   customerName      String
   customerPhone     String?  @default("")
   returnDate        DateTime @default(now())
@@ -1168,6 +1170,7 @@ model CustomerReturn {
 
   @@index([lifecycleStatus, createdAt])
   @@index([orderId, lifecycleStatus])
+  @@index([distributorId, lifecycleStatus])
 }
 
 model OrderExchangeRequest {
@@ -1179,6 +1182,8 @@ model OrderExchangeRequest {
   customerName              String
   customerPhone             String?                   @default("")
   manufacturerId            String?
+  distributorId             String?
+  deliveryRoute             String?                   @db.VarChar(32)
   manufacturerName          String?
   cardId                    String?
   reasonCode                String                    @db.VarChar(64)
@@ -1223,6 +1228,7 @@ model OrderExchangeRequest {
   @@index([orderId, status])
   @@index([status, createdAt])
   @@index([cardId, status])
+  @@index([distributorId, status])
 }
 
 model OrderExchangeEvent {

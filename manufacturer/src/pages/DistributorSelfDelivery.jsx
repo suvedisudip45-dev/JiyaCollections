@@ -2,15 +2,11 @@ import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
-  Truck,
-  Package,
-  CheckCircle2,
   RotateCcw,
   Clock,
   MapPin,
   Phone,
   User,
-  AlertTriangle,
   RotateCw,
   Search,
 } from "lucide-react";
@@ -19,6 +15,8 @@ import { backendUrl, useManufacturer, currency } from "../context/ManufacturerCo
 const DistributorSelfDelivery = () => {
   const { token, manufacturer: distributor } = useManufacturer();
   const [orders, setOrders] = useState([]);
+  const [customerReturnRequests, setCustomerReturnRequests] = useState([]);
+  const [exchangeRequests, setExchangeRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [updatingId, setUpdatingId] = useState(null);
@@ -26,6 +24,7 @@ const DistributorSelfDelivery = () => {
 
   // Return QA Modal state
   const [returnOrder, setReturnOrder] = useState(null);
+  const [returnRequestId, setReturnRequestId] = useState("");
   const [returnReason, setReturnReason] = useState("");
   const [returnItems, setReturnItems] = useState([]);
   const [damageType, setDamageType] = useState("DELIVERY_DAMAGE");
@@ -43,6 +42,22 @@ const DistributorSelfDelivery = () => {
         }
       );
       setOrders(response.data.orders || []);
+      const [returnsResult, exchangesResult] = await Promise.allSettled([
+        axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/returns/exchange/distributor`, { headers: { token } }),
+      ]);
+      if (returnsResult.status === "fulfilled") {
+        setCustomerReturnRequests(returnsResult.value.data.returns || []);
+      } else {
+        setCustomerReturnRequests([]);
+        toast.error(returnsResult.reason?.response?.data?.message || "Could not load approved return requests.");
+      }
+      if (exchangesResult.status === "fulfilled") {
+        setExchangeRequests(exchangesResult.value.data.requests || []);
+      } else {
+        setExchangeRequests([]);
+        toast.error(exchangesResult.reason?.response?.data?.message || "Could not load approved exchange requests.");
+      }
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not load assigned deliveries.");
     } finally {
@@ -71,19 +86,20 @@ const DistributorSelfDelivery = () => {
     }
   };
 
-  const openReturnModal = (orderRef) => {
+  const openReturnModal = (orderRef, approvedReturn) => {
     setReturnOrder(orderRef);
-    setReturnReason("Customer Return Request");
+    setReturnRequestId(approvedReturn?.id || "");
+    setReturnReason(approvedReturn?.reason || "Customer Return Request");
     setDamageType("DELIVERY_DAMAGE");
     setDamageNotes("");
-    const items = (orderRef.order?.items || []).map((item) => ({
+    const items = (approvedReturn?.items || orderRef.order?.items || []).map((item) => ({
       productId: item.productId || item._id || item.id,
       name: item.name || "Product",
       size: item.size || "Standard",
       color: item.color || "Standard",
       quantity: Number(item.quantity || 1),
       maxQuantity: Number(item.quantity || 1),
-      condition: "GOOD", // 'GOOD' or 'DAMAGED'
+      condition: "GOOD",
     }));
     setReturnItems(items);
   };
@@ -102,6 +118,7 @@ const DistributorSelfDelivery = () => {
       const response = await axios.post(
         `${backendUrl}/api/distributor/orders/${returnOrder.assignmentId}/return`,
         {
+          returnRequestId,
           reason: returnReason,
           damageType,
           damageNotes: damageNotes || undefined,
@@ -117,6 +134,7 @@ const DistributorSelfDelivery = () => {
       );
       toast.success(response.data.message || "Customer return and QA recorded successfully.");
       setReturnOrder(null);
+      setReturnRequestId("");
       await loadOrders();
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to process customer return.");
@@ -135,6 +153,28 @@ const DistributorSelfDelivery = () => {
     const city = (o.order?.address?.city || "").toLowerCase();
     return orderId.includes(q) || customer.includes(q) || city.includes(q);
   });
+
+  const openApprovedReturn = async (returnRecord) => {
+    let orderRef = orders.find((order) => order.orderId === returnRecord.orderId);
+    if (!orderRef) {
+      try {
+        const response = await axios.get(`${backendUrl}/api/distributor/orders/assigned`, {
+          headers: { token },
+        });
+        const allOrders = response.data.orders || [];
+        orderRef = allOrders.find((order) => order.orderId === returnRecord.orderId);
+        if (orderRef) setOrders(allOrders);
+      } catch (error) {
+        toast.error(error.response?.data?.message || "Could not load the assigned delivery for this return.");
+        return;
+      }
+      if (!orderRef) {
+        toast.error("The assigned delivery for this approved return is not available in your hub.");
+        return;
+      }
+    }
+    openReturnModal(orderRef, returnRecord);
+  };
 
   return (
     <div className="space-y-6">
@@ -167,6 +207,48 @@ const DistributorSelfDelivery = () => {
           </button>
         </div>
       </div>
+
+      {(customerReturnRequests.length > 0 || exchangeRequests.length > 0) && (
+        <section className="rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-4 sm:p-5 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-[#171717]">Approved return & exchange requests</h2>
+              <p className="mt-1 text-[11px] text-[#575757]">These self-delivery requests were approved by admin and routed to your hub.</p>
+            </div>
+            <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">
+              {customerReturnRequests.length + exchangeRequests.length} pending
+            </span>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {customerReturnRequests.map((request) => (
+              <article key={request.id} className="rounded-xl border border-rose-200 bg-rose-50/40 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-[#171717]">Return · Order #{String(request.orderId || "").slice(0, 8).toUpperCase()}</p>
+                    <p className="mt-1 text-[11px] text-[#575757]">{request.customerName || "Customer"} · {request.reason}</p>
+                    <p className="mt-2 text-[11px] text-[#575757]">
+                      {(Array.isArray(request.items) ? request.items : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => openApprovedReturn(request)} className="shrink-0 rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-rose-800">
+                    Receive & inspect
+                  </button>
+                </div>
+              </article>
+            ))}
+            {exchangeRequests.map((request) => (
+              <article key={request.id} className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
+                <p className="text-xs font-bold text-[#171717]">Exchange · Order #{String(request.orderId || "").slice(0, 8).toUpperCase()}</p>
+                <p className="mt-1 text-[11px] text-[#575757]">{request.customerName || "Customer"} · {request.reasonDetails || request.reasonCode}</p>
+                <p className="mt-2 text-[11px] text-[#575757]">
+                  Replacement: {(Array.isArray(request.replacementItems) ? request.replacementItems : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
+                </p>
+                <p className="mt-2 text-[10px] font-semibold text-indigo-800">Coordinate the approved exchange with the customer from your hub.</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Filter Chips */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
@@ -321,16 +403,8 @@ const DistributorSelfDelivery = () => {
                   )}
 
                   {currentStatus === "delivered" && (
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 py-1.5 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-xl border border-emerald-200">
-                        ✓ Delivered
-                      </div>
-                      <button
-                        onClick={() => openReturnModal(orderRef)}
-                        className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 rounded-xl border border-rose-200 hover:bg-rose-100 transition-colors"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" /> Return QA
-                      </button>
+                    <div className="w-full py-1.5 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-xl border border-emerald-200">
+                      ✓ Delivered
                     </div>
                   )}
 

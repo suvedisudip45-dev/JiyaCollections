@@ -273,7 +273,7 @@ const NcmShipmentTracking = ({ shipment, index, total, saving, returnReason, onR
 
         <div className="grid gap-2 rounded-lg bg-slate-50 p-3 text-xs sm:grid-cols-2">
           <p><span className="font-semibold text-slate-700">Carrier status:</span> {shipment.ncmStatus || "No carrier event received yet"}</p>
-          <p><span className="font-semibold text-slate-700">Freight:</span> NPR {shipment.freightCharge ?? "not quoted"} · platform/admin settlement, not manufacturer/distributor payable</p>
+          <p><span className="font-semibold text-slate-700">NCM delivery charge:</span> NPR {shipment.freightCharge ?? "not quoted"} · company payable to NCM; not payable to the manufacturer or distributor</p>
           {shipment.ncmPaymentStatus && <p><span className="font-semibold text-slate-700">NCM payment:</span> {shipment.ncmPaymentStatus}</p>}
           <p><span className="font-semibold text-slate-700">Shipment quantity:</span> {shippedQuantity} units</p>
         </div>
@@ -354,6 +354,7 @@ const FactoryTransfers = () => {
   const [carrierDetails, setCarrierDetails] = useState({});
   const [quantities, setQuantities] = useState({});
   const [checklistDrafts, setChecklistDrafts] = useState({});
+  const [checklistModalTransferId, setChecklistModalTransferId] = useState("");
   const [ncmReturnReasons, setNcmReturnReasons] = useState({});
 
   const loadTransfers = useCallback(async () => {
@@ -378,6 +379,15 @@ const FactoryTransfers = () => {
     loadTransfers();
   }, [loadTransfers]);
 
+  useEffect(() => {
+    if (!checklistModalTransferId) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape" && !savingId) setChecklistModalTransferId("");
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [checklistModalTransferId, savingId]);
+
   const setMode = (transfer, mode) => {
     setBookingMode((current) => ({ ...current, [transfer.id]: mode }));
     if (mode === "NCM") {
@@ -399,6 +409,13 @@ const FactoryTransfers = () => {
     ...current,
     [transferId]: { ...(current[transferId] || {}), [field]: checked },
   }));
+  const openChecklist = (transfer) => {
+    setChecklistDrafts((current) => ({
+      ...current,
+      [transfer.id]: { ...checklistFromTransfer(transfer), ...(current[transfer.id] || {}) },
+    }));
+    setChecklistModalTransferId(transfer.id);
+  };
 
   const requestNcmReturn = async (shipment) => {
     const reason = String(ncmReturnReasons[shipment.id] || "").trim();
@@ -436,6 +453,7 @@ const FactoryTransfers = () => {
         item.id === transfer.id ? { ...item, ...response.data.transfer } : item
       ));
       setChecklistDrafts((current) => ({ ...current, [transfer.id]: checklist }));
+      setChecklistModalTransferId("");
       toast.success("Product preparation checks saved.");
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not save preparation checks.");
@@ -462,6 +480,10 @@ const FactoryTransfers = () => {
     const details = carrierDetails[transfer.id] || {};
     if (mode === "MANUAL" && !String(details.deliveryPartner || "").trim()) {
       toast.error("Enter the manual carrier name.");
+      return;
+    }
+    if (mode === "MANUAL" && (!Number.isFinite(Number(details.freightCharge)) || Number(details.freightCharge) <= 0)) {
+      toast.error("Enter a positive local delivery cost paid by the manufacturer.");
       return;
     }
     if (mode === "NCM") {
@@ -620,7 +642,15 @@ const FactoryTransfers = () => {
 
           <TransferProgress transfer={transfer} />
 
-          <div className="mt-4 divide-y divide-slate-100">
+          <section className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+            <div className="mb-2 flex items-center gap-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">1</span>
+              <div>
+                <h4 className="font-semibold text-slate-900">Review approved demand and set dispatch quantities</h4>
+                <p className="text-xs text-slate-500">Check every size/color line. Enter zero for any SKU you are not sending in this shipment.</p>
+              </div>
+            </div>
+          <div className="divide-y divide-slate-100">
             {transfer.lines.map((line) => {
               const remaining = Math.max(0, Number(line.approvedQuantity || 0) - line.dispatchedQuantity - line.reservedShipmentQuantity);
               const sku = line.inventorySku;
@@ -646,45 +676,44 @@ const FactoryTransfers = () => {
               );
             })}
           </div>
+          </section>
 
           {transfer.status === "APPROVED" && !transfer.shipments?.length && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <h4 className="font-semibold text-slate-900">Product preparation checklist</h4>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {preparationChecks.map(([field, label]) => (
-                  <label key={field} className="flex items-center gap-2 text-sm text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={(checklistDrafts[transfer.id] || checklistFromTransfer(transfer))[field]}
-                      onChange={(event) => updateChecklist(transfer.id, field, event.target.checked)}
-                    />
-                    {label}
-                  </label>
-                ))}
-                {transferId && !transfers.some((transfer) => transfer.id === transferId) && (
-                  <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
-                    This distributor demand is unavailable or is no longer assigned to this manufacturer.
+            <section className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${checklistComplete(transfer) ? "bg-emerald-700 text-white" : "bg-amber-200 text-amber-900"}`}>2</span>
+                  <div>
+                    <h4 className="font-semibold text-slate-900">Complete product preparation checklist</h4>
+                    <p className="mt-1 text-xs text-slate-600">
+                      {checklistComplete(transfer)
+                        ? `All checks saved${transfer.preparedAt ? ` · ${new Date(transfer.preparedAt).toLocaleString()}` : ""}.`
+                        : "Confirm availability, quality, requested colors and sizes, and packaging before delivery."}
+                    </p>
                   </div>
-                )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openChecklist(transfer)}
+                  className="rounded-lg border border-amber-300 bg-white px-4 py-2.5 text-sm font-semibold text-amber-900 shadow-sm hover:bg-amber-50"
+                >
+                  {checklistComplete(transfer) ? "Review checklist" : "Open preparation checklist"}
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => saveChecklist(transfer)}
-                disabled={savingId === transfer.id}
-                className="mt-3 rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-900 disabled:opacity-50"
-              >
-                {savingId === transfer.id ? "Saving..." : "Save preparation checks"}
-              </button>
-              {transfer.preparedAt && (
-                <p className="mt-2 text-xs text-slate-600">Last saved {new Date(transfer.preparedAt).toLocaleString()}.</p>
-              )}
-            </div>
+            </section>
           )}
 
           {(transfer.status === "APPROVED" || transfer.status === "IN_TRANSIT" || transfer.status === "PARTIALLY_RECEIVED") && transfer.lines.some((line) => Number(line.approvedQuantity || 0) > line.dispatchedQuantity + line.reservedShipmentQuantity) && (
             <div className={`mt-4 rounded-xl p-4 ${checklistReady(transfer, checklistDrafts[transfer.id]) ? "bg-slate-50" : "bg-slate-100"}`}>
+              <div className="mb-4 flex items-center gap-3">
+                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${checklistReady(transfer, checklistDrafts[transfer.id]) ? "bg-emerald-700 text-white" : "bg-slate-300 text-slate-700"}`}>3</span>
+                <div>
+                  <h4 className="font-semibold text-slate-900">Choose delivery and dispatch</h4>
+                  <p className="text-xs text-slate-500">Choose local freight or NCM, complete the delivery details, then dispatch the selected quantities.</p>
+                </div>
+              </div>
               {!checklistReady(transfer, checklistDrafts[transfer.id]) && (
-                <p className="mb-3 text-sm font-medium text-amber-800">Delivery is locked until all preparation checks are saved as passed.</p>
+                <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">Delivery is locked until all preparation checks are saved as passed. Open step 2 to complete the checklist.</p>
               )}
               <div className="flex flex-wrap items-center gap-4">
                 <label className="text-sm font-medium text-slate-700">
@@ -761,27 +790,40 @@ const FactoryTransfers = () => {
                       className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
                       aria-label="Tracking number"
                     />
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={carrierDetails[transfer.id]?.freightCharge || ""}
-                      onChange={(event) => updateCarrier(transfer.id, "freightCharge", event.target.value)}
-                      placeholder="Freight (NPR)"
-                      className="w-36 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                      aria-label="Freight charge"
-                    />
+                    <label className="text-xs font-medium text-slate-700">
+                      Local delivery cost (NPR) *
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        required
+                        value={carrierDetails[transfer.id]?.freightCharge || ""}
+                        onChange={(event) => updateCarrier(transfer.id, "freightCharge", event.target.value)}
+                        placeholder="Enter amount paid"
+                        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                        aria-label="Local delivery cost paid by manufacturer"
+                      />
+                    </label>
                   </>
                 )}
                 <button onClick={() => dispatch(transfer)} disabled={savingId === transfer.id || !checklistReady(transfer, checklistDrafts[transfer.id])} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
                   {savingId === transfer.id ? "Processing..." : transfer.isOwnStore ? "Deliver to own store" : (bookingMode[transfer.id] || "MANUAL") === "NCM" ? "Book NCM shipment" : "Record local freight and dispatch"}
                 </button>
               </div>
-              {!transfer.isOwnStore && <p className="mt-3 text-xs text-slate-500">Local freight paid by the manufacturer is recorded for admin settlement. A successful NCM booking creates a stock transit movement only after NCM confirms it; uncertain bookings hold stock until admin review.</p>}
+              {!transfer.isOwnStore && <p className="mt-3 text-xs text-slate-500">For local logistics, enter the amount the manufacturer pays; the company records it as payable to the manufacturer for reimbursement. NCM delivery charges are a company payable to NCM, never to the manufacturer or distributor. A successful NCM booking moves stock to transit only after NCM confirms pickup; uncertain bookings remain on hold for admin review.</p>}
             </div>
           )}
 
           <div className="mt-4 space-y-2">
+            {transfer.shipments?.length > 0 && (
+              <div className="mb-3 flex items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sm font-bold text-sky-800">4</span>
+                <div>
+                  <h4 className="font-semibold text-slate-900">Track shipments and follow carrier updates</h4>
+                  <p className="text-xs text-slate-500">Carrier delivery does not complete stock receipt; the distributor still records receipt and QA.</p>
+                </div>
+              </div>
+            )}
             {transfer.shipments?.map((shipment, index) => (
               <div key={shipment.id}>
                 {shipment.bookingMode === "NCM" ? (
@@ -799,7 +841,8 @@ const FactoryTransfers = () => {
                     {shipment.deliveryPartner || shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}
                     {shipment.externalReference && ` · Reference ${shipment.externalReference}`}
                     {shipment.trackingNumber && ` · Tracking ${shipment.trackingNumber}`}
-                    {shipment.freightSettlementStatus && ` · ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
+                    {shipment.freightCharge !== null && shipment.freightCharge !== undefined && ` · Local delivery cost NPR ${shipment.freightCharge} · company payable to manufacturer`}
+                    {shipment.freightSettlementStatus && ` · Reimbursement ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
                     {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
                   </div>
                 )}
@@ -809,6 +852,74 @@ const FactoryTransfers = () => {
               </div>
             ))}
           </div>
+          {checklistModalTransferId === transfer.id && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && savingId !== transfer.id) setChecklistModalTransferId("");
+              }}
+            >
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={`preparation-checklist-title-${transfer.id}`}
+                className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-amber-700">Step 2 · Factory preparation</p>
+                    <h3 id={`preparation-checklist-title-${transfer.id}`} className="mt-1 text-xl font-bold text-slate-900">Product preparation checklist</h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {transfer.distributor?.name || "Distributor"} · Demand #{transfer.id.slice(-8)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setChecklistModalTransferId("")}
+                    disabled={savingId === transfer.id}
+                    aria-label="Close preparation checklist"
+                    className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50"
+                  >
+                    <span aria-hidden="true" className="text-2xl leading-none">×</span>
+                  </button>
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  {preparationChecks.map(([field, label]) => (
+                    <label key={field} className="flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 hover:bg-amber-50">
+                      <input
+                        type="checkbox"
+                        checked={(checklistDrafts[transfer.id] || checklistFromTransfer(transfer))[field]}
+                        onChange={(event) => updateChecklist(transfer.id, field, event.target.checked)}
+                        className="h-4 w-4 accent-amber-700"
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                <p className="mt-4 rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                  Check each item only after you have verified it physically. All five checks must be saved as passed before dispatch.
+                </p>
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setChecklistModalTransferId("")}
+                    disabled={savingId === transfer.id}
+                    className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => saveChecklist(transfer)}
+                    disabled={savingId === transfer.id}
+                    className="rounded-lg bg-amber-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+                  >
+                    {savingId === transfer.id ? "Saving checks..." : "Save preparation checks"}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
         </article>
           ))}
         </div>

@@ -89,9 +89,17 @@ const Orders = () => {
           total: list.length,
           active: accepted + preparing + packed + ready,
         });
+      } else {
+        setAssignments([]);
+        setPagination(null);
+        setStats({ pending: 0, accepted: 0, preparing: 0, packed: 0, ready: 0, delivered: 0, total: 0, active: 0 });
+        toast.error(res.data.message || "Failed to load orders");
       }
     } catch (err) {
-      toast.error("Failed to load orders");
+      setAssignments([]);
+      setPagination(null);
+      setStats({ pending: 0, accepted: 0, preparing: 0, packed: 0, ready: 0, delivered: 0, total: 0, active: 0 });
+      toast.error(err.response?.data?.message || "Failed to load orders");
     } finally {
       setLoading(false);
     }

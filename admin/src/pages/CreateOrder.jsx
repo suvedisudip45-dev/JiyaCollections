@@ -856,7 +856,7 @@ const CreateOrder = ({ token }) => {
               📦
             </span>
             <div>
-              <h2 className="text-2xl font-bold text-gray-800 tracking-tight">
+              <h2 className="font-display text-2xl font-bold tracking-tight text-ink-primary">
                 Add Social Media & Direct Order
               </h2>
               <p className="text-xs text-gray-500 mt-0.5">
@@ -892,10 +892,10 @@ const CreateOrder = ({ token }) => {
         {/* ================= LEFT COLUMN: CLIENT & SOCIAL DETAILS (5 cols) ================= */}
         <div className="lg:col-span-5 space-y-6">
           {/* Contact Verification Step */}
-          <div className="bg-white rounded-2xl p-5 border border-indigo-200 shadow-xs space-y-3">
+          <div className="space-y-3 rounded-2xl border border-brand-200 bg-white p-5 shadow-card">
             <div className="flex items-center justify-between gap-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-700 flex items-center gap-1.5">
-                <span className="w-5 h-5 rounded-full bg-indigo-100 flex items-center justify-center text-[10px]">1</span>
+              <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand-700">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-100 text-[10px]">1</span>
                 Contact Verification
               </h3>
               <span className="text-[10px] text-gray-500">Required before details</span>
@@ -966,7 +966,7 @@ const CreateOrder = ({ token }) => {
                     onClick={() => setClient((prev) => ({ ...prev, source: ch.id }))}
                     className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-xs font-semibold transition-all ${
                       isSelected
-                        ? `${ch.bg} ${ch.text} ring-2 ring-indigo-500/40 shadow-xs scale-[1.02]`
+                        ? `${ch.bg} ${ch.text} ring-2 ring-brand-500/40 shadow-xs scale-[1.02]`
                         : "bg-gray-50/70 border-gray-200 text-gray-600 hover:bg-gray-100"
                     }`}
                   >
@@ -997,7 +997,7 @@ const CreateOrder = ({ token }) => {
           </div>
 
           {/* Client Identity & Contact Card */}
-          <div className="bg-white rounded-2xl p-5 border border-gray-200 shadow-xs space-y-4">
+          <div className="space-y-4 rounded-2xl border border-brand-200 bg-white p-5 shadow-card lg:sticky lg:top-20">
             <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 flex items-center gap-1.5">
               <span>3</span> Customer Details
             </h3>

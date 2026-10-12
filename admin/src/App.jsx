@@ -1,5 +1,5 @@
 /* eslint-disable react/prop-types */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { clearAuthTokens } from "./auth/tokenStorage";
 import { PermissionsProvider, usePermissions } from "./auth/PermissionsContext";
@@ -79,6 +79,8 @@ const App = () => {
   const navigate = useNavigate();
   // Retrieve the token from localStorage only on the initial render
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const [authLoading, setAuthLoading] = useState(() => Boolean(localStorage.getItem("token")));
   const [sessionAccount, setSessionAccount] = useState(null);
   const [permissions, setPermissions] = useState([]);
@@ -156,7 +158,7 @@ const App = () => {
   }, [token]);
 
   return (
-    <div className="admin-shell bg-[#f3f6f4] min-h-screen">
+    <div className="admin-shell min-h-screen bg-surface-base">
       <ToastContainer />
       {authLoading ? (
         <div className="min-h-[70vh] flex items-center justify-center text-sm text-slate-500">Checking session...</div>
@@ -164,7 +166,7 @@ const App = () => {
         <Login setToken={setToken} />
       ) : (
         <PermissionsProvider account={sessionAccount} permissions={permissions}>
-          <Navbar setToken={setToken} />
+          <Navbar setToken={setToken} onToggleSidebar={() => setSidebarOpen((open) => !open)} />
           {passwordChangeRequired ? (
             <main className="min-h-[calc(100vh-65px)] p-4 sm:p-6 lg:p-8">
               <div className="max-w-7xl mx-auto">
@@ -180,8 +182,8 @@ const App = () => {
             </main>
           ) : (
             <div className="flex w-full min-h-[calc(100vh-65px)]">
-              <Sidebar />
-              <main className="flex-1 p-4 sm:p-6 lg:p-8 bg-[#f3f6f4] overflow-x-hidden min-w-0">
+              <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
+              <main className="min-w-0 flex-1 overflow-x-hidden bg-surface-base p-4 sm:p-6 lg:p-8">
                 <div className="max-w-7xl mx-auto">
                   <Breadcrumbs />
                   <Routes>

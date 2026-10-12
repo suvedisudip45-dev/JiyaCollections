@@ -462,6 +462,7 @@ export const processSelfDeliveryReturn = async ({
   notes = null,
   damageType = null,
   damageNotes = null,
+  returnRequestId = null,
   actorContext = {},
   client = prisma,
 } = {}) => {
@@ -485,6 +486,21 @@ export const processSelfDeliveryReturn = async ({
     throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
   }
   await ensureSelfDeliveryAssignment(assignment, client);
+  if (!returnRequestId) {
+    throw fail("An admin-approved customer return request is required before distributor return processing.", 409, "RETURN_ADMIN_APPROVAL_REQUIRED");
+  }
+  const approvedReturn = await client.customerReturn.findFirst({
+    where: {
+      id: returnRequestId,
+      orderId: assignment.orderId,
+      distributorId,
+      deliveryRoute: "DISTRIBUTOR",
+      lifecycleStatus: "DISTRIBUTOR_RETURN_PENDING",
+    },
+  });
+  if (!approvedReturn) {
+    throw fail("This return request is not approved for this distributor or has already been processed.", 409, "RETURN_NOT_APPROVED_FOR_DISTRIBUTOR");
+  }
 
   const order = await client.order.findUnique({
     where: { id: assignment.orderId },
@@ -492,11 +508,39 @@ export const processSelfDeliveryReturn = async ({
   if (!order) throw fail("Order not found.", 404);
 
   const orderItems = parseJSON(order.items, []);
+  const approvedItems = parseJSON(approvedReturn.items, []);
+  const approvedQuantities = new Map(approvedItems.map((item) => [
+    `${item.productId}|${normalizeSkuKey(item.size)}|${normalizeSkuKey(item.color)}`,
+    Number(item.quantity || 0),
+  ]));
+  const submittedQuantities = new Map();
+  for (const item of items) {
+    const key = `${item.productId || item._id || item.id}|${normalizeSkuKey(item.size)}|${normalizeSkuKey(item.color)}`;
+    submittedQuantities.set(key, (submittedQuantities.get(key) || 0) + Number(item.quantity || 0));
+  }
+  if (
+    submittedQuantities.size !== approvedQuantities.size ||
+    [...approvedQuantities].some(([key, quantity]) => submittedQuantities.get(key) !== quantity)
+  ) {
+    throw fail("Returned items and quantities must match the admin-approved request.", 409, "RETURN_ITEMS_NOT_APPROVED");
+  }
   const customerAddress = parseJSON(order.address, {});
   const customerName = `${customerAddress.firstName || ""} ${customerAddress.lastName || ""}`.trim() || "Valued Customer";
   const customerPhone = customerAddress.phone || "";
 
   return client.$transaction(async (tx) => {
+    const claimedReturn = await tx.customerReturn.updateMany({
+      where: {
+        id: approvedReturn.id,
+        distributorId,
+        lifecycleStatus: "DISTRIBUTOR_RETURN_PENDING",
+      },
+      data: { lifecycleStatus: "DISTRIBUTOR_RETURN_PROCESSING" },
+    });
+    if (claimedReturn.count !== 1) {
+      throw fail("This approved return is already being processed or is no longer available.", 409, "RETURN_PROCESSING_CONFLICT");
+    }
+
     // 1. Ensure Distributor Stock & Damaged Locations exist
     let stockLocation = await tx.inventoryLocation.findFirst({
       where: { distributorId, kind: "DISTRIBUTOR", isActive: true },
@@ -663,21 +707,34 @@ export const processSelfDeliveryReturn = async ({
     const vatRefunded = Number((totalRefundAmount - totalRefundAmount / 1.13).toFixed(2));
 
     // 2. Create CustomerReturn record
-    const customerReturn = await tx.customerReturn.create({
+    const now = new Date();
+    const customerReturn = await tx.customerReturn.update({
+      where: { id: approvedReturn.id },
       data: {
-        orderId: order.id,
-        userId: order.userId || null,
-        customerName,
-        customerPhone,
         items: processedItems,
         totalRefundAmount,
         vatRefunded,
         refundMethod: "STORE_CREDIT",
         refundStatus: "COMPLETED",
         inventoryAction: hasDamagedItems ? "DAMAGED_WRITE_OFF" : "RESTOCKED",
+        notes: [approvedReturn.adminNotes, notes ? String(notes).trim() : ""].filter(Boolean).join("\n") || null,
+        lifecycleStatus: "REFUNDED",
+        inspectionResult: hasDamagedItems ? "PARTIAL" : "RESTOCKABLE",
+        inspectedAt: now,
+        completedAt: now,
+      },
+    });
+    await tx.customerReturnEvent.create({
+      data: {
+        customerReturnId: customerReturn.id,
+        eventType: "DISTRIBUTOR_RETURN_RECEIVED_AND_INSPECTED",
+        fromStatus: "DISTRIBUTOR_RETURN_PROCESSING",
+        toStatus: "REFUNDED",
+        actorId: actorContext.actorId || distributorId,
+        actorRole: "DISTRIBUTOR",
         reason: reason.trim(),
-        notes: notes ? String(notes).trim() : null,
-        status: "RECEIVED_AT_WAREHOUSE",
+        metadata: { items: processedItems, damageType, damageNotes },
+        idempotencyKey: `RETURN:${customerReturn.id}:DISTRIBUTOR_RECEIVED`,
       },
     });
 
@@ -689,7 +746,6 @@ export const processSelfDeliveryReturn = async ({
     }
 
     // 4. Update Order and Assignment status
-    const now = new Date();
     await tx.orderAssignment.update({
       where: { id: assignment.id },
       data: {

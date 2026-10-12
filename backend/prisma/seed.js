@@ -53,7 +53,7 @@ const permissionDefinitions = [
   ["distributor:assignments_read", "Read customer orders assigned to the active distributor hub."], ["distributor:assignment_detail", "Read assignment details for distributor hub orders."], ["distributor:assignment_accept", "Accept assigned customer order for distributor fulfillment."], ["distributor:assignment_reject", "Reject assigned customer order for distributor hub reallocation."], ["distributor:assignment_status_update", "Update order packing and checklist status at distributor hub."],
   ["expense:create", "Create expenses."], ["expense:read", "Read expenses."], ["expense:update", "Update expenses."], ["expense:delete", "Delete expenses."], ["expense:summary_read", "Read expense summaries."],
   ["manufacturer:delivery_ready", "Mark deliveries ready."], ["manufacturer:delivery_return", "Record delivery returns."], ["customer:delivery_read", "Read customer delivery status."], ["delivery:admin_list", "List deliveries administratively."], ["delivery:settlements_read", "Read delivery settlements."], ["delivery:settlement_summary", "Read settlement summaries."], ["delivery:settlement_request", "Request settlements."], ["delivery:logs_read", "Read delivery logs."], ["delivery:admin_detail", "Read delivery details."], ["delivery:reconcile", "Reconcile deliveries."], ["delivery:ncm_handoff_recover", "Resolve an ambiguous NCM order creation outcome."],
-  ["manufacturer:letter_status_read", "Read personalized letter status."], ["manufacturer:letter_print", "Print personalized letters."],
+  ["manufacturer:letter_status_read", "Read personalized letter status."],
   ["storyletter:admin_manage", "Manage administrative story letters."],
   ["marketing_card:admin_manage", "Manage marketing cards administratively."], ["marketing_card:own_store_manage", "Manage own-store marketing campaigns."], ["marketing_card:custom_assign", "Assign own-store cards to partner or custom organizations."], ["marketing_card:customer_manage", "Use customer marketing card features."], ["marketing_card:partner_manage", "Manage partner marketing cards."], ["marketing_card:distributor_manage", "Manage distributor hub marketing cards."],
   ["customer:profile_read", "Read the customer profile."], ["customer:profile_update", "Update the customer profile."], ["customer:password_change", "Change the customer password."], ["customer:address_manage", "Manage customer addresses."], ["customer:cart_read", "Read the customer cart."], ["customer:cart_write", "Update the customer cart."], ["customer:order_place", "Place customer orders."], ["customer:order_read", "Read customer orders."], ["customer:review_write", "Write customer reviews."], ["customer:review_read", "Read customer review status."], ["customer:review_interact", "Interact with reviews."], ["customer:review_delete", "Delete customer reviews."], ["customer:loyalty_read", "Read customer loyalty status."],
@@ -64,14 +64,13 @@ const permissionDefinitions = [
 ];
 
 const rolePermissionCodes = {
-  ADMIN: permissionDefinitions.map(([code]) => code),
+  ADMIN: permissionDefinitions.map(([code]) => code).filter((code) => !["all:function", "distributor:letter_print"].includes(code)),
   CUSTOMER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("customer:") && !code.startsWith("customer:admin_")) || code === "marketing_card:customer_manage" || ["order:customer_cancel", "exchange:customer_request", "exchange:customer_read", "returns:customer_create", "returns:customer_read"].includes(code)),
   MANUFACTURER: permissionDefinitions.map(([code]) => code).filter((code) => (code.startsWith("manufacturer:") && !code.startsWith("manufacturer:admin_") && code !== "manufacturer:branches_sync" && ![
     "manufacturer:assignment_accept",
     "manufacturer:assignment_reject",
     "manufacturer:assignment_status_update",
     "manufacturer:collaboration_read",
-    "manufacturer:inventory_read",
     "manufacturer:inventory_update",
     "manufacturer:direct_order_create",
     "manufacturer:direct_order_read",

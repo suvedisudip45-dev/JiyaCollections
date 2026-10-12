@@ -66,6 +66,12 @@ const toCustomerDisplayItems = (items = []) => {
   return displayItems;
 };
 
+const getOrderItemKey = (item) => `${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`;
+const getOrderLineKey = (item, index) => `${getOrderItemKey(item)}|${index}`;
+const getInitialItemQuantities = (items = []) => Object.fromEntries(
+  items.map((item, index) => [getOrderLineKey(item, index), index === 0 ? 1 : 0])
+);
+
 const canCancelBeforeNcmHandoff = (order) => {
   const delivery = order.deliveryOrder || order.delivery || {};
   const status = String(order.status || "").toLowerCase();
@@ -270,11 +276,11 @@ const Orders = () => {
     event.preventDefault();
     if (!exchangeOrderTarget || actionLoading) return;
     const items = (exchangeOrderTarget.items || [])
-      .map((item) => ({
+      .map((item, index) => ({
         productId: item.productId || item._id || item.id,
         size: item.size || "",
         color: item.color || "",
-        quantity: Number(exchangeQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
+        quantity: Number(exchangeQuantities[getOrderLineKey(item, index)] || 0),
       }))
       .filter((item) => item.quantity > 0);
     const replacementItems = items.map((item) => {
@@ -313,7 +319,7 @@ const Orders = () => {
     setExchangeOrderTarget(order);
     setExchangeReasonCode("SIZE_OR_FIT");
     setExchangeReasonDetails("");
-    setExchangeQuantities({});
+    setExchangeQuantities(getInitialItemQuantities(order.items || []));
     setReplacementVariants({});
     setReplacementVariants(Object.fromEntries((order.items || []).map((item) => {
       const productId = item.productId || item._id || item.id;
@@ -327,11 +333,11 @@ const Orders = () => {
     event.preventDefault();
     if (!returnOrderTarget || actionLoading) return;
     const items = (returnOrderTarget.items || [])
-      .map((item) => ({
+      .map((item, index) => ({
         productId: item.productId || item._id || item.id,
         size: item.size || "",
         color: item.color || "",
-        quantity: Number(returnQuantities[`${item.productId || item._id || item.id}|${item.size || ""}|${item.color || ""}`] || 0),
+        quantity: Number(returnQuantities[getOrderLineKey(item, index)] || 0),
       }))
       .filter((item) => item.quantity > 0);
     if (!items.length) return toast.warn("Select at least one product quantity to return.");
@@ -362,7 +368,7 @@ const Orders = () => {
   const openReturnRequest = (order) => {
     setReturnOrderTarget(order);
     setReturnReason("");
-    setReturnQuantities({});
+    setReturnQuantities(getInitialItemQuantities(order.items || []));
     setReturnRequestKey(crypto.randomUUID());
   };
 
@@ -1069,18 +1075,19 @@ const Orders = () => {
               <div><h2 className="text-base font-bold text-slate-900">Request an exchange</h2><p className="text-xs text-slate-500 mt-1">Order #{exchangeOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setExchangeOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
-            <p className="text-xs text-slate-600">Choose the item quantities and explain the issue. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
-            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM's exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
+            <p className="text-xs text-slate-600">The first product and its purchased size/color are selected by default. Set another product’s quantity to choose it; you can include multiple items. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM&apos;s exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
             <div className="space-y-2">
               {(exchangeOrderTarget.items || []).map((item, index) => {
-                const productId = item.productId || item._id || item.id;
-                const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                const key = getOrderItemKey(item);
+                const lineKey = getOrderLineKey(item, index);
+                const selected = Number(exchangeQuantities[lineKey] || 0) > 0;
                 const replacement = replacementVariants[key] || { size: item.size || "", color: item.color || "" };
                 const variants = Array.isArray(item.variants) ? item.variants : [];
-                const sizes = [...new Set((Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)).filter(Boolean))];
-                const colors = [...new Set((Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)).filter(Boolean))];
+                const sizes = [...new Set([...(Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)), item.size].filter(Boolean))];
+                const colors = [...new Set([...(Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)), item.color].filter(Boolean))];
                 return (
-                  <div key={`${key}-${index}`} className="grid gap-3 border border-slate-200 rounded-lg p-3 sm:grid-cols-[1fr_92px]">
+                  <div key={`${key}-${index}`} className={`grid gap-3 rounded-lg border p-3 transition-colors sm:grid-cols-[1fr_92px] ${selected ? "border-blue-300 bg-blue-50/40" : "border-slate-200"}`}>
                     <div>
                       <p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p>
                       <p className="text-[11px] text-slate-500">Purchased {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {Number(item.quantity || 1)}</p>
@@ -1089,7 +1096,7 @@ const Orders = () => {
                         <label className="text-[10px] font-semibold text-slate-500">Replacement color<select value={replacement.color} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, color: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{colors.map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
                       </div>
                     </div>
-                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[key] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
+                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[lineKey] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [lineKey]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
               })}
@@ -1117,14 +1124,16 @@ const Orders = () => {
               <button type="button" disabled={actionLoading} onClick={() => setReturnOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Your request must be approved by an admin. Refund and stock adjustments happen only after the parcel is received and inspected.</p>
+            <p className="text-[11px] text-slate-500">The first product and its purchased size/color are selected by default. Change quantities to choose another product or include more than one.</p>
             <div className="space-y-2">
               {(returnOrderTarget.items || []).map((item, index) => {
-                const productId = item.productId || item._id || item.id;
-                const key = `${productId}|${item.size || ""}|${item.color || ""}`;
+                const key = getOrderItemKey(item);
+                const lineKey = getOrderLineKey(item, index);
+                const selected = Number(returnQuantities[lineKey] || 0) > 0;
                 return (
-                  <div key={`${key}-${index}`} className="grid grid-cols-[1fr_92px] gap-3 items-center border border-slate-200 rounded-lg p-3">
+                  <div key={`${key}-${index}`} className={`grid grid-cols-[1fr_92px] items-center gap-3 rounded-lg border p-3 transition-colors ${selected ? "border-rose-300 bg-rose-50/40" : "border-slate-200"}`}>
                     <div><p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p><p className="text-[11px] text-slate-500">{item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Purchased {Number(item.quantity || 1)}</p></div>
-                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={returnQuantities[key] ?? 0} onChange={(event) => setReturnQuantities({ ...returnQuantities, [key]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
+                    <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={returnQuantities[lineKey] ?? 0} onChange={(event) => setReturnQuantities({ ...returnQuantities, [lineKey]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
               })}

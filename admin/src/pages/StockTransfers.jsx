@@ -252,8 +252,12 @@ const StockTransfers = ({ token }) => {
                     {(shipment.ncmOrderId || shipment.externalReference) && `Reference ${shipment.ncmOrderId || shipment.externalReference} · `}
                     {shipment.trackingNumber && `Tracking ${shipment.trackingNumber} · `}
                     {shipment.bookingMode === "NCM" ? `NCM status ${shipment.ncmStatus || "awaiting carrier update"} · ` : ""}
-                    {shipment.bookingMode === "NCM" ? "NCM delivery charge" : "Freight"} {shipment.freightCharge === null ? "not quoted" : `NPR ${shipment.freightCharge}`} · {shipment.freightSettlementStatus.replaceAll("_", " ")}
-                    {shipment.bookingMode === "NCM" && ` · platform/admin settlement only`}
+                    {shipment.bookingMode === "NCM" ? "NCM delivery charge" : "Local delivery cost"}
+                    {shipment.freightCharge === null ? " not entered" : ` NPR ${shipment.freightCharge}`}
+                    {shipment.bookingMode === "NCM"
+                      ? " · company payable to NCM; not payable to manufacturer/distributor"
+                      : " · manufacturer-paid; company payable to manufacturer"}
+                    {` · ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
                     {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
                     {shipment.ncmLastSyncedAt && ` · Updated ${new Date(shipment.ncmLastSyncedAt).toLocaleString()}`}
                   </span>
@@ -277,7 +281,7 @@ const StockTransfers = ({ token }) => {
                       {shipment.ncmReturnReason ? ` · ${shipment.ncmReturnReason}` : ""}
                     </span>
                     <p className="basis-full text-xs text-slate-500">
-                      NCM permits only the vendor to mark an order for return; its response does not confirm physical receipt. Returned units still require distributor receipt and inspection. The carrier charge is settled by the platform, not payable to the manufacturer or distributor.
+                    NCM permits only the vendor to mark an order for return; its response does not confirm physical receipt. Returned units still require distributor receipt and inspection. The NCM delivery charge is a company payable to NCM, not a payable to the manufacturer or distributor.
                     </p>
                     {(shipment.events?.length > 0 || shipment.ncmStatusHistory?.length > 0) && (
                       <ul className="basis-full space-y-1 text-xs text-slate-600" aria-label="NCM status history">
@@ -308,7 +312,7 @@ const StockTransfers = ({ token }) => {
                   <div className="mt-3 grid gap-2 sm:grid-cols-4">
                     <input value={bookingResolution[shipment.id]?.externalReference || ""} onChange={(event) => updateResolution(shipment.id, "externalReference", event.target.value)} placeholder="Confirmed numeric NCM order ID" inputMode="numeric" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <input value={bookingResolution[shipment.id]?.trackingNumber || ""} onChange={(event) => updateResolution(shipment.id, "trackingNumber", event.target.value)} placeholder="Tracking number" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
-                    <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="Freight (NPR)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="NCM delivery charge (NPR)" aria-label="NCM delivery charge in NPR" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <div className="flex flex-wrap gap-2">
                       <button onClick={() => resolveNcm(shipment, "BOOKED")} disabled={savingId === shipment.id} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white">Confirm booked</button>
                       <button onClick={() => resolveNcm(shipment, "NOT_BOOKED")} disabled={savingId === shipment.id} className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold">Confirm not booked</button>
@@ -322,7 +326,7 @@ const StockTransfers = ({ token }) => {
                     </p>
                     <input value={bookingResolution[shipment.id]?.externalReference || ""} onChange={(event) => updateResolution(shipment.id, "externalReference", event.target.value)} placeholder="Confirmed numeric NCM order ID" inputMode="numeric" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <input value={bookingResolution[shipment.id]?.trackingNumber || ""} onChange={(event) => updateResolution(shipment.id, "trackingNumber", event.target.value)} placeholder="Tracking number (optional)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
-                    <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="Freight (NPR)" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
+                    <input type="number" min="0" step="0.01" value={bookingResolution[shipment.id]?.freightCharge ?? shipment.freightCharge ?? ""} onChange={(event) => updateResolution(shipment.id, "freightCharge", event.target.value)} placeholder="NCM delivery charge (NPR)" aria-label="NCM delivery charge in NPR" className="rounded border border-slate-300 px-2 py-1.5 text-sm" />
                     <button onClick={() => resolveNcm(shipment, "BOOKED")} disabled={savingId === shipment.id} className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Link confirmed NCM order</button>
                   </div>
                 )}

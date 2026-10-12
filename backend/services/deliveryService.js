@@ -10,6 +10,7 @@ import {
   getShippingRate,
   requestOrderReturn,
   shippingRateTypeForNcm,
+  validateNcmPackageName,
 } from "./ncmClient.js";
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
@@ -25,6 +26,16 @@ const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_picku
 const MAX_NCM_WEBHOOK_ORDER_IDS = 100;
 const MAX_NCM_WEBHOOK_PAYLOAD_BYTES = 64 * 1024;
 let ncmBranchNamesCache = { expiresAt: 0, names: [] };
+
+export const validateNcmDeliveryPackageDetails = ({ productDescription = "", packageType = "Box" } = {}) => {
+  const description = String(productDescription || "").trim();
+  if (description.length > 50) {
+    throw Object.assign(new Error("Product description cannot exceed 50 characters for NCM delivery."), {
+      code: "NCM_PACKAGE_DESCRIPTION_TOO_LONG",
+    });
+  }
+  return validateNcmPackageName(packageType);
+};
 
 const getNcmBranchNames = async () => {
   if (ncmBranchNamesCache.expiresAt > Date.now() && ncmBranchNamesCache.names.length) return ncmBranchNamesCache.names;
@@ -566,6 +577,8 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     packagingChecklist: packagingChecklist ?? existingNotes.packagingChecklist ?? null,
   };
 
+  validateNcmDeliveryPackageDetails(packagingMeta);
+
   const isAdminRequest = Boolean(adminId && !distributorId && !manufacturerId);
   const normalizedWeight = normalizePackageWeight(packagingMeta.packageWeight);
   if (isAdminRequest && (
@@ -596,6 +609,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
         nextStatus: "package_details_complete",
         notes: assignment.notes,
         packageData: packagingMeta,
+        workflowType: assignment.distributorId ? "DISTRIBUTOR" : "MANUFACTURER",
       });
       if (!packageTransition.valid) {
         const error = new Error(packageTransition.message);
@@ -618,6 +632,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     nextStatus: "ready_for_pickup",
     notes: effectiveAssignment.notes,
     packageData: packagingMeta,
+    workflowType: effectiveAssignment.distributorId ? "DISTRIBUTOR" : "MANUFACTURER",
   });
   if (!transition.valid && effectiveAssignment.status !== "ready_for_pickup") {
     const error = new Error(transition.message);
@@ -777,6 +792,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
     manufacturer: distributor || manufacturer,
     packagingMeta: assignmentNotes,
   });
+  const ncmPackageName = validateNcmDeliveryPackageDetails(input);
   const priorAttempts = await prisma.ncmRequestAttempt.findMany({
     where: { deliveryOrderId: delivery.id, operation: "CREATE_ORDER" },
     orderBy: { attemptNumber: "desc" },
@@ -838,7 +854,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
       address: input.customerAddress,
       fbranch: resolvedOrigin,
       branch: resolvedDestination,
-      package: input.packageDescription,
+      package: ncmPackageName,
       vref_id: input.vendorReference,
       instruction: String(input.instruction || input.address.deliveryInstruction || "").slice(0, 500),
       delivery_type: input.deliveryType,

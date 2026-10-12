@@ -4,6 +4,7 @@ import {
   createCustomerExchangeRequest,
   decideCustomerExchangeRequest,
   listAdminExchangeRequests,
+  listDistributorExchangeRequests,
   listCustomerExchangeRequests,
   recordExchangeInspection,
   reconcileCustomerExchange,
@@ -37,6 +38,15 @@ export const customerCreateExchangeRequest = async (req, res) => {
 export const customerListExchangeRequests = async (req, res) => {
   try {
     const requests = await listCustomerExchangeRequests({ customerId: req.userId, orderId: req.query.orderId });
+    return res.json({ success: true, requests });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const distributorListExchangeRequests = async (req, res) => {
+  try {
+    const requests = await listDistributorExchangeRequests({ distributorId: req.distributorId });
     return res.json({ success: true, requests });
   } catch (error) {
     return sendError(res, error);

@@ -1,8 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { prisma } from "../config/db.js";
 import { isBeforeNcmHandoff } from "../services/orderCancellationService.js";
 import { nextCustomerReturnNcmState, resolveCustomerReturnNcmState, returnItemsFromOrder } from "../services/customerReturnWorkflowService.js";
-import { buildExchangeNcmReturnComment, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
+import { buildExchangeNcmReturnComment, decideCustomerExchangeRequest, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
+import { resolveReturnExchangeRoute } from "../services/returnExchangeRouting.js";
+
+const stubMethod = (t, target, name, implementation) => {
+  const original = target[name];
+  target[name] = implementation;
+  t.after(() => {
+    target[name] = original;
+  });
+};
+
+test("return and exchange routing follows the completed delivery channel", () => {
+  assert.deepEqual(resolveReturnExchangeRoute({
+    assignment: { distributorId: "dist-1", deliveryType: "SELF_DELIVERY" },
+    deliveryOrder: null,
+  }), { route: "DISTRIBUTOR", distributorId: "dist-1" });
+
+  assert.deepEqual(resolveReturnExchangeRoute({
+    assignment: { distributorId: "dist-1", deliveryType: "NCM" },
+    deliveryOrder: { ncmOrderId: 123, deliveryType: "Door2Door" },
+  }), { route: "NCM", distributorId: null });
+
+  assert.equal(resolveReturnExchangeRoute({
+    assignment: { distributorId: null, deliveryType: "SELF_DELIVERY" },
+    deliveryOrder: null,
+  }), null);
+});
 
 test("customer cancellation is allowed only before any NCM handoff attempt", () => {
   assert.equal(isBeforeNcmHandoff({
@@ -168,4 +195,52 @@ test("exchange return comment carries the cause and replacement plan to NCM", ()
   assert.match(comment, /Returning: Top S White x1/);
   assert.match(comment, /Replacement requested: Top M Black x1/);
   assert.ok(comment.length <= 1000);
+});
+
+test("admin approval routes a manufacturer-less self-delivery exchange to its distributor without NCM", async (t) => {
+  const current = {
+    id: "exchange-1",
+    orderId: "order-1",
+    customerId: "customer-1",
+    manufacturerId: null,
+    distributorId: "dist-1",
+    deliveryRoute: "DISTRIBUTOR",
+    status: "REQUESTED",
+    replacementStockReservedAt: null,
+    replacementStockReleasedAt: null,
+    cardId: null,
+    order: { status: "Delivered", deliveryOrder: null },
+  };
+  let updateData;
+  let findRequestCount = 0;
+
+  stubMethod(t, prisma, "$transaction", (callback) => callback({
+    orderExchangeRequest: {
+      findUnique: async () => {
+        findRequestCount += 1;
+        return findRequestCount === 1 ? current : { ...current, ...updateData };
+      },
+      updateMany: async ({ data }) => {
+        updateData = data;
+        return { count: 1 };
+      },
+    },
+    orderAssignment: {
+      findUnique: async () => ({ distributorId: "dist-1", deliveryType: "SELF_DELIVERY" }),
+    },
+    orderExchangeEvent: { create: async () => ({ id: "event-1" }) },
+  }));
+
+  const result = await decideCustomerExchangeRequest({
+    requestId: current.id,
+    adminId: "admin-1",
+    decision: "APPROVE",
+    reason: "Approved after review",
+  });
+
+  assert.equal(result.request.status, "APPROVED_FOR_DISTRIBUTOR");
+  assert.equal(result.ncmSubmission, null);
+  assert.equal(updateData.deliveryRoute, "DISTRIBUTOR");
+  assert.equal(updateData.distributorId, "dist-1");
+  assert.equal("replacementStockReservedAt" in updateData, false);
 });

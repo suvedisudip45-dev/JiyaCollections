@@ -1,5 +1,20 @@
 import { logger } from "../utils/logger.js";
 
+export const normalizeNcmPackageName = (value, fallback = "Box") => {
+  const packageName = String(value ?? "").trim() || fallback;
+  return packageName.slice(0, 50);
+};
+
+export const validateNcmPackageName = (value, fallback = "Box") => {
+  const packageName = String(value ?? "").trim() || fallback;
+  if (packageName.length > 50) {
+    throw Object.assign(new Error("NCM package name cannot exceed 50 characters."), {
+      code: "NCM_PACKAGE_NAME_TOO_LONG",
+    });
+  }
+  return packageName;
+};
+
 const DEFAULT_BASE_URL = "https://demo.nepalcanmove.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 

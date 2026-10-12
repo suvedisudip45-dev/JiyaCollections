@@ -126,7 +126,7 @@ test("NCM stock transfer package details map only to documented fields", () => {
     address: "Pokhara",
     fbranch: "SANKHU",
     branch: "POKHARA",
-    package: "Apparel | Shirts and trousers | Package: Carton | Dimensions: 40 x 30 x 25 cm | Fragile | Packaging: Waterproof wrapping | Stock transfer 12345678",
+    package: "Carton",
     instruction: "Call on arrival No COD collection.",
     delivery_type: "Door2Door",
     weight: "2.5",
@@ -134,6 +134,23 @@ test("NCM stock transfer package details map only to documented fields", () => {
   assert.equal("vref_id" in payload, false);
   assert.equal("packageType" in payload, false);
   assert.equal("packageDimensions" in payload, false);
+});
+
+test("NCM stock transfer payload caps long package types at 50 characters", () => {
+  const transfer = {
+    id: "transfer-12345678",
+    manufacturer: { ncmPickupBranch: "SANKHU" },
+    distributor: { name: "Distributor", phone: "9800000000", address: "Pokhara", ncmPickupBranch: "POKHARA" },
+  };
+  const packageDetails = normalizeNcmStockTransferPackageDetails({
+    packageType: "Special reinforced shipment carton for bulk items and materials",
+    productType: "Apparel",
+    productDescription: "Bulk clothing",
+    packageWeight: 2,
+    packageDimensions: "40 x 30 x 25 cm",
+  });
+
+  assert.equal(buildNcmStockTransferPayload({ transfer, packageDetails }).package.length, 50);
 });
 
 test("NCM stock transfer package details reject missing and out-of-range values", () => {

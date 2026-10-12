@@ -68,6 +68,36 @@ test("resolveOrderReference falls back to the assignment record when the caller 
   }
 });
 
+test("resolveOrderReference allows only the assigned distributor to access an order letter", async () => {
+  const originalOrderFindUnique = prisma.order.findUnique;
+  const originalAssignmentFindUnique = prisma.orderAssignment.findUnique;
+  prisma.order.findUnique = async ({ where }) => where.id === "hub-order-1"
+    ? {
+        id: "hub-order-1",
+        userId: "customer-1",
+        manufacturerId: null,
+        distributorId: null,
+        status: "PROCESSING",
+        amount: 500,
+      }
+    : null;
+  prisma.orderAssignment.findUnique = async ({ where }) => where.orderId === "hub-order-1"
+    ? { id: "assignment-1", distributorId: "distributor-1", manufacturerId: null, status: "assigned" }
+    : null;
+
+  try {
+    const result = await resolveOrderReference("hub-order-1", null, "distributor-1");
+    assert.equal(result.assignment.id, "assignment-1");
+    await assert.rejects(
+      resolveOrderReference("hub-order-1", null, "another-distributor"),
+      /PERMISSION_DENIED/,
+    );
+  } finally {
+    prisma.order.findUnique = originalOrderFindUnique;
+    prisma.orderAssignment.findUnique = originalAssignmentFindUnique;
+  }
+});
+
 test("buildRenderedTemplate keeps the product color and Nepali product name together in the letter", () => {
   const rendered = buildRenderedTemplate("तपाईंले {{product.color}} {{product.name}} चयन गर्नुभएकोमा", {
     customer: { firstName: "दीप" },

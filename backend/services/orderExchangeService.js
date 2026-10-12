@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { prisma } from "../config/db.js";
 import { createExchangeOrder, createOrderComment, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, getOrderStatus } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
+import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
 
-const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
+const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "APPROVED_FOR_DISTRIBUTOR", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
 const REASONS = new Set(["SIZE_OR_FIT", "DEFECTIVE", "WRONG_ITEM", "DAMAGED_IN_TRANSIT", "OTHER"]);
 
 const parseArray = (value) => {
@@ -257,6 +258,12 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
     if (!order) throw fail("Order not found.", "ORDER_NOT_FOUND", 404);
     const delivered = normalized(order.status) === "delivered" || order.deliveryOrder?.state === "DELIVERED";
     if (!delivered) throw fail("Exchanges can only be requested for delivered orders.", "ORDER_NOT_DELIVERED", 409);
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
+    const delivery = resolveReturnExchangeRoute({ assignment, deliveryOrder: order.deliveryOrder });
+    if (!delivery) throw fail("The delivered order has no supported exchange route.", "EXCHANGE_ROUTE_UNAVAILABLE", 409);
+    if (delivery.route === "NCM" && (!Number.isInteger(Number(order.deliveryOrder?.ncmOrderId)) || Number(order.deliveryOrder.ncmOrderId) <= 0)) {
+      throw fail("The original delivery has no NCM order ID, so a carrier exchange cannot be created.", "NCM_ORDER_ID_MISSING", 409);
+    }
 
     const cardId = order.marketingCardOrder?.cardId || null;
     if (cardId) {
@@ -278,7 +285,9 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
     });
     const requestedItems = snapshotRequestedItems(order.items, items || [], existingRequests);
     const requestedReplacements = snapshotReplacementItems({ orderItems: order.items, requestedItems, replacementItems });
-    await adjustReplacementInventory({ tx, manufacturerId: order.manufacturerId, items: requestedReplacements, direction: "validate" });
+    if (delivery.route === "NCM" && order.manufacturerId) {
+      await adjustReplacementInventory({ tx, manufacturerId: order.manufacturerId, items: requestedReplacements, direction: "validate" });
+    }
     let priceDifference = 0;
     for (const item of requestedReplacements) {
       const product = await tx.product.findUnique({ where: { id: item.productId }, select: { price: true } });
@@ -299,6 +308,8 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
         customerName: customer?.name || "Customer",
         customerPhone: customer?.phone || "",
         manufacturerId: order.manufacturerId || null,
+        distributorId: delivery.distributorId,
+        deliveryRoute: delivery.route,
         manufacturerName: manufacturer?.name || null,
         cardId,
         reasonCode: code,
@@ -327,7 +338,14 @@ export const createCustomerExchangeRequest = async ({ customerId, orderId, reque
       actorId: actorId || customerId,
       actorRole,
       reason: details || code,
-      metadata: { reasonCode: code, items: requestedItems, replacementItems: requestedReplacements, priceDifference: Number(priceDifference.toFixed(2)) },
+      metadata: {
+        reasonCode: code,
+        items: requestedItems,
+        replacementItems: requestedReplacements,
+        priceDifference: Number(priceDifference.toFixed(2)),
+        deliveryRoute: delivery.route,
+        distributorId: delivery.distributorId,
+      },
       idempotencyKey: `EXCHANGE:${created.id}:REQUESTED`,
     });
     return { request: created, duplicate: false };
@@ -452,6 +470,18 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
   };
 };
 
+export const listDistributorExchangeRequests = ({ distributorId }) => {
+  if (!distributorId) throw fail("An approved distributor profile is required.", "DISTRIBUTOR_REQUIRED", 403);
+  return prisma.orderExchangeRequest.findMany({
+    where: { distributorId, deliveryRoute: "DISTRIBUTOR", status: "APPROVED_FOR_DISTRIBUTOR" },
+    include: {
+      order: { select: { id: true, address: true } },
+      events: { orderBy: { occurredAt: "asc" } },
+    },
+    orderBy: { decidedAt: "asc" },
+  });
+};
+
 export const decideCustomerExchangeRequest = async ({ requestId, adminId, decision, reason, chargePayer }) => {
   const normalizedDecision = String(decision || "").trim().toUpperCase();
   const decisionReason = String(reason || "").trim();
@@ -467,7 +497,7 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
     if (!current) throw fail("Exchange request not found.", "EXCHANGE_NOT_FOUND", 404);
     const canRejectNcmRejection = normalizedDecision === "REJECT" && current.status === "NCM_REJECTED";
     if (current.status !== "REQUESTED" && !canRejectNcmRejection) throw fail("This exchange request has already been reviewed.", "EXCHANGE_ALREADY_REVIEWED", 409);
-    if (normalizedDecision === "APPROVE" && current.status !== "REQUESTED") {
+    if (normalizedDecision === "APPROVE") {
       const delivered = normalized(current.order.status) === "delivered" || current.order.deliveryOrder?.state === "DELIVERED";
       if (!delivered) throw fail("The original order is no longer eligible for exchange.", "ORDER_NOT_DELIVERED", 409);
       if (current.cardId && await cardHasBeenScanned(tx, current.cardId)) {
@@ -475,9 +505,22 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       }
     }
 
-    const nextStatus = normalizedDecision === "APPROVE" ? "APPROVED" : "REJECTED";
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId: current.orderId } });
+    const route = normalizedDecision === "APPROVE"
+      ? resolveReturnExchangeRoute({ assignment, deliveryOrder: current.order.deliveryOrder })
+      : null;
+    if (normalizedDecision === "APPROVE" && (
+      !route ||
+      (current.deliveryRoute && current.deliveryRoute !== route.route) ||
+      (route.route === "DISTRIBUTOR" && current.distributorId !== route.distributorId)
+    )) {
+      throw fail("The original delivery route has changed or is unavailable. Review the order before approving this exchange.", "EXCHANGE_ROUTE_CHANGED", 409);
+    }
+    const nextStatus = normalizedDecision === "APPROVE"
+      ? route.route === "DISTRIBUTOR" ? "APPROVED_FOR_DISTRIBUTOR" : "APPROVED"
+      : "REJECTED";
     const now = new Date();
-    if (normalizedDecision === "APPROVE" && !current.replacementStockReservedAt) {
+    if (normalizedDecision === "APPROVE" && route.route === "NCM" && current.manufacturerId && !current.replacementStockReservedAt) {
       await adjustReplacementInventory({
         tx,
         manufacturerId: current.manufacturerId,
@@ -500,9 +543,10 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
         decisionActorId: adminId,
         decisionReason,
         decidedAt: now,
-        ...(normalizedDecision === "APPROVE" && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
+        ...(normalizedDecision === "APPROVE" && route.route === "NCM" && current.manufacturerId && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
         ...(normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt ? { replacementStockReleasedAt: now } : {}),
         ...(normalizedDecision === "APPROVE" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(normalizedDecision === "APPROVE" ? { deliveryRoute: route.route, distributorId: route.distributorId } : {}),
       },
     });
     if (claimed.count !== 1) throw fail("This exchange request was reviewed by another admin.", "EXCHANGE_ALREADY_REVIEWED", 409);
@@ -521,6 +565,7 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       actorId: adminId,
       actorRole: "ADMIN",
       reason: decisionReason,
+      metadata: normalizedDecision === "APPROVE" ? { deliveryRoute: route.route, distributorId: route.distributorId } : undefined,
       idempotencyKey: `EXCHANGE:${current.id}:${nextStatus}`,
     });
     return updated;

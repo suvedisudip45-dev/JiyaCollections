@@ -2,7 +2,6 @@ import {
   authenticate,
   authorize,
   authorizeAny,
-  setManufacturerContext,
   setFulfillmentContext,
 } from "../middleware/unifiedAuth.js";
 import express from "express";
@@ -33,12 +32,14 @@ import {
   adminRetryExchangeSubmission,
   customerCreateExchangeRequest,
   customerListExchangeRequests,
+  distributorListExchangeRequests,
 } from "../controllers/orderExchangeController.js";
 
 const returnsRouter = express.Router();
 
 returnsRouter.post("/exchange/customer", authenticate, authorize("exchange:customer_request"), customerCreateExchangeRequest);
 returnsRouter.get("/exchange/customer", authenticate, authorize("exchange:customer_read"), customerListExchangeRequests);
+returnsRouter.get("/exchange/distributor", authenticate, authorize("distributor:delivery_return"), setFulfillmentContext, distributorListExchangeRequests);
 returnsRouter.get("/exchange/admin", authenticate, authorize("exchange:admin_read"), adminListExchangeRequests);
 returnsRouter.post("/exchange/admin", authenticate, authorize("exchange:admin_create"), adminCreateExchangeRequest);
 returnsRouter.post("/exchange/admin/:id/decision", authenticate, authorize("exchange:admin_review"), adminDecideExchangeRequest);

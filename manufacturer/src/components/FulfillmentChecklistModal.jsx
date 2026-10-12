@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, CheckCircle2, Gift, HeartHandshake, PackageCheck, X } from "lucide-react";
 
-const REQUIRED_CHECKS = [
+const MANUFACTURER_REQUIRED_CHECKS = [
   ["productVerified", "Product and quantity verified"],
   ["sizeColorVerified", "Size and color verified"],
   ["stitchingVerified", "Stitching completed and inspected"],
@@ -12,9 +12,19 @@ const REQUIRED_CHECKS = [
   ["packagingMaterialsVerified", "Packaging materials and seal verified"],
 ];
 
-const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, currency = "Rs ", onClose, onConfirm, busy = false }) => {
+const DISTRIBUTOR_REQUIRED_CHECKS = [
+  ["productVerified", "Product and quantity verified"],
+  ["sizeColorVerified", "Size and color verified"],
+  ["qualityVerified", "Quality check passed"],
+  ["customerLetterIncluded", "Compulsory customer letter included"],
+  ["addressVerified", "Customer address and phone verified"],
+  ["packagingMaterialsVerified", "Packaging materials and seal verified"],
+];
+
+const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false }) => {
   const [draft, setDraft] = useState(checklist);
   const [error, setError] = useState("");
+  const requiredChecks = isDistributor ? DISTRIBUTOR_REQUIRED_CHECKS : MANUFACTURER_REQUIRED_CHECKS;
 
   useEffect(() => {
     if (isOpen) {
@@ -24,17 +34,17 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
   }, [isOpen, checklist]);
 
   const completedRequired = useMemo(
-    () => REQUIRED_CHECKS.filter(([key]) => draft[key] === true).length,
-    [draft]
+    () => requiredChecks.filter(([key]) => draft[key] === true).length,
+    [draft, requiredChecks]
   );
   const assignedGift = assignment?.order?.assignedGift;
   const hasAssignedGift = Boolean(assignedGift?.id);
   const hasGiftOpportunity = Boolean(giftOptions?.eligible && !giftOptions?.alreadyAssigned);
   const availableGifts = giftOptions?.options || [];
   const giftSelectionRequired = hasGiftOpportunity && availableGifts.length > 0;
-  const totalRequired = REQUIRED_CHECKS.length + (hasAssignedGift ? 1 : 0) + (giftSelectionRequired ? 1 : 0);
+  const totalRequired = requiredChecks.length + (hasAssignedGift ? 1 : 0) + (giftSelectionRequired ? 1 : 0);
   const completedTotal = completedRequired + (hasAssignedGift && draft.catalogGiftIncluded ? 1 : 0) + (giftSelectionRequired && draft.giftInventoryId && draft.catalogGiftIncluded ? 1 : 0);
-  const allRequiredComplete = completedRequired === REQUIRED_CHECKS.length &&
+  const allRequiredComplete = completedRequired === requiredChecks.length &&
     (!hasAssignedGift || draft.catalogGiftIncluded === true) &&
     (!giftSelectionRequired || (Boolean(draft.giftInventoryId) && draft.catalogGiftIncluded === true));
   const hasCustomPerk = Boolean(benefits.customPerk);
@@ -56,7 +66,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
       return;
     }
     if (!allRequiredComplete) {
-      setError(`Complete all required checks. ${REQUIRED_CHECKS.length - completedRequired} remaining.`);
+      setError(`Complete all required checks. ${requiredChecks.length - completedRequired} remaining.`);
       return;
     }
     if (draft.marketingCard && !String(draft.marketingCardId || "").trim()) {
@@ -98,7 +108,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
           </div>
 
           <div className="space-y-2">
-            {REQUIRED_CHECKS.map(([key, label]) => (
+            {requiredChecks.map(([key, label]) => (
               <label key={key} className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold transition ${draft[key] ? "border-emerald-300 bg-emerald-50 text-emerald-950" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300"}`}>
                 <input type="checkbox" checked={Boolean(draft[key])} onChange={() => toggle(key)} className="sr-only" />
                 <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${draft[key] ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300 bg-white"}`}>
