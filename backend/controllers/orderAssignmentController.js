@@ -145,7 +145,266 @@ const getStockShortages = (distributor, requirements) => requirements
 const distributorHasStock = (distributor, requirements) =>
   getStockShortages(distributor, requirements).length === 0;
 
+const selectDistributorForOrder = async ({
+  address,
+  items,
+  preferredDistributorId = null,
+  allowSplit = false,
+}) => {
+  const location = canonicalizeNepalLocation(address.province || address.state, address.district || address.city);
+  if (!location) {
+    return { success: false, message: "A valid customer province and district are required for distributor hub allocation." };
+  }
+  const lineItems = parseJSON(items, []).map((item) => ({
+    productId: String(item.productId || item._id || item.id || ""),
+    size: String(item.size || "Standard"),
+    color: String(item.color || "Standard"),
+    qty: Number(item.quantity ?? 1),
+  }));
+  if (!lineItems.length || lineItems.some((item) => !item.productId || !Number.isSafeInteger(item.qty) || item.qty < 1)) {
+    return { success: false, message: "Order items are invalid for distributor allocation." };
+  }
+  const requirementsBySku = new Map();
+  for (const item of lineItems) {
+    const key = [item.productId, normalizeSkuKey(item.size), normalizeSkuKey(item.color)].join("\0");
+    const existing = requirementsBySku.get(key);
+    if (existing) existing.qty += item.qty;
+    else requirementsBySku.set(key, { ...item });
+  }
+  const requirements = [...requirementsBySku.values()];
+  const productIds = [...new Set(requirements.map((item) => item.productId))];
+  const distributors = await prisma.distributor.findMany({
+    where: {
+      status: "ACTIVE",
+      isActive: true,
+    },
+    include: {
+      locations: { where: { isActive: true } },
+    },
+  });
+  if (!distributors.length) {
+    return {
+      success: false,
+      code: "NO_ACTIVE_DISTRIBUTOR",
+      message: "There are no active distributors available for allocation.",
+    };
+  }
+  const customerBranch = normalizeLocationKey(address.ncmBranch || address.ncmPickupBranch);
+  const compareRating = (left, right) =>
+    Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
+    Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
+    left.id.localeCompare(right.id);
+  const getCoverageLocations = (distributor) => {
+    const configuredLocations = (distributor.locations || [])
+      .filter((serviceArea) => serviceArea.isActive !== false)
+      .map((serviceArea) => canonicalizeNepalLocation(serviceArea.province, serviceArea.district))
+      .filter(Boolean);
+    if (configuredLocations.length) return configuredLocations;
+    const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+    return registeredLocation ? [registeredLocation] : [];
+  };
+  const hasExactCoverage = (distributor) => getCoverageLocations(distributor).some((serviceLocation) =>
+    serviceLocation.province === location.province &&
+    serviceLocation.district === location.district
+  );
+  const hasBranchMatch = (distributor) => customerBranch &&
+    normalizeLocationKey(distributor.ncmPickupBranch) === customerBranch;
+  const hasDistrictMatch = (distributor) => {
+    const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
+    return registeredLocation?.province === location.province &&
+      registeredLocation?.district === location.district;
+  };
+  const hasProvinceMatch = (distributor) =>
+    getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
+    canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
+
+  const coverageCandidates = distributors.filter(hasExactCoverage);
+  const districtCandidates = distributors.filter((distributor) =>
+    !hasExactCoverage(distributor) && hasDistrictMatch(distributor)
+  );
+  const branchCandidates = distributors.filter((distributor) =>
+    !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
+  );
+  const provinceCandidates = distributors.filter((distributor) =>
+    !hasExactCoverage(distributor) &&
+    !hasDistrictMatch(distributor) &&
+    !hasBranchMatch(distributor) &&
+    hasProvinceMatch(distributor)
+  );
+  const nationwideCandidates = distributors.filter((distributor) =>
+    !hasExactCoverage(distributor) &&
+    !hasDistrictMatch(distributor) &&
+    !hasBranchMatch(distributor) &&
+    !hasProvinceMatch(distributor)
+  );
+  const candidateTiers = [
+    ["service-area coverage", coverageCandidates],
+    ["same district", districtCandidates],
+    ["NCM branch", branchCandidates],
+    ["same province", provinceCandidates],
+    ["review-ranked nationwide", nationwideCandidates],
+  ].map(([tierName, tierCandidates]) => [
+    tierName,
+    preferredDistributorId
+      ? tierCandidates.filter((distributor) => distributor.id === preferredDistributorId)
+      : tierCandidates,
+  ]);
+  let allocationTier = "";
+  let candidates = [];
+  let stockRows = [];
+  for (const [tierName, tierCandidates] of candidateTiers) {
+    if (!tierCandidates.length) continue;
+    const tierStockRows = await prisma.inventoryBalance.findMany({
+      where: {
+        location: {
+          distributorId: { in: tierCandidates.map((distributor) => distributor.id) },
+          kind: "DISTRIBUTOR",
+          inventoryOwner: "PLATFORM",
+          isActive: true,
+        },
+        inventorySku: {
+          isActive: true,
+          OR: requirements.map((requirement) => ({
+            productId: requirement.productId,
+            sizeKey: normalizeSkuKey(requirement.size),
+            colorKey: normalizeSkuKey(requirement.color),
+          })),
+        },
+      },
+      select: {
+        quantityOnHand: true,
+        reservedQuantity: true,
+        location: { select: { distributorId: true } },
+        inventorySku: { select: { productId: true, sizeKey: true, colorKey: true } },
+      },
+    });
+    stockRows = stockRows.concat(tierStockRows);
+    const stockedCandidates = tierCandidates
+      .map((distributor) => ({
+        ...distributor,
+        inventoryBalances: tierStockRows
+          .filter((balance) => balance.location.distributorId === distributor.id),
+      }))
+      .filter((distributor) => distributorHasStock(distributor, requirements))
+      .sort(compareRating);
+    if (stockedCandidates.length) {
+      allocationTier = tierName;
+      candidates = stockedCandidates;
+      break;
+    }
+  }
+  const selected = candidates[0];
+  if (!selected) {
+    const stockShortages = distributors.map((distributor) => ({
+      distributor: distributor.name,
+      shortages: getStockShortages({
+        ...distributor,
+        inventoryBalances: stockRows.filter((balance) =>
+          balance.location.distributorId === distributor.id
+        ),
+      }, requirements),
+    }));
+    if (!allowSplit) {
+      return {
+        success: false,
+        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
+        message: "No single active distributor has enough available distributor-ledger stock for every requested variant.",
+        stockShortages,
+      };
+    }
+    const rankedDistributors = candidateTiers.flatMap(([, tierCandidates]) =>
+      tierCandidates.slice().sort(compareRating)
+    );
+    const splitByDistributor = new Map();
+
+    for (const requirement of requirements) {
+      let remaining = requirement.qty;
+      for (const distributor of rankedDistributors) {
+        const availableQuantity = stockRows
+          .filter((balance) =>
+            balance.location.distributorId === distributor.id &&
+            balance.inventorySku.productId === requirement.productId &&
+            normalizeSkuKey(balance.inventorySku.sizeKey) === normalizeSkuKey(requirement.size) &&
+            normalizeSkuKey(balance.inventorySku.colorKey) === normalizeSkuKey(requirement.color)
+          )
+          .reduce((total, balance) =>
+            total + Math.max(0, balance.quantityOnHand - balance.reservedQuantity), 0);
+        const allocatedQuantity = Math.min(remaining, availableQuantity);
+        if (allocatedQuantity > 0) {
+          const shipment = splitByDistributor.get(distributor.id) || {
+            distributor,
+            items: [],
+          };
+          shipment.items.push({ ...requirement, qty: allocatedQuantity });
+          splitByDistributor.set(distributor.id, shipment);
+          remaining -= allocatedQuantity;
+        }
+        if (!remaining) break;
+      }
+    }
+
+    const allocatedQuantity = [...splitByDistributor.values()]
+      .flatMap(({ items: shipmentItems }) => shipmentItems)
+      .reduce((total, item) => total + item.qty, 0);
+    const requiredQuantity = requirements.reduce((total, item) => total + item.qty, 0);
+    if (allocatedQuantity !== requiredQuantity) {
+      return {
+        success: false,
+        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
+        message: "The active distributors do not have enough combined available stock for every requested variant.",
+        stockShortages,
+      };
+    }
+    return {
+      success: true,
+      selected: null,
+      distributors,
+      requirements,
+      productIds,
+      allocationTier: "split distributor stock",
+      location,
+      splitShipments: [...splitByDistributor.values()],
+    };
+  }
+  return {
+    success: true,
+    selected,
+    distributors,
+    requirements,
+    productIds,
+    allocationTier,
+    location,
+  };
+};
+
+export const previewDistributorAllocation = async ({ address, items }) => {
+  const result = await selectDistributorForOrder({ address, items, allowSplit: true });
+  if (!result.success) return result;
+  if (result.splitShipments) {
+    return {
+      success: true,
+      splitShipments: result.splitShipments.map(({ distributor, items: shipmentItems }) => ({
+        distributor: {
+          id: distributor.id,
+          name: distributor.name,
+          district: distributor.district,
+          province: distributor.province,
+        },
+        items: shipmentItems,
+      })),
+      location: result.location,
+    };
+  }
+  return {
+    success: true,
+    distributor: result.selected,
+    allocationTier: result.allocationTier,
+    location: result.location,
+  };
+};
+
 export const runAllocationEngine = async (orderId, actorContext = {}) => {
+  const { preferredDistributorId = null, ...auditContext } = actorContext;
   const actor = {
     actorId: null,
     actorRole: "SYSTEM",
@@ -153,7 +412,7 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
     ipAddress: null,
     userAgent: null,
     correlationId: null,
-    ...actorContext,
+    ...auditContext,
   };
 
   try {
@@ -165,161 +424,20 @@ export const runAllocationEngine = async (orderId, actorContext = {}) => {
     if (order.assignmentId) return { success: false, message: "Order already assigned." };
 
     const address = parseJSON(order.address, {});
-    const location = canonicalizeNepalLocation(address.province || address.state, address.district || address.city);
-    if (!location) {
-      return { success: false, message: "A valid customer province and district are required for distributor hub allocation." };
-    }
-    const lineItems = parseJSON(order.items, []).map((item) => ({
-      productId: String(item.productId || item._id || item.id || ""),
-      size: String(item.size || "Standard"),
-      color: String(item.color || "Standard"),
-      qty: Number(item.quantity ?? 1),
-    }));
-    if (!lineItems.length || lineItems.some((item) => !item.productId || !Number.isSafeInteger(item.qty) || item.qty < 1)) {
-      return { success: false, message: "Order items are invalid for distributor allocation." };
-    }
-    const requirementsBySku = new Map();
-    for (const item of lineItems) {
-      const key = [item.productId, normalizeSkuKey(item.size), normalizeSkuKey(item.color)].join("\0");
-      const existing = requirementsBySku.get(key);
-      if (existing) existing.qty += item.qty;
-      else requirementsBySku.set(key, { ...item });
-    }
-    const requirements = [...requirementsBySku.values()];
-    const productIds = [...new Set(requirements.map((item) => item.productId))];
-    const distributors = await prisma.distributor.findMany({
-      where: {
-        status: "ACTIVE",
-        isActive: true,
-      },
-      include: {
-        locations: { where: { isActive: true } },
-      },
+    const selection = await selectDistributorForOrder({
+      address,
+      items: order.items,
+      preferredDistributorId,
     });
-    if (!distributors.length) {
-      return {
-        success: false,
-        code: "NO_ACTIVE_DISTRIBUTOR",
-        message: "There are no active distributors available for allocation.",
-      };
-    }
-    const customerBranch = normalizeLocationKey(address.ncmBranch || address.ncmPickupBranch);
-    const compareRating = (left, right) =>
-      Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
-      Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
-      left.id.localeCompare(right.id);
-    const getCoverageLocations = (distributor) => {
-      const configuredLocations = (distributor.locations || [])
-        .filter((serviceArea) => serviceArea.isActive !== false)
-        .map((serviceArea) => canonicalizeNepalLocation(serviceArea.province, serviceArea.district))
-        .filter(Boolean);
-      if (configuredLocations.length) return configuredLocations;
-      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
-      return registeredLocation ? [registeredLocation] : [];
-    };
-    const hasExactCoverage = (distributor) => getCoverageLocations(distributor).some((serviceLocation) =>
-      serviceLocation.province === location.province &&
-      serviceLocation.district === location.district
-    );
-    const hasBranchMatch = (distributor) => customerBranch &&
-      normalizeLocationKey(distributor.ncmPickupBranch) === customerBranch;
-    const hasDistrictMatch = (distributor) => {
-      const registeredLocation = canonicalizeNepalLocation(distributor.province, distributor.district);
-      return registeredLocation?.province === location.province &&
-        registeredLocation?.district === location.district;
-    };
-    const hasProvinceMatch = (distributor) =>
-      getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
-      canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
-
-    const coverageCandidates = distributors.filter(hasExactCoverage);
-    const districtCandidates = distributors.filter((distributor) =>
-      !hasExactCoverage(distributor) && hasDistrictMatch(distributor)
-    );
-    const branchCandidates = distributors.filter((distributor) =>
-      !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
-    );
-    const provinceCandidates = distributors.filter((distributor) =>
-      !hasExactCoverage(distributor) &&
-      !hasDistrictMatch(distributor) &&
-      !hasBranchMatch(distributor) &&
-      hasProvinceMatch(distributor)
-    );
-    const nationwideCandidates = distributors.filter((distributor) =>
-      !hasExactCoverage(distributor) &&
-      !hasDistrictMatch(distributor) &&
-      !hasBranchMatch(distributor) &&
-      !hasProvinceMatch(distributor)
-    );
-    const candidateTiers = [
-      ["service-area coverage", coverageCandidates],
-      ["same district", districtCandidates],
-      ["NCM branch", branchCandidates],
-      ["same province", provinceCandidates],
-      ["review-ranked nationwide", nationwideCandidates],
-    ];
-    let allocationTier = "";
-    let candidates = [];
-    let stockRows = [];
-    for (const [tierName, tierCandidates] of candidateTiers) {
-      if (!tierCandidates.length) continue;
-      const tierStockRows = await prisma.inventoryBalance.findMany({
-        where: {
-          location: {
-            distributorId: { in: tierCandidates.map((distributor) => distributor.id) },
-            kind: "DISTRIBUTOR",
-            inventoryOwner: "PLATFORM",
-            isActive: true,
-          },
-          inventorySku: {
-            isActive: true,
-            OR: requirements.map((requirement) => ({
-              productId: requirement.productId,
-              sizeKey: normalizeSkuKey(requirement.size),
-              colorKey: normalizeSkuKey(requirement.color),
-            })),
-          },
-        },
-        select: {
-          quantityOnHand: true,
-          reservedQuantity: true,
-          location: { select: { distributorId: true } },
-          inventorySku: { select: { productId: true, sizeKey: true, colorKey: true } },
-        },
-      });
-      stockRows = stockRows.concat(tierStockRows);
-      const stockedCandidates = tierCandidates
-        .map((distributor) => ({
-          ...distributor,
-          inventoryBalances: tierStockRows
-            .filter((balance) => balance.location.distributorId === distributor.id),
-        }))
-        .filter((distributor) => distributorHasStock(distributor, requirements))
-        .sort(compareRating);
-      if (stockedCandidates.length) {
-        allocationTier = tierName;
-        candidates = stockedCandidates;
-        break;
-      }
-    }
-    const selected = candidates[0];
-    if (!selected) {
-      const stockShortages = distributors.map((distributor) => ({
-        distributor: distributor.name,
-        shortages: getStockShortages({
-          ...distributor,
-          inventoryBalances: stockRows.filter((balance) =>
-            balance.location.distributorId === distributor.id
-          ),
-        }, requirements),
-      }));
-      return {
-        success: false,
-        code: "INSUFFICIENT_DISTRIBUTOR_STOCK",
-        message: "No active distributor has enough available distributor-ledger stock for every requested variant. Check available stock (on hand minus reserved) and replenish the missing variants.",
-        stockShortages,
-      };
-    }
+    if (!selection.success) return selection;
+    const {
+      selected,
+      distributors,
+      requirements,
+      productIds,
+      allocationTier,
+      location,
+    } = selection;
     const assignment = await prisma.$transaction(async (tx) => {
       const stillActive = await tx.distributor.findFirst({
         where: { id: selected.id, status: "ACTIVE", isActive: true },

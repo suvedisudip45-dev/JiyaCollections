@@ -36,9 +36,7 @@ const PlaceOrder = () => {
     cartItems,
     setCartItems,
     getCartAmount,
-    delivery_fee,
     shippingConfig,
-    calculateDeliveryFee,
     calculateShippingRate,
     products,
     getMaxStock,
@@ -94,6 +92,38 @@ const PlaceOrder = () => {
       return { productId, size, color: color || "", quantity: Number(quantity) };
     })
   ), [cartItems]);
+  const shippingQuoteItems = useMemo(() => {
+    if (!comboBundleData) return cartPricingItems;
+    return (comboBundleData.products || []).map((entry, index) => ({
+      productId: entry.product?._id || entry.product?.id || "",
+      size: checkoutBundleVariant?.size || "",
+      color: checkoutBundleVariant?.productVariants?.[index]?.color || "",
+      quantity: Number(comboBundlePurchase?.quantity || 1),
+    })).filter((item) => item.productId);
+  }, [cartPricingItems, comboBundleData, comboBundlePurchase?.quantity, checkoutBundleVariant]);
+  const shippingQuoteKey = JSON.stringify({
+    province: formData.province,
+    district: formData.district,
+    ncmBranch: formData.city || formData.ncmBranch || "",
+    subtotal: orderSubtotal,
+    items: shippingQuoteItems,
+  });
+  const [shippingQuoteResult, setShippingQuoteResult] = useState({
+    key: null,
+    status: "idle",
+    error: "",
+    stockShortages: [],
+    quote: null,
+  });
+  const [shippingQuoteRetry, setShippingQuoteRetry] = useState(0);
+  const hasMatchingShippingQuote = shippingQuoteResult.key === shippingQuoteKey;
+  const shippingQuoteStatus = hasMatchingShippingQuote
+    ? shippingQuoteResult.status
+    : formData.province && formData.district && shippingQuoteItems.length > 0
+      ? "loading"
+      : "idle";
+  const shippingQuoteError = hasMatchingShippingQuote ? shippingQuoteResult.error : "";
+  const shippingStockShortages = hasMatchingShippingQuote ? shippingQuoteResult.stockShortages : [];
   const hasComboBundle = Boolean(comboBundleData);
   const checkoutPriceKey = JSON.stringify({
     province: formData.province,
@@ -175,8 +205,8 @@ const PlaceOrder = () => {
   const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
 
-  // Dynamic delivery fee - recalculated when city changes
-  const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(delivery_fee);
+  // Dynamic delivery fee - recalculated when address or cart contents change
+  const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(undefined);
   const [shippingTierLabel, setShippingTierLabel] = useState("");
   const [loyaltyData, setLoyaltyData] = useState(null);
   const [loyaltyDiscountAmount, setLoyaltyDiscountAmount] = useState(0);
@@ -428,82 +458,139 @@ const PlaceOrder = () => {
   // Recalculate fee & loyalty rewards whenever district, province, shippingConfig or loyalty changes
   useEffect(() => {
     let isCancelled = false;
-    const updateRates = async () => {
-      const subtotal = orderSubtotal;
-      const district = formData.district || "Kathmandu";
-      const province = formData.province || "Bagmati Province";
-
-      let serverFee = 120;
-      let serverLabel = "Outside District Delivery";
-
-      if (calculateShippingRate) {
-        const rateResult = await calculateShippingRate(district, province, subtotal);
-        if (!isCancelled && rateResult) {
-          serverFee = rateResult.fee !== undefined ? rateResult.fee : 120;
-          serverLabel = rateResult.label || "Standard Shipping";
-        }
-      } else {
-        serverFee = calculateDeliveryFee ? calculateDeliveryFee(district, subtotal) : 50;
+    const fetchQuote = async () => {
+      if (!formData.province || !formData.district || shippingQuoteItems.length === 0) {
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "idle",
+          error: "",
+          stockShortages: [],
+          quote: null,
+        });
+        return;
       }
 
-      if (isCancelled) return;
+      setShippingQuoteResult({
+        key: shippingQuoteKey,
+        status: "loading",
+        error: "",
+        stockShortages: [],
+        quote: null,
+      });
 
-      let fee = serverFee;
-      let tierLabel = serverLabel;
-
-      // ---- Modular loyalty reward resolution ----
-      let isLoyaltyFreeShipping = false;
-      let discAmount = 0;
-      let discLabel = "";
-      let giftInfo = null;
-
-      if (rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible) {
-        const act = loyaltyData.activeReward;
-        const lvl = loyaltyData.currentLevel;
-        const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
-
-        // Free Delivery
-        if (act.freeShipping) {
-          isLoyaltyFreeShipping = true;
-          fee = 0;
-          tierLabel = `Free Delivery · ${lvl.name} (${usageText})`;
+      try {
+        const quote = await calculateShippingRate(
+          formData.district,
+          formData.province,
+          orderSubtotal,
+          shippingQuoteItems,
+          formData.city || formData.ncmBranch || ""
+        );
+        if (!quote?.probableDistributor && !quote?.splitShipment) {
+          throw new Error("A distributor for this cart and delivery location could not be confirmed.");
         }
-
-        // Price Discount
-        if (Number(act.discountAmount) > 0) {
-          discAmount = Math.min(subtotal, Number(act.discountAmount));
-          const parts = [];
-          if (act.freeShipping) parts.push("Free Delivery");
-          parts.push(`Rs. ${discAmount} Off`);
-          discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
-        } else if (act.freeShipping) {
-          discLabel = `${lvl.name} · Free Delivery (${usageText})`;
+        if (quote?.splitShipment && (!Array.isArray(quote.shipments) || quote.shipments.length < 2)) {
+          throw new Error("The split-shipment quote did not include at least two confirmed distributor hubs.");
         }
-
-        // Gift / Letter / Custom Perk
-        if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
-          giftInfo = {
-            amount: Number(act.giftAmount || 0),
-            description: act.giftDescription || "",
-            letterIncluded: Boolean(act.letterIncluded),
-            customPerk: act.customPerk || "",
-          };
+        if (!Number.isFinite(Number(quote.fee)) || Number(quote.fee) < 0) {
+          throw new Error("The shipping quote returned an invalid delivery charge.");
         }
+        if (!isCancelled) {
+          setShippingQuoteResult({
+            key: shippingQuoteKey,
+            status: "ready",
+            error: "",
+            stockShortages: [],
+            quote,
+          });
+        }
+      } catch (error) {
+        if (isCancelled) return;
+        if (error.code !== "INSUFFICIENT_DISTRIBUTOR_STOCK") {
+          console.error("Failed to fetch a distributor-based shipping quote:", error);
+        }
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "error",
+          error: error.message || "Unable to calculate delivery for this address.",
+          stockShortages: error.stockShortages || [],
+          quote: null,
+        });
       }
-
-      setShippingTierLabel(tierLabel);
-      setDynamicDeliveryFee(fee);
-      setLoyaltyDiscountAmount(discAmount);
-      setLoyaltyDiscountLabel(discLabel);
-      setLoyaltyGiftInfo(giftInfo);
     };
 
-    updateRates();
+    fetchQuote();
 
     return () => {
       isCancelled = true;
     };
-  }, [formData.district, formData.province, shippingConfig, cartItems, loyaltyData, orderSubtotal, rewardChoice]);
+  }, [shippingQuoteKey, shippingQuoteRetry, calculateShippingRate]);
+
+  useEffect(() => {
+    if (shippingQuoteResult.key !== shippingQuoteKey || shippingQuoteResult.status !== "ready" || !shippingQuoteResult.quote) {
+      setDynamicDeliveryFee(undefined);
+      setShippingTierLabel("");
+      setLoyaltyDiscountAmount(0);
+      setLoyaltyDiscountLabel("");
+      setLoyaltyGiftInfo(null);
+      return;
+    }
+
+    const subtotal = orderSubtotal;
+    const quote = shippingQuoteResult.quote;
+    const shipmentOriginLabel = quote.splitShipment
+      ? `Ships as ${quote.shipmentCount} product deliveries from ${quote.shipments.map(({ distributor }) =>
+        `${distributor.name}${distributor.district ? ` (${distributor.district})` : ""}`
+      ).join(", ")}`
+      : `Ships from ${quote.probableDistributor.name || "Selected hub"}${
+        quote.probableDistributor.district || quote.origin?.district
+          ? ` (${quote.probableDistributor.district || quote.origin?.district})`
+          : ""
+      }`;
+    let fee = Number(quote.fee);
+    let tierLabel = `${quote.label || "Standard Shipping"}${
+      quote.splitShipment ? " (one flat fee)" : ""
+    } · ${shipmentOriginLabel}`;
+    let discAmount = 0;
+    let discLabel = "";
+    let giftInfo = null;
+
+    if (rewardChoice === "LOYALTY" && loyaltyData?.activeReward?.isEligible) {
+      const act = loyaltyData.activeReward;
+      const lvl = loyaltyData.currentLevel;
+      const usageText = `Use ${act.currentUseIndex} of ${act.orderLimit}`;
+
+      if (act.freeShipping) {
+        fee = 0;
+        tierLabel = `Free Delivery · ${lvl.name} (${usageText}) · ${shipmentOriginLabel}`;
+      }
+
+      if (Number(act.discountAmount) > 0) {
+        discAmount = Math.min(subtotal, Number(act.discountAmount));
+        const parts = [];
+        if (act.freeShipping) parts.push("Free Delivery");
+        parts.push(`Rs. ${discAmount} Off`);
+        discLabel = `${lvl.name} · ${parts.join(" + ")} (${usageText})`;
+      } else if (act.freeShipping) {
+        discLabel = `${lvl.name} · Free Delivery (${usageText})`;
+      }
+
+      if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
+        giftInfo = {
+          amount: Number(act.giftAmount || 0),
+          description: act.giftDescription || "",
+          letterIncluded: Boolean(act.letterIncluded),
+          customPerk: act.customPerk || "",
+        };
+      }
+    }
+
+    setShippingTierLabel(tierLabel);
+    setDynamicDeliveryFee(fee);
+    setLoyaltyDiscountAmount(discAmount);
+    setLoyaltyDiscountLabel(discLabel);
+    setLoyaltyGiftInfo(giftInfo);
+  }, [shippingQuoteResult, shippingQuoteKey, orderSubtotal, rewardChoice, loyaltyData]);
 
   const onChangeHandler = (event) => {
     const { name, value } = event.target;
@@ -606,6 +693,13 @@ const PlaceOrder = () => {
     if (!token) {
       toast.error("Please login to place your order");
       navigate("/login");
+      return;
+    }
+
+    if (shippingQuoteStatus !== "ready") {
+      toast.error(shippingQuoteStatus === "error"
+        ? shippingQuoteError || "Unable to verify shipping for this delivery location. Please retry."
+        : "Confirming the distributor and shipping fee. Please wait.");
       return;
     }
 
@@ -1253,12 +1347,45 @@ const PlaceOrder = () => {
               )}
               {/* ===== END VIP BANNER ===== */}
 
+              {shippingQuoteStatus === "loading" && (
+                <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs text-slate-600">
+                  Checking distributor availability and delivery charge for this address…
+                </div>
+              )}
+              {shippingQuoteStatus === "error" && (
+                <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs text-rose-700">
+                  <span>{shippingQuoteError}</span>
+                  {shippingStockShortages.length > 0 && (
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {shippingStockShortages.map((hub) => (
+                        <li key={hub.distributor}>
+                          <span className="font-semibold">{hub.distributor}:</span>{" "}
+                          {hub.shortages.map((shortage) => {
+                            const product = products.find((item) =>
+                              String(item._id || item.id) === String(shortage.productId)
+                            );
+                            return `${product?.name || "Item"} (${shortage.size} / ${shortage.color || "Default"}) has ${shortage.availableQuantity} of ${shortage.requiredQuantity} required`;
+                          }).join("; ")}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShippingQuoteRetry((retry) => retry + 1)}
+                    className="ml-2 font-semibold underline"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
               {/* Dynamic Shipping Rate Badge (only shown when NOT a loyalty free delivery) */}
-              {shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
+              {shippingQuoteStatus === "ready" && shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
                 <div className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${
                   dynamicDeliveryFee === 0
                     ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
-                    : shippingTierLabel.includes("Inside")
+                    : shippingTierLabel.includes("Within")
                     ? "bg-sky-50 border border-sky-200 text-sky-700"
                     : "bg-amber-50 border border-amber-200 text-amber-700"
                 }`}>
@@ -1321,7 +1448,7 @@ const PlaceOrder = () => {
               <div className="w-full text-end mt-8">
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || shippingQuoteStatus !== "ready"}
                   className="bg-black text-white px-12 py-3.5 text-sm font-semibold rounded-xl hover:bg-gray-800 active:scale-95 transition-all w-full sm:w-auto shadow-sm flex items-center justify-center gap-2 disabled:opacity-50"
                 >
                   {submitting && (

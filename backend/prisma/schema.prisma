@@ -620,6 +620,7 @@ model Order {
   paymentMethod               String
   payment                     Boolean             @default(false)
   date                        BigInt
+  checkoutGroupId             String?
   updatedAt                   DateTime            @default(now()) @updatedAt
   loyaltyDiscount             Float?              @default(0)
   rewardApplied               Json?
@@ -666,6 +667,7 @@ model Order {
   @@index([manufacturerId])
   @@index([distributorId])
   @@index([date])
+  @@index([checkoutGroupId])
   @@index([updatedAt])
   @@index([status])
   @@index([payment])
@@ -732,6 +734,10 @@ model ShippingConfig {
   id                   String   @id @default("default")
   sameDistrictFee      Float    @default(50)
   differentDistrictFee Float    @default(120)
+  sameProvinceFee      Float    @default(120)
+  differentProvinceFee Float    @default(120)
+  routeOverrides       Json     @default("[]")
+  splitShipmentFee     Float    @default(200)
   freeShippingMin      Float?   @default(0)
   updatedAt            DateTime @updatedAt
 }

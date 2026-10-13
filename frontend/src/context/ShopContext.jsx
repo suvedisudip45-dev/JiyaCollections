@@ -1,4 +1,4 @@
-import { createContext, useEffect, useState } from "react";
+import { createContext, useCallback, useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
@@ -46,6 +46,9 @@ const ShopContextProvider = (props) => {
   const [shippingConfig, setShippingConfig] = useState({
     sameDistrictFee: 50,
     differentDistrictFee: 120,
+    sameProvinceFee: 120,
+    differentProvinceFee: 120,
+    routeOverrides: [],
     freeShippingMin: 0,
   });
 
@@ -57,6 +60,9 @@ const ShopContextProvider = (props) => {
         setShippingConfig({
           sameDistrictFee: Number(c.sameDistrictFee ?? c.sameCityFee ?? 50),
           differentDistrictFee: Number(c.differentDistrictFee ?? c.differentCityFee ?? 120),
+          sameProvinceFee: Number(c.sameProvinceFee ?? c.differentDistrictFee ?? 120),
+          differentProvinceFee: Number(c.differentProvinceFee ?? c.differentDistrictFee ?? 120),
+          routeOverrides: Array.isArray(c.routeOverrides) ? c.routeOverrides : [],
           freeShippingMin: Number(c.freeShippingMin ?? 0),
         });
       }
@@ -66,25 +72,30 @@ const ShopContextProvider = (props) => {
   };
 
   // Authoritative backend shipping rate calculation
-  const calculateShippingRate = async (district, province = "", subtotal = 0) => {
+  const calculateShippingRate = useCallback(async (district, province = "", subtotal = 0, items = [], ncmBranch = "") => {
     try {
-      const res = await axios.get(backendUrl + "/api/shipping/calculate", {
-        params: { district, province, subtotal },
+      const res = await axios.post(backendUrl + "/api/shipping/calculate", {
+        district,
+        province,
+        subtotal,
+        items,
+        ncmBranch,
       });
       if (res.data.success) {
         return res.data;
       }
+      throw new Error(res.data?.message || "Unable to calculate shipping for this delivery location.");
     } catch (err) {
-      console.error("Error fetching calculated shipping rate:", err);
+      const responseData = err.response?.data;
+      if (responseData?.code !== "INSUFFICIENT_DISTRIBUTOR_STOCK") {
+        console.error("Error fetching calculated shipping rate:", err);
+      }
+      const quoteError = new Error(responseData?.message || err.message || "Unable to calculate shipping for this delivery location.");
+      quoteError.code = responseData?.code;
+      quoteError.stockShortages = responseData?.stockShortages || [];
+      throw quoteError;
     }
-    return {
-      fee: shippingConfig.differentDistrictFee || 120,
-      tier: "DIFFERENT_DISTRICT",
-      label: "Outside District Delivery",
-      sameDistrictFee: shippingConfig.sameDistrictFee,
-      differentDistrictFee: shippingConfig.differentDistrictFee,
-    };
-  };
+  }, [backendUrl]);
 
   // Backwards compatibility helper for instant display
   const calculateDeliveryFee = (district, subtotal) => {

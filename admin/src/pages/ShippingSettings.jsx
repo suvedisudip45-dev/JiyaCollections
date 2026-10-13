@@ -3,31 +3,25 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
-
-const NEPAL_DISTRICTS = [
-  "Kathmandu", "Lalitpur", "Bhaktapur",
-  "Achham", "Arghakhanchi", "Baglung", "Baitadi", "Bajhang", "Bajura", "Banke",
-  "Bardiya", "Bhojpur", "Chitwan", "Dadeldhura", "Dailekh", "Dang", "Darchula",
-  "Dhading", "Dhankuta", "Dhanusha", "Dolakha", "Dolpa", "Doti", "Gorkha",
-  "Gulmi", "Humla", "Ilam", "Jajarkot", "Jhapa", "Jumla", "Kailali", "Kalikot",
-  "Kanchanpur", "Kapilvastu", "Kaski", "Kavrepalanchok", "Khotang", "Lamjung",
-  "Mahottari", "Makwanpur", "Manang", "Mustang", "Mugu", "Myagdi", "Nawalpur",
-  "Nuwakot", "Okhaldhunga", "Palpa", "Panchthar", "Parasi", "Parbat", "Parsa",
-  "Pyuthan", "Ramechhap", "Rasuwa", "Rautahat", "Rolpa", "Rukum East", "Rukum West",
-  "Rupandehi", "Salyan", "Sankhuwasabha", "Saptari", "Sarlahi", "Sindhuli",
-  "Sindhupalchok", "Siraha", "Solukhumbu", "Sunsari", "Surkhet", "Syangja",
-  "Tanahun", "Taplejung", "Terhathum", "Udayapur"
-];
+import { NEPAL_PROVINCES } from "../data/nepalLocations";
+import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
 
 const ShippingSettings = ({ token }) => {
   const [config, setConfig] = useState({
     sameDistrictFee: 50,
     differentDistrictFee: 120,
+    sameProvinceFee: 120,
+    differentProvinceFee: 120,
+    splitShipmentFee: 200,
+    routeOverrides: [],
     freeShippingMin: 0,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [simDistrict, setSimDistrict] = useState("Kathmandu");
+  const [simProvince, setSimProvince] = useState("Bagmati Province");
+  const [simOriginDistrict, setSimOriginDistrict] = useState("Kathmandu");
+  const [simOriginProvince, setSimOriginProvince] = useState("Bagmati Province");
   const [simAmount, setSimAmount] = useState(1500);
   const [simResult, setSimResult] = useState({
     fee: 50,
@@ -45,6 +39,10 @@ const ShippingSettings = ({ token }) => {
         setConfig({
           sameDistrictFee: Number(c.sameDistrictFee ?? c.sameCityFee ?? 50),
           differentDistrictFee: Number(c.differentDistrictFee ?? c.differentCityFee ?? 120),
+          sameProvinceFee: Number(c.sameProvinceFee ?? c.differentDistrictFee ?? 120),
+          differentProvinceFee: Number(c.differentProvinceFee ?? c.differentDistrictFee ?? 120),
+          splitShipmentFee: Number(c.splitShipmentFee ?? 200),
+          routeOverrides: Array.isArray(c.routeOverrides) ? c.routeOverrides : [],
           freeShippingMin: Number(c.freeShippingMin ?? 0),
         });
       }
@@ -55,11 +53,11 @@ const ShippingSettings = ({ token }) => {
     }
   };
 
-  const runSimulation = async (district, amount) => {
+  const runSimulation = async (district, province, amount, originDistrict, originProvince) => {
     try {
       setSimulating(true);
       const res = await axios.get(`${backendUrl}/api/shipping/calculate`, {
-        params: { district, subtotal: amount },
+        params: { district, province, subtotal: amount, originDistrict, originProvince },
       });
       if (res.data.success) {
         setSimResult({
@@ -80,14 +78,50 @@ const ShippingSettings = ({ token }) => {
   }, []);
 
   useEffect(() => {
-    runSimulation(simDistrict, simAmount);
-  }, [simDistrict, simAmount, config]);
+    runSimulation(simDistrict, simProvince, simAmount, simOriginDistrict, simOriginProvince);
+  }, [simDistrict, simProvince, simAmount, simOriginDistrict, simOriginProvince, config]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setConfig((prev) => ({
       ...prev,
       [name]: Math.max(0, Number(value)),
+    }));
+  };
+
+  const updateRouteOverride = (index, field, value) => {
+    setConfig((current) => ({
+      ...current,
+      routeOverrides: current.routeOverrides.map((route, routeIndex) =>
+        routeIndex === index
+          ? {
+              ...route,
+              [field]: value,
+              ...(field === "originProvince" ? {
+                originDistrict: NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "",
+              } : {}),
+              ...(field === "destinationProvince" ? {
+                destinationDistrict: NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "",
+              } : {}),
+            }
+          : route
+      ),
+    }));
+  };
+
+  const addRouteOverride = () => {
+    setConfig((current) => ({
+      ...current,
+      routeOverrides: [
+        ...current.routeOverrides,
+        {
+          originProvince: "Bagmati Province",
+          originDistrict: "Kathmandu",
+          destinationProvince: "Gandaki Province",
+          destinationDistrict: "Kaski",
+          fee: 250,
+        },
+      ],
     }));
   };
 
@@ -99,6 +133,10 @@ const ShippingSettings = ({ token }) => {
         {
           sameDistrictFee: config.sameDistrictFee,
           differentDistrictFee: config.differentDistrictFee,
+          sameProvinceFee: config.sameProvinceFee,
+          differentProvinceFee: config.differentProvinceFee,
+          splitShipmentFee: config.splitShipmentFee,
+          routeOverrides: config.routeOverrides,
           freeShippingMin: config.freeShippingMin,
         },
         { headers: { token } }
@@ -124,8 +162,8 @@ const ShippingSettings = ({ token }) => {
     );
   }
 
-  const isFreeShipping = simResult.fee === 0 && Number(config.freeShippingMin || 0) > 0;
-  const isSameZone = simResult.tier === "SAME_DISTRICT";
+  const isFreeShipping = simResult.tier === "FREE_SHIPPING";
+  const isSameZone = ["SAME_DISTRICT", "SAME_PROVINCE"].includes(simResult.tier);
 
   return (
     <div className="max-w-4xl mx-auto pb-16">
@@ -140,7 +178,7 @@ const ShippingSettings = ({ token }) => {
           </div>
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Shipment Rate Settings</h1>
-            <p className="text-sm text-gray-500">Configure delivery tier pricing</p>
+            <p className="text-sm text-gray-500">Shared route tiers with optional corridor exceptions</p>
           </div>
         </div>
       </div>
@@ -181,24 +219,67 @@ const ShippingSettings = ({ token }) => {
               </div>
             </div>
 
-            {/* Different District Fee */}
+            {/* Same Province Fee */}
             <div>
               <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                Outside District Fee (Rs.)
+                Within Province Fee (Rs.)
               </label>
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
                 <input
                   type="number"
-                  name="differentDistrictFee"
-                  value={config.differentDistrictFee}
+                  name="sameProvinceFee"
+                  value={config.sameProvinceFee}
                   onChange={handleChange}
                   min="0"
                   step="1"
                   className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
-                  placeholder="120"
+                  placeholder="150"
                 />
               </div>
+            </div>
+
+            {/* Different Province Fee */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                Cross-Province Fee (Rs.)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
+                <input
+                  type="number"
+                  name="differentProvinceFee"
+                  value={config.differentProvinceFee}
+                  onChange={handleChange}
+                  min="0"
+                  step="1"
+                  className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
+                  placeholder="250"
+                />
+              </div>
+            </div>
+
+            {/* Free Shipping Minimum */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                Split Shipment Fee (Rs.)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
+                <input
+                  type="number"
+                  name="splitShipmentFee"
+                  value={config.splitShipmentFee}
+                  onChange={handleChange}
+                  min="0"
+                  step="1"
+                  className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
+                  placeholder="200"
+                />
+              </div>
+              <p className="mt-1 text-[11px] text-gray-500">
+                Flat customer delivery charge when an order must ship from more than one distributor hub.
+              </p>
             </div>
 
             {/* Free Shipping Minimum */}
@@ -220,6 +301,76 @@ const ShippingSettings = ({ token }) => {
                 />
               </div>
             </div>
+
+            <details className="rounded-lg border border-gray-200 p-3">
+              <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-gray-700">
+                Optional route exceptions ({config.routeOverrides.length})
+              </summary>
+              <p className="mt-2 text-xs leading-5 text-gray-500">
+                Add exceptions only for routes with a known different carrier charge. All other routes use the three shared rates above.
+              </p>
+              <div className="mt-3 space-y-3">
+                {config.routeOverrides.map((route, index) => (
+                  <div key={`${index}-${route.originDistrict}-${route.destinationDistrict}`} className="rounded-lg bg-gray-50 p-3">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {[
+                        ["originProvince", "Origin province"],
+                        ["originDistrict", "Origin district"],
+                        ["destinationProvince", "Destination province"],
+                        ["destinationDistrict", "Destination district"],
+                      ].map(([field, label]) => {
+                        const isProvince = field.endsWith("Province");
+                        const provinceField = field.startsWith("origin") ? "originProvince" : "destinationProvince";
+                        const options = isProvince
+                          ? NEPAL_PROVINCES
+                          : NEPAL_DISTRICTS_BY_PROVINCE[route[provinceField]] || [];
+                        return (
+                          <label key={field} className="block text-[11px] font-semibold text-gray-600">
+                            {label}
+                            <select
+                              value={route[field]}
+                              onChange={(event) => updateRouteOverride(index, field, event.target.value)}
+                              className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-2 text-xs"
+                            >
+                              {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                            </select>
+                          </label>
+                        );
+                      })}
+                      <label className="block text-[11px] font-semibold text-gray-600">
+                        Route fee (Rs.)
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={route.fee}
+                          onChange={(event) => updateRouteOverride(index, "fee", event.target.value)}
+                          className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-2 text-xs"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setConfig((current) => ({
+                          ...current,
+                          routeOverrides: current.routeOverrides.filter((_, routeIndex) => routeIndex !== index),
+                        }))}
+                        className="self-end rounded-md border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                      >
+                        Remove route
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addRouteOverride}
+                  disabled={config.routeOverrides.length >= 50}
+                  className="w-full rounded-lg border border-dashed border-gray-300 py-2 text-xs font-semibold text-gray-700 hover:border-indigo-400 disabled:opacity-50"
+                >
+                  Add corridor exception
+                </button>
+              </div>
+            </details>
 
             {/* Save Button */}
             <button
@@ -253,19 +404,46 @@ const ShippingSettings = ({ token }) => {
               </h2>
             </div>
             <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                  District
-                </label>
-                <select
-                  value={simDistrict}
-                  onChange={(e) => setSimDistrict(e.target.value)}
-                  className="w-full border border-gray-200 rounded-lg py-2.5 px-3 text-sm bg-white focus:outline-none focus:border-indigo-500 cursor-pointer"
-                >
-                  {NEPAL_DISTRICTS.map((dist) => (
-                    <option key={dist} value={dist}>{dist}</option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[
+                  {
+                    title: "Shipment origin",
+                    province: simOriginProvince,
+                    district: simOriginDistrict,
+                    setProvince: setSimOriginProvince,
+                    setDistrict: setSimOriginDistrict,
+                  },
+                  {
+                    title: "Delivery destination",
+                    province: simProvince,
+                    district: simDistrict,
+                    setProvince: setSimProvince,
+                    setDistrict: setSimDistrict,
+                  },
+                ].map((location) => (
+                  <fieldset key={location.title} className="space-y-2 rounded-lg border border-gray-200 p-3">
+                    <legend className="px-1 text-[11px] font-bold uppercase tracking-wider text-gray-600">{location.title}</legend>
+                    <select
+                      value={location.province}
+                      onChange={(event) => {
+                        location.setProvince(event.target.value);
+                        location.setDistrict(NEPAL_DISTRICTS_BY_PROVINCE[event.target.value]?.[0] || "");
+                      }}
+                      className="w-full border border-gray-200 rounded-lg py-2 px-2 text-xs bg-white"
+                    >
+                      {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                    </select>
+                    <select
+                      value={location.district}
+                      onChange={(event) => location.setDistrict(event.target.value)}
+                      className="w-full border border-gray-200 rounded-lg py-2 px-2 text-xs bg-white"
+                    >
+                      {(NEPAL_DISTRICTS_BY_PROVINCE[location.province] || []).map((district) => (
+                        <option key={district} value={district}>{district}</option>
+                      ))}
+                    </select>
+                  </fieldset>
+                ))}
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
@@ -329,8 +507,16 @@ const ShippingSettings = ({ token }) => {
                 <span className="text-sm font-bold text-sky-800">Rs. {config.sameDistrictFee}</span>
               </div>
               <div className="flex items-center justify-between py-2 px-3 bg-amber-50 rounded-lg">
-                <span className="text-xs text-gray-600">Outside District Fee</span>
-                <span className="text-sm font-bold text-amber-800">Rs. {config.differentDistrictFee}</span>
+                <span className="text-xs text-gray-600">Within Province Fee</span>
+                <span className="text-sm font-bold text-amber-800">Rs. {config.sameProvinceFee}</span>
+              </div>
+              <div className="flex items-center justify-between py-2 px-3 bg-violet-50 rounded-lg">
+                <span className="text-xs text-gray-600">Cross-Province Fee</span>
+                <span className="text-sm font-bold text-violet-800">Rs. {config.differentProvinceFee}</span>
+              </div>
+              <div className="flex items-center justify-between py-2 px-3 bg-orange-50 rounded-lg">
+                <span className="text-xs text-gray-600">Split Shipment Fee</span>
+                <span className="text-sm font-bold text-orange-800">Rs. {config.splitShipmentFee}</span>
               </div>
               {Number(config.freeShippingMin) > 0 && (
                 <div className="flex items-center justify-between py-2 px-3 bg-emerald-50 rounded-lg">

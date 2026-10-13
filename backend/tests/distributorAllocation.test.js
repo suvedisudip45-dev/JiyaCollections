@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { prisma } from "../config/db.js";
-import { runAllocationEngine } from "../controllers/orderAssignmentController.js";
+import {
+  previewDistributorAllocation,
+  runAllocationEngine,
+} from "../controllers/orderAssignmentController.js";
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -12,14 +15,18 @@ const stubMethod = (t, target, name, implementation) => {
   });
 };
 
-const createBalance = (id, quantityOnHand, reservedQuantity = 0) => ({
+const createBalance = (id, quantityOnHand, reservedQuantity = 0, {
+  productId = "product-1",
+  sizeKey = "medium",
+  colorKey = "navy blue",
+} = {}) => ({
   id,
   quantityOnHand,
   reservedQuantity,
   inventorySku: {
-    productId: "product-1",
-    sizeKey: "medium",
-    colorKey: "navy blue",
+    productId,
+    sizeKey,
+    colorKey,
   },
 });
 
@@ -138,6 +145,100 @@ test("allocator prefers exact district service coverage among stocked hubs", asy
   assert.equal(result.success, true);
   assert.equal(result.distributor.id, exactDistrictHub.id);
   assert.equal(getAssignment().distributorId, exactDistrictHub.id);
+});
+
+test("split order allocation stays with the hub selected for its product", async (t) => {
+  const preferredHub = createDistributor({
+    id: "preferred-hub",
+    qualityRating: 3,
+  });
+  const higherRatedHub = createDistributor({
+    id: "higher-rated-hub",
+    qualityRating: 5,
+  });
+  const { getAssignment } = installAllocationMocks(t, {
+    distributors: [higherRatedHub, preferredHub],
+  });
+
+  const result = await runAllocationEngine("order-1", {
+    preferredDistributorId: preferredHub.id,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, preferredHub.id);
+  assert.equal(getAssignment().distributorId, preferredHub.id);
+});
+
+test("shipping allocation preview uses the same priority-ranked stocked distributor", async (t) => {
+  const exactDistrictHub = createDistributor({ id: "exact-hub", qualityRating: 2.5 });
+  const sameProvinceHub = createDistributor({
+    id: "province-hub",
+    district: "Lalitpur",
+    qualityRating: 5,
+  });
+  installAllocationMocks(t, { distributors: [sameProvinceHub, exactDistrictHub] });
+
+  const result = await previewDistributorAllocation({
+    address: { province: "Bagmati Province", district: "Kathmandu" },
+    items: [{ productId: "product-1", size: "Medium", color: "Navy Blue", quantity: 2 }],
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, exactDistrictHub.id);
+  assert.equal(result.distributor.district, "Kathmandu");
+});
+
+test("shipping allocation preview splits products between hubs when no single hub has the full cart", async (t) => {
+  const apparelHub = createDistributor({
+    id: "apparel-hub",
+    stock: [createBalance("apparel-balance", 3, 0, { productId: "product-1" })],
+  });
+  const accessoryHub = createDistributor({
+    id: "accessory-hub",
+    stock: [createBalance("accessory-balance", 3, 0, { productId: "product-2" })],
+  });
+  installAllocationMocks(t, { distributors: [apparelHub, accessoryHub] });
+
+  const result = await previewDistributorAllocation({
+    address: { province: "Bagmati Province", district: "Kathmandu" },
+    items: [
+      { productId: "product-1", size: "Medium", color: "Navy Blue", quantity: 2 },
+      { productId: "product-2", size: "Medium", color: "Navy Blue", quantity: 1 },
+    ],
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.splitShipments.length, 2);
+  assert.deepEqual(result.splitShipments.map(({ distributor }) => distributor.id).sort(), [
+    "accessory-hub",
+    "apparel-hub",
+  ]);
+  assert.deepEqual(result.splitShipments.map(({ items }) => items[0].qty).sort(), [1, 2]);
+});
+
+test("shipping allocation preview splits one product quantity across stock-eligible hubs", async (t) => {
+  const higherRatedHub = createDistributor({
+    id: "higher-rated-hub",
+    qualityRating: 5,
+    stock: [createBalance("higher-rated-balance", 2)],
+  });
+  const nextHub = createDistributor({
+    id: "next-hub",
+    qualityRating: 4,
+    stock: [createBalance("next-balance", 3)],
+  });
+  installAllocationMocks(t, { distributors: [higherRatedHub, nextHub] });
+
+  const result = await previewDistributorAllocation({
+    address: { province: "Bagmati Province", district: "Kathmandu" },
+    items: [{ productId: "product-1", size: "Medium", color: "Navy Blue", quantity: 4 }],
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    result.splitShipments.map(({ distributor, items }) => [distributor.id, items[0].qty]),
+    [["higher-rated-hub", 2], ["next-hub", 2]]
+  );
 });
 
 test("overlapping coverage is resolved by distributor rating", async (t) => {
@@ -308,7 +409,7 @@ test("allocator returns variant shortages when no active distributor has suffici
 
   assert.equal(result.success, false);
   assert.equal(result.code, "INSUFFICIENT_DISTRIBUTOR_STOCK");
-  assert.match(result.message, /No active distributor has enough/);
+  assert.match(result.message, /No single active distributor has enough/);
   assert.deepEqual(result.stockShortages, [{
     distributor: "small-hub",
     shortages: [{

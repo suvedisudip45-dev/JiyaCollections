@@ -1,4 +1,6 @@
 import { prisma } from "../config/db.js";
+import { previewDistributorAllocation } from "./orderAssignmentController.js";
+import { normalizeShippingRouteOverrides, resolveRouteShippingRate } from "../services/shippingRateService.js";
 
 // KTM Valley Cluster: Kathmandu, Lalitpur, Bhaktapur are treated as the same district / delivery zone
 export const KTM_VALLEY_DISTRICTS = ["kathmandu", "lalitpur", "bhaktapur"];
@@ -37,11 +39,23 @@ const DEFAULT_CONFIG = {
   id: "default",
   sameDistrictFee: 50,
   differentDistrictFee: 120,
+  sameProvinceFee: 120,
+  differentProvinceFee: 120,
+  routeOverrides: [],
+  splitShipmentFee: 200,
   freeShippingMin: 0,
 };
 
-// Resolve district shipping rate authoritative calculation based purely on active manufacturer hub locations
-export const resolveDistrictShippingFee = async ({ district, province = "", subtotal = 0 }) => {
+// Checkout routes use the selected distributor origin; older callers retain district-only rates.
+export const resolveDistrictShippingFee = async ({
+  district,
+  province = "",
+  subtotal = 0,
+  items = [],
+  ncmBranch = "",
+  originDistrict = "",
+  originProvince = "",
+}) => {
   let config = await prisma.shippingConfig.findFirst();
   if (!config) {
     config = await prisma.shippingConfig.create({
@@ -51,8 +65,94 @@ export const resolveDistrictShippingFee = async ({ district, province = "", subt
 
   const itemsTotal = Math.max(0, Number(subtotal) || 0);
   const freeMin = Number(config.freeShippingMin || 0);
-  const sameFee = Number(config.sameDistrictFee || 50);
-  const diffFee = Number(config.differentDistrictFee || 120);
+  const sameFee = Number(config.sameDistrictFee ?? 50);
+  const diffFee = Number(config.differentDistrictFee ?? 120);
+
+  let routeOrigin = { district: originDistrict, province: originProvince };
+  let probableDistributor = null;
+  let splitShipments = null;
+  if (Array.isArray(items) && items.length > 0) {
+    const allocation = await previewDistributorAllocation({
+      address: { district, province, ncmBranch },
+      items,
+    });
+    if (!allocation.success) {
+      throw Object.assign(new Error(allocation.message || "No distributor is currently available for this delivery location."), {
+        status: 409,
+        code: allocation.code || "DISTRIBUTOR_UNAVAILABLE",
+        stockShortages: allocation.stockShortages,
+      });
+    }
+    if (allocation.splitShipments?.length > 1) {
+      splitShipments = allocation.splitShipments.map(({ distributor, items: shipmentItems }) => ({
+        distributor,
+        items: shipmentItems,
+      }));
+    } else {
+      probableDistributor = {
+        id: allocation.distributor.id,
+        name: allocation.distributor.name,
+        district: allocation.distributor.district,
+        province: allocation.distributor.province,
+      };
+      routeOrigin = {
+        district: probableDistributor.district,
+        province: probableDistributor.province,
+      };
+    }
+  }
+  if (splitShipments) {
+    const isFreeShipping = freeMin > 0 && itemsTotal >= freeMin;
+    return {
+      fee: isFreeShipping ? 0 : Number(config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee),
+      tier: isFreeShipping ? "FREE_SHIPPING" : "SPLIT_SHIPMENT",
+      rateTier: "SPLIT_SHIPMENT",
+      label: isFreeShipping ? "Free Split Delivery" : "Split Delivery",
+      splitShipment: true,
+      shipmentCount: splitShipments.reduce((count, { items: shipmentItems }) =>
+        count + new Set(shipmentItems.map((item) => item.productId)).size, 0),
+      splitShipmentFee: Number(config.splitShipmentFee ?? DEFAULT_CONFIG.splitShipmentFee),
+      shipments: splitShipments.map(({ distributor, items: shipmentItems }) => ({
+        distributor,
+        items: shipmentItems,
+        origin: {
+          district: distributor.district,
+          province: distributor.province,
+        },
+      })),
+      destination: { district, province },
+      freeShippingMin: freeMin,
+      probableDistributor: null,
+    };
+  }
+  if (routeOrigin.district && routeOrigin.province) {
+    const routeRate = resolveRouteShippingRate({
+      originDistrict: routeOrigin.district,
+      originProvince: routeOrigin.province,
+      destinationDistrict: district,
+      destinationProvince: province,
+      subtotal: itemsTotal,
+      config: {
+        ...DEFAULT_CONFIG,
+        ...config,
+        sameDistrictFee: sameFee,
+        differentDistrictFee: diffFee,
+      },
+    });
+    if (routeRate) {
+      return {
+        ...routeRate,
+        hasLocalHub: routeRate.hasLocalHub,
+        probableDistributor,
+      };
+    }
+  }
+  if (Array.isArray(items) && items.length > 0) {
+    throw Object.assign(new Error("The selected distributor does not have a valid shipping origin configured."), {
+      status: 409,
+      code: "DISTRIBUTOR_LOCATION_UNAVAILABLE",
+    });
+  }
 
   // Check free shipping threshold
   if (freeMin > 0 && itemsTotal >= freeMin) {
@@ -64,6 +164,7 @@ export const resolveDistrictShippingFee = async ({ district, province = "", subt
       differentDistrictFee: diffFee,
       freeShippingMin: freeMin,
       hasLocalHub: true,
+      probableDistributor,
     };
   }
 
@@ -158,20 +259,51 @@ export const calculateShippingFee = async (req, res) => {
     const district = req.query.district || req.body.district || "";
     const province = req.query.province || req.body.province || "";
     const subtotal = req.query.subtotal || req.body.subtotal || 0;
+    const items = req.body.items || [];
+    const ncmBranch = req.query.ncmBranch || req.body.ncmBranch || "";
+    const originDistrict = req.query.originDistrict || req.body.originDistrict || "";
+    const originProvince = req.query.originProvince || req.body.originProvince || "";
+    if (!Array.isArray(items) || items.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Shipping quotes accept no more than 100 cart lines.",
+      });
+    }
+    if (items.some((item) =>
+      !String(item?.productId || item?._id || item?.id || "").trim() ||
+      !Number.isSafeInteger(Number(item?.quantity ?? 1)) ||
+      Number(item?.quantity ?? 1) < 1
+    )) {
+      return res.status(400).json({
+        success: false,
+        message: "Every shipping quote line requires a product ID and positive whole-number quantity.",
+      });
+    }
 
-    const result = await resolveDistrictShippingFee({ district, province, subtotal });
+    const result = await resolveDistrictShippingFee({
+      district,
+      province,
+      subtotal,
+      items,
+      ncmBranch,
+      originDistrict,
+      originProvince,
+    });
     res.json({ success: true, ...result });
   } catch (error) {
-    console.error("Error calculating shipping fee:", error);
-    res.json({
+    if (error.status && error.status < 500) {
+      console.warn("Shipping quote unavailable:", {
+        code: error.code || "SHIPPING_QUOTE_UNAVAILABLE",
+        message: error.message,
+      });
+    } else {
+      console.error("Error calculating shipping fee:", error);
+    }
+    res.status(error.status || 500).json({
       success: false,
+      code: error.code || "SHIPPING_QUOTE_FAILED",
       message: error.message,
-      fee: 120,
-      tier: "DIFFERENT_DISTRICT",
-      label: "Outside District Delivery",
-      sameDistrictFee: 50,
-      differentDistrictFee: 120,
-      hasLocalHub: false,
+      ...(error.stockShortages && { stockShortages: error.stockShortages }),
     });
   }
 };
@@ -200,6 +332,10 @@ export const updateShippingConfig = async (req, res) => {
       sameCityFee,
       differentDistrictFee,
       differentCityFee,
+      sameProvinceFee,
+      differentProvinceFee,
+      splitShipmentFee,
+      routeOverrides,
       freeShippingMin,
     } = req.body;
 
@@ -213,11 +349,27 @@ export const updateShippingConfig = async (req, res) => {
       });
     }
 
-    const updatedData = {
-      sameDistrictFee: Math.max(0, Number(sameFeeVal)),
-      differentDistrictFee: Math.max(0, Number(diffFeeVal)),
-      freeShippingMin: freeShippingMin !== undefined ? Math.max(0, Number(freeShippingMin)) : 0,
+    const numericRates = {
+      sameDistrictFee: Number(sameFeeVal),
+      differentDistrictFee: Number(diffFeeVal),
     };
+    const optionalRates = [
+      ...(sameProvinceFee !== undefined ? [Number(sameProvinceFee)] : []),
+      ...(differentProvinceFee !== undefined ? [Number(differentProvinceFee)] : []),
+      ...(splitShipmentFee !== undefined ? [Number(splitShipmentFee)] : []),
+      ...(freeShippingMin !== undefined ? [Number(freeShippingMin)] : []),
+    ];
+    if ([...Object.values(numericRates), ...optionalRates].some((value) => !Number.isFinite(value) || value < 0)) {
+      return res.status(400).json({ success: false, message: "Shipping rates and the free-delivery threshold must be non-negative numbers." });
+    }
+    const updatedData = {
+      ...numericRates,
+    };
+    if (sameProvinceFee !== undefined) updatedData.sameProvinceFee = Number(sameProvinceFee);
+    if (differentProvinceFee !== undefined) updatedData.differentProvinceFee = Number(differentProvinceFee);
+    if (splitShipmentFee !== undefined) updatedData.splitShipmentFee = Number(splitShipmentFee);
+    if (freeShippingMin !== undefined) updatedData.freeShippingMin = Number(freeShippingMin);
+    if (routeOverrides !== undefined) updatedData.routeOverrides = normalizeShippingRouteOverrides(routeOverrides);
 
     const existing = await prisma.shippingConfig.findFirst();
 
@@ -243,6 +395,9 @@ export const updateShippingConfig = async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating shipping config:", error);
+    if (error.status) {
+      return res.status(error.status).json({ success: false, message: error.message });
+    }
     res.json({ success: false, message: error.message });
   }
 };

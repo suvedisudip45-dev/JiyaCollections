@@ -25,10 +25,87 @@ import { createCollaborationSalesForOrder } from "../services/collaborationSales
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
 
-// global variables
-const deliveryCharge = 50;
+const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
+const roundOrderAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
-const allocateOrderToDistributor = async (orderId, source, req) => {
+export const splitItemsIntoDistributorShipments = (items, shipments) => {
+  const remainingByShipment = shipments.map((shipment) => ({
+    ...shipment,
+    remainingItems: shipment.items.map((item) => ({ ...item, remainingQuantity: Number(item.qty) })),
+  }));
+  const ordersByDistributorProduct = new Map();
+
+  for (const orderItem of items) {
+    let remaining = Number(orderItem.quantity || 1);
+    const productId = String(orderItem.productId || orderItem._id || orderItem.id || "");
+    for (const shipment of remainingByShipment) {
+      for (const requirement of shipment.remainingItems) {
+        if (
+          requirement.productId !== productId ||
+          normalizeOrderVariant(requirement.size) !== normalizeOrderVariant(orderItem.size) ||
+          normalizeOrderVariant(requirement.color) !== normalizeOrderVariant(orderItem.color)
+        ) continue;
+        const quantity = Math.min(remaining, requirement.remainingQuantity);
+        if (!quantity) continue;
+        const unitPrice = Number(orderItem.purchasedUnitPrice ?? orderItem.price ?? (
+          Number(orderItem.lineTotal || 0) / Number(orderItem.quantity || 1)
+        ));
+        const orderKey = `${shipment.distributor.id}\0${productId}`;
+        const packageOrder = ordersByDistributorProduct.get(orderKey) || {
+          distributor: shipment.distributor,
+          items: [],
+        };
+        packageOrder.items.push({
+          ...orderItem,
+          quantity,
+          lineTotal: roundOrderAmount(unitPrice * quantity),
+          ...(orderItem.comboBundleQuantity !== undefined ? { comboBundleQuantity: quantity } : {}),
+        });
+        ordersByDistributorProduct.set(orderKey, packageOrder);
+        requirement.remainingQuantity -= quantity;
+        remaining -= quantity;
+        if (!remaining) break;
+      }
+      if (!remaining) break;
+    }
+    if (remaining) {
+      throw Object.assign(
+        new Error("The distributor stock plan no longer covers every item. Refresh checkout and retry."),
+        { status: 409, code: "DISTRIBUTOR_STOCK_PLAN_MISMATCH" }
+      );
+    }
+  }
+
+  if (remainingByShipment.some((shipment) =>
+    shipment.remainingItems.some((item) => item.remainingQuantity > 0)
+  )) {
+    throw Object.assign(
+      new Error("The distributor stock plan contains items that do not match the checkout cart."),
+      { status: 409, code: "DISTRIBUTOR_STOCK_PLAN_MISMATCH" }
+    );
+  }
+  return [...ordersByDistributorProduct.values()];
+};
+
+export const allocateMoneyAcrossShipments = (amount, shipments) => {
+  const totalCents = Math.max(0, Math.round(Number(amount || 0) * 100));
+  const weights = shipments.map(({ items }) => items.reduce(
+    (total, item) => total + Math.max(0, Number(item.lineTotal || 0)), 0
+  ));
+  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+  let allocatedCents = 0;
+  return shipments.map((_, index) => {
+    const cents = index === shipments.length - 1
+      ? totalCents - allocatedCents
+      : totalWeight > 0
+      ? Math.round(totalCents * weights[index] / totalWeight)
+      : Math.floor(totalCents / shipments.length);
+    allocatedCents += cents;
+    return cents / 100;
+  });
+};
+
+const allocateOrderToDistributor = async (orderId, source, req, preferredDistributorId = null) => {
   const result = await runAllocationEngine(orderId, {
     actorId: req.auth?.accountId || null,
     actorRole: req.auth?.role || "SYSTEM",
@@ -36,6 +113,7 @@ const allocateOrderToDistributor = async (orderId, source, req) => {
     ipAddress: req.ip || null,
     userAgent: req.headers["user-agent"] || null,
     correlationId: req.correlationId || null,
+    ...(preferredDistributorId ? { preferredDistributorId } : {}),
   });
 
   if (!result.success) {
@@ -121,6 +199,7 @@ const buildOrderListItem = (order) => {
     loyaltyDiscount: Number(order.loyaltyDiscount || 0),
     rewardApplied: parsedReward,
     fulfillmentStatus: order.fulfillmentStatus,
+    checkoutGroupId: order.checkoutGroupId || null,
     assignmentId: order.assignmentId,
     deliveryJobId: order.deliveryJobId,
     orderType: order.orderType,
@@ -584,7 +663,8 @@ const placeOrder = async (req, res) => {
     }
 
     // Resolve dynamic shipping charge from ShippingConfig (authoritative backend calculation)
-    let expectedFee = deliveryCharge;
+    let expectedFee = 0;
+    let shipmentPlan = [];
     try {
       const customerDistrict = address?.district || address?.city || "";
       const customerProvince = address?.state || address?.province || "";
@@ -592,10 +672,19 @@ const placeOrder = async (req, res) => {
         district: customerDistrict,
         province: customerProvince,
         subtotal: itemsTotal,
+        items: frozenItemsSnapshot,
+        ncmBranch: address?.ncmBranch || address?.city || "",
       });
       expectedFee = shippingResult.fee;
+      shipmentPlan = shippingResult.shipments || [];
     } catch (cfgErr) {
-      console.error("Error calculating district shipping fee in placeOrder:", cfgErr);
+      console.error("Error calculating authoritative shipping fee in placeOrder:", cfgErr);
+      return res.status(cfgErr.status || 500).json({
+        success: false,
+        code: cfgErr.code || "SHIPPING_QUOTE_FAILED",
+        message: cfgErr.message || "Unable to confirm delivery availability and fee.",
+        ...(cfgErr.stockShortages ? { stockShortages: cfgErr.stockShortages } : {}),
+      });
     }
 
     // Rewards are selected explicitly at checkout. Older clients that omit a choice
@@ -722,7 +811,13 @@ const placeOrder = async (req, res) => {
       rewardApplied: rewardApplied ? JSON.stringify(rewardApplied) : "{}",
     };
 
-    const createdOrder = await prisma.$transaction(async (tx) => {
+    const packages = shipmentPlan.length > 1
+      ? splitItemsIntoDistributorShipments(frozenItemsSnapshot, shipmentPlan)
+      : [{ distributor: null, items: frozenItemsSnapshot }];
+    const checkoutGroupId = packages.length > 1 ? randomUUID() : null;
+    const packageLoyaltyDiscounts = allocateMoneyAcrossShipments(loyaltyDiscount, packages);
+    const packageCardDiscounts = allocateMoneyAcrossShipments(cardDiscount, packages);
+    const packageOrders = await prisma.$transaction(async (tx) => {
       if (selectedRedemptionId) {
         const redeemed = await tx.marketingBenefitRedemption.updateMany({
           where: { id: selectedRedemptionId, customerId: userId, status: "CLAIMED" },
@@ -735,9 +830,51 @@ const placeOrder = async (req, res) => {
           throw error;
         }
       }
-      const order = await tx.order.create({ data: orderData });
-      await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
-      return order;
+      const createdOrders = [];
+      for (const [index, shipment] of packages.entries()) {
+        const shipmentSubtotal = shipment.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0);
+        const shipmentFee = index === 0 ? resolvedFee : 0;
+        const shipmentLoyaltyDiscount = packageLoyaltyDiscounts[index];
+        const shipmentCardDiscount = packageCardDiscounts[index];
+        const shipmentReward = rewardApplied
+          ? {
+            ...rewardApplied,
+            ...(rewardApplied.discountAmount !== undefined
+              ? { discountAmount: shipmentCardDiscount || shipmentLoyaltyDiscount }
+              : {}),
+          }
+          : null;
+        const shipmentLocationSnapshot = locationDiscountApplied
+          ? {
+            ...orderData.locationPricingSnapshot,
+            items: shipment.items.filter((item) => item.discountSource === "LOCATION").map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              originalUnitPrice: item.originalUnitPrice,
+              locationDiscountPercentage: item.locationDiscountPercentage,
+              purchasedUnitPrice: item.purchasedUnitPrice,
+              lineTotal: item.lineTotal,
+            })),
+          }
+          : null;
+        const order = await tx.order.create({
+          data: {
+            ...orderData,
+            items: shipment.items,
+            amount: Math.max(0, roundOrderAmount(
+              shipmentSubtotal + shipmentFee - shipmentLoyaltyDiscount - shipmentCardDiscount
+            )),
+            deliveryFee: shipmentFee,
+            loyaltyDiscount: shipmentLoyaltyDiscount,
+            rewardApplied: shipmentReward ? JSON.stringify(shipmentReward) : "{}",
+            locationPricingSnapshot: shipmentLocationSnapshot,
+            checkoutGroupId,
+          },
+        });
+        await createCollaborationSalesForOrder({ order, items: shipment.items, client: tx });
+        createdOrders.push(order);
+      }
+      return createdOrders;
     });
 
     // Update user cart and saved addresses
@@ -880,13 +1017,37 @@ const placeOrder = async (req, res) => {
       }
     }
 
-    const allocation = await allocateOrderToDistributor(createdOrder.id, "STOREFRONT", req);
+    const allocations = [];
+    for (const [index, order] of packageOrders.entries()) {
+      allocations.push(await allocateOrderToDistributor(
+        order.id,
+        "STOREFRONT",
+        req,
+        packages[index].distributor?.id || null
+      ));
+    }
+    const allocation = packages.length > 1
+      ? {
+        status: allocations.every((entry) => entry.status === "ASSIGNED") ? "ASSIGNED" : "PENDING_ASSIGNMENT",
+        shipments: packageOrders.map((order, index) => ({
+          orderId: order.id,
+          ...allocations[index],
+        })),
+      }
+      : allocations[0];
     res.json({
       success: true,
       message: allocation.status === "ASSIGNED"
-        ? "Order placed and assigned to a distributor."
-        : `Order placed, but distributor assignment is pending: ${allocation.message}`,
+        ? packages.length > 1
+          ? `Order placed as ${packages.length} product shipments and assigned to their distributors.`
+          : "Order placed and assigned to a distributor."
+        : `Order placed, but distributor assignment is pending: ${
+          allocations.filter((entry) => entry.status === "PENDING_ASSIGNMENT").map((entry) => entry.message).join(" ")
+        }`,
       allocation,
+      orderIds: packageOrders.map((order) => order.id),
+      checkoutGroupId,
+      shipmentCount: packageOrders.length,
     });
 
   } catch (error) {

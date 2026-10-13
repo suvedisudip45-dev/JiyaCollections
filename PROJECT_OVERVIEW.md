@@ -4,7 +4,7 @@
 
 Aama Clothings is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, distributor hub operations, marketing partner campaigns, and delivery/NCM fulfillment workflows.
 
-The repository separates factory production and replenishment from customer-facing distributor hub fulfillment. Production completion creates factory inventory only; storefront product availability is projected exclusively from unreserved stock in active distributor ledgers, and transfer stock is not sellable until the distributor records receipt. Active distributors with exact delivery-area coverage and sufficient ledger stock receive customer-order assignments, including when a business account also has a manufacturer profile. The manufacturer portal dashboard distinguishes factory stock, produced good units, and damaged units.
+The repository separates factory production and replenishment from customer-facing distributor hub fulfillment. Production completion creates factory inventory only; storefront product availability is projected exclusively from unreserved stock in active distributor ledgers, and transfer stock is not sellable until the distributor records receipt. Customer checkout prefers one active distributor with stock for the full cart; when no single hub can fulfill it but multiple hubs collectively can, it creates product-specific orders and separate deliveries under a shared checkout group, using the admin-configured flat split-shipment fee once. Active distributors with exact delivery-area coverage receive priority, including when a business account also has a manufacturer profile. The manufacturer portal dashboard distinguishes factory stock, produced good units, and damaged units.
 
 ## 2. Technology Stack
 
@@ -28,7 +28,7 @@ The repository separates factory production and replenishment from customer-faci
 
 - Customer storefront browsing, cart, wishlist, product search, order placement, return/exchange flows, and marketing-card redemption UX.
 - Customer checkout now verifies server-authoritative location pricing by province/district and stores the resolved local-discount manufacturer, price snapshot, and assignment context on the order.
-- Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shipping config, access control, and exchange/return reconciliation.
+- Admin portal with catalog management, orders, manufacturer management, inventory monitoring, financing/accounting, tax, refunds, shared shipment-rate tiers with optional corridor overrides, access control, and exchange/return reconciliation.
 - Gift promotion operations across the admin and distributor portals: generated gift SKUs, controlled gift categories, configurable order-value rules, loyalty-tier gift allowances, distributor stock acceptance, distributor-selected order gifts, packing verification, and delivery deduction.
 - Manufacturer portal with production, factory dispatch, pickup profile, performance, and finance; customer-facing hub fulfillment tools are in the distributor workspace.
 - Distributor hub operations for ledger-backed inventory, direct phone/walk-in orders, gift stock, marketing-card receipt and attachment, loyalty customers, and assigned customer-order fulfillment.
