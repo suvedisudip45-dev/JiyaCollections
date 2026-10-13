@@ -19,7 +19,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Domain | Representative models | Purpose |
 | --- | --- | --- |
 | Authentication | `AuthAccount`, `AuthSession`, `Role`, `Permission`, `OtpChallenge`, `AdminTwoFactorChallenge`, `AuthAuditLog` | identity, sessions, RBAC, MFA, audit |
-| Users & profiles | `User`, `Admin`, `Manufacturer`, `Distributor`, `MarketingPartner` | customer and portal profiles |
+| Users & profiles | `User`, `Admin`, `Manufacturer`, `Distributor`, `MarketingPartner` | customer and portal profiles; `User.isDisabled` and its audit metadata retain an administratively disabled customer identity |
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
@@ -35,6 +35,8 @@ The schema currently contains a large multi-domain model set, including auth, pr
 ### 3.1 Authentication and RBAC
 
 The auth layer is built around `AuthAccount` and related session tables.
+
+Customer disable state is stored on `User`, not by deleting or replacing the identity. The profile's `isDisabled` state prevents CUSTOMER workspace authentication, already-issued requests, and refresh-token rotation; disable also revokes active `AuthSession` rows for the linked account. Email and phone identity records remain retained so registration and social-profile activation cannot reuse a disabled identity.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |

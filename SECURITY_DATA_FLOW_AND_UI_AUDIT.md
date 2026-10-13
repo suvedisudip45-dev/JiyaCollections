@@ -68,6 +68,8 @@ These observations are based on source code, not a penetration test or productio
 
 ## 4. Deployment and operational checklist
 
+- Customer disable is enforced through the retained `User.isDisabled` flag, CUSTOMER workspace validation on login/access/refresh, revoked sessions, and registration/profile-activation checks. The action is gated by `customer:account_manage` and recorded through the system-audit outbox.
+- The admin customer search requires an explicit query; customer records are not loaded into the page before search. Customer notification history is matched to stored contact addresses, excludes authentication/verification messages, and returns only selected message text rather than raw payloads.
 - Apply the audit/outbox Prisma migration and regenerate Prisma Client.
 - Run the RBAC seed so `access:audit_read` is assigned as intended; verify the actual production role mappings rather than assuming seed state.
 - Configure and test `OTP_SERVER_SECRET`, outbound notification credentials, HTTPS, trusted proxy behavior, and allowed frontend origins outside source control.

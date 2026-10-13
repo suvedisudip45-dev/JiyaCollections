@@ -56,6 +56,6 @@ export const ADMIN_SECTION_PERMISSIONS = {
   operations: ["inventory:admin_read_all", "inventory:ledger_read", "cogs:read", "shipping:config_update"],
   finance: ["finance:dashboard_read", "finance:treasury_read", "finance:assets_read", "finance:partnership_read", "expense:read", "finance:tax_report_read", "returns:supplier_read", "finance:payables_read", "finance:statements_read"],
   accounting: ["accounting:coa_read", "accounting:journal_read", "accounting:ledger_read", "accounting:trial_balance_read", "accounting:fiscal_years_read", "accounting:subledger_read"],
-  customers: ["customer:admin_list", "loyalty:level_manage", "review:admin_list", "storyletter:admin_manage"],
+  customers: ["customer:admin_list", "customer:admin_detail", "customer:account_manage", "loyalty:level_manage", "review:admin_list", "storyletter:admin_manage"],
   platform: ["platform:features_manage"],
 };

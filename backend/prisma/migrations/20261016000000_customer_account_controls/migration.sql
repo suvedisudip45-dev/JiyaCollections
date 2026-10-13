@@ -1,0 +1,5 @@
+ALTER TABLE `User`
+  ADD COLUMN `isDisabled` BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN `disabledAt` DATETIME(3) NULL,
+  ADD COLUMN `disabledBy` VARCHAR(191) NULL,
+  ADD COLUMN `disabledReason` TEXT NULL;

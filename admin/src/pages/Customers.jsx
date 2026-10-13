@@ -1,15 +1,17 @@
 /* eslint-disable react/prop-types */
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+import React, { useRef, useState } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
 import Pagination from "../components/Pagination";
+import Customer360Panel from "../components/Customer360Panel";
 
 const Customers = ({ token }) => {
   const [customers, setCustomers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
@@ -24,48 +26,60 @@ const Customers = ({ token }) => {
   const [letterNotes, setLetterNotes] = useState("");
   const [letterOrderId, setLetterOrderId] = useState("");
   const [activeImageZoom, setActiveImageZoom] = useState(null);
+  const searchRequestId = useRef(0);
+  const detailsRequestId = useRef(0);
 
-  // Fetch all customers
   const fetchCustomers = async (searchQuery = search, requestedPage = page) => {
+    const normalizedQuery = String(searchQuery || "").trim();
+    if (normalizedQuery.length < 2) return;
+    const requestId = ++searchRequestId.current;
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/customer/list?search=${encodeURIComponent(searchQuery)}&page=${requestedPage}&limit=10`, {
+      setCustomers([]);
+      setPagination(null);
+      const res = await axios.get(`${backendUrl}/api/customer/admin/search?search=${encodeURIComponent(normalizedQuery)}&page=${requestedPage}&limit=10`, {
         headers: { token },
       });
-      if (res.data.success) {
+      if (requestId === searchRequestId.current && res.data.success) {
         setCustomers(res.data.customers || []);
         setPagination(res.data.pagination || null);
-      } else {
-        toast.error(res.data.message || "Failed to load customers");
+      } else if (requestId === searchRequestId.current) {
+        toast.error(res.data.message || "Failed to search customers");
       }
     } catch (err) {
-      console.error(err);
-      toast.error("Error fetching customers");
+      if (requestId === searchRequestId.current) {
+        console.error(err);
+        toast.error(err.response?.data?.message || "Error searching customers");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestId.current) {
+        setLoading(false);
+        setHasSearched(true);
+      }
     }
   };
 
-  useEffect(() => {
-    if (token) {
-      fetchCustomers(search);
-    }
-  }, [token]);
-
   const handleSearchSubmit = (e) => {
     e.preventDefault();
+    if (search.trim().length < 2) {
+      toast.info("Enter at least two characters to search for a customer.");
+      return;
+    }
     setPage(1);
     fetchCustomers(search, 1);
   };
 
   const handlePageChange = (nextPage) => {
+    if (!hasSearched) return;
     setPage(nextPage);
     fetchCustomers(search, nextPage);
   };
 
   // Open customer details modal
   const handleOpenDetails = async (cust) => {
+    const requestId = ++detailsRequestId.current;
     setSelectedCustomer(cust);
+    setCustomerDetails(null);
     setLetterFile(null);
     setLetterPreview(null);
     setLetterTitle("");
@@ -76,16 +90,18 @@ const Customers = ({ token }) => {
       const res = await axios.get(`${backendUrl}/api/customer/details/${cust.id}`, {
         headers: { token },
       });
-      if (res.data.success) {
+      if (requestId === detailsRequestId.current && res.data.success) {
         setCustomerDetails(res.data);
-      } else {
+      } else if (requestId === detailsRequestId.current) {
         toast.error(res.data.message || "Failed to load customer details");
       }
     } catch (err) {
-      console.error(err);
-      toast.error("Error loading customer data");
+      if (requestId === detailsRequestId.current) {
+        console.error(err);
+        toast.error("Error loading customer data");
+      }
     } finally {
-      setDetailsLoading(false);
+      if (requestId === detailsRequestId.current) setDetailsLoading(false);
     }
   };
 
@@ -194,7 +210,7 @@ const Customers = ({ token }) => {
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search name, email, phone, city..."
+                placeholder="Search name, email, phone, social code..."
                 className="w-64 sm:w-80 px-3.5 py-2 pl-9 bg-white border border-gray-300 rounded-xl text-xs focus:outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600"
               />
               <svg className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -207,12 +223,17 @@ const Customers = ({ token }) => {
             >
               Search
             </button>
-            {search && (
+            {(search || hasSearched) && (
               <button
                 type="button"
                 onClick={() => {
                   setSearch("");
-                  fetchCustomers("");
+                  searchRequestId.current += 1;
+                  setLoading(false);
+                  setCustomers([]);
+                  setPagination(null);
+                  setHasSearched(false);
+                  setPage(1);
                 }}
                 className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-semibold"
               >
@@ -223,7 +244,7 @@ const Customers = ({ token }) => {
         </div>
 
         {/* Quick Stats Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+        {hasSearched && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
           <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm">
             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Total Customers</p>
             <p className="text-xl font-black text-gray-900 mt-1">{customers.length}</p>
@@ -240,7 +261,7 @@ const Customers = ({ token }) => {
             <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Letter Images Stored</p>
             <p className="text-xl font-black text-amber-500 mt-1">{totalLettersArchived} 💌</p>
           </div>
-        </div>
+        </div>}
       </div>
 
       {/* Customer List Table */}
@@ -249,6 +270,12 @@ const Customers = ({ token }) => {
           <div className="p-12 text-center text-gray-400">
             <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
             <p className="text-xs font-semibold">Loading customer database...</p>
+          </div>
+        ) : !hasSearched ? (
+          <div className="p-12 text-center text-gray-500">
+            <span className="text-3xl mb-2 block">🔍</span>
+            <p className="text-sm font-semibold">Search to view customer records</p>
+            <p className="text-xs text-gray-400 mt-1">Customer details are loaded only after an explicit search.</p>
           </div>
         ) : customers.length === 0 ? (
           <div className="p-12 text-center text-gray-500">
@@ -351,13 +378,15 @@ const Customers = ({ token }) => {
             </table>
           </div>
         )}
-        <Pagination
-          page={pagination?.page || page}
-          totalPages={pagination?.totalPages || 0}
-          total={pagination?.total || 0}
-          onPageChange={handlePageChange}
-          loading={loading}
-        />
+        {hasSearched && (
+          <Pagination
+            page={pagination?.page || page}
+            totalPages={pagination?.totalPages || 0}
+            total={pagination?.total || 0}
+            onPageChange={handlePageChange}
+            loading={loading}
+          />
+        )}
       </div>
 
       {/* Customer Detail & Letters Modal */}
@@ -394,7 +423,12 @@ const Customers = ({ token }) => {
 
               <button
                 type="button"
-                onClick={() => setSelectedCustomer(null)}
+                onClick={() => {
+                  detailsRequestId.current += 1;
+                  setSelectedCustomer(null);
+                  setCustomerDetails(null);
+                  setDetailsLoading(false);
+                }}
                 className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors"
               >
                 ✕
@@ -410,6 +444,25 @@ const Customers = ({ token }) => {
                 </div>
               ) : customerDetails ? (
                 <>
+                  <Customer360Panel
+                    data={customerDetails}
+                    token={token}
+                    onStatusChange={(isDisabled, disabledAt, disabledReason) => {
+                      setCustomerDetails((previous) => ({
+                        ...previous,
+                        customer: {
+                          ...previous.customer,
+                          isDisabled,
+                          disabledAt,
+                          disabledBy: isDisabled ? previous.customer.disabledBy : null,
+                          disabledReason: isDisabled ? disabledReason : "",
+                        },
+                      }));
+                      setCustomers((previous) => previous.map((customer) => (
+                        customer.id === selectedCustomer.id ? { ...customer, isDisabled, disabledAt } : customer
+                      )));
+                    }}
+                  />
                   {/* Loyalty Level Progress Card */}
                   {customerDetails.loyalty && (
                     <div className="p-4 rounded-2xl bg-gradient-to-r from-gray-900 to-indigo-950 text-white shadow-lg">

@@ -75,6 +75,8 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
 - `GET /api/features` and `PATCH /api/features` (the update requires `platform:features_manage`)
+- `GET /api/customer/admin/search` requires a search query of at least two characters and `customer:admin_list`; `GET /api/customer/details/:userId` requires `customer:admin_detail`.
+- `PATCH /api/customer/admin/:userId/status` requires `customer:account_manage`; disabling a customer revokes that account's active sessions and is recorded in the system audit outbox.
 - `POST /api/auth/2fa/send` and `/api/auth/2fa/verify`
 - `GET /api/admin/manufacturer-locations`
 - `POST /api/admin/manufacturer-locations`

@@ -95,7 +95,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
             role: true,
             status: true,
             mustChangePassword: true,
-            customerProfile: { select: { id: true } },
+            customerProfile: { select: { id: true, isDisabled: true } },
             adminProfile: { select: { id: true } },
             manufacturerProfile: {
               select: {

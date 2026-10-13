@@ -128,6 +128,26 @@ test("inactive accounts are rejected", async () => {
   assert.equal(result.response.body.code, "ACCOUNT_INACTIVE");
 });
 
+test("disabled customer profiles reject already-issued access tokens", async () => {
+  const account = {
+    id: "customer-account",
+    role: "CUSTOMER",
+    status: "ACTIVE",
+    customerProfile: { id: "customer-profile", isDisabled: true },
+    adminProfile: null,
+    manufacturerProfile: null,
+    distributorProfile: null,
+    marketingPartnerProfile: null,
+    roleMappings: [],
+  };
+  const token = generateAccessToken({ accountId: account.id, profileId: "customer-profile", role: "CUSTOMER" });
+  const result = await invokeAuthenticate(token, account);
+
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 403);
+  assert.equal(result.response.body.code, "WORKSPACE_INACTIVE");
+});
+
 test("forced Admin password rotation blocks APIs except session inspection and password change", async () => {
   const account = {
     id: "admin-account",

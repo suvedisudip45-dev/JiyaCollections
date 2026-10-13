@@ -377,6 +377,10 @@ model User {
   id                  String       @id @default(uuid())
   accountId           String?      @unique
   account             AuthAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  isDisabled          Boolean      @default(false)
+  disabledAt          DateTime?
+  disabledBy          String?
+  disabledReason      String?      @db.Text
   firstName           String?      @default("")
   lastName            String?      @default("")
   phone               String?      @default("")

@@ -157,8 +157,8 @@ const registerUser = async (req, res) => {
     const duplicatePhoneUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { phone: normalizedPhone },
-          { socialCustomerPhone: normalizedPhone },
+          { phone: { in: [normalizedPhone, `977${normalizedPhone}`, `+977${normalizedPhone}`] } },
+          { socialCustomerPhone: { in: [normalizedPhone, `977${normalizedPhone}`, `+977${normalizedPhone}`] } },
         ],
       },
     });
@@ -293,6 +293,15 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     },
   });
 
+  if (existingProfile?.isDisabled) {
+    return {
+      success: false,
+      code: null,
+      user: existingProfile,
+      message: "This customer account has been disabled. Contact support for assistance.",
+    };
+  }
+
   if (existingProfile && existingProfile.isInactiveProfile) {
     return {
       success: true,
@@ -337,6 +346,14 @@ export const createInactiveSocialCustomerProfile = async (payload = {}) => {
     : `social.${normalizedPhone}.${activeCode.toLowerCase()}@inactive.local`;
 
   const duplicateEmail = await prisma.user.findUnique({ where: { email: candidateEmail } });
+  if (duplicateEmail?.isDisabled) {
+    return {
+      success: false,
+      code: null,
+      user: duplicateEmail,
+      message: "This email belongs to a disabled customer account and cannot be reused.",
+    };
+  }
   const finalEmail = duplicateEmail ? `social.${normalizedPhone}.${Date.now()}.${activeCode.toLowerCase()}@inactive.local` : candidateEmail;
   const socialPassword = await bcrypt.hash(`social-${activeCode.toLowerCase()}`, 10);
   const socialAddress = Array.isArray(address) ? address : (address && Object.keys(address).length ? [address] : []);
@@ -416,6 +433,13 @@ export const validateSocialCustomerProfile = async (req, res) => {
       });
     }
 
+    if (user.isDisabled) {
+      return res.json({
+        success: false,
+        message: "This customer account has been disabled. Contact support for assistance.",
+      });
+    }
+
     const inactiveProfileData = typeof user.inactiveProfileData === "string"
       ? JSON.parse(user.inactiveProfileData || "{}")
       : (user.inactiveProfileData || {});
@@ -486,6 +510,13 @@ export const activateSocialCustomerProfile = async (req, res) => {
       return res.json({
         success: false,
         message: "Invalid mobile number or secret code. Please check the code provided during your purchase.",
+      });
+    }
+
+    if (user.isDisabled) {
+      return res.json({
+        success: false,
+        message: "This customer account has been disabled. Contact support for assistance.",
       });
     }
 
