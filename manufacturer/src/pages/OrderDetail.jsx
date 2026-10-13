@@ -88,11 +88,14 @@ const OrderDetail = () => {
     if (!token) return;
     if (!silent) setLoading(true);
     try {
-      const res = await axios.get(`${backendUrl}/api/order-assignment/my`, {
+      const assignmentPath = isDistributor
+        ? `/api/order-assignment/distributor/${id}`
+        : `/api/order-assignment/${id}`;
+      const res = await axios.get(`${backendUrl}${assignmentPath}`, {
         headers: { token },
       });
       if (res.data.success) {
-        const found = (res.data.assignments || []).find((a) => a.id === id);
+        const found = res.data.assignment || null;
         if (found) {
           const notes = (() => {
             if (!found.notes) return {};
@@ -320,15 +323,16 @@ const OrderDetail = () => {
     if (!validateChecklist()) return;
     setActionLoading(true);
     try {
-      const useSelfDelivery = isDistributor && selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY";
-      if (useSelfDelivery) {
+      if (isDistributor) {
         const response = await axios.post(
-          `${backendUrl}/api/distributor/orders/${id}/self-delivery`,
-          {},
+          `${backendUrl}/api/distributor/orders/${id}/hold`,
+          {
+            deliveryType: selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY" ? "SELF_DELIVERY" : "NCM",
+          },
           { headers: { token } }
         );
-        if (!response.data.success) throw new Error(response.data.message || "Could not select self-delivery.");
-        toast.success(response.data.message || "Order is ready for self-delivery.");
+        if (!response.data.success) throw new Error(response.data.message || "Could not place order on hold.");
+        toast.success(response.data.message || "Order placed on hold for delivery.");
         await fetchAssignment();
         return;
       }
@@ -464,7 +468,20 @@ const OrderDetail = () => {
 
   const order = assignment.order;
   const items = order?.items || [];
-  const deliveryChoice = deliveryChoiceState.assignmentId === id ? deliveryChoiceState.value : "NCM";
+  const savedAssignmentNotes = (() => {
+    if (!assignment.notes) return {};
+    if (typeof assignment.notes === "object") return assignment.notes;
+    try {
+      return JSON.parse(assignment.notes);
+    } catch {
+      return {};
+    }
+  })();
+  const deliveryChoice = deliveryChoiceState.assignmentId === id
+    ? deliveryChoiceState.value
+    : savedAssignmentNotes.deliveryOnHold
+      ? assignment.deliveryType
+      : "NCM";
   const setDeliveryChoice = (value) => setDeliveryChoiceState({ assignmentId: id, value });
   const delivery = assignment.delivery || null;
   const benefits = order?.fulfillmentBenefits || {};
@@ -521,7 +538,8 @@ const OrderDetail = () => {
     { key: "letter_ready", label: "Packing checklist", description: "Confirm the order contents, address, and parcel readiness." },
     { key: "checklist_complete", label: "Pack order", description: "Securely pack and seal the verified order." },
     { key: "packed", label: "Package details", description: "Enter parcel dimensions and weight; description must be 50 characters or fewer." },
-    { key: "package_details_complete", label: "Book delivery", description: "Choose self-delivery when available or book NCM pickup." },
+    { key: "package_details_complete", label: "Choose delivery", description: "Choose self-delivery when available or NCM pickup, then hold the packed order." },
+    { key: "on_hold", label: "On hold", description: "This order is waiting in the selected delivery queue." },
   ];
   const WORKFLOW_STEPS = isDistributor ? DISTRIBUTOR_WORKFLOW_STEPS : MANUFACTURER_WORKFLOW_STEPS;
   const storedWorkflowStatus = assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : String(assignment.status || "assigned").toLowerCase();
@@ -530,7 +548,7 @@ const OrderDetail = () => {
   const workflowIndex = matchedWorkflowIndex >= 0
     ? matchedWorkflowIndex
     : ["ready_for_pickup", "picked_up", "in_transit", "out_for_delivery", "delivered"].includes(workflowStatus)
-      ? WORKFLOW_STEPS.length - 1
+      ? WORKFLOW_STEPS.length - (isDistributor ? 2 : 1)
       : 0;
   const customerDistrict = normalizeDistrict(order?.address?.district);
   const distributorDistricts = [
@@ -543,8 +561,8 @@ const OrderDetail = () => {
     distributorDistricts.includes(customerDistrict)
   );
   const deliveryActionLabel = workflowStatus === "package_details_complete"
-    ? isDistributor && selfDeliveryAvailable && deliveryChoice === "SELF_DELIVERY"
-      ? "Start self-delivery"
+    ? isDistributor
+      ? "Hold order"
       : "Book NCM delivery"
     : "Continue";
   const handleWorkflowNext = async () => {
@@ -595,7 +613,7 @@ const OrderDetail = () => {
       {/* Top Breadcrumb & Actions */}
       <div className="flex items-center justify-between">
         <Link
-          to="/orders"
+          to={isDistributor && (workflowStatus === "on_hold" || assignment.deliveryType === "NCM") ? "/ncm" : "/orders"}
           className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -611,9 +629,9 @@ const OrderDetail = () => {
         currentIndex={workflowIndex}
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
-        nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : "Continue"}
-        nextDisabled={workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
-        previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
+        nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : workflowStatus === "on_hold" ? "Waiting for batch dispatch" : "Continue"}
+        nextDisabled={workflowStatus === "on_hold" || workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
+        previousDisabled={workflowIndex <= 0 || ["on_hold", "ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
         busy={actionLoading}
       >
         {marketingCardsEnabled && order?.marketingCardRequired !== false && (
@@ -655,7 +673,7 @@ const OrderDetail = () => {
                   {
                     value: "NCM",
                     title: "NCM delivery",
-                    description: "Book a courier pickup through the NCM API.",
+                    description: "Hold the packed order for batch NCM pickup booking.",
                   },
                 ].map((option) => (
                   <button
@@ -681,6 +699,17 @@ const OrderDetail = () => {
           </div>
         )}
         {workflowStatus === "package_details_complete" && !isDistributor && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Package details are complete. Continue to book delivery with NCM.</p>}
+        {workflowStatus === "on_hold" && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-4 text-xs text-amber-950">
+            <p className="font-bold">Order held for {assignment.deliveryType === "NCM" ? "NCM batch booking" : "self-delivery"}.</p>
+            <Link
+              to={assignment.deliveryType === "NCM" ? "/ncm" : "/distributor/deliveries"}
+              className="mt-2 inline-flex font-bold underline underline-offset-2"
+            >
+              Open {assignment.deliveryType === "NCM" ? "NCM deliveries" : "self-delivery management"}
+            </Link>
+          </div>
+        )}
         {workflowStatus === "ready_for_pickup" && isDistributor && assignment.deliveryType === "SELF_DELIVERY" && <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-xs font-semibold text-emerald-900">Self-delivery selected. Track and complete this order in Self-Delivery Management.</p>}
         {workflowStatus !== "quality_check" && workflowStatus !== "letter_ready" && workflowStatus !== "package_details_complete" && <p className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-xs text-slate-600">{WORKFLOW_STEPS[workflowIndex]?.description}</p>}
       </FulfillmentProgressStepper>

@@ -582,8 +582,13 @@ const getMyAssignments = async (req, res) => {
     const { status } = req.query;
     const pagination = getPagination(req.query);
 
-    const where = distributorId ? { distributorId } : { manufacturerId };
-    if (status && status !== "all") where.status = status;
+    const where = distributorId
+      ? { distributorId, AND: [{ status: { not: "on_hold" } }] }
+      : { manufacturerId };
+    if (status && status !== "all") {
+      if (distributorId) where.AND.push({ status });
+      else where.status = status;
+    }
 
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({

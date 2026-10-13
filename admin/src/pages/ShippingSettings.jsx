@@ -15,6 +15,10 @@ const ShippingSettings = ({ token }) => {
     splitShipmentFee: 200,
     routeOverrides: [],
     freeShippingMin: 0,
+    ncmReturnSettlementRate: 0,
+    ncmExchangeSettlementRate: 0,
+    distributorReturnSettlementRate: 0,
+    distributorExchangeSettlementRate: 0,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -44,6 +48,10 @@ const ShippingSettings = ({ token }) => {
           splitShipmentFee: Number(c.splitShipmentFee ?? 200),
           routeOverrides: Array.isArray(c.routeOverrides) ? c.routeOverrides : [],
           freeShippingMin: Number(c.freeShippingMin ?? 0),
+          ncmReturnSettlementRate: Number(c.ncmReturnSettlementRate ?? 0),
+          ncmExchangeSettlementRate: Number(c.ncmExchangeSettlementRate ?? 0),
+          distributorReturnSettlementRate: Number(c.distributorReturnSettlementRate ?? 0),
+          distributorExchangeSettlementRate: Number(c.distributorExchangeSettlementRate ?? 0),
         });
       }
     } catch (err) {
@@ -138,6 +146,10 @@ const ShippingSettings = ({ token }) => {
           splitShipmentFee: config.splitShipmentFee,
           routeOverrides: config.routeOverrides,
           freeShippingMin: config.freeShippingMin,
+          ncmReturnSettlementRate: config.ncmReturnSettlementRate,
+          ncmExchangeSettlementRate: config.ncmExchangeSettlementRate,
+          distributorReturnSettlementRate: config.distributorReturnSettlementRate,
+          distributorExchangeSettlementRate: config.distributorExchangeSettlementRate,
         },
         { headers: { token } }
       );
@@ -369,6 +381,36 @@ const ShippingSettings = ({ token }) => {
                 >
                   Add corridor exception
                 </button>
+              </div>
+            </details>
+
+            <details className="rounded-lg border border-gray-200 p-3">
+              <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-gray-700">
+                Return and exchange settlement rates
+              </summary>
+              <p className="mt-2 text-xs leading-5 text-gray-500">
+                Company-paid logistics settlement amounts. Rates are snapshotted when a request is approved and become payables after the logistics work is completed; they do not change the customer’s delivery charge.
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[
+                  ["ncmReturnSettlementRate", "NCM return settlement"],
+                  ["ncmExchangeSettlementRate", "NCM exchange settlement"],
+                  ["distributorReturnSettlementRate", "Distributor return settlement"],
+                  ["distributorExchangeSettlementRate", "Distributor exchange settlement"],
+                ].map(([name, label]) => (
+                  <label key={name} className="block text-[11px] font-semibold text-gray-600">
+                    {label} (Rs.)
+                    <input
+                      type="number"
+                      name={name}
+                      value={config[name]}
+                      onChange={handleChange}
+                      min="0"
+                      step="0.01"
+                      className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-xs"
+                    />
+                  </label>
+                ))}
               </div>
             </details>
 

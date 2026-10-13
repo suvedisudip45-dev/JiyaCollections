@@ -3,6 +3,11 @@ import { prisma } from "../config/db.js";
 import { createExchangeOrder, createOrderComment, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, getOrderStatus } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
+import {
+  createReturnExchangeSettlementPayable,
+  postReturnExchangeSettlementAccounting,
+  resolveReturnExchangeSettlementRate,
+} from "./returnExchangeSettlementService.js";
 
 const ACTIVE_STATUSES = ["REQUESTED", "APPROVED", "APPROVED_FOR_DISTRIBUTOR", "SUBMITTING", "NCM_SUBMISSION_UNKNOWN", "NCM_REJECTED", "NCM_CREATED", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED", "IN_PROGRESS"];
 const REASONS = new Set(["SIZE_OR_FIT", "DEFECTIVE", "WRONG_ITEM", "DAMAGED_IN_TRANSIT", "OTHER"]);
@@ -228,6 +233,59 @@ const adjustReplacementInventory = async ({ tx, manufacturerId, items, direction
       });
     }
   }
+};
+
+const reserveDistributorReplacementInventory = async ({ tx, distributorId, items }) => {
+  if (!distributorId) throw fail("The exchange has no distributor stock owner.", "EXCHANGE_DISTRIBUTOR_MISSING", 409);
+  const quantities = new Map();
+  for (const item of items) {
+    const sizeKey = normalized(item.size || "Standard").replace(/\s+/g, " ");
+    const colorKey = normalized(item.color || "Standard").replace(/\s+/g, " ");
+    const key = JSON.stringify([item.productId, sizeKey, colorKey]);
+    const existing = quantities.get(key);
+    if (existing) existing.quantity += Number(item.quantity || 0);
+    else quantities.set(key, { productId: item.productId, sizeKey, colorKey, quantity: Number(item.quantity || 0) });
+  }
+
+  const reservations = [];
+  for (const item of quantities.values()) {
+    const sku = await tx.inventorySku.findUnique({
+      where: { productId_sizeKey_colorKey: { productId: item.productId, sizeKey: item.sizeKey, colorKey: item.colorKey } },
+      select: { id: true, isActive: true },
+    });
+    if (!sku?.isActive) {
+      throw fail(`Replacement SKU is missing or inactive for product ${item.productId}.`, "EXCHANGE_REPLACEMENT_SKU_MISSING", 409);
+    }
+    const balances = await tx.inventoryBalance.findMany({
+      where: {
+        inventorySkuId: sku.id,
+        location: { distributorId, kind: "DISTRIBUTOR", inventoryOwner: "PLATFORM", isActive: true },
+      },
+      orderBy: { locationId: "asc" },
+    });
+    let remaining = item.quantity;
+    for (const balance of balances) {
+      const available = balance.quantityOnHand - balance.reservedQuantity;
+      const reserveQuantity = Math.min(remaining, available);
+      if (reserveQuantity <= 0) continue;
+      const updated = await tx.inventoryBalance.updateMany({
+        where: {
+          id: balance.id,
+          quantityOnHand: balance.quantityOnHand,
+          reservedQuantity: balance.reservedQuantity,
+        },
+        data: { reservedQuantity: { increment: reserveQuantity } },
+      });
+      if (updated.count !== 1) throw fail("Distributor stock changed while approving the exchange. Retry the review.", "EXCHANGE_STOCK_CONFLICT", 409);
+      reservations.push({ productId: item.productId, inventorySkuId: sku.id, locationId: balance.locationId, quantity: reserveQuantity });
+      remaining -= reserveQuantity;
+      if (remaining === 0) break;
+    }
+    if (remaining > 0) {
+      throw fail(`Insufficient distributor replacement stock for product ${item.productId}.`, "EXCHANGE_REPLACEMENT_STOCK_UNAVAILABLE", 409);
+    }
+  }
+  return reservations;
 };
 
 export const createCustomerExchangeRequest = async ({ customerId, orderId, requestKey, reasonCode, reasonDetails, items, replacementItems, actorRole = "CUSTOMER", actorId }) => {
@@ -473,7 +531,7 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
 export const listDistributorExchangeRequests = ({ distributorId }) => {
   if (!distributorId) throw fail("An approved distributor profile is required.", "DISTRIBUTOR_REQUIRED", 403);
   return prisma.orderExchangeRequest.findMany({
-    where: { distributorId, deliveryRoute: "DISTRIBUTOR", status: "APPROVED_FOR_DISTRIBUTOR" },
+    where: { distributorId, deliveryRoute: "DISTRIBUTOR", status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS"] } },
     include: {
       order: { select: { id: true, address: true } },
       events: { orderBy: { occurredAt: "asc" } },
@@ -519,7 +577,16 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
     const nextStatus = normalizedDecision === "APPROVE"
       ? route.route === "DISTRIBUTOR" ? "APPROVED_FOR_DISTRIBUTOR" : "APPROVED"
       : "REJECTED";
+    const shippingConfig = normalizedDecision === "APPROVE" ? await tx.shippingConfig.findFirst() : null;
     const now = new Date();
+    let distributorReplacementReservations = [];
+    if (normalizedDecision === "APPROVE" && route.route === "DISTRIBUTOR" && !current.replacementStockReservedAt) {
+      distributorReplacementReservations = await reserveDistributorReplacementInventory({
+        tx,
+        distributorId: route.distributorId,
+        items: parseArray(current.replacementItems).length ? parseArray(current.replacementItems) : parseArray(current.items),
+      });
+    }
     if (normalizedDecision === "APPROVE" && route.route === "NCM" && current.manufacturerId && !current.replacementStockReservedAt) {
       await adjustReplacementInventory({
         tx,
@@ -543,9 +610,12 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
         decisionActorId: adminId,
         decisionReason,
         decidedAt: now,
-        ...(normalizedDecision === "APPROVE" && route.route === "NCM" && current.manufacturerId && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
+        ...(normalizedDecision === "APPROVE" && ((route.route === "NCM" && current.manufacturerId) || route.route === "DISTRIBUTOR") && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
         ...(normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt ? { replacementStockReleasedAt: now } : {}),
-        ...(normalizedDecision === "APPROVE" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(normalizedDecision === "APPROVE" && route.route === "NCM" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(normalizedDecision === "APPROVE" ? {
+          logisticsSettlementAmount: resolveReturnExchangeSettlementRate(shippingConfig, route.route, "EXCHANGE"),
+        } : {}),
         ...(normalizedDecision === "APPROVE" ? { deliveryRoute: route.route, distributorId: route.distributorId } : {}),
       },
     });
@@ -565,7 +635,11 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       actorId: adminId,
       actorRole: "ADMIN",
       reason: decisionReason,
-      metadata: normalizedDecision === "APPROVE" ? { deliveryRoute: route.route, distributorId: route.distributorId } : undefined,
+      metadata: normalizedDecision === "APPROVE" ? {
+        deliveryRoute: route.route,
+        distributorId: route.distributorId,
+        ...(distributorReplacementReservations.length ? { replacementReservations: distributorReplacementReservations } : {}),
+      } : undefined,
       idempotencyKey: `EXCHANGE:${current.id}:${nextStatus}`,
     });
     return updated;
@@ -902,6 +976,9 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       where: { id: current.id },
       data: { ...patch, status: exchangeStatus, ...(exchangeStatus === "COMPLETED" ? { completedAt: current.completedAt || happenedAt } : {}) },
     });
+    if (exchangeStatus === "COMPLETED") {
+      await createReturnExchangeSettlementPayable(tx, result, "EXCHANGE");
+    }
     const eventKey = `EXCHANGE_NCM:${numericId}:${nextLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
     await addEvent(tx, {
       exchangeRequestId: current.id,
@@ -934,6 +1011,9 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
     }
     return result;
   }, { isolationLevel: "Serializable" });
+  if (updated?.status === "COMPLETED") {
+    await postReturnExchangeSettlementAccounting({ operation: "EXCHANGE", requestId: updated.id });
+  }
   return Boolean(updated);
 };
 
@@ -948,7 +1028,7 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     throw fail("Add inspection notes for damaged, missing, or disputed items.", "EXCHANGE_INSPECTION_NOTES_REQUIRED");
   }
 
-  return prisma.$transaction(async (tx) => {
+  const record = await prisma.$transaction(async (tx) => {
     const request = await tx.orderExchangeRequest.findUnique({ where: { id: requestId } });
     if (!request) throw fail("Exchange request not found.", "EXCHANGE_NOT_FOUND", 404);
     if (!request.manufacturerReceivedAt) {
@@ -1022,6 +1102,9 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     }
 
     const updated = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
+    if (nextStatus === "COMPLETED") {
+      await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+    }
     await addEvent(tx, {
       exchangeRequestId: request.id,
       eventType: "MANUFACTURER_RETURN_INSPECTED",
@@ -1035,6 +1118,10 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     });
     return updated;
   }, { isolationLevel: "Serializable" });
+  if (record.status === "COMPLETED") {
+    await postReturnExchangeSettlementAccounting({ operation: "EXCHANGE", requestId: record.id });
+  }
+  return record;
 };
 
 export const reconcileCustomerExchange = async (requestId) => {

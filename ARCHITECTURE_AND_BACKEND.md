@@ -88,6 +88,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `PUT /api/admin/distributor-applications/:id/profile` updates the registration profile and linked login email/phone transactionally.
 - `GET /api/order-assignment/admin/unassigned` lists pending customer orders for admin retry through `POST /api/order-assignment/assign`
 - `POST /api/returns/exchange/customer`
+- `GET /api/returns/exchange/distributor` and `POST /api/returns/exchange/distributor/:id/process`
 - `GET /api/returns/exchange/admin` (admin exchange list; serializes the related order's `BigInt` date as a decimal string for JSON clients)
 - `POST /api/returns/customer/request` and `GET /api/returns/customer/requests`
 - `GET /api/returns/customer/admin/requests` and `POST /api/returns/customer/admin/:id/decision`
@@ -112,11 +113,17 @@ Gift assignment is distributor-selected and backend-authoritative for distributo
 
 Direct hub orders are created as `DIRECT_DISTRIBUTOR`, scoped to the authenticated `req.distributorId`, and deduct each selected SKU through the distributor inventory ledger in the same transaction as order and assignment creation. They do not use manufacturer assignments or `ManufacturerInventory`; the manufacturer direct-order API is no longer mounted.
 
-Distributor customer-order delivery is selected after package details are complete. A distributor may choose self-delivery only when an active distributor district or coverage district matches the customer's district; that choice moves the assignment into the self-delivery workflow without creating an NCM delivery. Choosing NCM records `deliveryType = NCM` and submits through the existing NCM integration. Self-Delivery Management only lists self-delivery assignments and excludes assignments with an NCM delivery record, including legacy records.
+Distributor customer-order delivery is selected after package details are complete. The distributor chooses self-delivery or NCM and places the assignment on hold; held assignments are excluded from the ordinary hub queue. Self-delivery is permitted only when an active distributor district or coverage district matches the customer's district, and held self-delivery orders can be dispatched from Self-Delivery Management. NCM-held orders are managed from the distributor NCM desk, where the distributor can submit selected orders as separate NCM bookings in one action. Each order keeps its own booking, waybill, and failure result; this is not a carrier-side multi-parcel booking. Existing NCM submission and reconciliation safeguards remain in use. Self-Delivery Management only lists self-delivery assignments and excludes assignments with an NCM delivery record, including legacy records.
+
+The distributor NCM desk provides on-hold, failed NCM, active booked, delivered, and all-NCM views, with order details, product image, payment/delivery state, creation time, and any likely-delivery date found in persisted NCM event payloads. The Booked view excludes delivered orders; Failed NCM contains failed submissions without an NCM order ID. It does not infer an ETA when the carrier has not provided one. Its list and bulk-book routes require authenticated distributor context and `distributor:assignments_read`.
 
 Admins can submit package details from Order Assignments and request NCM
 delivery for a distributor-assigned order. The request uses the assigned hub's
-pickup branch and the standard NCM order-creation contract. Customer-order
+pickup branch and the standard NCM order-creation contract. For distributor
+orders, the customer's selected NCM branch supplies the NCM pickup-origin
+branch (falling back to the saved customer city/location for older orders);
+manufacturer-originated bookings continue using the assigned manufacturer's
+pickup branch. Customer-order
 carrier status is updated from NCM webhooks and persisted in the database;
 customer-order reads do not poll NCM status/detail APIs. Webhook success is
 returned only after the event and status update have been saved. NCM delivery
@@ -288,15 +295,18 @@ This makes the backend the actual business service layer for the project rather 
 ## 9. Customer return and exchange lifecycle
 
 - Customer and admin requests are validated against a delivered order and purchased quantities. The backend records the cause and an idempotency key; customer input never calls NCM directly.
-- Admin approval is the dispatch gate. Return approval calls NCM's vendor-return endpoint; exchange approval reserves the requested replacement variant and calls NCM's exchange-create endpoint.
+- The original completed delivery channel determines the handler: NCM-delivered orders route both returns and exchanges through NCM; `SELF_DELIVERY` orders route to the distributor on the original `OrderAssignment`. Admin approval is the dispatch gate, and the admin panels display this handler before approval.
+- NCM return approval calls `/api/v2/vendor/order/return` with the original NCM order ID and reason. This marks the original order for return rather than creating a new return waybill; NCM webhooks/polling track the reverse leg until delivered to the manufacturer, where inspection and refund accounting continue.
+- NCM exchange approval calls `/api/v2/vendor/order/exchange-create` with the original NCM order ID. NCM creates distinct return (`ven_order`) and replacement (`cust_order`) legs; the backend stores and reconciles both IDs and attaches the return reason/replacement plan to the return leg. Returned goods must reach and be inspected at the manufacturer, while replacement status tracks NCM delivery.
+- Approved distributor returns are assigned to the original distributor for receipt, QA, inventory adjustment, and return accounting. Approved distributor exchanges reserve replacement stock from that distributor's ledger; the distributor receives and inspects the returned units, dispatches the reserved replacement, and marks it delivered. Neither distributor route calls NCM.
 - `ReturnExchangeNcmAttempt` stores each carrier request, response, HTTP result, error detail, and timestamps. Available NCM charges and the selected payer are stored on the case.
 - NCM HTTP 5xx responses retry up to three times by default; every transport attempt is included in the case audit. Timeouts are not blindly retried and remain an unknown outcome for admin reconciliation.
-- Per NCM's API guide, `{ pk, comment }` marks the original order for return (`vendor_return: true`) and does not create a new return waybill. Exchange creation returns `cust_order` for replacement and `ven_order` for the return leg.
-- Because exchange-create accepts only `pk`, the backend attaches the recorded return cause and replacement plan to the new `ven_order` using NCM's documented order-comment endpoint.
+- Because exchange-create accepts only `pk`, the backend attaches the recorded return cause and replacement plan to the new `ven_order` using NCM's order-comment endpoint; NCM does not accept the replacement SKU or price delta in the exchange-create request.
 - Return webhook milestones include Pickup Complete, Sent for Delivery, Dispatched, Arrived, and Delivered; updates are applied monotonically and the return is not received until its return leg is delivered.
 - The NCM return endpoint does not document a separate reverse-pickup tariff. The system records a charge from the return response when present, otherwise the documented order-detail `delivery_charge`, and records which source supplied it.
 - NCM rejection is failed/retryable, not success. Ambiguous outcomes must be reconciled before retrying.
 - Return webhooks use a separate state machine. Inventory is adjusted only after manufacturer receipt and inspection; refund payables are created after inspection, and a return closes only after settlement.
-- Exchange replacement stock is reserved on approval, released when a rejected request is closed, and consumed when the replacement delivery completes.
-- NCM exchange-create accepts only the original order `pk`; it cannot accept a replacement SKU or COD delta. The requested variant is stored/reserved internally, so admins must verify the NCM replacement waybill and coordinate any price adjustment.
+- Admins configure separate NCM/distributor return and exchange logistics settlement rates in Shipping Rate Settings. The selected rate is snapshotted at approval, is not charged to the customer, and becomes an accounts payable to NCM or the original distributor only when the logistics workflow completes. The NCM-reported carrier charge remains a separate actual-charge record.
+- NCM exchange replacement stock follows the manufacturer reservation and carrier-status lifecycle. For self-delivery exchanges, reserved distributor-ledger stock is consumed at dispatch; the distributor must receive and inspect the return before dispatch, then mark the replacement delivered. Good returned items are ledgered as `RETURN`; damaged items are ledgered to `DAMAGED` and recorded as open inventory discrepancies.
+- NCM exchange replacements are not variant- or price-adjusted by NCM's API call. The requested variant is stored/reserved internally, so admins must verify the NCM replacement waybill and coordinate any price adjustment.
 - Existing processed return rows are preserved as `LEGACY_PROCESSED`; new requests use the reviewed lifecycle rather than the old immediate refund/restock route.

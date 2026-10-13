@@ -416,19 +416,35 @@ transfer flow:
 7. Distributor fulfillment is a dispatch workflow, not a production workflow:
    accept the order, inspect product/variant quality, include the compulsory
    customer letter, complete the packing checklist, pack and enter parcel
-   details, then choose self-delivery when eligible or book NCM. Distributor
+   details, then choose self-delivery when eligible or select NCM and place
+   the order on hold. Held orders are excluded from the ordinary hub queue.
+   Self-delivery orders resume in Self-Delivery Management. NCM orders appear
+   in the NCM Deliveries sidebar page, where the distributor can review held,
+   failed NCM, active booked, delivered, and all-NCM orders and submit a
+   checklist-selected batch. Each selected parcel receives a separate NCM
+   booking and per-order result; this is not a carrier-side combined booking.
+   Booked and all-order views can be filtered by the carrier's pickup,
+   transit, delivery, and return statuses. Alias labels that normalize to the
+   same stored NCM state intentionally return the same matching orders.
+   A failed NCM submission can be reapplied directly from its order row by the
+   distributor without admin review.
+   The customer's selected NCM branch is used for the NCM pickup-origin
+   branch, with customer city/location as a fallback for older orders.
+   Distributor
    checklist and transition validation do not require stitching or branding
    checks. The user-entered product description and the NCM `package` field
    must each be no longer than 50 characters; the backend rejects longer
    values before making an NCM request.
 8. Distributor fulfillment provides two delivery channels:
-   - **NCM Courier Path**: Uses automated NCM booking, carrier tracking, and webhook sync.
+   - **NCM Courier Path**: Uses automated NCM booking, carrier tracking, and webhook sync. A distributor first holds package-complete orders in the NCM desk, then submits selected held orders for individual bookings.
    - **Distributor Self-Delivery Path**:
      - `GET /api/distributor/orders/assigned`: List orders allocated to the distributor hub.
      - `PATCH /api/distributor/orders/:id/status`: Updates status sequentially (`Dispatched` → `On the Way` → `Delivered`). Upon delivery, reserved inventory balances and on-hand stock are deducted transactionally, recording `FULFILLMENT` ledger entries and booking delivery accounting.
-     - Customer return requests remain pending until admin approval. Approved self-delivery returns are routed to the original distributor hub, where the distributor records receipt and QA. The endpoint rejects returns without an approved request.
-     - Approved self-delivery exchange requests are listed for the assigned distributor hub; they do not invoke NCM.
+     - Customer return requests remain pending until admin approval. The Admin panel shows the original delivery route and responsible handler: NCM-delivered returns are submitted to NCM for reverse pickup, while approved self-delivery returns are routed to the original distributor hub for receipt and QA. The distributor endpoint rejects returns without the matching approved request.
+     - Exchanges follow the same delivery-route rule. NCM handles NCM-delivered return and replacement legs; the original distributor handles approved self-delivery exchanges by receiving/inspecting the return and dispatching/delivering the reserved replacement.
+     - Admin-approved self-delivery exchanges are listed for the original distributor hub and reserve replacement stock from its platform-owned inventory ledger. The distributor must receive and inspect the returned items before dispatching the replacement; dispatched stock is consumed from its reservation and the exchange is closed only after the distributor confirms delivery.
      - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. The approved customer return record and accounting are updated automatically.
+     - Admin Shipping Rate Settings include separate company-paid settlement rates for NCM and distributor returns and exchanges. The selected rate is fixed on admin approval; when the return or exchange logistics complete, the system records the payable against NCM or the original distributor. These amounts do not affect customer shipping charges or overwrite reported NCM charges.
    - Admins can enter the same package details used by the fulfillment workflow
      from Order Assignments and request NCM booking for a distributor-assigned
      order. The confirmed NCM order and carrier webhook events are stored in
@@ -448,11 +464,16 @@ Relevant endpoints:
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
+| `GET /api/distributor/orders/ncm` | Distributor | `distributor:assignments_read` | List NCM orders by hold, failed, booked (excluding delivered), delivered, or all-NCM filter, optionally filtered by carrier status; includes persisted carrier status and any provided ETA. |
+| `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings and return per-order outcomes. |
+| `POST /api/distributor/orders/:id/hold` | Distributor | `distributor:assignments_read` | Select self-delivery or NCM and place a package-complete order on hold. |
+| `GET /api/order-assignment/distributor/:id` | Distributor | `distributor:assignment_detail` | Read an assignment through the active distributor profile, including dual-role manufacturer/distributor accounts. |
 | `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; the customer district must match the distributor's district or an active coverage district. |
 | `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
 | `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process QA and inventory movements for an admin-approved self-delivery return request. |
 | `GET /api/returns/customer/manufacturer` | Distributor | `distributor:delivery_return` | List admin-approved return requests assigned to this distributor hub. |
 | `GET /api/returns/exchange/distributor` | Distributor | `distributor:delivery_return` | List admin-approved self-delivery exchange requests assigned to this distributor hub. |
+| `POST /api/returns/exchange/distributor/:id/process` | Distributor | `distributor:delivery_return` | Receive and inspect the approved return, dispatch reserved replacement inventory, or confirm replacement delivery. |
 | `POST /api/delivery/admin/assignment/:id/ncm` | Admin | `assignment:admin_list` | Enter/validate package details and request NCM delivery for an assigned order. |
 | `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
 | `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |

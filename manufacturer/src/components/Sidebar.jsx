@@ -152,6 +152,13 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
+              <NavLink to="/ncm" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <Truck className="w-4 h-4 text-sky-600" />
+                  <span>NCM Deliveries</span>
+                </div>
+              </NavLink>
+
               <NavLink to="/distributor/demand" className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Boxes className="w-4 h-4 text-emerald-600" />

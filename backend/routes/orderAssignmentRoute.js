@@ -97,6 +97,12 @@ orderAssignmentRouter.patch(
 
 // Distributor-explicit subroutes
 orderAssignmentRouter.get("/distributor/my", authenticate, authorizeAny("distributor:assignments_read", "assignment:admin_list"), setDistributorContext, getMyAssignments);
-orderAssignmentRouter.get("/distributor/:id", authenticate, authorizeAny("distributor:assignment_detail", "distributor:assignments_read", "assignment:admin_list"), setDistributorContext, getAssignmentById);
+orderAssignmentRouter.get(
+  "/distributor/:id",
+  authenticate,
+  authorize("distributor:assignment_detail"),
+  setDistributorContext,
+  getAssignmentById,
+);
 
 export default orderAssignmentRouter;

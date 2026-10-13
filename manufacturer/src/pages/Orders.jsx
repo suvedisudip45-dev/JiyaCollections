@@ -149,7 +149,7 @@ const Orders = () => {
 
   const handlePrintSelected = () => {
     const selected = assignments
-      .filter((a) => selectedOrderIds.has(a.id))
+      .filter((a) => a.status !== "on_hold" && selectedOrderIds.has(a.id))
       .map((a) => a.order || { id: a.orderId });
     if (selected.length === 0) {
       toast.warning("Please select at least 1 order to print shipping labels.");
@@ -159,7 +159,8 @@ const Orders = () => {
   };
 
   // Filter logic
-  const filteredOrders = assignments.filter((item) => {
+  const hubAssignments = assignments.filter((item) => item.status !== "on_hold");
+  const filteredOrders = hubAssignments.filter((item) => {
     // 1. Tab filter
     if (activeTab === "pending" && item.status !== "assigned") return false;
     if (
@@ -201,12 +202,12 @@ const Orders = () => {
   });
 
   const tabCounts = {
-    all: assignments.length,
-    pending: assignments.filter((a) => a.status === "assigned").length,
-    production: assignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
-    ready: assignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
-    completed: assignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
-    rejected: assignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
+    all: hubAssignments.length,
+    pending: hubAssignments.filter((a) => a.status === "assigned").length,
+    production: hubAssignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
+    ready: hubAssignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
+    completed: hubAssignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
+    rejected: hubAssignments.filter((a) => ["rejected", "cancelled"].includes(a.status)).length,
   };
 
   return (

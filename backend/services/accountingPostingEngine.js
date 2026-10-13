@@ -1465,6 +1465,7 @@ export const postExpenseAccounting = async ({
     else if (cat.includes("UTILIT")) expenseCode = "6300";
     else if (cat.includes("MARKET") || cat.includes("ADS")) expenseCode = "6400";
     else if (cat.includes("SOFTWARE") || cat.includes("TOOL")) expenseCode = "6500";
+    else if (cat.includes("DELIVERY") || cat.includes("COURIER")) expenseCode = "6430";
 
     const creditCode = isPayable ? "2110" : paidFromAccountType === "CASH" ? "1110" : "1120";
 

@@ -73,7 +73,7 @@ The auth layer is built around `AuthAccount` and related session tables.
 | --- | --- | --- |
 | `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items |
-| `ShippingConfig` | `sameDistrictFee`, `sameProvinceFee`, `differentProvinceFee`, `routeOverrides`, `splitShipmentFee`, `freeShippingMin` | shared route tiers plus optional exact district-to-district exceptions; admins configure the flat fee for orders fulfilled by multiple distributor hubs; the order stores its calculated `deliveryFee` |
+| `ShippingConfig` | `sameDistrictFee`, `sameProvinceFee`, `differentProvinceFee`, `routeOverrides`, `splitShipmentFee`, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tiers plus optional route exceptions and company-paid return/exchange logistics rates; approved requests snapshot the settlement rate and create an accounts payable after logistics completion |
 | `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
@@ -92,9 +92,9 @@ manufacturer or distributor payables.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, refund and inspection fields | approved RMA lifecycle; legacy rows default to `LEGACY_PROCESSED` |
+| `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, `logisticsSettlementAmount`, refund and inspection fields | approved RMA lifecycle; snapshots the configured logistics settlement at approval; legacy rows default to `LEGACY_PROCESSED` |
 | `CustomerReturnEvent` | `customerReturnId`, event/status transition, actor, reason, metadata, idempotency key | return audit trail |
-| `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, returned `items`, `replacementItems`, `priceDifference`, NCM leg IDs/charges, stock reservation timestamps | exchange lifecycle and replacement-stock control |
+| `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, returned `items`, `replacementItems`, `priceDifference`, NCM leg IDs/charges, `logisticsSettlementAmount`, stock reservation timestamps | exchange lifecycle and replacement-stock control; snapshots the configured logistics settlement at approval |
 | `OrderExchangeEvent` | `exchangeRequestId`, `eventType`, `fromStatus`, `toStatus`, `metadata` | audit trail for exchange state transitions |
 | `ReturnExchangeNcmAttempt` | optional return/exchange ID, operation, request/response JSON, HTTP status, result, error, idempotency key | durable NCM request history |
 | `DeliveryReturn` | `deliveryOrderId`, `orderId`, optional `manufacturerId`/`distributorId`, `state`, `returnReason`, `inspectionResult` | return-inspection record owned by the assigned fulfillment hub |

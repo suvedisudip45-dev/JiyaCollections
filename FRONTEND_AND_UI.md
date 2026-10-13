@@ -117,7 +117,7 @@ Checkout refreshes its shipping quote when the customer changes the delivery pro
 
 Carrier state labels are also intentionally strict. A failed NCM booking is presented as "Failed to Book Courier" or equivalent failure text instead of the optimistic "Courier Booked" state, and the manufacturer UI uses the same failed-state labels to prevent false-positive booking confirmations.
 
-In the manufacturer portal's distributor workspace, the final order-assignment step offers Self Delivery only when the customer district matches the distributor's own or actively covered district. Self Delivery routes the order to Self-Delivery Management without calling NCM; NCM delivery books through the existing courier API. Self-Delivery Management lists only distributor-handled deliveries, never NCM bookings.
+In the manufacturer portal's distributor workspace, the final order-assignment step offers Self Delivery only when the customer district matches the distributor's own or actively covered district. Selecting Self Delivery or NCM places the packed order on hold instead of dispatching it immediately. Held self-delivery orders appear in Self-Delivery Management and can be dispatched there. After admin approval, self-delivery returns and exchanges are assigned to the original distributor: the distributor receives and inspects returned units, then handles the return accounting or dispatches the replacement from stock reserved at approval and marks it delivered. NCM-delivered returns and exchanges instead use NCM's reverse-pickup/return and replacement-delivery workflow. Held NCM orders appear under NCM Deliveries, where distributors can review order details and submit selected orders together; each order is still booked individually and retains its own NCM result. The NCM page includes on-hold, failed NCM, active booked (excluding delivered orders), delivered, and all-NCM views, with carrier-status filtering for Pickup Order Created, Sent for Pickup, Drop off Order Created, Pickup Complete, Sent for Delivery, Dispatched, In Transit, Arrived, Out for Delivery, Delivered, and Returned in the applicable booked, delivered, and all-order views. Where webhook normalization groups carrier labels, selecting either label matches the same persisted state; the table shows the latest original carrier status when present. A failed NCM submission can be reapplied directly by the distributor without admin review. Likely delivery time is displayed only when an NCM event includes a recognized expected-date field; otherwise the UI states that NCM did not provide one.
 
 For distributor-assigned customer orders, the admin Order Assignments detail
 opens the same package-details workflow used by the fulfillment portal
@@ -264,16 +264,18 @@ This portal is clearly structured around the backend `marketing-cards` router an
 3. Checkout uses backend order creation plus shipping/config lookup.
 4. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account). Each card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Own Store code entries and QR scans are tracked, and eligible cards can be claimed on demand.
 5. Checkout offers a mutually exclusive selection between one claimed card reward, the active VIP loyalty reward, or no reward.
-6. `Orders` page reads customer order history and supports cancellation, return requests, exchange requests with replacement-variant selection, and verified distributor-hub reviews after delivery.
-7. Return/exchange requests await admin approval before NCM is called; customers can see carrier failures and recorded charges.
-8. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
+6. `Orders` page presents order history in a table with order ID, creation time, product summary, order status, total, payment status, and delivery date. The table has only a View action; order details open in a modal containing tracking, eligible cancellation/return/exchange actions, hub rating, and links to exchange details. Exchange requests have a separate details view with requested/replacement items, status, charges, and event history.
+7. Return/exchange requests await admin approval. The Admin panel identifies the original delivery handler: NCM-delivered orders are submitted to NCM, while self-delivered orders are assigned to the original distributor. NCM-specific charge, attempt, and reconciliation controls are shown only on NCM cases; customers can see carrier failures, exchange progress, and recorded charges.
+8. Customer tracking follows the actual fulfillment route: NCM orders show carrier tracking, while distributor self-delivery uses the assigned distributor's status and dispatch/on-the-way/delivery timestamps. A completed self-delivery COD order is shown as delivered and collected.
+9. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 
 ### Admin flow
 
 1. Admin logs in and receives a token.
 2. `PermissionsProvider` resolves role permissions.
-3. Route access is checked against the route-permission map.
-4. Each module calls the backend APIs for product, order, accounting, or access-management actions.
+3. Shipping Rate Settings manage normal customer delivery tiers and four company-paid return/exchange settlement rates; the latter are snapshotted on approval and are not displayed as customer delivery charges.
+4. Route access is checked against the route-permission map.
+5. Each module calls the backend APIs for product, order, accounting, or access-management actions.
 
 ### Manufacturer flow
 

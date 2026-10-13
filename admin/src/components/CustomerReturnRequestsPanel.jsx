@@ -67,9 +67,11 @@ const CustomerReturnRequestsPanel = ({ token }) => {
         const chargePayer = chargePayers[record.id] || "MERCHANT";
         const inspection = inspections[record.id] || { result: "RESTOCKABLE", notes: "" };
         const resolution = resolutions[record.id] || { outcome: "FOUND", reason: "" };
-        const canResolve = record.lifecycleStatus === "NCM_SUBMISSION_UNKNOWN" || (
+        const isNcmRoute = record.deliveryRoute === "NCM";
+        const isDistributorRoute = record.deliveryRoute === "DISTRIBUTOR";
+        const canResolve = isNcmRoute && (record.lifecycleStatus === "NCM_SUBMISSION_UNKNOWN" || (
           record.lifecycleStatus === "SUBMITTING" && Date.now() - new Date(record.ncmSubmissionAttemptedAt || 0).getTime() >= 120000
-        );
+        ));
         const items = Array.isArray(record.items) ? record.items : [];
         return (
           <article key={record.id} className="border border-slate-200 rounded-lg bg-white p-4 space-y-3">
@@ -80,16 +82,30 @@ const CustomerReturnRequestsPanel = ({ token }) => {
               </div>
               <span className="px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-bold uppercase text-slate-700">{readable(record.lifecycleStatus)}</span>
             </div>
+            <div className={`rounded-md border p-3 text-xs ${isNcmRoute ? "border-blue-200 bg-blue-50 text-blue-950" : isDistributorRoute ? "border-violet-200 bg-violet-50 text-violet-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+              <p className="font-bold">
+                {isNcmRoute ? "NCM handles this return" : isDistributorRoute ? "Assigned distributor handles this return" : "Delivery route needs verification"}
+              </p>
+              <p className="mt-1">
+                {isNcmRoute
+                  ? "Approval asks NCM to mark the original shipment for return. Track the return-leg updates below; a carrier status is not physical receipt. Manufacturer inspection and refund processing follow delivery."
+                  : isDistributorRoute
+                    ? `Approval assigns the return to distributor ${record.distributorId || "(profile unavailable)"} for customer pickup, receipt, QA, and inventory/refund processing.`
+                    : "The original delivery route is not recorded on this request. Verify the delivered order route before approving."}
+              </p>
+            </div>
             <div className="grid gap-2 text-xs sm:grid-cols-3">
               <p><span className="text-slate-400">Cause</span><br /><span className="text-slate-800">{record.reason}</span></p>
-              <p><span className="text-slate-400">NCM original ID</span><br /><span className="font-mono text-slate-800">{record.originalNcmOrderId || "Not linked"}</span></p>
-              <p><span className="text-slate-400">NCM-reported delivery charge</span><br /><span className="font-semibold text-slate-800">{record.ncmDeliveryCharge == null ? "Not supplied by NCM" : `${money(record.ncmDeliveryCharge)} · ${record.ncmChargeSource === "ORDER_DETAIL" ? "order detail" : "return response"}`} · {record.ncmChargePayer}</span></p>
+              {isNcmRoute && <>
+                <p><span className="text-slate-400">NCM original order ID</span><br /><span className="font-mono text-slate-800">{record.originalNcmOrderId || "Not linked"}</span></p>
+                <p><span className="text-slate-400">NCM-reported charge</span><br /><span className="font-semibold text-slate-800">{record.ncmDeliveryCharge == null ? "Not supplied by NCM" : `${money(record.ncmDeliveryCharge)} · ${record.ncmChargeSource === "ORDER_DETAIL" ? "order detail" : "return response"}`} · {record.ncmChargePayer}</span></p>
+              </>}
             </div>
             <div className="space-y-1 text-xs text-slate-700">
               {items.map((item, index) => <p key={`${item.productId}-${index}`}>{item.name} · {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {item.quantity} · Refund estimate {money(item.refundAmount)}</p>)}
             </div>
-            {record.ncmSubmissionError && <p className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">NCM response: {record.ncmSubmissionError}</p>}
-            {record.ncmAttempts?.length > 0 && (
+            {isNcmRoute && record.ncmSubmissionError && <p className="rounded-md border border-rose-200 bg-rose-50 p-2 text-xs text-rose-800">NCM response: {record.ncmSubmissionError}</p>}
+            {isNcmRoute && record.ncmAttempts?.length > 0 && (
               <details className="text-[11px] text-slate-600">
                 <summary className="cursor-pointer font-semibold">NCM attempt history ({record.ncmAttempts.length})</summary>
                 <div className="mt-2 space-y-2">
@@ -104,19 +120,19 @@ const CustomerReturnRequestsPanel = ({ token }) => {
               </details>
             )}
             {record.lifecycleStatus === "PENDING_ADMIN_REVIEW" && (
-              <div className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[1fr_auto_auto]">
+              <div className={`grid gap-2 border-t border-slate-100 pt-3 ${isNcmRoute ? "sm:grid-cols-[1fr_auto_auto]" : "sm:grid-cols-[1fr_auto]"}`}>
                 <input value={note} onChange={(event) => setDecisionNotes({ ...decisionNotes, [record.id]: event.target.value })} className="min-w-0 border border-slate-300 rounded-md px-3 py-2 text-xs" placeholder="Decision reason (required)" />
-                <select value={chargePayer} onChange={(event) => setChargePayers({ ...chargePayers, [record.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM return charge">
+                {isNcmRoute && <select value={chargePayer} onChange={(event) => setChargePayers({ ...chargePayers, [record.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM return charge">
                   <option value="MERCHANT">Merchant pays NCM</option>
                   <option value="CUSTOMER">Customer pays NCM</option>
-                </select>
+                </select>}
                 <div className="flex gap-2">
-                  <button disabled={busyId === record.id || note.trim().length < 3} onClick={() => postAction(record.id, "decision", { decision: "APPROVE", reason: note, chargePayer }, "Return approved and sent to NCM")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
+                  <button disabled={busyId === record.id || note.trim().length < 3 || (!isNcmRoute && !isDistributorRoute)} onClick={() => postAction(record.id, "decision", { decision: "APPROVE", reason: note, ...(isNcmRoute ? { chargePayer } : {}) }, isDistributorRoute ? "Return approved and assigned to the distributor" : "Return approved and submitted to NCM")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
                   <button disabled={busyId === record.id || note.trim().length < 3} onClick={() => postAction(record.id, "decision", { decision: "REJECT", reason: note }, "Return rejected")} className="px-3 py-2 rounded-md bg-rose-700 text-white text-xs font-bold disabled:opacity-50">Reject</button>
                 </div>
               </div>
             )}
-            {record.lifecycleStatus === "NCM_REJECTED" && (
+            {isNcmRoute && record.lifecycleStatus === "NCM_REJECTED" && (
               <div className="flex flex-wrap items-center gap-2">
                 <button disabled={busyId === record.id} onClick={() => postAction(record.id, "retry-ncm", { chargePayer }, "Return resubmitted to NCM")} className="px-3 py-2 rounded-md bg-slate-900 text-white text-xs font-bold disabled:opacity-50">Retry confirmed NCM rejection</button>
                 <input value={note} onChange={(event) => setDecisionNotes({ ...decisionNotes, [record.id]: event.target.value })} className="min-w-0 flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs" placeholder="Reason for closing this request" />

@@ -23,6 +23,7 @@ import Finance from "./pages/Finance";
 import MarketingCards from "./pages/MarketingCards";
 import DistributorHome from "./pages/DistributorHome";
 import DistributorSelfDelivery from "./pages/DistributorSelfDelivery";
+import NcmDeliveries from "./pages/NcmDeliveries";
 import DistributorDemandReceipt from "./pages/DistributorDemandReceipt";
 import DistributorFinanceDashboard from "./pages/DistributorFinanceDashboard";
 import { installAuthInterceptor } from "./api/authInterceptor";
@@ -87,6 +88,7 @@ const MainLayout = () => {
               <Route path="/direct-orders" element={activeWorkspace === "DISTRIBUTOR" ? <DirectOrders /> : <Navigate to="/" replace />} />
               <Route path="/inventory" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorInventory /> : <Navigate to="/" replace />} />
               <Route path="/distributor/deliveries" element={<DistributorSelfDelivery />} />
+              <Route path="/ncm" element={activeWorkspace === "DISTRIBUTOR" ? <NcmDeliveries /> : <Navigate to="/" replace />} />
               <Route path="/distributor/demand" element={<DistributorDemandReceipt />} />
               <Route path="/distributor/demand/:transferId" element={<DistributorDemandReceipt />} />
               <Route path="/distributor/finance" element={<DistributorFinanceDashboard />} />

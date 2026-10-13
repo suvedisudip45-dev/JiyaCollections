@@ -3,6 +3,10 @@ import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
 import { postDeliveredOrderAccounting, postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
+import {
+  createReturnExchangeSettlementPayable,
+  postReturnExchangeSettlementAccounting,
+} from "./returnExchangeSettlementService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -24,6 +28,8 @@ const serializeOrder = (order) => ({
   date: order.date == null ? order.date : Number(order.date),
 });
 const SELF_DELIVERY_STATUSES = [
+  "on_hold",
+  "package_details_complete",
   "ready_for_pickup",
   "Ready for Pickup",
   "dispatched",
@@ -71,7 +77,9 @@ const ALLOWED_INITIAL_STATES = new Set([
   "pending_acceptance",
   "accepted",
   "packed",
+  "package_details_complete",
   "ready_for_pickup",
+  "on_hold",
 ]);
 
 export const validateSelfDeliveryTransition = (currentStatus, targetStatus) => {
@@ -137,6 +145,7 @@ export const listAssignedDistributorOrders = async ({
   if (status && status !== "all") {
     const norm = normalize(status);
     if (norm === "assigned") where.status = { in: ["ready_for_pickup", "Ready for Pickup"] };
+    else if (norm === "on_hold") where.status = { in: ["on_hold", "ON_HOLD"] };
     else if (norm === "dispatched") where.status = { in: ["dispatched", "Dispatched"] };
     else if (norm === "on_the_way" || norm === "on the way") where.status = { in: ["on_the_way", "On the Way", "out_for_delivery"] };
     else if (norm === "delivered") where.status = { in: ["delivered", "Delivered"] };
@@ -162,7 +171,11 @@ export const listAssignedDistributorOrders = async ({
   const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
   const selfDeliveryAssignments = assignments.filter((assignment) =>
     normalize(assignment.deliveryType || "SELF_DELIVERY") === "self_delivery" &&
-    !ncmOrderIds.has(assignment.orderId)
+    !ncmOrderIds.has(assignment.orderId) &&
+    (
+      normalize(assignment.status) !== "package_details_complete" ||
+      parseJSON(assignment.notes, {}).deliveryOnHold === true
+    )
   );
   const total = selfDeliveryAssignments.length;
   const pageAssignments = selfDeliveryAssignments.slice(skip, skip + numLimit);
@@ -189,6 +202,7 @@ export const listAssignedDistributorOrders = async ({
       deliveredAt: assignment.deliveredAt,
       returnedAt: assignment.returnedAt,
       notes: parseJSON(assignment.notes, assignment.notes),
+      onHold: normalize(assignment.status) === "on_hold" && parseJSON(assignment.notes, {}).deliveryOnHold === true,
       order: order
         ? {
             id: order.id,
@@ -248,7 +262,10 @@ export const markDistributorSelfDeliveryReady = async ({
     return { success: true, duplicate: true, assignment, order: serializeOrder(order) };
   }
 
-  if (normalize(assignment.status) !== "package_details_complete") {
+  const heldForSelfDelivery = normalize(assignment.status) === "on_hold" &&
+    parseJSON(assignment.notes, {}).deliveryOnHold === true &&
+    normalize(assignment.deliveryType) === "self_delivery";
+  if (normalize(assignment.status) !== "package_details_complete" && !heldForSelfDelivery) {
     throw fail("Complete package details before selecting distributor self-delivery.", 409, "INVALID_SELF_DELIVERY_STATE");
   }
 
@@ -392,6 +409,12 @@ export const updateSelfDeliveryStatus = async ({
 
     if (internalStatus === "dispatched") {
       assignmentUpdateData.dispatchedAt = now;
+      const prevNotes = parseJSON(assignment.notes, {});
+      assignmentUpdateData.notes = JSON.stringify({
+        ...prevNotes,
+        deliveryOnHold: false,
+        deliveryDispatchedAt: now.toISOString(),
+      });
     } else if (internalStatus === "on_the_way") {
       assignmentUpdateData.onTheWayAt = now;
     } else if (internalStatus === "delivered") {
@@ -528,7 +551,7 @@ export const processSelfDeliveryReturn = async ({
   const customerName = `${customerAddress.firstName || ""} ${customerAddress.lastName || ""}`.trim() || "Valued Customer";
   const customerPhone = customerAddress.phone || "";
 
-  return client.$transaction(async (tx) => {
+  const result = await client.$transaction(async (tx) => {
     const claimedReturn = await tx.customerReturn.updateMany({
       where: {
         id: approvedReturn.id,
@@ -724,6 +747,7 @@ export const processSelfDeliveryReturn = async ({
         completedAt: now,
       },
     });
+    await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
     await tx.customerReturnEvent.create({
       data: {
         customerReturnId: customerReturn.id,
@@ -793,4 +817,8 @@ export const processSelfDeliveryReturn = async ({
       totalRefundAmount,
     };
   });
+  if (client === prisma) {
+    await postReturnExchangeSettlementAccounting({ operation: "RETURN", requestId: approvedReturn.id });
+  }
+  return result;
 };

@@ -44,6 +44,10 @@ const DEFAULT_CONFIG = {
   routeOverrides: [],
   splitShipmentFee: 200,
   freeShippingMin: 0,
+  ncmReturnSettlementRate: 0,
+  ncmExchangeSettlementRate: 0,
+  distributorReturnSettlementRate: 0,
+  distributorExchangeSettlementRate: 0,
 };
 
 // Checkout routes use the selected distributor origin; older callers retain district-only rates.
@@ -337,6 +341,10 @@ export const updateShippingConfig = async (req, res) => {
       splitShipmentFee,
       routeOverrides,
       freeShippingMin,
+      ncmReturnSettlementRate,
+      ncmExchangeSettlementRate,
+      distributorReturnSettlementRate,
+      distributorExchangeSettlementRate,
     } = req.body;
 
     const sameFeeVal = sameDistrictFee !== undefined ? sameDistrictFee : sameCityFee;
@@ -358,6 +366,10 @@ export const updateShippingConfig = async (req, res) => {
       ...(differentProvinceFee !== undefined ? [Number(differentProvinceFee)] : []),
       ...(splitShipmentFee !== undefined ? [Number(splitShipmentFee)] : []),
       ...(freeShippingMin !== undefined ? [Number(freeShippingMin)] : []),
+      ...(ncmReturnSettlementRate !== undefined ? [Number(ncmReturnSettlementRate)] : []),
+      ...(ncmExchangeSettlementRate !== undefined ? [Number(ncmExchangeSettlementRate)] : []),
+      ...(distributorReturnSettlementRate !== undefined ? [Number(distributorReturnSettlementRate)] : []),
+      ...(distributorExchangeSettlementRate !== undefined ? [Number(distributorExchangeSettlementRate)] : []),
     ];
     if ([...Object.values(numericRates), ...optionalRates].some((value) => !Number.isFinite(value) || value < 0)) {
       return res.status(400).json({ success: false, message: "Shipping rates and the free-delivery threshold must be non-negative numbers." });
@@ -369,6 +381,10 @@ export const updateShippingConfig = async (req, res) => {
     if (differentProvinceFee !== undefined) updatedData.differentProvinceFee = Number(differentProvinceFee);
     if (splitShipmentFee !== undefined) updatedData.splitShipmentFee = Number(splitShipmentFee);
     if (freeShippingMin !== undefined) updatedData.freeShippingMin = Number(freeShippingMin);
+    if (ncmReturnSettlementRate !== undefined) updatedData.ncmReturnSettlementRate = Number(ncmReturnSettlementRate);
+    if (ncmExchangeSettlementRate !== undefined) updatedData.ncmExchangeSettlementRate = Number(ncmExchangeSettlementRate);
+    if (distributorReturnSettlementRate !== undefined) updatedData.distributorReturnSettlementRate = Number(distributorReturnSettlementRate);
+    if (distributorExchangeSettlementRate !== undefined) updatedData.distributorExchangeSettlementRate = Number(distributorExchangeSettlementRate);
     if (routeOverrides !== undefined) updatedData.routeOverrides = normalizeShippingRouteOverrides(routeOverrides);
 
     const existing = await prisma.shippingConfig.findFirst();

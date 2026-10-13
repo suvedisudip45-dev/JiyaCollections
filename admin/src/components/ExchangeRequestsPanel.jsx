@@ -68,6 +68,7 @@ const ExchangeRequestsPanel = ({ token }) => {
         const request = response.data.request;
         if (request?.status === "NCM_REJECTED") toast.error(request.ncmSubmissionError || "NCM rejected the exchange request");
         else if (request?.status === "NCM_SUBMISSION_UNKNOWN") toast.warning("NCM outcome is unknown. Reconcile with the carrier before retrying.");
+        else if (request?.status === "APPROVED_FOR_DISTRIBUTOR") toast.success("Exchange approved and assigned to the distributor for return pickup and replacement delivery.");
         else toast.success(successMessage);
         await fetchRequests();
       } else {
@@ -141,11 +142,13 @@ const ExchangeRequestsPanel = ({ token }) => {
         const decisionReason = decisionReasons[request.id] || "";
         const inspection = inspectionForms[request.id] || { result: "RESTOCKABLE", notes: "" };
         const ncmResolution = ncmResolutionForms[request.id] || { outcome: "FOUND", ncmReturnOrderId: "", ncmReplacementOrderId: "", reason: "" };
+        const isNcmRoute = request.deliveryRoute === "NCM";
+        const isDistributorRoute = request.deliveryRoute === "DISTRIBUTOR";
         const statusClass = STATUS_STYLES[request.status] || "bg-slate-50 text-slate-700 border-slate-200";
-        const canInspect = request.manufacturerReceivedAt && !request.inspectedAt;
-        const canResolveNcm = request.status === "NCM_SUBMISSION_UNKNOWN" || (
+        const canInspect = isNcmRoute && request.manufacturerReceivedAt && !request.inspectedAt;
+        const canResolveNcm = isNcmRoute && (request.status === "NCM_SUBMISSION_UNKNOWN" || (
           request.status === "SUBMITTING" && Date.now() - new Date(request.ncmSubmissionAttemptedAt || 0).getTime() >= 120000
-        );
+        ));
 
         return (
           <article key={request.id} className="border border-slate-200 rounded-lg bg-white p-4 space-y-3">
@@ -160,6 +163,19 @@ const ExchangeRequestsPanel = ({ token }) => {
                 <p className="text-xs text-slate-500 mt-1">Order #{request.orderId.slice(0, 8).toUpperCase()} · Requested {formatDate(request.createdAt)}</p>
               </div>
               <p className="text-xs font-semibold text-slate-700">Lifetime returned units: {request.lifetimeReturnedUnits}</p>
+            </div>
+
+            <div className={`rounded-md border p-3 text-xs ${isNcmRoute ? "border-blue-200 bg-blue-50 text-blue-950" : isDistributorRoute ? "border-violet-200 bg-violet-50 text-violet-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+              <p className="font-bold">
+                {isNcmRoute ? "NCM handles this exchange" : isDistributorRoute ? "Assigned distributor handles this exchange" : "Delivery route not recorded"}
+              </p>
+              <p className="mt-1">
+                {isNcmRoute
+                  ? "Approval creates NCM return and replacement legs. NCM coordinates reverse pickup and replacement delivery; returned goods are inspected at the manufacturer."
+                  : isDistributorRoute
+                    ? `Approval assigns this request to distributor ${request.distributorId || "(profile unavailable)"}. The distributor receives and inspects the return, then dispatches and delivers the reserved replacement.`
+                    : "Verify the original delivery method. The backend will resolve the current order route during approval."}
+              </p>
             </div>
 
             <div className="grid gap-3 text-xs sm:grid-cols-3">
@@ -188,23 +204,24 @@ const ExchangeRequestsPanel = ({ token }) => {
                 ))}
                 <p className="font-semibold">Estimated price adjustment: {formatMoney(request.priceDifference || 0)}</p>
                 {request.replacementStockReservedAt && <p className="text-emerald-700">Replacement stock reserved {formatDate(request.replacementStockReservedAt)}{request.replacementStockConsumedAt ? ` · consumed ${formatDate(request.replacementStockConsumedAt)}` : request.replacementStockReleasedAt ? ` · released ${formatDate(request.replacementStockReleasedAt)}` : ""}</p>}
-                <p className="text-amber-800">NCM exchange-create accepts the original order ID only. Verify the NCM replacement waybill matches this reserved variant before fulfillment.</p>
+                {isNcmRoute && <p className="text-amber-800">NCM exchange-create accepts the original order ID only. Verify the NCM replacement waybill matches this reserved variant before fulfillment.</p>}
+                {isDistributorRoute && <p className="text-violet-800">The distributor portal provides the receive/inspect, dispatch, and delivered steps. Reserved replacement stock is consumed at dispatch.</p>}
               </div>
             </div>
 
-            {(request.ncmReturnOrderId || request.ncmReplacementOrderId) && (
+            {isNcmRoute && (request.ncmReturnOrderId || request.ncmReplacementOrderId) && (
               <div className="rounded-md bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
                 NCM return #{request.ncmReturnOrderId || "Pending"} · Pickup: {request.returnPickupStatus || "Pending"} · Replacement #{request.ncmReplacementOrderId || "Pending"} · {request.replacementStatus || "Pending"} · Charge payer: {request.ncmChargePayer || "MERCHANT"}
               </div>
             )}
-            {(request.ncmSubmissionError || request.ncmAttempts?.length > 0) && (
+            {isNcmRoute && (request.ncmSubmissionError || request.ncmAttempts?.length > 0) && (
               <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-[11px] text-rose-900 space-y-1">
                 {request.ncmSubmissionError && <p><strong>Latest NCM response:</strong> {request.ncmSubmissionError}</p>}
                 <p><strong>Recorded NCM charge:</strong> Return {request.ncmReturnCharge == null ? "not supplied" : formatMoney(request.ncmReturnCharge)} · Replacement {request.ncmReplacementCharge == null ? "not supplied" : formatMoney(request.ncmReplacementCharge)} · Total {request.ncmTotalCharge == null ? "not supplied" : formatMoney(request.ncmTotalCharge)}</p>
                 {request.ncmAttempts?.length > 0 && <details><summary className="cursor-pointer font-bold">NCM attempts ({request.ncmAttempts.length})</summary><div className="mt-1 space-y-1">{request.ncmAttempts.map((attempt) => <div key={attempt.id}>Attempt {attempt.attemptNumber} · {attempt.result} · HTTP {attempt.httpStatus || "—"}{attempt.responseJson ? <pre className="whitespace-pre-wrap break-all">{JSON.stringify(attempt.responseJson)}</pre> : null}</div>)}</div></details>}
               </div>
             )}
-            {request.status === "SUBMITTING" && !canResolveNcm && (
+            {isNcmRoute && request.status === "SUBMITTING" && !canResolveNcm && (
               <p className="text-xs text-orange-900 bg-orange-50 border border-orange-200 rounded-md p-2">NCM submission is still being confirmed. Manual resolution becomes available after two minutes.</p>
             )}
             {canResolveNcm && (
@@ -238,20 +255,20 @@ const ExchangeRequestsPanel = ({ token }) => {
                   className="min-w-0 flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs"
                   placeholder="Decision note (required)"
                 />
-                <select value={chargePayers[request.id] || "MERCHANT"} onChange={(event) => setChargePayers({ ...chargePayers, [request.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM exchange charges"><option value="MERCHANT">Merchant pays NCM</option><option value="CUSTOMER">Customer pays NCM</option></select>
-                <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason, chargePayer: chargePayers[request.id] || "MERCHANT" }, "Exchange approved; NCM submission recorded")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
+                {isNcmRoute && <select value={chargePayers[request.id] || "MERCHANT"} onChange={(event) => setChargePayers({ ...chargePayers, [request.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM exchange charges"><option value="MERCHANT">Merchant pays NCM</option><option value="CUSTOMER">Customer pays NCM</option></select>}
+                <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason, ...(isNcmRoute ? { chargePayer: chargePayers[request.id] || "MERCHANT" } : {}) }, isDistributorRoute ? "Exchange approved and assigned to distributor" : "Exchange approved and submitted to NCM")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
                 <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "REJECT", reason: decisionReason }, "Exchange request rejected")} className="px-3 py-2 rounded-md bg-rose-700 text-white text-xs font-bold disabled:opacity-50">Reject</button>
               </div>
             )}
 
-            {request.status === "NCM_REJECTED" && (
+            {isNcmRoute && request.status === "NCM_REJECTED" && (
               <div className="flex flex-col gap-2 sm:flex-row">
                 <button disabled={busyId === request.id} onClick={() => postAction(request.id, "retry-ncm", {}, "Exchange resubmission attempted")} className="px-3 py-2 rounded-md bg-slate-900 text-white text-xs font-bold disabled:opacity-50">Retry NCM after verified rejection</button>
                 <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "REJECT", reason: decisionReason }, "Exchange request closed; card unlocked")} className="px-3 py-2 rounded-md border border-rose-300 text-rose-800 text-xs font-bold disabled:opacity-50">Close exchange request</button>
                 <input value={decisionReason} onChange={(event) => setDecisionReasons({ ...decisionReasons, [request.id]: event.target.value })} className="min-w-0 flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs" placeholder="Reason for closing" />
               </div>
             )}
-            {request.ncmReturnOrderId && request.ncmReplacementOrderId && request.status !== "COMPLETED" && (
+            {isNcmRoute && request.ncmReturnOrderId && request.ncmReplacementOrderId && request.status !== "COMPLETED" && (
               <button disabled={busyId === request.id} onClick={() => postAction(request.id, "reconcile", {}, "NCM exchange statuses refreshed")} className="px-3 py-2 rounded-md border border-slate-300 text-slate-700 text-xs font-bold disabled:opacity-50">Reconcile NCM statuses</button>
             )}
 

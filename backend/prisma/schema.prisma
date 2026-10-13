@@ -731,15 +731,19 @@ model Review {
 }
 
 model ShippingConfig {
-  id                   String   @id @default("default")
-  sameDistrictFee      Float    @default(50)
-  differentDistrictFee Float    @default(120)
-  sameProvinceFee      Float    @default(120)
-  differentProvinceFee Float    @default(120)
-  routeOverrides       Json     @default("[]")
-  splitShipmentFee     Float    @default(200)
-  freeShippingMin      Float?   @default(0)
-  updatedAt            DateTime @updatedAt
+  id                            String   @id @default("default")
+  sameDistrictFee               Float    @default(50)
+  differentDistrictFee          Float    @default(120)
+  sameProvinceFee               Float    @default(120)
+  differentProvinceFee          Float    @default(120)
+  routeOverrides                Json     @default("[]")
+  splitShipmentFee              Float    @default(200)
+  freeShippingMin               Float?   @default(0)
+  ncmReturnSettlementRate       Float    @default(0)
+  ncmExchangeSettlementRate     Float    @default(0)
+  distributorReturnSettlementRate   Float    @default(0)
+  distributorExchangeSettlementRate Float    @default(0)
+  updatedAt                     DateTime @updatedAt
 }
 
 model PlatformFeatureConfig {
@@ -1169,6 +1173,7 @@ model CustomerReturn {
   ncmDeliveryCharge Float?
   ncmChargeSource   String?  @db.VarChar(32)
   ncmChargePayer    String   @default("MERCHANT") @db.VarChar(16)
+  logisticsSettlementAmount Float?
   ncmSubmissionAttemptedAt DateTime?
   ncmSubmissionError String? @db.Text
   returnPickupStatus String? @db.VarChar(64)
@@ -1215,6 +1220,7 @@ model OrderExchangeRequest {
   ncmReplacementCharge      Float?
   ncmTotalCharge            Float?
   ncmChargePayer            String                    @default("MERCHANT") @db.VarChar(16)
+  logisticsSettlementAmount Float?
   replacementStockReservedAt DateTime?
   replacementStockReleasedAt DateTime?
   replacementStockConsumedAt DateTime?

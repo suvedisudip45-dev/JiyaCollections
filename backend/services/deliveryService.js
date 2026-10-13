@@ -245,7 +245,10 @@ export const parseBoolean = (value, fallback = false) => {
 
 const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
 
-const resolvePickupBranch = (manufacturer) => {
+const resolvePickupBranch = (manufacturer, address, assignment) => {
+  if (assignment?.distributorId) {
+    return normalizeBranch(address?.ncmBranch || address?.city || address?.district || "");
+  }
   const direct = normalizeBranch(manufacturer?.ncmPickupBranch || manufacturer?.pickupBranch || "");
   return direct;
 };
@@ -440,10 +443,14 @@ export const normalizePackageWeight = (value) => {
 export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingMeta = {}, itemsOverride = null }) => {
   const address = parseJson(order.address, {});
   const items = itemsOverride || parseJson(order.items, []);
-  const origin = resolvePickupBranch(manufacturer);
+  const origin = resolvePickupBranch(manufacturer, address, assignment);
   const destination = normalizeBranch(address.ncmBranch || address.city);
   if (!origin) {
-    const error = new Error("Manufacturer NCM pickup branch is required. Ask admin to assign and verify the pickup branch before readying the order.");
+    const error = new Error(
+      assignment?.distributorId
+        ? "Customer NCM branch or location is required before booking distributor delivery."
+        : "Manufacturer NCM pickup branch is required. Ask admin to assign and verify the pickup branch before readying the order.",
+    );
     error.code = "NCM_PICKUP_BRANCH_REQUIRED";
     throw error;
   }
@@ -532,7 +539,7 @@ export const isDeliveryOrderOwner = ({ order, assignment, distributorId, manufac
   )
 );
 
-export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, adminId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist }) => {
+export const prepareReadyDelivery = async ({ orderId, distributorId, manufacturerId, adminId, packageWeight, packageDimensions, packagingNotes, productType, productDescription, packageType, isFragile, deliveryInstruction, instruction, packagingChecklist, allowRetryAfterUnknown = false }) => {
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) {
     const error = new Error("Order not found or unauthorized");
@@ -564,17 +571,18 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   });
 
   const existingNotes = parsePackagingMeta(assignment.notes);
+  const { deliveryOnHold: _deliveryOnHold, deliveryOnHoldAt: _deliveryOnHoldAt, ...existingPackagingNotes } = existingNotes;
   const packagingMeta = {
-    ...existingNotes,
-    packageWeight: packageWeight ?? existingNotes.packageWeight ?? "",
-    productType: productType ?? existingNotes.productType ?? "",
-    productDescription: productDescription ?? existingNotes.productDescription ?? "",
-    packageType: packageType ?? existingNotes.packageType ?? "Box",
-    isFragile: isFragile !== undefined ? parseBoolean(isFragile) : parseBoolean(existingNotes.isFragile),
-    deliveryInstruction: deliveryInstruction ?? instruction ?? existingNotes.deliveryInstruction ?? "",
-    packagingNotes: packagingNotes ?? existingNotes.packagingNotes ?? "",
-    packageDimensions: packageDimensions ?? existingNotes.packageDimensions ?? "",
-    packagingChecklist: packagingChecklist ?? existingNotes.packagingChecklist ?? null,
+    ...existingPackagingNotes,
+    packageWeight: packageWeight ?? existingPackagingNotes.packageWeight ?? "",
+    productType: productType ?? existingPackagingNotes.productType ?? "",
+    productDescription: productDescription ?? existingPackagingNotes.productDescription ?? "",
+    packageType: packageType ?? existingPackagingNotes.packageType ?? "Box",
+    isFragile: isFragile !== undefined ? parseBoolean(isFragile) : parseBoolean(existingPackagingNotes.isFragile),
+    deliveryInstruction: deliveryInstruction ?? instruction ?? existingPackagingNotes.deliveryInstruction ?? "",
+    packagingNotes: packagingNotes ?? existingPackagingNotes.packagingNotes ?? "",
+    packageDimensions: packageDimensions ?? existingPackagingNotes.packageDimensions ?? "",
+    packagingChecklist: packagingChecklist ?? existingPackagingNotes.packagingChecklist ?? null,
   };
 
   validateNcmDeliveryPackageDetails(packagingMeta);
@@ -596,6 +604,14 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   packagingMeta.packageWeight = effectiveWeight;
 
   let effectiveAssignment = assignment;
+  let persistedAssignmentStatus = assignment.status;
+  if (
+    String(assignment.status || "").toLowerCase() === "on_hold" &&
+    assignment.deliveryType === "NCM" &&
+    existingNotes.deliveryOnHold === true
+  ) {
+    effectiveAssignment = { ...assignment, status: "package_details_complete" };
+  }
   if (isAdminRequest) {
     const currentStatus = String(assignment.status || "").toLowerCase();
     if (!["packed", "package_details_complete", "ready_for_pickup"].includes(currentStatus)) {
@@ -620,6 +636,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
         where: { id: assignment.id },
         data: { status: "package_details_complete", notes: JSON.stringify(packagingMeta) },
       });
+      persistedAssignmentStatus = effectiveAssignment.status;
       await prisma.order.update({
         where: { id: orderId },
         data: { fulfillmentStatus: "package_details_complete" },
@@ -648,7 +665,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
       })
     : null;
   const handoffOutcomeUnknown = existing?.state === "NCM_SUBMISSION_STARTED" || ["STARTED", "UNKNOWN"].includes(latestCreateAttempt?.result);
-  if (existing && handoffOutcomeUnknown) {
+  if (existing && handoffOutcomeUnknown && !(allowRetryAfterUnknown && existing.state === "SUBMISSION_FAILED")) {
     return { delivery: existing, alreadySubmitted: true, recoveryRequired: true };
   }
   const submittedStates = ["NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"];
@@ -730,10 +747,11 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     const assignmentClaim = await tx.orderAssignment.updateMany({
       where: {
         id: assignment.id,
-        status: effectiveAssignment.status,
+        status: persistedAssignmentStatus,
         deliveryType: effectiveAssignment.deliveryType,
       },
       data: {
+        status: effectiveAssignment.status,
         deliveryType: "NCM",
         notes: JSON.stringify({
           ...packagingMeta,
@@ -761,7 +779,7 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
   return { delivery, input };
 };
 
-export const submitDeliveryToNcm = async (deliveryId) => {
+export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown = false } = {}) => {
   const delivery = await prisma.deliveryOrder.findUnique({ where: { id: deliveryId } });
   if (!delivery) throw new Error("Delivery not found");
   if (delivery.ncmOrderId) return delivery;
@@ -801,7 +819,7 @@ export const submitDeliveryToNcm = async (deliveryId) => {
   if (priorAttempt?.result === "SUCCESS") return prisma.deliveryOrder.findUnique({ where: { id: delivery.id } });
   const explicitlyRejected = priorAttempt?.result === "RESOLVED_NOT_CREATED" ||
     (priorAttempt?.result === "FAILED" && Number(priorAttempt.httpStatus) >= 400 && Number(priorAttempt.httpStatus) < 500);
-  if (priorAttempt && !explicitlyRejected) {
+  if (priorAttempt && !explicitlyRejected && !allowRetryAfterUnknown) {
     const error = new Error("An NCM create attempt already exists and may have reached the carrier. Reconcile it before retrying.");
     error.code = "NCM_SUBMISSION_UNKNOWN";
     throw error;

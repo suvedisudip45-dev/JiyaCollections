@@ -11,6 +11,7 @@ import {
   resolveUnknownExchangeSubmission,
   submitApprovedExchange,
 } from "../services/orderExchangeService.js";
+import { processDistributorExchange } from "../services/distributorExchangeService.js";
 
 const sendError = (res, error) => res.status(error.status || 400).json({
   success: false,
@@ -48,6 +49,22 @@ export const distributorListExchangeRequests = async (req, res) => {
   try {
     const requests = await listDistributorExchangeRequests({ distributorId: req.distributorId });
     return res.json({ success: true, requests });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const distributorProcessExchangeRequest = async (req, res) => {
+  try {
+    const request = await processDistributorExchange({
+      requestId: req.params.id,
+      distributorId: req.distributorId,
+      actorId: req.auth?.accountId || req.auth?.userId,
+      action: req.body.action,
+      inspectedItems: req.body.items,
+      notes: req.body.notes,
+    });
+    return res.json({ success: true, request });
   } catch (error) {
     return sendError(res, error);
   }

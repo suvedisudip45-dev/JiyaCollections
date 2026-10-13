@@ -23,6 +23,9 @@ import {
 } from "../controllers/stockTransferController.js";
 import {
   getAssignedOrders,
+  getDistributorNcmOrders,
+  holdDistributorOrder,
+  bookDistributorNcmOrders,
   selectDistributorSelfDelivery,
   updateSelfDeliveryOrderStatus,
   processDistributorOrderReturn,
@@ -135,6 +138,27 @@ distributorRouter.get(
   authorize("distributor:assignments_read"),
   setDistributorContext,
   getAssignedOrders,
+);
+distributorRouter.get(
+  "/orders/ncm",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  getDistributorNcmOrders,
+);
+distributorRouter.post(
+  "/orders/ncm/bulk-book",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  bookDistributorNcmOrders,
+);
+distributorRouter.post(
+  "/orders/:id/hold",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  holdDistributorOrder,
 );
 distributorRouter.post(
   "/orders/:id/self-delivery",

@@ -30,6 +30,10 @@ const DistributorSelfDelivery = () => {
   const [damageType, setDamageType] = useState("DELIVERY_DAMAGE");
   const [damageNotes, setDamageNotes] = useState("");
   const [submittingReturn, setSubmittingReturn] = useState(false);
+  const [exchangeToInspect, setExchangeToInspect] = useState(null);
+  const [exchangeInspectionItems, setExchangeInspectionItems] = useState([]);
+  const [exchangeInspectionNotes, setExchangeInspectionNotes] = useState("");
+  const [submittingExchange, setSubmittingExchange] = useState(false);
 
   const loadOrders = useCallback(async () => {
     setLoading(true);
@@ -143,6 +147,53 @@ const DistributorSelfDelivery = () => {
     }
   };
 
+  const openExchangeInspection = (request) => {
+    setExchangeToInspect(request);
+    setExchangeInspectionNotes("");
+    setExchangeInspectionItems((request.items || []).map((item) => ({
+      productId: item.productId,
+      name: item.name || "Product",
+      size: item.size || "Standard",
+      color: item.color || "Standard",
+      quantity: Number(item.quantity || 1),
+      condition: "GOOD",
+    })));
+  };
+
+  const handleExchangeAction = async (request, action, items, notes) => {
+    setUpdatingId(request.id);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/returns/exchange/distributor/${request.id}/process`,
+        { action, items, notes },
+        { headers: { token } }
+      );
+      toast.success(response.data.message || (
+        action === "RECEIVE_AND_INSPECT" ? "Returned items received and inspected." :
+          action === "DISPATCH" ? "Replacement dispatched." : "Replacement marked delivered."
+      ));
+      setExchangeToInspect(null);
+      await loadOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Failed to update the exchange.");
+    } finally {
+      setUpdatingId(null);
+      setSubmittingExchange(false);
+    }
+  };
+
+  const submitExchangeInspection = async (event) => {
+    event.preventDefault();
+    if (!exchangeToInspect) return;
+    setSubmittingExchange(true);
+    await handleExchangeAction(
+      exchangeToInspect,
+      "RECEIVE_AND_INSPECT",
+      exchangeInspectionItems,
+      exchangeInspectionNotes
+    );
+  };
+
   const filteredOrders = orders.filter((o) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
@@ -240,10 +291,45 @@ const DistributorSelfDelivery = () => {
               <article key={request.id} className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
                 <p className="text-xs font-bold text-[#171717]">Exchange · Order #{String(request.orderId || "").slice(0, 8).toUpperCase()}</p>
                 <p className="mt-1 text-[11px] text-[#575757]">{request.customerName || "Customer"} · {request.reasonDetails || request.reasonCode}</p>
+                <p className="mt-2 text-[10px] font-semibold text-indigo-800">
+                  Return: {request.returnPickupStatus || "Awaiting return"} · Replacement: {request.replacementStatus || "Reserved"}
+                </p>
+                <p className="mt-2 text-[11px] text-[#575757]">
+                  Returned: {(Array.isArray(request.items) ? request.items : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
+                </p>
                 <p className="mt-2 text-[11px] text-[#575757]">
                   Replacement: {(Array.isArray(request.replacementItems) ? request.replacementItems : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
                 </p>
-                <p className="mt-2 text-[10px] font-semibold text-indigo-800">Coordinate the approved exchange with the customer from your hub.</p>
+                {!request.inspectedAt && (
+                  <button
+                    type="button"
+                    onClick={() => openExchangeInspection(request)}
+                    disabled={updatingId === request.id}
+                    className="mt-3 rounded-lg bg-indigo-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-indigo-800 disabled:opacity-50"
+                  >
+                    Receive & inspect return
+                  </button>
+                )}
+                {request.inspectedAt && !request.replacementStockConsumedAt && (
+                  <button
+                    type="button"
+                    onClick={() => handleExchangeAction(request, "DISPATCH")}
+                    disabled={updatingId === request.id}
+                    className="mt-3 rounded-lg bg-indigo-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-indigo-800 disabled:opacity-50"
+                  >
+                    {updatingId === request.id ? "Updating..." : "Dispatch reserved replacement"}
+                  </button>
+                )}
+                {request.replacementStatus === "DISPATCHED" && (
+                  <button
+                    type="button"
+                    onClick={() => handleExchangeAction(request, "DELIVER")}
+                    disabled={updatingId === request.id}
+                    className="mt-3 rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                  >
+                    {updatingId === request.id ? "Updating..." : "Mark replacement delivered"}
+                  </button>
+                )}
               </article>
             ))}
           </div>
@@ -254,6 +340,7 @@ const DistributorSelfDelivery = () => {
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         {[
           { key: "all", label: "All Orders" },
+          { key: "on_hold", label: "On hold" },
           { key: "assigned", label: "Assigned" },
           { key: "dispatched", label: "Dispatched" },
           { key: "on_the_way", label: "On The Way" },
@@ -311,6 +398,8 @@ const DistributorSelfDelivery = () => {
                       className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
                         currentStatus === "delivered"
                           ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : currentStatus === "on_hold"
+                          ? "bg-amber-50 text-amber-800 border-amber-200"
                           : currentStatus === "on_the_way"
                           ? "bg-amber-50 text-amber-700 border-amber-200"
                           : currentStatus === "dispatched"
@@ -320,7 +409,7 @@ const DistributorSelfDelivery = () => {
                           : "bg-[#f8f7f4] text-[#171717] border-[#dedbd3]"
                       }`}
                     >
-                      {currentStatus.replace("_", " ")}
+                      {currentStatus === "on_hold" ? "On hold" : currentStatus.replace("_", " ")}
                     </span>
                   </div>
 
@@ -372,7 +461,7 @@ const DistributorSelfDelivery = () => {
 
                 {/* Status Action Buttons */}
                 <div className="space-y-2 pt-2">
-                  {["assigned", "pending_acceptance", "accepted", "packed", "ready_for_pickup"].includes(currentStatus) && (
+                  {["assigned", "pending_acceptance", "accepted", "packed", "ready_for_pickup", "package_details_complete", "on_hold"].includes(currentStatus) && (
                     <button
                       onClick={() => handleStatusUpdate(orderRef, "Dispatched")}
                       disabled={updatingId === orderRef.assignmentId}
@@ -421,6 +510,46 @@ const DistributorSelfDelivery = () => {
       )}
 
       {/* Customer Return QA Modal */}
+      {exchangeToInspect && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form onSubmit={submitExchangeInspection} className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <div>
+              <h2 className="text-base font-bold text-[#171717]">Receive and inspect exchange return</h2>
+              <p className="mt-1 text-xs text-[#575757]">Classify every approved return item. Replacement stock is already reserved and can be dispatched after inspection.</p>
+            </div>
+            <div className="space-y-2">
+              {exchangeInspectionItems.map((item, index) => (
+                <div key={`${item.productId}-${item.size}-${item.color}`} className="flex items-center justify-between gap-3 rounded-xl border border-[#dedbd3] p-3 text-xs">
+                  <span className="font-semibold text-[#171717]">{item.quantity} × {item.name} ({item.size}/{item.color})</span>
+                  <select
+                    value={item.condition}
+                    onChange={(event) => setExchangeInspectionItems((current) =>
+                      current.map((entry, itemIndex) => itemIndex === index ? { ...entry, condition: event.target.value } : entry)
+                    )}
+                    className="rounded-lg border border-[#dedbd3] bg-white p-2"
+                  >
+                    <option value="GOOD">Good · restock</option>
+                    <option value="DAMAGED">Damaged · record discrepancy</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+            <textarea
+              value={exchangeInspectionNotes}
+              onChange={(event) => setExchangeInspectionNotes(event.target.value)}
+              placeholder="Inspection notes (required for damaged items)"
+              className="min-h-20 w-full rounded-lg border border-[#dedbd3] p-3 text-xs focus:outline-none focus:border-[#171717]"
+            />
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] pt-3">
+              <button type="button" onClick={() => setExchangeToInspect(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
+              <button type="submit" disabled={submittingExchange} className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {submittingExchange ? "Processing..." : "Confirm receipt & inspection"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {returnOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
           <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl w-full max-w-lg shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">

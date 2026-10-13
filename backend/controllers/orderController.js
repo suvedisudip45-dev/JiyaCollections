@@ -195,7 +195,14 @@ const buildOrderListItem = (order) => {
     address,
     status: order.status,
     paymentMethod: order.paymentMethod,
-    payment: Boolean(order.payment),
+    payment: Boolean(
+      order.payment ||
+      (
+        order.distributorDelivery?.deliveryType === "SELF_DELIVERY" &&
+        String(order.distributorDelivery?.status || "").toLowerCase() === "delivered" &&
+        /cod|cash/i.test(String(order.paymentMethod || ""))
+      )
+    ),
     date: Number(order.date || 0),
     loyaltyDiscount: Number(order.loyaltyDiscount || 0),
     rewardApplied: parsedReward,
@@ -215,6 +222,7 @@ const buildOrderListItem = (order) => {
     distributorReview: order.distributorReview || null,
     assignedDistributorId: order.assignedDistributorId || order.distributorId || null,
     distributorAssignment: order.distributorAssignment || null,
+    distributorDelivery: order.distributorDelivery || null,
     totalItems: Array.isArray(parsedItems) ? parsedItems.reduce((sum, item) => sum + Number(item.quantity || 1), 0) : 0,
   };
 };
@@ -1216,13 +1224,36 @@ const userOrders = async (req, res) => {
     const assignments = rawOrders.length
       ? await prisma.orderAssignment.findMany({
           where: { orderId: { in: rawOrders.map((item) => item.id) } },
-          select: { orderId: true, distributorId: true },
+          select: {
+            orderId: true,
+            distributorId: true,
+            deliveryType: true,
+            status: true,
+            assignedAt: true,
+            dispatchedAt: true,
+            onTheWayAt: true,
+            deliveredAt: true,
+            distributor: { select: { id: true, name: true } },
+          },
         })
       : [];
-    const distributorByOrderId = new Map(assignments.map((assignment) => [assignment.orderId, assignment.distributorId]));
+    const assignmentByOrderId = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
     const orders = rawOrders.map((item) => buildOrderListItem({
       ...item,
-      assignedDistributorId: item.distributorId || distributorByOrderId.get(item.id) || null,
+      assignedDistributorId: item.distributorId || assignmentByOrderId.get(item.id)?.distributorId || null,
+      distributorDelivery: (() => {
+        const assignment = assignmentByOrderId.get(item.id);
+        if (!assignment || String(assignment.deliveryType || "").toUpperCase() !== "SELF_DELIVERY") return null;
+        return {
+          deliveryType: "SELF_DELIVERY",
+          status: assignment.status,
+          assignedAt: assignment.assignedAt,
+          dispatchedAt: assignment.dispatchedAt,
+          onTheWayAt: assignment.onTheWayAt,
+          deliveredAt: assignment.deliveredAt,
+          distributor: assignment.distributor,
+        };
+      })(),
     }));
     res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {

@@ -74,6 +74,7 @@ const getInitialItemQuantities = (items = []) => Object.fromEntries(
 
 const canCancelBeforeNcmHandoff = (order) => {
   const delivery = order.deliveryOrder || order.delivery || {};
+  const distributorStatus = String(order.distributorDelivery?.status || "").toLowerCase();
   const status = String(order.status || "").toLowerCase();
   const fulfillmentStatus = String(order.fulfillmentStatus || "").toLowerCase();
   const handedOffStates = new Set([
@@ -81,12 +82,14 @@ const canCancelBeforeNcmHandoff = (order) => {
     "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested",
   ]);
   return status !== "cancelled" && status !== "delivered" && status !== "returned" &&
+    distributorStatus !== "delivered" && distributorStatus !== "returned" &&
     !delivery.ncmOrderId && !handedOffStates.has(String(delivery.state || "").toLowerCase()) &&
     !handedOffStates.has(fulfillmentStatus);
 };
 
 const isDeliveredOrder = (order) => String(order.status || "").toLowerCase() === "delivered" ||
   String(order.fulfillmentStatus || "").toLowerCase() === "delivered" ||
+  String(order.distributorDelivery?.status || "").toLowerCase() === "delivered" ||
   String((order.deliveryOrder || order.delivery)?.state || "").toUpperCase() === "DELIVERED";
 
 const Orders = () => {
@@ -110,6 +113,7 @@ const Orders = () => {
   const [invoiceOrder, setInvoiceOrder] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [exchangeRequests, setExchangeRequests] = useState([]);
+  const [exchangeViewRequest, setExchangeViewRequest] = useState(null);
   const [returnRequests, setReturnRequests] = useState([]);
   const [cancelOrderTarget, setCancelOrderTarget] = useState(null);
   const [reviewOrderTarget, setReviewOrderTarget] = useState(null);
@@ -442,7 +446,13 @@ const Orders = () => {
   // Open Tracking Modal
   const handleOpenTracking = async (order) => {
     setTrackingOrder(order);
-    setActiveDeliveryData(order.delivery || null);
+    const isSelfDelivery = order.distributorDelivery?.deliveryType === "SELF_DELIVERY";
+    setActiveDeliveryData(isSelfDelivery ? order.distributorDelivery : order.delivery || null);
+
+    if (isSelfDelivery) {
+      setTrackingLoading(false);
+      return;
+    }
 
     const lookupId = order.deliveryOrder?.id || order.deliveryJobId || order.delivery?.id || order.id;
     if (lookupId) {
@@ -470,9 +480,25 @@ const Orders = () => {
   };
 
   // Helper for Status Badges
-  const getStatusBadge = (status = "", fulfillmentStatus = "") => {
+  const getStatusBadge = (status = "", fulfillmentStatus = "", order = {}) => {
     const s = status.toLowerCase();
     const f = (fulfillmentStatus || "").toLowerCase();
+    const distributorStatus = String(order.distributorDelivery?.status || "").toLowerCase().replaceAll(" ", "_");
+
+    if (order.distributorDelivery?.deliveryType === "SELF_DELIVERY") {
+      if (distributorStatus === "delivered") {
+        return { label: "Delivered by Distributor", bg: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500", icon: CheckCircle2 };
+      }
+      if (distributorStatus === "on_the_way") {
+        return { label: "Out for Delivery", bg: "bg-blue-50 text-blue-700 border-blue-200", dot: "bg-blue-500", icon: Truck };
+      }
+      if (distributorStatus === "dispatched") {
+        return { label: "Dispatched by Distributor", bg: "bg-indigo-50 text-indigo-700 border-indigo-200", dot: "bg-indigo-500", icon: Box };
+      }
+      if (["accepted", "packed", "ready_for_pickup"].includes(distributorStatus)) {
+        return { label: "Preparing at Distributor Hub", bg: "bg-amber-50 text-amber-700 border-amber-200", dot: "bg-amber-500 animate-pulse", icon: Clock };
+      }
+    }
 
     if (s.includes("delivered") || f.includes("delivered")) {
       return {
@@ -524,6 +550,14 @@ const Orders = () => {
 
   // Calculate Tracking Progress Stage (1 to 5)
   const calculateTrackingStage = (order, deliveryData) => {
+    if (order.distributorDelivery?.deliveryType === "SELF_DELIVERY") {
+      const distributorStatus = String(order.distributorDelivery.status || "").toLowerCase().replaceAll(" ", "_");
+      if (distributorStatus === "delivered") return 5;
+      if (distributorStatus === "on_the_way") return 4;
+      if (distributorStatus === "dispatched") return 3;
+      if (["accepted", "packed", "ready_for_pickup"].includes(distributorStatus)) return 2;
+      return 1;
+    }
     const s = (order.status || "").toLowerCase();
     const f = (order.fulfillmentStatus || "").toLowerCase();
     const dState = (deliveryData?.state || deliveryData?.ncmStatus || "").toLowerCase();
@@ -534,6 +568,19 @@ const Orders = () => {
     if (f.includes("manufacturing") || f.includes("quality_check") || f.includes("packed") || f.includes("assigned") || s.includes("processing")) return 2;
     return 1; // Order Placed
   };
+
+  const invoiceExchanges = invoiceOrder
+    ? exchangeRequests.filter((request) => request.orderId === invoiceOrder.id)
+    : [];
+  const invoiceReturns = invoiceOrder
+    ? returnRequests.filter((request) => request.orderId === invoiceOrder.id)
+    : [];
+  const invoiceHasActiveExchange = invoiceExchanges.some(
+    (request) => !["REJECTED", "CANCELLED"].includes(request.status)
+  );
+  const invoiceHasActiveReturn = invoiceReturns.some(
+    (request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus)
+  );
 
   return (
     <div className="min-h-screen bg-slate-50/50 py-10 px-4 sm:px-6 lg:px-8 border-t">
@@ -704,304 +751,39 @@ const Orders = () => {
           </div>
         ) : (
           <div className="space-y-6">
-            {filteredOrders.map((order) => {
-              const statusBadge = getStatusBadge(order.status, order.fulfillmentStatus);
-              const StatusIcon = statusBadge.icon;
-              const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
-              const itemCount = displayItems.reduce(
-                (sum, item) => sum + Number(item.quantity || 1),
-                0
-              );
-              const orderExchanges = exchangeRequests.filter((request) => request.orderId === order.id);
-              const activeExchange = orderExchanges.find((request) => !["REJECTED", "CANCELLED"].includes(request.status));
-              const orderReturns = returnRequests.filter((request) => request.orderId === order.id);
-              const activeReturn = orderReturns.find((request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus));
-              const canRequestExchange = isDeliveredOrder(order) && !activeExchange;
-              const canRequestReturn = isDeliveredOrder(order) && !activeReturn;
-              const canReviewHub = isDeliveredOrder(order) && Boolean(order.assignedDistributorId);
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-xs">
+              <table className="w-full min-w-[1050px] border-collapse text-left">
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Order ID</th><th className="px-4 py-3">Created At</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Order Status</th><th className="px-4 py-3 text-right">Total Amount</th><th className="px-4 py-3">Payment Status</th><th className="px-4 py-3">Delivered Date</th><th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {filteredOrders.map((order) => {
+                    const statusBadge = getStatusBadge(order.status, order.fulfillmentStatus, order);
+                    const displayItems = order.displayItems || toCustomerDisplayItems(order.items || []);
+                    const productNames = displayItems.map((item) => item.name || "Product");
+                    const deliveredAt = order.distributorDelivery?.deliveredAt || order.deliveryOrder?.deliveredAt || order.delivery?.deliveredAt;
+                    const paymentLabel = order.payment ? "Paid" : /cod|cash/i.test(String(order.paymentMethod || "")) ? "Due on delivery" : "Pending";
 
-              return (
-                <div
-                  key={order.id}
-                  className="bg-white rounded-2xl border border-slate-200/90 shadow-xs hover:shadow-md transition overflow-hidden"
-                >
-                  {/* Order Header Card */}
-                  <div className="p-4 sm:p-5 bg-slate-50/70 border-b border-slate-200/70 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-slate-900">
-                            #{order.id.slice(0, 8).toUpperCase()}
-                          </span>
-                          <button
-                            onClick={() => copyOrderId(order.id)}
-                            title="Copy Order ID"
-                            className="p-1 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition cursor-pointer"
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          {copiedId === order.id && (
-                            <span className="text-[10px] text-emerald-600 font-bold">Copied!</span>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                          <Calendar className="w-3 h-3 text-slate-400" />
-                          <span>
-                            {new Date(order.dateNum).toLocaleDateString("en-US", {
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })}{" "}
-                            at {new Date(order.dateNum).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </span>
-                        </p>
-                      </div>
-
-                      <div className="hidden sm:block h-6 w-px bg-slate-200"></div>
-
-                      <div className="flex items-center gap-2">
-                        {/* Status Badge */}
-                        <div
-                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold ${statusBadge.bg}`}
-                        >
-                          <span className={`w-2 h-2 rounded-full ${statusBadge.dot}`} />
-                          <StatusIcon className="w-3 h-3" />
-                          <span>{statusBadge.label}</span>
-                        </div>
-
-                        {/* Payment Badge */}
-                        <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-[11px] font-semibold text-slate-700">
-                          <CreditCard className="w-3 h-3 text-slate-500" />
-                          <span>{order.paymentMethod}</span>
-                          <span
-                            className={`text-[10px] font-bold ml-1 ${
-                              order.payment ? "text-emerald-600" : "text-amber-600"
-                            }`}
-                          >
-                            ({order.payment ? "Paid" : "Pay on Delivery"})
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between md:justify-end gap-3 pt-2 md:pt-0 border-t md:border-0 border-slate-200">
-                      <div className="text-left md:text-right">
-                        <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
-                          Order Total ({itemCount} {itemCount === 1 ? "item" : "items"})
-                        </p>
-                        <p className="text-base sm:text-lg font-black text-slate-900">
-                          {currency}{order.amount.toLocaleString()}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {canCancelBeforeNcmHandoff(order) && (
-                          <button
-                            onClick={() => { setCancelOrderTarget(order); setCancelReason(""); }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-white text-rose-700 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            <span>Cancel</span>
-                          </button>
-                        )}
-                        {canRequestExchange && (
-                          <button
-                            onClick={() => openExchangeRequest(order)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 bg-white text-blue-800 text-xs font-bold hover:bg-blue-50 transition cursor-pointer"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Request Exchange</span>
-                          </button>
-                        )}
-                        {canRequestReturn && (
-                          <button
-                            onClick={() => openReturnRequest(order)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-rose-200 bg-white text-rose-800 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Request Return</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleOpenTracking(order)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                        >
-                          <Truck className="w-3.5 h-3.5" />
-                          <span>Track</span>
-                        </button>
-                        <button
-                          onClick={() => setInvoiceOrder(order)}
-                          className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition cursor-pointer"
-                          title="View Invoice & Receipt"
-                        >
-                          <FileText className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Items List Inside Single Order */}
-                  <div className="divide-y divide-slate-100">
-                    {displayItems.map((item, idx) => {
-                      const unitPrice = Number(item.purchasedUnitPrice ?? item.price ?? 0);
-                      const qty = Number(item.quantity || 1);
-                      const lineTotal = Number(item.lineTotal || unitPrice * qty);
-                      const itemImg = Array.isArray(item.image) ? item.image[0] : item.image;
-
-                      return (
-                        <div
-                          key={`${order.id}-item-${idx}`}
-                          className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50/40 transition"
-                        >
-                          <div className="flex items-start gap-4">
-                            {/* Product Image */}
-                            <div className="w-16 h-20 sm:w-20 sm:h-24 bg-slate-100 rounded-xl overflow-hidden border border-slate-200/80 shrink-0 relative group">
-                              <img
-                                src={itemImg}
-                                alt={item.name}
-                                className="w-full h-full object-cover object-center group-hover:scale-105 transition duration-300"
-                              />
-                            </div>
-
-                            {/* Product Info */}
-                            <div className="space-y-1">
-                              {item.isComboBundle ? (
-                                <p className="text-sm font-bold text-slate-900 sm:text-base">{item.name}</p>
-                              ) : (
-                                <Link to={`/product/${item._id || item.productId || item.id}`} className="line-clamp-1 text-sm font-bold text-slate-900 transition hover:text-slate-600 sm:text-base">
-                                  {item.name}
-                                </Link>
-                              )}
-
-                              <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                                {item.category && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-medium">
-                                    {item.category}
-                                  </span>
-                                )}
-                                {item.size && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-900 text-white text-[11px] font-bold">
-                                    Size: {item.size}
-                                  </span>
-                                )}
-                                {item.color && (
-                                  <span className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-medium flex items-center gap-1">
-                                    <span
-                                      className="w-2 h-2 rounded-full border border-slate-300"
-                                      style={{ backgroundColor: item.color.toLowerCase() }}
-                                    />
-                                    {item.color}
-                                  </span>
-                                )}
-                                {item.isComboBundle && (
-                                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-bold">
-                                    {item.componentCount} included pieces
-                                  </span>
-                                )}
-                                {item.offerTag && (
-                                  <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold flex items-center gap-1">
-                                    <Sparkles className="w-2.5 h-2.5" />
-                                    {item.offerTag}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2 text-xs text-slate-500 pt-1">
-                                <span className="font-semibold text-slate-700">
-                                  {currency}{unitPrice.toLocaleString()}
-                                </span>
-                                <span>×</span>
-                                <span className="font-semibold text-slate-700">{qty} qty</span>
-                                {(item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage) > 0 && (
-                                  <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.2 rounded">
-                                    {item.isComboBundle ? item.comboBundleDiscountPercentage : item.discountPercentage}% OFF
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Line Total */}
-                          <div className="text-right sm:text-right flex sm:flex-col justify-between items-center sm:items-end border-t sm:border-0 pt-2 sm:pt-0 border-slate-100">
-                            <span className="sm:hidden text-xs text-slate-400">Item Total:</span>
-                            <div>
-                              <p className="text-sm sm:text-base font-black text-slate-900">
-                                {currency}{lineTotal.toLocaleString()}
-                              </p>
-                              <p className="text-[10px] text-slate-400">Snapshot price guaranteed</p>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Order Footer & Shipping Destination */}
-                  {(orderExchanges.length > 0 || orderReturns.length > 0) && (
-                    <div className="px-4 sm:px-5 py-3 border-t border-blue-100 bg-blue-50/60 space-y-1">
-                      {orderExchanges.map((request) => (
-                        <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="font-semibold text-blue-950">Exchange {request.status.replace(/_/g, " ")}</span>
-                          <span className="text-blue-800">{request.reasonCode.replace(/_/g, " ")}{request.returnPickupStatus ? ` · Return ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.replacementItems?.length ? ` · Replacement ${request.replacementItems.map((item) => `${item.size || "One size"}${item.color ? `/${item.color}` : ""} ×${item.quantity}`).join(", ")}` : ""}{request.priceDifference ? ` · Price adjustment ${currency}${Number(request.priceDifference).toLocaleString()}` : ""}{request.ncmTotalCharge != null ? ` · NCM ${currency}${Number(request.ncmTotalCharge).toLocaleString()} (${request.ncmChargePayer || "MERCHANT"})` : ""}</span>
-                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
-                        </div>
-                      ))}
-                      {orderReturns.map((request) => (
-                        <div key={request.id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <span className="font-semibold text-rose-950">Return {String(request.lifecycleStatus || "REQUESTED").replace(/_/g, " ")}</span>
-                          <span className="text-rose-800">{request.reason}{request.returnPickupStatus ? ` · Pickup ${request.returnPickupStatus.replace(/_/g, " ")}` : ""}{request.ncmDeliveryCharge != null ? ` · NCM-reported charge ${currency}${Number(request.ncmDeliveryCharge).toLocaleString()}` : ""}</span>
-                          {request.ncmSubmissionError && <span className="basis-full text-rose-700">Carrier update: {request.ncmSubmissionError}</span>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="p-4 bg-slate-50/50 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-600">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="line-clamp-1 font-medium">
-                        Ship to:{" "}
-                        <strong className="text-slate-800">
-                          {order.address?.firstName} {order.address?.lastName}
-                        </strong>{" "}
-                        ({[order.address?.street, order.address?.city, order.address?.state].filter(Boolean).join(", ")})
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-4 self-end sm:self-auto">
-                      {order.loyaltyDiscount > 0 && (
-                        <span className="text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          Loyalty Saved: -{currency}{order.loyaltyDiscount}
-                        </span>
-                      )}
-                      {canReviewHub && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setReviewOrderTarget(order);
-                            setReviewRating(order.distributorReview?.rating || 5);
-                            setReviewComment(order.distributorReview?.comment || "");
-                          }}
-                          className="text-amber-700 font-bold hover:underline flex items-center gap-1 cursor-pointer"
-                        >
-                          <Star className="w-3.5 h-3.5" />
-                          {order.distributorReview
-                            ? `Rated ${order.distributorReview.rating}/5 · Edit review`
-                            : "Rate your hub"}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => handleOpenTracking(order)}
-                        className="text-slate-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
-                      >
-                        <span>Detailed Tracking</span>
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            <Pagination
+                    return (
+                      <tr key={order.id} className="align-top hover:bg-slate-50/70">
+                        <td className="whitespace-nowrap px-4 py-4 font-mono font-bold text-slate-900">#{order.id.slice(0, 8).toUpperCase()}</td>
+                        <td className="whitespace-nowrap px-4 py-4 text-slate-600">{new Date(order.dateNum).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td>
+                        <td className="max-w-56 px-4 py-4"><p className="line-clamp-2 font-semibold text-slate-800">{productNames[0] || "Order items"}</p>{productNames.length > 1 && <p className="mt-1 text-[10px] text-slate-500">+{productNames.length - 1} more product{productNames.length === 2 ? "" : "s"}</p>}</td>
+                        <td className="whitespace-nowrap px-4 py-4"><span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${statusBadge.bg}`}><span className={`h-1.5 w-1.5 rounded-full ${statusBadge.dot}`} />{statusBadge.label}</span></td>
+                        <td className="whitespace-nowrap px-4 py-4 text-right font-bold text-slate-900">{currency}{Number(order.amount || 0).toLocaleString()}</td>
+                        <td className="whitespace-nowrap px-4 py-4"><span className={`font-semibold ${order.payment ? "text-emerald-700" : "text-amber-700"}`}>{paymentLabel}</span><span className="mt-0.5 block text-[10px] text-slate-500">{order.paymentMethod || "Payment"}</span></td>
+                        <td className="whitespace-nowrap px-4 py-4 text-slate-600">{deliveredAt ? new Date(deliveredAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "—"}</td>
+                        <td className="px-4 py-4">
+                          <button type="button" onClick={() => setInvoiceOrder(order)} className="rounded-lg bg-slate-900 px-3 py-1.5 text-[10px] font-bold text-white hover:bg-slate-700">View</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>            <Pagination
               page={pagination?.page || page}
               totalPages={pagination?.totalPages || 0}
               total={pagination?.total || 0}
@@ -1160,7 +942,7 @@ const Orders = () => {
             <div className="p-5 bg-slate-900 text-white flex items-center justify-between">
               <div>
                 <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  Live Courier & Fulfillment Tracking
+                  Live Delivery Tracking
                 </p>
                 <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2 mt-0.5">
                   <Truck className="w-5 h-5 text-emerald-400" />
@@ -1177,18 +959,32 @@ const Orders = () => {
 
             <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto text-xs">
               {/* Active Route Box */}
+              {(() => {
+                const distributorDelivery = trackingOrder.distributorDelivery;
+                const isSelfDelivery = distributorDelivery?.deliveryType === "SELF_DELIVERY";
+                const deliveryStatus = String(distributorDelivery?.status || trackingOrder.status || "Processing").replaceAll("_", " ");
+                const isCod = /cod|cash/i.test(String(trackingOrder.paymentMethod || ""));
+                return (
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">Logistics Carrier:</span>
-                  <span className="font-bold text-slate-900 bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">
-                    Nepal Can Move (NCM) Logistics
+                  <span className="text-slate-500 font-semibold">Delivery Provider:</span>
+                  <span className={`font-bold px-2 py-0.5 rounded border ${
+                    isSelfDelivery
+                      ? "text-indigo-700 bg-indigo-50 border-indigo-200"
+                      : "text-emerald-700 bg-emerald-50 border-emerald-200"
+                  }`}>
+                    {isSelfDelivery
+                      ? `${distributorDelivery.distributor?.name || "Local Distributor"} · Self delivery`
+                      : "Nepal Can Move (NCM) Logistics"}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-semibold">Courier Consignment / AWB:</span>
+                  <span className="text-slate-500 font-semibold">{isSelfDelivery ? "Delivery Status:" : "Courier Consignment / AWB:"}</span>
                   <span className="font-mono font-bold text-slate-900">
-                    {activeDeliveryData?.ncmOrderId || activeDeliveryData?.id || trackingOrder.deliveryJobId || "Processing in Hub"}
+                    {isSelfDelivery
+                      ? deliveryStatus
+                      : activeDeliveryData?.ncmOrderId || activeDeliveryData?.id || trackingOrder.deliveryJobId || "Processing in Hub"}
                   </span>
                 </div>
 
@@ -1197,14 +993,28 @@ const Orders = () => {
                   <span className="font-bold text-slate-900">{trackingOrder.address?.city || "Nepal Hub"}</span>
                 </div>
 
-                {activeDeliveryData?.originBranchName && activeDeliveryData?.destinationBranchName && (
+                {!isSelfDelivery && activeDeliveryData?.originBranchName && activeDeliveryData?.destinationBranchName && (
                   <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-600">
                     <span>Origin: <strong>{activeDeliveryData.originBranchName}</strong></span>
                     <span>→</span>
                     <span>Hub: <strong>{activeDeliveryData.destinationBranchName}</strong></span>
                   </div>
                 )}
+                {isCod && (
+                  <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-500 font-semibold">Cash on Delivery:</span>
+                    <strong className={trackingOrder.payment ? "text-emerald-700" : "text-amber-700"}>
+                      {trackingOrder.payment
+                        ? isSelfDelivery && distributorDelivery?.status?.toLowerCase() === "delivered"
+                          ? "Collected by distributor"
+                          : "Paid"
+                        : "Due on delivery"}
+                    </strong>
+                  </div>
+                )}
               </div>
+                );
+              })()}
 
               {/* 5-Step Visual Stepper */}
               <div>
@@ -1213,7 +1023,41 @@ const Orders = () => {
                 </h4>
                 {(() => {
                   const stage = calculateTrackingStage(trackingOrder, activeDeliveryData);
-                  const steps = [
+                  const isSelfDelivery = trackingOrder.distributorDelivery?.deliveryType === "SELF_DELIVERY";
+                  const distributorDelivery = trackingOrder.distributorDelivery || {};
+                  const formatTime = (value, fallback) => value ? new Date(value).toLocaleString() : fallback;
+                  const steps = isSelfDelivery ? [
+                    {
+                      num: 1,
+                      title: "Order Placed & Confirmed",
+                      desc: "Your order has been validated and recorded.",
+                      time: new Date(trackingOrder.dateNum).toLocaleString(),
+                    },
+                    {
+                      num: 2,
+                      title: "Preparing at Distributor Hub",
+                      desc: `Your order is prepared for local delivery by ${distributorDelivery.distributor?.name || "the assigned distributor"}.`,
+                      time: stage >= 2 ? "Completed" : "Pending",
+                    },
+                    {
+                      num: 3,
+                      title: "Dispatched by Distributor",
+                      desc: "The distributor has dispatched your order for local delivery.",
+                      time: formatTime(distributorDelivery.dispatchedAt, stage >= 3 ? "Dispatched" : "Pending dispatch"),
+                    },
+                    {
+                      num: 4,
+                      title: "Out for Delivery",
+                      desc: "The distributor is delivering your order to the delivery address.",
+                      time: formatTime(distributorDelivery.onTheWayAt, stage >= 4 ? "Out for delivery" : "Pending"),
+                    },
+                    {
+                      num: 5,
+                      title: "Delivered to Customer",
+                      desc: "Your order has been handed to you.",
+                      time: formatTime(distributorDelivery.deliveredAt, stage >= 5 ? "Delivered" : "Pending delivery"),
+                    },
+                  ] : [
                     {
                       num: 1,
                       title: "Order Placed & Confirmed",
@@ -1283,7 +1127,8 @@ const Orders = () => {
               </div>
 
               {/* Event Log if available */}
-              {activeDeliveryData?.events && activeDeliveryData.events.length > 0 && (
+              {trackingOrder.distributorDelivery?.deliveryType !== "SELF_DELIVERY" &&
+                activeDeliveryData?.events && activeDeliveryData.events.length > 0 && (
                 <div className="pt-4 border-t border-slate-200 space-y-2">
                   <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px]">
                     Detailed Carrier Events Log
@@ -1314,6 +1159,109 @@ const Orders = () => {
         </div>
       )}
 
+      {exchangeViewRequest && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setExchangeViewRequest(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="exchange-details-title"
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 p-5">
+              <div>
+                <h2 id="exchange-details-title" className="text-base font-bold text-slate-900">Exchange request details</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Order #{String(exchangeViewRequest.orderId || "").slice(0, 8).toUpperCase()}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExchangeViewRequest(null)}
+                className="rounded-lg p-1 text-slate-500 hover:bg-slate-200 hover:text-slate-900"
+                aria-label="Close exchange details"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </header>
+
+            <div className="space-y-5 p-5 text-xs">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Status</p>
+                  <p className="mt-1 font-bold text-slate-900">{String(exchangeViewRequest.status || "Requested").replace(/_/g, " ")}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Requested</p>
+                  <p className="mt-1 font-semibold text-slate-800">{exchangeViewRequest.createdAt ? new Date(exchangeViewRequest.createdAt).toLocaleString() : "—"}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Reason</p>
+                  <p className="mt-1 font-semibold text-slate-800">{String(exchangeViewRequest.reasonCode || "—").replace(/_/g, " ")}</p>
+                  {exchangeViewRequest.reasonDetails && <p className="mt-1 text-slate-600">{exchangeViewRequest.reasonDetails}</p>}
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Price difference</p>
+                  <p className="mt-1 font-semibold text-slate-800">{currency}{Number(exchangeViewRequest.priceDifference || 0).toLocaleString()}</p>
+                </div>
+              </div>
+
+              {[["Items requested for exchange", exchangeViewRequest.items], ["Replacement items", exchangeViewRequest.replacementItems]].map(([title, items]) => (
+                <div key={title}>
+                  <h3 className="mb-2 font-bold text-slate-900">{title}</h3>
+                  {Array.isArray(items) && items.length ? (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="w-full text-left">
+                        <thead className="bg-slate-50 text-[10px] uppercase text-slate-500">
+                          <tr><th className="px-3 py-2">Product</th><th className="px-3 py-2">Size / Color</th><th className="px-3 py-2 text-right">Quantity</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {items.map((item, index) => (
+                            <tr key={`${item.productId || item.name || "item"}-${index}`}>
+                              <td className="px-3 py-2 font-semibold text-slate-800">{item.name || item.productName || item.productId || "Product"}</td>
+                              <td className="px-3 py-2 text-slate-600">{[item.size, item.color].filter(Boolean).join(" / ") || "—"}</td>
+                              <td className="px-3 py-2 text-right font-bold text-slate-800">{item.quantity || 0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <p className="rounded-xl bg-slate-50 p-3 text-slate-500">No item details available.</p>}
+                </div>
+              ))}
+
+              {(exchangeViewRequest.ncmSubmissionError || exchangeViewRequest.decisionReason || exchangeViewRequest.ncmTotalCharge > 0) && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <h3 className="font-bold text-amber-950">Delivery and review notes</h3>
+                  {exchangeViewRequest.decisionReason && <p className="mt-1 text-amber-900">{exchangeViewRequest.decisionReason}</p>}
+                  {exchangeViewRequest.ncmSubmissionError && <p className="mt-1 text-rose-800">Carrier update: {exchangeViewRequest.ncmSubmissionError}</p>}
+                  {Number(exchangeViewRequest.ncmTotalCharge || 0) > 0 && <p className="mt-1 text-amber-900">Carrier charges: {currency}{Number(exchangeViewRequest.ncmTotalCharge).toLocaleString()} ({exchangeViewRequest.ncmChargePayer || "payer not specified"})</p>}
+                </div>
+              )}
+
+              {Array.isArray(exchangeViewRequest.events) && exchangeViewRequest.events.length > 0 && (
+                <div>
+                  <h3 className="mb-2 font-bold text-slate-900">Request history</h3>
+                  <ol className="space-y-2 border-l-2 border-slate-200 pl-4">
+                    {exchangeViewRequest.events.map((event, index) => (
+                      <li key={`${event.eventType || event.toStatus || "event"}-${index}`} className="relative">
+                        <span className="absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full bg-slate-400" />
+                        <p className="font-semibold text-slate-800">{String(event.toStatus || event.eventType || "Update").replace(/_/g, " ")}</p>
+                        {event.reason && <p className="mt-0.5 text-slate-600">{event.reason}</p>}
+                        <p className="mt-0.5 text-[10px] text-slate-400">{event.occurredAt ? new Date(event.occurredAt).toLocaleString() : ""}</p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* Detailed Order Receipt / Invoice Modal */}
       {invoiceOrder && (
         <div
@@ -1328,7 +1276,7 @@ const Orders = () => {
             <div className="p-4 bg-slate-900 text-white flex items-center justify-between print:hidden">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-emerald-400" />
-                <span className="font-bold text-sm">Official Order Receipt</span>
+                <span className="font-bold text-sm">Order Details & Receipt</span>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1467,13 +1415,102 @@ const Orders = () => {
               </div>
             </div>
 
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end print:hidden">
-              <button
-                onClick={() => setInvoiceOrder(null)}
-                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl cursor-pointer transition"
-              >
-                Close Receipt
-              </button>
+            <div className="border-t border-slate-200 bg-slate-50 p-4 print:hidden">
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const order = invoiceOrder;
+                    setInvoiceOrder(null);
+                    handleOpenTracking(order);
+                  }}
+                  className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700"
+                >
+                  <span className="inline-flex items-center gap-1.5"><Truck className="h-3.5 w-3.5" />Track order</span>
+                </button>
+                {canCancelBeforeNcmHandoff(invoiceOrder) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCancelOrderTarget(invoiceOrder);
+                      setCancelReason("");
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-50"
+                  >
+                    Cancel order
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && !invoiceHasActiveExchange && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openExchangeRequest(invoiceOrder);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-bold text-blue-800 hover:bg-blue-50"
+                  >
+                    Request exchange
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && !invoiceHasActiveReturn && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      openReturnRequest(invoiceOrder);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-bold text-rose-800 hover:bg-rose-50"
+                  >
+                    Request return
+                  </button>
+                )}
+                {isDeliveredOrder(invoiceOrder) && Boolean(invoiceOrder.assignedDistributorId) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReviewOrderTarget(invoiceOrder);
+                      setReviewRating(invoiceOrder.distributorReview?.rating || 5);
+                      setReviewComment(invoiceOrder.distributorReview?.comment || "");
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-50"
+                  >
+                    {invoiceOrder.distributorReview ? "View / edit hub rating" : "Rate hub"}
+                  </button>
+                )}
+                {invoiceExchanges.map((request) => (
+                  <button
+                    key={request.id}
+                    type="button"
+                    onClick={() => {
+                      setExchangeViewRequest(request);
+                      setInvoiceOrder(null);
+                    }}
+                    className="rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-bold text-indigo-800 hover:bg-indigo-50"
+                  >
+                    View exchange · {String(request.status || "REQUESTED").replace(/_/g, " ")}
+                  </button>
+                ))}
+              </div>
+              {invoiceReturns.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-600">
+                  {invoiceReturns.map((request) => (
+                    <span key={request.id}>
+                      Return request: <strong>{String(request.lifecycleStatus || request.status || "REQUESTED").replace(/_/g, " ")}</strong>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setInvoiceOrder(null)}
+                  className="rounded-xl bg-slate-900 px-5 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

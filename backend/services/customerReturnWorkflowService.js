@@ -6,6 +6,11 @@ import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { applyCollaborationReturnAdjustments } from "./collaborationSalesService.js";
 import { recordSystemAudit } from "./auditService.js";
 import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
+import {
+  createReturnExchangeSettlementPayable,
+  postReturnExchangeSettlementAccounting,
+  resolveReturnExchangeSettlementRate,
+} from "./returnExchangeSettlementService.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
@@ -483,6 +488,7 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
         throw fail("This return is not assigned to the current distributor. Review the order assignment.", "RETURN_DISTRIBUTOR_MISMATCH", 409);
       }
       const approvedStatus = route.route === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN";
+      const shippingConfig = await tx.shippingConfig.findFirst();
       const updated = await tx.customerReturn.updateMany({
         where: { id: returnId, lifecycleStatus: "PENDING_ADMIN_REVIEW" },
         data: {
@@ -490,7 +496,8 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
           adminReviewerId: adminId,
           adminNotes: decisionReason,
           approvedAt: new Date(),
-          ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT",
+          ...(route.route === "NCM" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+          logisticsSettlementAmount: resolveReturnExchangeSettlementRate(shippingConfig, route.route, "RETURN"),
           deliveryRoute: route.route,
           distributorId: route.distributorId,
         },
@@ -516,7 +523,7 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
           lifecycleStatus: approvedStatus,
           deliveryRoute: route.route,
           distributorId: route.distributorId,
-          chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT",
+          ...(route.route === "NCM" ? { chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
         },
       }, { client: tx });
       return { approvedStatus, route };
@@ -699,6 +706,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
         inspectedAt: now,
       },
     });
+    await createReturnExchangeSettlementPayable(tx, updated, "RETURN");
     if (returnAccepted) {
       await tx.accountPayable.create({
         data: {
@@ -746,6 +754,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
     return updated;
   }, { isolationLevel: "Serializable" });
 
+  await postReturnExchangeSettlementAccounting({ operation: "RETURN", requestId: record.id });
   if (record.lifecycleStatus === "REFUND_PENDING") {
     postCustomerReturnAccounting({
       ...record,
