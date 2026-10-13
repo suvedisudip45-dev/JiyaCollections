@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { validateFulfillmentTransition, parseNotes } from "../services/fulfillmentStateMachine.js";
+import { getPlatformFeatures } from "../services/platformFeatureService.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { ensureOrderCardAttached } from "../services/marketingCardService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
@@ -1007,12 +1008,14 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction: deliveryInstruction !== undefined ? deliveryInstruction : (instruction !== undefined ? instruction : existingNotes.deliveryInstruction),
       packagingChecklist: packagingChecklist !== undefined ? packagingChecklist : existingNotes.packagingChecklist,
     };
+    const platformFeatures = await getPlatformFeatures();
     const transition = validateFulfillmentTransition({
       currentStatus: assignment.status === "PENDING_ACCEPTANCE" ? "assigned" : assignment.status,
       nextStatus: normalizedStatus,
       notes: assignment.notes,
       packageData: payload,
       workflowType: distributorOwnsAssignment ? "DISTRIBUTOR" : "MANUFACTURER",
+      features: platformFeatures,
     });
     if (!transition.valid) {
       return res.status(409).json({ success: false, message: transition.message });

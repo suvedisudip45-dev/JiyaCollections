@@ -260,6 +260,17 @@ const Sidebar = ({ isOpen = false, onClose }) => {
 
         <div className="h-px bg-slate-100 my-1" />
 
+        <SectionGroup
+          label="Platform Settings"
+          icon={Icon.ops}
+          requiredPermissions={ADMIN_SECTION_PERMISSIONS.platform}
+          routes={["/platform-features"]}
+        >
+          <NavItem to="/platform-features" icon={Icon.ops} label="Feature Settings" />
+        </SectionGroup>
+
+        <div className="h-px bg-slate-100 my-1" />
+
         {/* ── FINANCE ── */}
         <SectionGroup
           label="Finance & Banking"

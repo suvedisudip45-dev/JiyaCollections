@@ -103,3 +103,30 @@ test("distributor final checklist does not require stitching or branding checks"
 
   assert.equal(result.valid, true);
 });
+
+test("disabled letters are not required to advance fulfillment", () => {
+  const checklist = {
+    productVerified: true,
+    sizeColorVerified: true,
+    qualityVerified: true,
+    addressVerified: true,
+    packagingMaterialsVerified: true,
+  };
+
+  const transition = validateFulfillmentTransition({
+    currentStatus: "quality_check",
+    nextStatus: "letter_ready",
+    workflowType: "DISTRIBUTOR",
+    features: { lettersEnabled: false },
+  });
+  const finalChecklist = validateFulfillmentTransition({
+    currentStatus: "letter_ready",
+    nextStatus: "checklist_complete",
+    workflowType: "DISTRIBUTOR",
+    packageData: { packagingChecklist: checklist },
+    features: { lettersEnabled: false },
+  });
+
+  assert.equal(transition.valid, true);
+  assert.equal(finalChecklist.valid, true);
+});

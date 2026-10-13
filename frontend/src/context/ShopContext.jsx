@@ -12,6 +12,7 @@ const ShopContextProvider = (props) => {
   const backendUrl = import.meta.env.VITE_BACKEND_URL;
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [platformFeatures, setPlatformFeatures] = useState(null);
   const [cartItems, setCartItems] = useState({});
   const [products, setProducts] = useState([]);
   const [priceLocation, setPriceLocation] = useState(null);
@@ -24,6 +25,21 @@ const ShopContextProvider = (props) => {
   });
   const [token, setToken] = useState(() => getAccessToken());
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/features`)
+      .then((response) => {
+        if (mounted && response.data?.success) setPlatformFeatures(response.data.features || {});
+      })
+      .catch((error) => {
+        console.error("Unable to load platform feature settings:", error);
+        if (mounted) setPlatformFeatures({});
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [backendUrl]);
 
   useEffect(() => {
     const updateToken = (event) => {
@@ -489,6 +505,7 @@ const ShopContextProvider = (props) => {
     getCartAmount,
     navigate,
     backendUrl,
+    platformFeatures,
     setToken,
     token,
     getMaxStock,

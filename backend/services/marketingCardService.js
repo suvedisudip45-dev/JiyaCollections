@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { getPlatformFeatures } from "./platformFeatureService.js";
 import {
   NEPAL_LOCATION_MAP,
   NEPAL_PROVINCES,
@@ -1055,6 +1056,8 @@ export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufactur
   if (distributorId && order.distributorId && order.distributorId !== distributorId) {
     throw new Error("Order not found or unauthorized.");
   }
+  const features = await getPlatformFeatures(tx);
+  if (!features.marketingCardsEnabled) return null;
   if (order.marketingCardRequired && !order.marketingCardOrder) {
     const error = new Error("A marketing card must be attached before delivery handoff.");
     error.code = "MARKETING_CARD_REQUIRED";

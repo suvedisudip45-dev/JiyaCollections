@@ -40,7 +40,10 @@ const normalizeDistrict = (value) => String(value || "").trim().toLowerCase();
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { token, backendUrl, currency, manufacturer, distributor, activeWorkspace } = useManufacturer();
+  const { token, backendUrl, currency, manufacturer, distributor, activeWorkspace, platformFeatures } = useManufacturer();
+  const loyaltyEnabled = Boolean(platformFeatures?.loyaltyEnabled);
+  const marketingCardsEnabled = Boolean(platformFeatures?.marketingCardsEnabled);
+  const lettersEnabled = Boolean(platformFeatures?.lettersEnabled);
   const isDistributor = activeWorkspace === "DISTRIBUTOR";
   const [assignment, setAssignment] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -161,7 +164,7 @@ const OrderDetail = () => {
   }, [id, token, backendUrl, navigate]);
 
   const fetchStoryLetterStatus = useCallback(async () => {
-    if (!isDistributor) {
+    if (!isDistributor || !lettersEnabled) {
       setStoryLetter(null);
       return;
     }
@@ -174,10 +177,13 @@ const OrderDetail = () => {
     } catch (error) {
       setStoryLetter(null);
     }
-  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, lettersEnabled, token]);
 
   const fetchMarketingCardStatus = useCallback(async () => {
-    if (!token || !assignment?.order?.id) return;
+    if (!token || !assignment?.order?.id || !marketingCardsEnabled) {
+      setMarketingCard(null);
+      return;
+    }
     if (!isDistributor) {
       setMarketingCard(null);
       return;
@@ -189,7 +195,7 @@ const OrderDetail = () => {
     } catch (error) {
       setMarketingCard(null);
     }
-  }, [assignment?.order?.id, backendUrl, isDistributor, token]);
+  }, [assignment?.order?.id, backendUrl, isDistributor, marketingCardsEnabled, token]);
 
   const fetchGiftOptions = useCallback(async () => {
     const orderId = assignment?.order?.id;
@@ -230,7 +236,7 @@ const OrderDetail = () => {
 
   const validateChecklist = () => {
     const benefits = assignment?.order?.fulfillmentBenefits || {};
-    const hasHandwrittenLetter = Boolean(benefits.handwrittenCard);
+    const hasHandwrittenLetter = lettersEnabled && Boolean(benefits.handwrittenCard);
 
     if (assignment?.order?.assignedGift && !checklist.catalogGiftIncluded) {
       toast.warning(`Please verify the assigned gift (${assignment.order.assignedGift.name}) is packed.`);
@@ -240,11 +246,11 @@ const OrderDetail = () => {
       toast.warning("Please verify that the Handwritten Thank-You Letter is enclosed as requested for this tier.");
       return false;
     }
-    if (checklist.marketingCard && !checklist.marketingCardId.trim()) {
+    if (marketingCardsEnabled && checklist.marketingCard && !checklist.marketingCardId.trim()) {
       toast.warning("Please enter the Marketing Partner Card ID.");
       return false;
     }
-    if (assignment?.order?.marketingCardRequired !== false && !marketingCard) {
+    if (marketingCardsEnabled && assignment?.order?.marketingCardRequired !== false && !marketingCard) {
       toast.warning("Attach a received marketing card before packing this order.");
       return false;
     }
@@ -252,7 +258,7 @@ const OrderDetail = () => {
   };
 
   const handleAttachMarketingCard = async () => {
-    if (!assignment?.order?.id || marketingCardLoading) return;
+    if (!marketingCardsEnabled || !assignment?.order?.id || marketingCardLoading) return;
     setMarketingCardLoading(true);
     try {
       const res = await axios.post(`${backendUrl}/api/marketing-cards/distributor/orders/${assignment.order.id}/attach`, {}, { headers: { token } });
@@ -502,7 +508,7 @@ const OrderDetail = () => {
     { key: "assigned", label: "Accept order", description: "Confirm this assignment for your hub." },
     { key: "accepted", label: "Stitching & branding", description: "Complete tailoring, labels, and branding." },
     { key: "preparing", label: "Quality check", description: "Inspect the finished garment before letter preparation." },
-    { key: "quality_check", label: "Customer letter", description: "Print and include the compulsory customer letter." },
+    { key: "quality_check", label: lettersEnabled ? "Customer letter" : "Quality check", description: lettersEnabled ? "Print and include the compulsory customer letter." : "Confirm the quality check before packing." },
     { key: "letter_ready", label: "Final checklist", description: "Confirm every required item before packing." },
     { key: "checklist_complete", label: "Pack order", description: "Seal the verified order." },
     { key: "packed", label: "Package details", description: "Record weight, dimensions, type, and handling." },
@@ -511,7 +517,7 @@ const OrderDetail = () => {
   const DISTRIBUTOR_WORKFLOW_STEPS = [
     { key: "assigned", label: "Accept order", description: "Confirm this order for your distributor hub." },
     { key: "accepted", label: "Quality check", description: "Verify the received products, variants, and condition." },
-    { key: "quality_check", label: "Customer letter", description: "Print and include the customer’s required letter." },
+    { key: "quality_check", label: lettersEnabled ? "Customer letter" : "Quality check", description: lettersEnabled ? "Print and include the customer’s required letter." : "Verify the received products, variants, and condition." },
     { key: "letter_ready", label: "Packing checklist", description: "Confirm the order contents, address, and parcel readiness." },
     { key: "checklist_complete", label: "Pack order", description: "Securely pack and seal the verified order." },
     { key: "packed", label: "Package details", description: "Enter parcel dimensions and weight; description must be 50 characters or fewer." },
@@ -550,11 +556,11 @@ const OrderDetail = () => {
       return handleStatusChange("quality_check", { stitchingBrandingCompleted: true });
     }
     if (workflowStatus === "quality_check") {
-      if (isDistributor && !storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
+      if (isDistributor && lettersEnabled && !storyLetter?.letter) return toast.warning("Print the compulsory customer letter before continuing.");
       const letterChecklist = isDistributor
-        ? { ...checklist, customerLetterIncluded: true, thankYouLetter: true }
+        ? { ...checklist, ...(lettersEnabled ? { customerLetterIncluded: true, thankYouLetter: true } : {}) }
         : checklist;
-      if (isDistributor) setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
+      if (isDistributor && lettersEnabled) setChecklist((prev) => ({ ...prev, customerLetterIncluded: true, thankYouLetter: true }));
       return handleStatusChange("letter_ready", { packagingChecklist: letterChecklist });
     }
     if (workflowStatus === "letter_ready") {
@@ -610,7 +616,7 @@ const OrderDetail = () => {
         previousDisabled={workflowIndex <= 0 || ["ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
         busy={actionLoading}
       >
-        {order?.marketingCardRequired !== false && (
+        {marketingCardsEnabled && order?.marketingCardRequired !== false && (
           <div className={`rounded-2xl border px-4 py-4 ${marketingCard ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -622,7 +628,7 @@ const OrderDetail = () => {
             </div>
           </div>
         )}
-        {isDistributor && workflowStatus === "quality_check" && (
+        {lettersEnabled && isDistributor && workflowStatus === "quality_check" && (
           <button type="button" onClick={handlePrintPersonalizedLetter} disabled={actionLoading} className="w-full rounded-2xl border border-violet-200 bg-violet-50 px-4 py-4 text-left transition hover:border-violet-300 hover:bg-violet-100 disabled:opacity-50">
             <span className="flex items-center gap-2 text-sm font-black text-violet-900"><Printer className="h-4 w-4" /> Print compulsory customer letter</span>
             <span className="mt-1 block text-xs text-violet-700">Every customer receives a letter before the order can continue.</span>
@@ -760,7 +766,7 @@ const OrderDetail = () => {
               </span>
             </div>
 
-            {(benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
+            {loyaltyEnabled && (benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
               <div className="mt-4 rounded-xl border border-teal-200 bg-teal-50/60 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-teal-900">Customer benefits &amp; packing instructions</h3>
@@ -772,7 +778,7 @@ const OrderDetail = () => {
                   {benefits.totalDiscount > 0 && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Discount applied: <strong>{currency}{benefits.totalDiscount.toLocaleString()}</strong></div>}
                   {benefits.freeShipping && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Free delivery benefit applied</div>}
                   {benefits.giftDescription && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Gift: <strong>{benefits.giftDescription}</strong></div>}
-                  {benefits.handwrittenCard && <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 font-bold text-amber-900">Include a handwritten thank-you card</div>}
+                  {lettersEnabled && benefits.handwrittenCard && <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 font-bold text-amber-900">Include a handwritten thank-you card</div>}
                   {benefits.customPerk && <div className="rounded-lg bg-white/70 border border-teal-100 p-2">Perk: <strong>{benefits.customPerk}</strong></div>}
                 </div>
                 {benefits.offerItems?.length > 0 && (
@@ -801,7 +807,7 @@ const OrderDetail = () => {
             </p>
 
             {/* Standard Order Banner if no special perks apply */}
-            {!benefits.giftDescription && !benefits.handwrittenCard && !benefits.customPerk && (
+            {loyaltyEnabled && !benefits.giftDescription && !(lettersEnabled && benefits.handwrittenCard) && !benefits.customPerk && (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 flex items-center gap-2.5">
                 <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
                 <p className="text-[11px] text-slate-600">
@@ -821,7 +827,7 @@ const OrderDetail = () => {
                     ["brandingVerified", "Branding, tags, and labels verified"],
                   ] : []),
                   ["qualityVerified", "Quality check passed"],
-                  ["customerLetterIncluded", "Compulsory customer letter included"],
+                  ...(lettersEnabled ? [["customerLetterIncluded", "Compulsory customer letter included"]] : []),
                   ["addressVerified", "Customer address and phone verified"],
                   ["packagingMaterialsVerified", "Packaging materials and seal verified"],
                 ].map(([field, label]) => (
@@ -833,7 +839,7 @@ const OrderDetail = () => {
               </div>
 
               {/* 1. Gifts from loyalty card — only shown if customer earned a gift */}
-              {(benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0)) && (
+              {loyaltyEnabled && (benefits.giftDescription || (benefits.giftAmount && benefits.giftAmount > 0)) && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, loyaltyGift: !prev.loyaltyGift }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -871,7 +877,7 @@ const OrderDetail = () => {
               )}
 
               {/* 2. Handwritten thank-you letter — only shown if requested for this tier */}
-              {benefits.handwrittenCard && (
+              {lettersEnabled && benefits.handwrittenCard && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, thankYouLetter: !prev.thankYouLetter }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -904,7 +910,7 @@ const OrderDetail = () => {
               )}
 
               {/* 3. Custom Perk Fulfilled if present */}
-              {benefits.customPerk && (
+              {loyaltyEnabled && benefits.customPerk && (
                 <div
                   onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, customPerkIncluded: !prev.customPerkIncluded }))}
                   className={`p-3.5 rounded-2xl border transition-all select-none ${
@@ -934,81 +940,81 @@ const OrderDetail = () => {
               )}
 
               {/* 4. Additional letter */}
-              <div
-                onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, additionalLetter: !prev.additionalLetter }))}
-                className={`p-3.5 rounded-2xl border transition-all select-none ${
-                  isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
-                } flex items-start gap-3.5 ${
-                  checklist.additionalLetter
-                    ? "bg-emerald-50/70 border-emerald-300"
-                    : "bg-slate-50 border-slate-200 hover:border-slate-300"
-                }`}
-              >
-                <div className="mt-0.5 text-emerald-600 shrink-0">
-                  {checklist.additionalLetter ? (
-                    <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
-                  ) : (
-                    <Square className="w-5 h-5 text-slate-400" />
-                  )}
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-indigo-500" />
-                    <span className="text-xs font-bold text-slate-900">
-                      Additional Letter
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* 5. Marketing partner card */}
-              <div
-                className={`p-3.5 rounded-2xl border transition-all space-y-3 ${
-                  checklist.marketingCard
-                    ? "bg-amber-50/50 border-amber-300"
-                    : "bg-slate-50 border-slate-200"
-                }`}
-              >
+              {lettersEnabled && (
                 <div
-                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, marketingCard: !prev.marketingCard }))}
-                  className={`flex items-start gap-3.5 select-none ${
+                  onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, additionalLetter: !prev.additionalLetter }))}
+                  className={`p-3.5 rounded-2xl border transition-all select-none ${
                     isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                  } flex items-start gap-3.5 ${
+                    checklist.additionalLetter
+                      ? "bg-emerald-50/70 border-emerald-300"
+                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
                   }`}
                 >
-                  <div className="mt-0.5 text-amber-600 shrink-0">
-                    {checklist.marketingCard ? (
-                      <CheckSquare className="w-5 h-5 text-amber-600 fill-amber-100" />
+                  <div className="mt-0.5 text-emerald-600 shrink-0">
+                    {checklist.additionalLetter ? (
+                      <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
                     ) : (
                       <Square className="w-5 h-5 text-slate-400" />
                     )}
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <CreditCard className="w-4 h-4 text-amber-600" />
-                      <span className="text-xs font-bold text-slate-900">
-                        Marketing Partner Card
-                      </span>
+                      <FileText className="w-4 h-4 text-indigo-500" />
+                      <span className="text-xs font-bold text-slate-900">Additional Letter</span>
                     </div>
                   </div>
                 </div>
+              )}
 
-                {checklist.marketingCard && (
-                  <div className="pt-2 border-t border-amber-200/80 pl-8 space-y-1.5 animate-in fade-in duration-150">
-                    <label className="block text-[11px] font-bold text-amber-900">
-                      Marketing Partner Card ID <span className="text-rose-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Enter Card ID"
-                      value={checklist.marketingCardId}
-                      disabled={isDispatchLocked}
-                      onChange={(e) => setChecklist((prev) => ({ ...prev, marketingCardId: e.target.value }))}
-                      className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 disabled:opacity-60"
-                      required={checklist.marketingCard}
-                    />
+              {/* 5. Marketing partner card */}
+              {marketingCardsEnabled && (
+                <div
+                  className={`p-3.5 rounded-2xl border transition-all space-y-3 ${
+                    checklist.marketingCard
+                      ? "bg-amber-50/50 border-amber-300"
+                      : "bg-slate-50 border-slate-200"
+                  }`}
+                >
+                  <div
+                    onClick={() => !isDispatchLocked && setChecklist((prev) => ({ ...prev, marketingCard: !prev.marketingCard }))}
+                    className={`flex items-start gap-3.5 select-none ${
+                      isDispatchLocked ? "opacity-80 cursor-default" : "cursor-pointer"
+                    }`}
+                  >
+                    <div className="mt-0.5 text-amber-600 shrink-0">
+                      {checklist.marketingCard ? (
+                        <CheckSquare className="w-5 h-5 text-amber-600 fill-amber-100" />
+                      ) : (
+                        <Square className="w-5 h-5 text-slate-400" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <CreditCard className="w-4 h-4 text-amber-600" />
+                        <span className="text-xs font-bold text-slate-900">Marketing Partner Card</span>
+                      </div>
+                    </div>
                   </div>
-                )}
-              </div>
+
+                  {checklist.marketingCard && (
+                    <div className="pt-2 border-t border-amber-200/80 pl-8 space-y-1.5 animate-in fade-in duration-150">
+                      <label className="block text-[11px] font-bold text-amber-900">
+                        Marketing Partner Card ID <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Enter Card ID"
+                        value={checklist.marketingCardId}
+                        disabled={isDispatchLocked}
+                        onChange={(e) => setChecklist((prev) => ({ ...prev, marketingCardId: e.target.value }))}
+                        className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 disabled:opacity-60"
+                        required={checklist.marketingCard}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 6. Garment quality check & packaging seal */}
               <div
@@ -1421,16 +1427,16 @@ const OrderDetail = () => {
 
             {isDistributor && assignment.status === "packed" && (
               <div className="space-y-2">
-                <button
+                {lettersEnabled && <button
                   onClick={handlePrintPersonalizedLetter}
                   disabled={actionLoading}
                   className="w-full py-3 px-4 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <Printer className="w-4 h-4" />
                   Print Personalized Letter
-                </button>
+                </button>}
 
-                {storyLetter?.letter && (
+                {lettersEnabled && storyLetter?.letter && (
                   <div className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[11px] text-violet-900">
                     <div className="font-bold uppercase tracking-wider text-violet-700">Allocated letter</div>
                     <div className="mt-1 text-sm font-black">#{storyLetter.letter.sequenceNumber || "1"}</div>
@@ -1510,6 +1516,7 @@ const OrderDetail = () => {
         onClose={() => setChecklistModalOpen(false)}
         onConfirm={handleChecklistConfirm}
         isDistributor={isDistributor}
+        platformFeatures={{ loyaltyEnabled, marketingCardsEnabled, lettersEnabled }}
       />
     </div>
   );

@@ -33,7 +33,13 @@ const CustomerOnly = () => {
   return token ? <Outlet /> : <Navigate to="/" replace />;
 };
 
+const FeatureRoute = ({ enabled, children }) => {
+  if (enabled === undefined) return null;
+  return enabled ? children : <Navigate to="/" replace />;
+};
+
 const App = () => {
+  const { platformFeatures } = useContext(ShopContext);
   return (
     <div className="fashion-shell min-h-screen">
       <ToastContainer />
@@ -57,7 +63,7 @@ const App = () => {
           <Route path="place-order" element={<PlaceOrder />} />
           <Route path="orders" element={<Orders />} />
           <Route path="profile" element={<Profile />} />
-          <Route path="marketing-cards" element={<MarketingCards />} />
+          <Route path="marketing-cards" element={<FeatureRoute enabled={platformFeatures?.marketingCardsEnabled}><MarketingCards /></FeatureRoute>} />
         </Route>
         <Route path="/verify" element={<Verify />} />
         <Route path="/wishlist" element={<Wishlist />} />

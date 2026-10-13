@@ -22,7 +22,10 @@ import ShippingLabelModal from "../components/ShippingLabelModal";
 import Pagination from "../components/Pagination";
 
 const Orders = () => {
-  const { token, backendUrl, currency, setStats, distributor } = useManufacturer();
+  const { token, backendUrl, currency, setStats, distributor, platformFeatures } = useManufacturer();
+  const loyaltyEnabled = Boolean(platformFeatures?.loyaltyEnabled);
+  const marketingCardsEnabled = Boolean(platformFeatures?.marketingCardsEnabled);
+  const lettersEnabled = Boolean(platformFeatures?.lettersEnabled);
   const [assignments, setAssignments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("all");
@@ -476,13 +479,13 @@ const Orders = () => {
                   {/* Column 3: Production Action Stepper (3 cols) */}
                   <div className="md:col-span-3 flex flex-col justify-between space-y-3">
                     <div className="space-y-2">
-                      {(benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
+                      {loyaltyEnabled && (benefits.loyaltyTier !== "Standard customer" || benefits.totalDiscount > 0 || benefits.giftDescription || benefits.handwrittenCard || benefits.customPerk) && (
                         <div className="rounded-xl border border-teal-200 bg-teal-50/60 p-2.5 space-y-1.5">
                           <p className="text-[10px] font-bold uppercase tracking-wider text-teal-800">Customer benefits</p>
                           <p className="text-[11px] font-bold text-slate-900">{benefits.loyaltyTier}</p>
                           {benefits.totalDiscount > 0 && <p className="text-[10px] text-teal-800">Discount applied: {currency}{benefits.totalDiscount.toLocaleString()}</p>}
                           {benefits.giftDescription && <p className="text-[10px] text-slate-700">Gift: {benefits.giftDescription}</p>}
-                          {benefits.handwrittenCard && <p className="text-[10px] font-semibold text-amber-800">Include handwritten thank-you card</p>}
+                          {lettersEnabled && benefits.handwrittenCard && <p className="text-[10px] font-semibold text-amber-800">Include handwritten thank-you card</p>}
                           {benefits.customPerk && <p className="text-[10px] text-slate-700">{benefits.customPerk}</p>}
                         </div>
                       )}
@@ -505,10 +508,10 @@ const Orders = () => {
                               <span>Packaging Checklist Verified</span>
                             </div>
                             <div className="flex flex-wrap gap-1 text-[10px] text-slate-700">
-                              {parsedChecklist.loyaltyGift && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">🎁 Loyalty Gift</span>}
-                              {parsedChecklist.thankYouLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">✍️ Thank-You Letter</span>}
-                              {parsedChecklist.additionalLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">📄 Additional Letter</span>}
-                              {parsedChecklist.marketingCard && (
+                              {loyaltyEnabled && parsedChecklist.loyaltyGift && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">🎁 Loyalty Gift</span>}
+                              {lettersEnabled && parsedChecklist.thankYouLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">✍️ Thank-You Letter</span>}
+                              {lettersEnabled && parsedChecklist.additionalLetter && <span className="bg-white px-1.5 py-0.5 rounded border border-emerald-100">📄 Additional Letter</span>}
+                              {marketingCardsEnabled && parsedChecklist.marketingCard && (
                                 <span className="bg-amber-100/70 px-1.5 py-0.5 rounded border border-amber-200 text-amber-900 font-semibold">
                                   💳 Partner Card: {parsedChecklist.marketingCardId || "Enclosed"}
                                 </span>

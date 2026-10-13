@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { randomUUID } from "node:crypto";
 import { calculateUserLoyalty } from "./loyaltyController.js";
+import { getPlatformFeatures } from "../services/platformFeatureService.js";
 import {
   postSalesOrderAccounting,
   postCustomerPaymentAccounting,
@@ -486,9 +487,16 @@ const placeOrder = async (req, res) => {
     const { address, comboBundle } = req.body;
     const rewardChoice = String(req.body.rewardChoice || "").trim().toUpperCase();
     const selectedCardId = String(req.body.marketingCardId || "").trim();
+    const platformFeatures = await getPlatformFeatures();
     if (!userId) return res.status(401).json({ success: false, message: "Authenticated customer is required." });
     if (rewardChoice && !["CARD", "LOYALTY", "NONE"].includes(rewardChoice)) {
       return res.status(400).json({ success: false, message: "Select either a card reward, a loyalty reward, or no reward." });
+    }
+    if (rewardChoice === "CARD" && !platformFeatures.marketingCardsEnabled) {
+      return res.status(403).json({ success: false, code: "FEATURE_DISABLED", message: "Marketing card rewards are currently unavailable." });
+    }
+    if (rewardChoice === "LOYALTY" && !platformFeatures.loyaltyEnabled) {
+      return res.status(403).json({ success: false, code: "FEATURE_DISABLED", message: "Loyalty rewards are currently unavailable." });
     }
     let items = Array.isArray(req.body.items) ? req.body.items : [];
     let comboBundleRecord = null;
@@ -743,7 +751,7 @@ const placeOrder = async (req, res) => {
         discountPercentage,
         discountAmount: cardDiscount,
       };
-    } else if (rewardChoice !== "NONE" || !rewardChoice) {
+    } else if ((rewardChoice !== "NONE" || !rewardChoice) && platformFeatures.loyaltyEnabled) {
       try {
         const loyaltyStatus = await calculateUserLoyalty(userId);
         if (loyaltyStatus?.activeReward?.isEligible) {

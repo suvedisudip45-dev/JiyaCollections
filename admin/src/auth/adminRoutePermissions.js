@@ -41,6 +41,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/reviews": ["review:admin_list"],
   "/story-letter-library": ["storyletter:admin_manage"],
   "/shipping": ["shipping:config_update"],
+  "/platform-features": ["platform:features_manage"],
   "/access-control/users": ["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"],
   "/access-control/roles": ["access:roles_read"],
   "/access-control/permissions": ["access:permissions_read"],
@@ -56,4 +57,5 @@ export const ADMIN_SECTION_PERMISSIONS = {
   finance: ["finance:dashboard_read", "finance:treasury_read", "finance:assets_read", "finance:partnership_read", "expense:read", "finance:tax_report_read", "returns:supplier_read", "finance:payables_read", "finance:statements_read"],
   accounting: ["accounting:coa_read", "accounting:journal_read", "accounting:ledger_read", "accounting:trial_balance_read", "accounting:fiscal_years_read", "accounting:subledger_read"],
   customers: ["customer:admin_list", "loyalty:level_manage", "review:admin_list", "storyletter:admin_manage"],
+  platform: ["platform:features_manage"],
 };

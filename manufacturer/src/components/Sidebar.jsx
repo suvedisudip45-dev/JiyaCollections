@@ -20,7 +20,7 @@ import {
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 
 const Sidebar = () => {
-  const { stats, availableWorkspaces, manufacturer, distributor, activeWorkspace, token } = useManufacturer();
+  const { stats, availableWorkspaces, manufacturer, distributor, activeWorkspace, token, platformFeatures } = useManufacturer();
   const [applying, setApplying] = useState(false);
   const [pendingPreparationCount, setPendingPreparationCount] = useState(0);
   const previousPreparationCount = useRef(null);
@@ -173,19 +173,19 @@ const Sidebar = () => {
                 </div>
               </NavLink>
 
-              <NavLink to="/marketing-cards" className={navLinkStyle}>
+              {platformFeatures?.marketingCardsEnabled && <NavLink to="/marketing-cards" className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <CreditCard className="w-4 h-4 text-emerald-600" />
                   <span>Marketing Cards</span>
                 </div>
-              </NavLink>
+              </NavLink>}
 
-              <NavLink to="/customer-loyalty" className={navLinkStyle}>
+              {platformFeatures?.loyaltyEnabled && <NavLink to="/customer-loyalty" className={navLinkStyle}>
                 <div className="flex items-center gap-3">
                   <Crown className="w-4 h-4" />
                   <span>Customer Loyalty</span>
                 </div>
-              </NavLink>
+              </NavLink>}
 
               <NavLink to="/gift-inventory" className={navLinkStyle}>
                 <div className="flex items-center gap-3">

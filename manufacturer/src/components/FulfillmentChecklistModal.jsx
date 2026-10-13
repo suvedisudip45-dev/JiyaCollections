@@ -21,10 +21,11 @@ const DISTRIBUTOR_REQUIRED_CHECKS = [
   ["packagingMaterialsVerified", "Packaging materials and seal verified"],
 ];
 
-const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false }) => {
+const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false, platformFeatures = { lettersEnabled: true, marketingCardsEnabled: true, loyaltyEnabled: true } }) => {
   const [draft, setDraft] = useState(checklist);
   const [error, setError] = useState("");
-  const requiredChecks = isDistributor ? DISTRIBUTOR_REQUIRED_CHECKS : MANUFACTURER_REQUIRED_CHECKS;
+  const requiredChecks = (isDistributor ? DISTRIBUTOR_REQUIRED_CHECKS : MANUFACTURER_REQUIRED_CHECKS)
+    .filter(([key]) => platformFeatures.lettersEnabled || key !== "customerLetterIncluded");
 
   useEffect(() => {
     if (isOpen) {
@@ -47,7 +48,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
   const allRequiredComplete = completedRequired === requiredChecks.length &&
     (!hasAssignedGift || draft.catalogGiftIncluded === true) &&
     (!giftSelectionRequired || (Boolean(draft.giftInventoryId) && draft.catalogGiftIncluded === true));
-  const hasCustomPerk = Boolean(benefits.customPerk);
+  const hasCustomPerk = platformFeatures.loyaltyEnabled && Boolean(benefits.customPerk);
 
   if (!isOpen) return null;
 
@@ -69,7 +70,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
       setError(`Complete all required checks. ${requiredChecks.length - completedRequired} remaining.`);
       return;
     }
-    if (draft.marketingCard && !String(draft.marketingCardId || "").trim()) {
+    if (platformFeatures.marketingCardsEnabled && draft.marketingCard && !String(draft.marketingCardId || "").trim()) {
       setError("Enter the marketing partner card ID or uncheck the card item.");
       return;
     }
@@ -119,7 +120,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
             ))}
           </div>
 
-          {(giftOptionsLoading || giftOptionsError || hasGiftOpportunity || hasCustomPerk || benefits.handwrittenCard || hasAssignedGift) && (
+          {(giftOptionsLoading || giftOptionsError || hasGiftOpportunity || hasCustomPerk || (platformFeatures.lettersEnabled && benefits.handwrittenCard) || hasAssignedGift) && (
             <div className="mt-6 border-t border-slate-100 pt-5">
               <p className="mb-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Order inclusions</p>
               <div className="space-y-2">
@@ -127,7 +128,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
                 {giftOptionsError && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-xs text-rose-800"><span>{giftOptionsError}</span><button type="button" onClick={onRetryGiftOptions} className="font-bold underline">Retry</button></div>}
                 {hasGiftOpportunity && <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div><p className="text-xs font-bold text-emerald-950">Customer gift reward</p><p className="mt-1 text-[11px] text-emerald-800">{giftOptions.eligibility?.reasons?.includes("LOYALTY_TIER") ? `Loyalty tier gift up to ${currency}${Number(giftOptions.eligibility.loyaltyGiftValue).toLocaleString()}` : "Order-value gift promotion"}{giftOptions.eligibility?.reasons?.includes("ORDER_VALUE") && giftOptions.eligibility?.reasons?.includes("LOYALTY_TIER") ? ` · order reward up to ${currency}${Number(giftOptions.eligibility.orderValueGiftValue).toLocaleString()}` : ""}</p>{benefits.giftDescription && <p className="mt-1 text-[10px] text-emerald-800">Tier note: {benefits.giftDescription}</p>}</div>
+                    <div><p className="text-xs font-bold text-emerald-950">Customer gift reward</p><p className="mt-1 text-[11px] text-emerald-800">{giftOptions.eligibility?.reasons?.includes("LOYALTY_TIER") && platformFeatures.loyaltyEnabled ? `Loyalty tier gift up to ${currency}${Number(giftOptions.eligibility.loyaltyGiftValue).toLocaleString()}` : "Order-value gift promotion"}{giftOptions.eligibility?.reasons?.includes("ORDER_VALUE") && giftOptions.eligibility?.reasons?.includes("LOYALTY_TIER") && platformFeatures.loyaltyEnabled ? ` · order reward up to ${currency}${Number(giftOptions.eligibility.orderValueGiftValue).toLocaleString()}` : ""}</p>{platformFeatures.loyaltyEnabled && benefits.giftDescription && <p className="mt-1 text-[10px] text-emerald-800">Tier note: {benefits.giftDescription}</p>}</div>
                     <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-emerald-800">Cap {currency}{Number(giftOptions.eligibility?.budget || 0).toLocaleString()}</span>
                   </div>
                   {giftOptionsLoading ? <p className="mt-3 text-xs text-slate-600">Checking accepted hub stock...</p> : availableGifts.length ? <>
@@ -141,7 +142,7 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
                   </> : <p className="mt-3 rounded-lg bg-white px-3 py-2.5 text-xs text-slate-600">{giftOptions.message || "No accepted gifts are currently available at this hub. The order can continue without a catalog gift."}</p>}
                 </div>}
                 {hasAssignedGift && <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${draft.catalogGiftIncluded ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}><input type="checkbox" checked={Boolean(draft.catalogGiftIncluded)} onChange={() => toggle("catalogGiftIncluded")} className="h-4 w-4 rounded border-slate-300 text-emerald-600" /><Gift className="h-4 w-4 text-emerald-600" /><span className="min-w-0 flex-1">Pack assigned gift: <strong>{assignedGift.name}</strong><span className="ml-1 block text-[10px] font-medium text-slate-500 sm:inline">{assignedGift.sku} · {currency} {Number(assignedGift.priceValue || 0).toLocaleString()}</span></span><span className="shrink-0 text-[10px] font-bold uppercase text-rose-700">Required</span></label>}
-                {benefits.handwrittenCard && <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${draft.thankYouLetter ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}><input type="checkbox" checked={Boolean(draft.thankYouLetter)} onChange={() => toggle("thankYouLetter")} className="h-4 w-4 rounded border-slate-300 text-emerald-600" /><HeartHandshake className="h-4 w-4 text-rose-500" /><span>Include handwritten thank-you letter</span></label>}
+                {platformFeatures.lettersEnabled && benefits.handwrittenCard && <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${draft.thankYouLetter ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}><input type="checkbox" checked={Boolean(draft.thankYouLetter)} onChange={() => toggle("thankYouLetter")} className="h-4 w-4 rounded border-slate-300 text-emerald-600" /><HeartHandshake className="h-4 w-4 text-rose-500" /><span>Include handwritten thank-you letter</span></label>}
                 {hasCustomPerk && <label className={`flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${draft.customPerkIncluded ? "border-emerald-300 bg-emerald-50" : "border-slate-200 bg-slate-50"}`}><input type="checkbox" checked={Boolean(draft.customPerkIncluded)} onChange={() => toggle("customPerkIncluded")} className="h-4 w-4 rounded border-slate-300 text-emerald-600" /><span>Include custom perk: {benefits.customPerk}</span></label>}
               </div>
             </div>

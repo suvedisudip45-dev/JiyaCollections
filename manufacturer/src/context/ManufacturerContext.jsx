@@ -17,6 +17,7 @@ export const currency = "Rs ";
 
 export const ManufacturerProvider = ({ children }) => {
   const [token, setToken] = useState(() => getAccessToken());
+  const [platformFeatures, setPlatformFeatures] = useState(null);
   const [manufacturer, setManufacturer] = useState(null);    // active manufacturer profile (null if distributor-only view)
   const [distributor, setDistributor] = useState(null);      // active distributor profile (null if manufacturer-only view)
   const [activeWorkspace, setActiveWorkspaceState] = useState(() => getActiveWorkspace());
@@ -29,6 +30,21 @@ export const ManufacturerProvider = ({ children }) => {
     completed: 0,
     total: 0,
   });
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/features`)
+      .then((response) => {
+        if (mounted && response.data?.success) setPlatformFeatures(response.data.features || {});
+      })
+      .catch((error) => {
+        console.error("Unable to load platform feature settings:", error);
+        if (mounted) setPlatformFeatures({});
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const updateToken = (event) => {
@@ -208,6 +224,7 @@ export const ManufacturerProvider = ({ children }) => {
         logout,
         backendUrl,
         currency,
+        platformFeatures,
       }}
     >
       {children}

@@ -83,6 +83,7 @@ The store is driven by `frontend/src/context/ShopContext.jsx` and manages:
 - `token`
 - `search` and `showSearch`
 - `shippingConfig`
+- `platformFeatures` (public feature flags fetched from `/api/features`)
 
 The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present.
 
@@ -174,6 +175,7 @@ The application exposes modules such as:
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
+- `/platform-features` (requires `platform:features_manage`)
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
 
@@ -182,6 +184,7 @@ The application exposes modules such as:
 - requires a valid admin token and permission set before route access
 - uses a local permissions provider to evaluate route access
 - centralizes permission guard logic in `admin/src/auth/adminRoutePermissions.js`
+- `/platform-features` lets authorized admins enable or disable loyalty, marketing cards, and letters. The customer storefront, marketing-partner portal, and distributor portal hide disabled features; backend APIs enforce the same flags.
 - `/audit-history` requires `access:audit_read` and displays paginated actor/action/entity/date/result-filtered system audit records, including authentication and security signals, with before/after diffs and CSV export. Failed/blocked entries are visually distinguished and explicitly described as signals rather than confirmed breaches. Its in-memory query cache is bounded to 20 entries with a 15-second TTL; Refresh clears the cache and reloads the current query.
 - an authenticated visit to `/` redirects to `/orders`; unmatched admin paths render a 404 page with a return-to-orders link
 - `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; physical stock is assigned to distributors, with batch generation, QR export, and print flows. Customer-order card attachment and delivery handoff validate distributor ownership against the order's `OrderAssignment`, including automatically allocated orders that do not store a direct `Order.distributorId`.
@@ -199,7 +202,9 @@ The `manufacturer/` app serves separate manufacturer and distributor workspaces,
 selected through `activeWorkspace` and protected by backend role permissions.
 Factory production and replenishment stay in the manufacturer workspace; hub
 inventory, direct hub sales, customer-order fulfillment, gift stock, and
-marketing-card stock are distributor-only. Its route list includes:
+marketing-card stock are distributor-only. Customer loyalty, marketing-card,
+and letter links/actions follow the public platform feature configuration;
+turning a flag off does not delete loyalty or personalized-letter history. Its route list includes:
 
 | Route | Purpose |
 | --- | --- |

@@ -67,12 +67,14 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/assignment` and `/api/order-assignment` | Assignment flow |
 | `/api/delivery` and `/api/delivery-job` | Delivery lifecycle, NCM webhooks, settlements |
 | `/api/marketing-cards` | Marketing card lifecycle, partner/customer operations, and Own Store campaigns |
+| `/api/features` | Public feature flags and admin-only platform feature updates |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
 
 ### Key route examples from the actual code
 
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
+- `GET /api/features` and `PATCH /api/features` (the update requires `platform:features_manage`)
 - `POST /api/auth/2fa/send` and `/api/auth/2fa/verify`
 - `GET /api/admin/manufacturer-locations`
 - `POST /api/admin/manufacturer-locations`
@@ -172,6 +174,8 @@ The schema includes:
 - `AuthAccountRoleMapping`
 
 Authorization is enforced through a centralized `authorize` middleware that resolves account permissions from the RBAC service and checks required permission strings such as `product:create`, `order:list_admin`, `delivery:admin_list`, `access:roles_read`, and `marketing_card:admin_manage`.
+
+The admin-only `platform:features_manage` permission protects changes to the singleton `PlatformFeatureConfig`. The public read endpoint supplies flags for storefront, marketing-partner, and distributor portals. Loyalty, marketing cards, and letters default to enabled for compatibility. Backend order reward logic and feature-sensitive card, loyalty, letter, and fulfillment endpoints also enforce the flags; client-side hiding is only the corresponding UX. Disabling letters skips the required-letter validation without deleting `LetterDelivery` or customer story-assignment progress, so the same persisted progression remains available when letters are re-enabled.
 
 Own Store campaign creation and public/organization card assignment use the additional `marketing_card:own_store_manage` and `marketing_card:custom_assign` permissions. All Own Store cards are available to any logged-in customer without a delivered-order ownership check; code entry, QR attempts, and successful scans are recorded as card events. The first successful QR scan consumes a card; the backend rejects subsequent scans by both the scanning account and other accounts. The campaign's `maxScansPerCustomer` setting (default one) limits each account across the campaign lifetime, in addition to the weekly campaign cap of five; organization-assigned cards also have a two-per-organization campaign lifetime cap. Physical card stock is assigned to active distributors, with receipt and order attachment performed under distributor context. Customer scan quotas and reward eligibility are enforced in backend services; `POST /api/marketing-cards/customer/claim-reward` claims eligible discount rewards, and `GET /api/marketing-cards/customer/rewards` lists active claims for checkout.
 

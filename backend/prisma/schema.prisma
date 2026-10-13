@@ -742,6 +742,14 @@ model ShippingConfig {
   updatedAt            DateTime @updatedAt
 }
 
+model PlatformFeatureConfig {
+  id                    String   @id @default("default")
+  loyaltyEnabled        Boolean  @default(true)
+  marketingCardsEnabled Boolean  @default(true)
+  lettersEnabled        Boolean  @default(true)
+  updatedAt             DateTime @updatedAt
+}
+
 model CustomerLevel {
   id                String   @id @default(uuid())
   levelNumber       Int      @unique

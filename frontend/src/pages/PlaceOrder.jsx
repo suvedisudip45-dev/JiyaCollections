@@ -38,6 +38,7 @@ const PlaceOrder = () => {
     getCartAmount,
     shippingConfig,
     calculateShippingRate,
+    platformFeatures,
     products,
     getMaxStock,
     getProductsData,
@@ -230,7 +231,9 @@ const PlaceOrder = () => {
       setLoadingProfile(true);
       const [profRes, loyRes] = await Promise.all([
         axios.get(`${backendUrl}/api/user/profile`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } }),
+        platformFeatures?.loyaltyEnabled
+          ? axios.get(`${backendUrl}/api/loyalty/my-status`, { headers: { token } })
+          : Promise.resolve({ data: { success: false } }),
       ]);
 
       if (profRes.data.success && profRes.data.user) {
@@ -284,7 +287,9 @@ const PlaceOrder = () => {
       if (loyRes.data.success && loyRes.data.loyalty) {
         setLoyaltyData(loyRes.data.loyalty);
       }
-      const rewardsRes = await axios.get(`${backendUrl}/api/marketing-cards/customer/rewards`, { headers: { token } });
+      const rewardsRes = platformFeatures?.marketingCardsEnabled
+        ? await axios.get(`${backendUrl}/api/marketing-cards/customer/rewards`, { headers: { token } })
+        : { data: { success: false } };
       if (rewardsRes.data.success) {
         const rewards = rewardsRes.data.rewards || [];
         setClaimedCardRewards(rewards);
@@ -337,8 +342,8 @@ const PlaceOrder = () => {
       navigate("/login", { state: { from: "/place-order" } });
       return;
     }
-    fetchUserProfile();
-  }, [token]);
+    if (platformFeatures) fetchUserProfile();
+  }, [token, platformFeatures]);
 
   useEffect(() => {
     if (!rewardsInitialized || rewardChoice) return;
@@ -1314,7 +1319,7 @@ const PlaceOrder = () => {
                     )}
 
                     {/* Handwritten Letter */}
-                    {loyaltyData.activeReward.letterIncluded && (
+                    {platformFeatures?.lettersEnabled && loyaltyData.activeReward.letterIncluded && (
                       <div className="flex items-center gap-2 text-xs">
                         <span className="w-5 h-5 rounded-full bg-violet-100 text-violet-800 flex items-center justify-center text-[10px] font-bold flex-shrink-0">✉</span>
                         <span className="font-bold text-violet-800">Handwritten Thank-You Letter</span>

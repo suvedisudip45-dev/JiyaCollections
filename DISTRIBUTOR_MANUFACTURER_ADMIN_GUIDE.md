@@ -625,6 +625,13 @@ story/template delivery records.
    through their separate role-protected APIs.
 8. Review role and permission assignments under `/api/admin/access/*`; follow
    least privilege and use the access-management audit records.
+9. Use `/platform-features` (permission `platform:features_manage`) to enable or
+   disable loyalty, marketing cards, and customer letters. Disabled operations
+   are hidden from customer/distributor interfaces and rejected by their
+   feature-sensitive APIs. Disabling letters pauses printing without deleting
+   the existing letter/story assignment, so re-enabling resumes the existing
+   sequence. Disabling loyalty does not erase customer history or reward
+   configuration.
 
 ## 8. Important distinctions and implementation gaps
 

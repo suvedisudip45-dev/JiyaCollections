@@ -47,6 +47,7 @@ export const validateFulfillmentTransition = ({
   notes = {},
   packageData = {},
   workflowType = "MANUFACTURER",
+  features = { lettersEnabled: true },
 }) => {
   const workflowSteps = getWorkflowSteps(workflowType);
   let current = normalizeStatus(currentStatus || "assigned");
@@ -83,7 +84,7 @@ export const validateFulfillmentTransition = ({
     return { valid: false, message: "Confirm stitching and branding before quality check." };
   }
 
-  if (next === "letter_ready" && checklist.customerLetterIncluded !== true) {
+  if (features.lettersEnabled && next === "letter_ready" && checklist.customerLetterIncluded !== true) {
     return { valid: false, message: "The customer letter is compulsory. Confirm that it is printed and included." };
   }
 
@@ -92,10 +93,10 @@ export const validateFulfillmentTransition = ({
       "productVerified",
       "sizeColorVerified",
       "qualityVerified",
-      "customerLetterIncluded",
       "addressVerified",
       "packagingMaterialsVerified",
     ];
+    if (features.lettersEnabled) requiredChecks.push("customerLetterIncluded");
     if (workflowType !== "DISTRIBUTOR") requiredChecks.splice(2, 0, "stitchingVerified", "brandingVerified");
     const missing = requiredChecks.filter((field) => !isComplete(checklist[field]));
     if (missing.length > 0) {
