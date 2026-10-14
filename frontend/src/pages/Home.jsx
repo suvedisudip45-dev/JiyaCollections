@@ -115,7 +115,7 @@ const Home = () => {
                   {tile.subtitle}
                 </p>
                 <div className="pt-2">
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-widest text-amber-400 group-hover:text-white transition-colors underline">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-widest text-[var(--accent)] transition-colors underline group-hover:text-white">
                     Explore Drops →
                   </span>
                 </div>

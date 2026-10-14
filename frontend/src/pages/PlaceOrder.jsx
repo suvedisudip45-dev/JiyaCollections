@@ -543,19 +543,10 @@ const PlaceOrder = () => {
 
     const subtotal = orderSubtotal;
     const quote = shippingQuoteResult.quote;
-    const shipmentOriginLabel = quote.splitShipment
-      ? `Ships as ${quote.shipmentCount} product deliveries from ${quote.shipments.map(({ distributor }) =>
-        `${distributor.name}${distributor.district ? ` (${distributor.district})` : ""}`
-      ).join(", ")}`
-      : `Ships from ${quote.probableDistributor.name || "Selected hub"}${
-        quote.probableDistributor.district || quote.origin?.district
-          ? ` (${quote.probableDistributor.district || quote.origin?.district})`
-          : ""
-      }`;
     let fee = Number(quote.fee);
     let tierLabel = `${quote.label || "Standard Shipping"}${
-      quote.splitShipment ? " (one flat fee)" : ""
-    } · ${shipmentOriginLabel}`;
+      quote.splitShipment ? " · multiple packages" : ""
+    }`;
     let discAmount = 0;
     let discLabel = "";
     let giftInfo = null;
@@ -567,7 +558,7 @@ const PlaceOrder = () => {
 
       if (act.freeShipping) {
         fee = 0;
-        tierLabel = `Free Delivery · ${lvl.name} (${usageText}) · ${shipmentOriginLabel}`;
+        tierLabel = `Free Delivery · ${lvl.name} (${usageText})`;
       }
 
       if (Number(act.discountAmount) > 0) {
@@ -1353,32 +1344,34 @@ const PlaceOrder = () => {
               {/* ===== END VIP BANNER ===== */}
 
               {shippingQuoteStatus === "loading" && (
-                <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2 text-xs text-slate-600">
-                  Checking distributor availability and delivery charge for this address…
+                <div role="status" className="mb-3 flex items-center gap-2 border border-status-info-border bg-status-info-bg px-3.5 py-3 text-xs text-status-info-text">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-status-info-text/30 border-t-status-info-text" aria-hidden="true" />
+                  <span>Calculating delivery options and charge for this address…</span>
                 </div>
               )}
               {shippingQuoteStatus === "error" && (
-                <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs text-rose-700">
+                <div role="alert" className="mb-3 border border-status-error-border bg-status-error-bg px-3.5 py-3 text-xs text-status-error-text">
                   <span>{shippingQuoteError}</span>
                   {shippingStockShortages.length > 0 && (
                     <ul className="mt-2 list-disc space-y-1 pl-5">
-                      {shippingStockShortages.map((hub) => (
-                        <li key={hub.distributor}>
-                          <span className="font-semibold">{hub.distributor}:</span>{" "}
-                          {hub.shortages.map((shortage) => {
+                      {shippingStockShortages.flatMap((hub) =>
+                        hub.shortages.map((shortage) => {
                             const product = products.find((item) =>
                               String(item._id || item.id) === String(shortage.productId)
                             );
-                            return `${product?.name || "Item"} (${shortage.size} / ${shortage.color || "Default"}) has ${shortage.availableQuantity} of ${shortage.requiredQuantity} required`;
-                          }).join("; ")}
-                        </li>
-                      ))}
+                            return (
+                              <li key={`${hub.distributor}-${shortage.productId}-${shortage.size}-${shortage.color}`}>
+                                {product?.name || "An item"} ({shortage.size} / {shortage.color || "Default"}): {shortage.availableQuantity} of {shortage.requiredQuantity} available.
+                              </li>
+                            );
+                          })
+                      )}
                     </ul>
                   )}
                   <button
                     type="button"
                     onClick={() => setShippingQuoteRetry((retry) => retry + 1)}
-                    className="ml-2 font-semibold underline"
+                    className="ml-2 min-h-11 px-2 font-semibold underline underline-offset-2"
                   >
                     Retry
                   </button>
@@ -1387,21 +1380,23 @@ const PlaceOrder = () => {
 
               {/* Dynamic Shipping Rate Badge (only shown when NOT a loyalty free delivery) */}
               {shippingQuoteStatus === "ready" && shippingTierLabel && (rewardChoice !== "LOYALTY" || !loyaltyData?.activeReward?.isEligible) && (
-                <div className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 ${
+                <div className={`mb-3 flex items-center gap-2 border px-3.5 py-3 text-xs font-semibold ${
                   dynamicDeliveryFee === 0
-                    ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
-                    : shippingTierLabel.includes("Within")
-                    ? "bg-sky-50 border border-sky-200 text-sky-700"
-                    : "bg-amber-50 border border-amber-200 text-amber-700"
+                    ? "border-status-success-border bg-status-success-bg text-status-success-text"
+                    : "border-status-info-border bg-status-info-bg text-status-info-text"
                 }`}>
-                  <span>{shippingTierLabel}</span>
-                  <span className="ml-auto font-bold">
-                    {dynamicDeliveryFee === 0 ? "FREE" : `Rs. ${dynamicDeliveryFee}`}
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.12em] opacity-75">Delivery confirmed</p>
+                    <p>{shippingTierLabel}</p>
+                  </div>
+                  <span className="ml-auto shrink-0 font-bold tabular-nums">
+                    {dynamicDeliveryFee === 0 ? "FREE" : `Rs. ${Number(dynamicDeliveryFee).toLocaleString()}`}
                   </span>
                 </div>
               )}
               <CartTotal
                 subtotalOverride={orderSubtotal}
+                requireQuotedFee
                 deliveryFee={dynamicDeliveryFee}
                 shippingLabel={shippingTierLabel}
                 loyaltyDiscount={rewardChoice === "LOYALTY" ? loyaltyDiscountAmount : 0}
@@ -1454,7 +1449,7 @@ const PlaceOrder = () => {
                 <button
                   type="submit"
                   disabled={submitting || shippingQuoteStatus !== "ready"}
-                  className="bg-black text-white px-12 py-3.5 text-sm font-semibold rounded-xl hover:bg-gray-800 active:scale-95 transition-all w-full sm:w-auto shadow-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                  className="flex min-h-12 w-full items-center justify-center gap-2 bg-[var(--ink)] px-8 py-3.5 text-sm font-semibold uppercase tracking-[0.12em] text-white shadow-card transition-colors hover:bg-[var(--accent)] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:px-12"
                 >
                   {submitting && (
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>

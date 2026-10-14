@@ -31,15 +31,15 @@ const SearchBar = () => {
   if (!showSearch) return null;
 
   return (
-    <div className="border-t border-b bg-gray-50 text-center py-4 relative z-30 shadow-2xs">
+    <div className="relative z-30 border-y border-[var(--line)] bg-[var(--paper)] px-4 py-4 text-center">
       <form
         onSubmit={handleSearchSubmit}
-        className="inline-flex items-center justify-center border border-gray-300 bg-white px-5 py-2.5 rounded-full w-4/5 sm:w-1/2 shadow-xs focus-within:border-black focus-within:ring-1 focus-within:ring-black transition-all"
+        className="mx-auto inline-flex min-h-12 w-full max-w-2xl items-center justify-center border border-[var(--line)] bg-white px-4 transition-colors focus-within:border-[var(--accent)] focus-within:ring-1 focus-within:ring-[var(--accent)]"
       >
         <input
           value={search}
           onChange={handleInputChange}
-          className="flex-1 outline-none bg-transparent text-sm text-gray-800 placeholder-gray-400"
+          className="flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--muted)]"
           type="text"
           placeholder="Search products by name, category, style..."
           autoFocus
@@ -48,12 +48,9 @@ const SearchBar = () => {
           <img className="w-4 opacity-70 hover:opacity-100 transition-opacity" src={assets.search_icon} alt="Search" />
         </button>
       </form>
-      <img
-        onClick={handleClose}
-        className="inline w-3.5 ml-3 cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
-        src={assets.cross_icon}
-        alt="Close Search"
-      />
+      <button onClick={handleClose} className="icon-button ml-2 h-11 w-11" aria-label="Close search">
+        <img className="w-3.5 opacity-60 transition-opacity hover:opacity-100" src={assets.cross_icon} alt="" />
+      </button>
     </div>
   );
 };

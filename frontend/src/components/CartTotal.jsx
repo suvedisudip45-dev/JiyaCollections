@@ -13,6 +13,7 @@ import Title from "./Title";
  * @param {number} [cardDiscount]     – selected marketing card discount
  * @param {string} [cardRewardLabel]  – selected marketing card reward name
  * @param {boolean} [isCartPage]      – true when viewed from /cart before address selection
+ * @param {boolean} [requireQuotedFee] – prevent fallback shipping fees until checkout has a valid quote
  */
 const CartTotal = ({
   deliveryFee,
@@ -26,6 +27,8 @@ const CartTotal = ({
   cardRewardLabel,
   subtotalOverride,
   isCartPage = false,
+  // eslint-disable-next-line react/prop-types
+  requireQuotedFee = false,
 }) => {
   const { currency, delivery_fee, getCartAmount, shippingConfig } = useContext(ShopContext);
 
@@ -34,7 +37,9 @@ const CartTotal = ({
   const isEligibleFreeShipping = freeMin > 0 && subtotal >= freeMin;
 
   // On cart page, we don't assume a static 50 unless free shipping is already guaranteed
-  const resolvedFee = isCartPage
+  const resolvedFee = requireQuotedFee
+    ? deliveryFee
+    : isCartPage
     ? isEligibleFreeShipping || deliveryFee === 0
       ? 0
       : undefined
@@ -46,7 +51,7 @@ const CartTotal = ({
   const grandTotal = Math.max(0, subtotal === 0 ? 0 : subtotal + numericShipping - loyaltyDiscount - cardDiscount);
 
   return (
-    <div className="w-full">
+    <div className="w-full rounded-sm border border-[var(--line)] bg-white p-5 sm:p-6">
       <div className="text-2xl">
         <Title text1={"CART"} text2={"TOTALS"} />
       </div>
@@ -55,21 +60,21 @@ const CartTotal = ({
         {/* Subtotal */}
         <div className="flex justify-between">
           <p>Subtotal</p>
-          <p>{currency} {subtotal}.00</p>
+          <p className="tabular-nums">{currency} {Number(subtotal).toLocaleString()}.00</p>
         </div>
         <hr />
 
         {/* VIP Price Discount */}
         {loyaltyDiscount > 0 && (
           <>
-            <div className="flex justify-between items-start text-emerald-600 font-semibold">
+            <div className="flex items-start justify-between font-semibold text-status-success-text">
               <div>
                 <p>VIP Level Discount</p>
                 {loyaltyLabel && (
-                  <p className="text-[11px] text-emerald-500 font-normal">{loyaltyLabel}</p>
+                  <p className="text-[11px] font-normal text-status-success-text/80">{loyaltyLabel}</p>
                 )}
               </div>
-              <p>- {currency} {loyaltyDiscount}.00</p>
+              <p className="tabular-nums">- {currency} {Number(loyaltyDiscount).toLocaleString()}.00</p>
             </div>
             <hr />
           </>
@@ -77,12 +82,12 @@ const CartTotal = ({
 
         {cardDiscount > 0 && (
           <>
-            <div className="flex justify-between items-start text-orange-700 font-semibold">
+            <div className="flex items-start justify-between font-semibold text-[var(--accent)]">
               <div>
                 <p>Marketing Card Discount</p>
-                {cardRewardLabel && <p className="text-[11px] text-orange-600 font-normal">{cardRewardLabel}</p>}
+                {cardRewardLabel && <p className="text-[11px] font-normal text-[var(--muted)]">{cardRewardLabel}</p>}
               </div>
-              <p>- {currency} {cardDiscount}.00</p>
+              <p className="tabular-nums">- {currency} {Number(cardDiscount).toLocaleString()}.00</p>
             </div>
             <hr />
           </>
@@ -91,7 +96,7 @@ const CartTotal = ({
         {/* Gift Voucher / Special Item */}
         {loyaltyGift && (loyaltyGift.amount > 0 || loyaltyGift.description) && (
           <>
-            <div className="flex justify-between items-start text-indigo-600 font-semibold">
+            <div className="flex justify-between items-start font-semibold text-status-info-text">
               <div>
                 <p className="flex items-center gap-1">Complimentary Gift</p>
               </div>
@@ -106,7 +111,7 @@ const CartTotal = ({
         {/* Handwritten Letter */}
         {loyaltyGift?.letterIncluded && (
           <>
-            <div className="flex justify-between items-center text-violet-600 font-semibold">
+            <div className="flex justify-between items-center font-semibold text-status-info-text">
               <p className="flex items-center gap-1">Handwritten Thank-You Note</p>
               <p className="text-[11px] font-semibold">Included</p>
             </div>
@@ -117,31 +122,35 @@ const CartTotal = ({
         {/* Custom VIP Perk */}
         {loyaltyGift?.customPerk && (
           <>
-            <div className="flex justify-between items-center text-amber-700 font-semibold">
+            <div className="flex justify-between items-center font-semibold text-status-warning-text">
               <p className="flex items-center gap-1">{loyaltyGift.customPerk}</p>
-              <p className="text-[11px] font-semibold text-amber-600">VIP Perk</p>
+              <p className="text-[11px] font-semibold text-status-warning-text">VIP Perk</p>
             </div>
             <hr />
           </>
         )}
 
         {/* Shipping Fee */}
-        <div className="flex justify-between items-start">
+        <div className="flex items-start justify-between">
           <div>
             <p>Shipping</p>
             {shippingLabel ? (
               <p className="text-[11px] text-gray-400">{shippingLabel}</p>
+            ) : requireQuotedFee && resolvedFee === undefined ? (
+              <p className="text-[11px] text-gray-400">Confirming delivery charge</p>
             ) : isCartPage ? (
               <p className="text-[11px] text-gray-400">Calculated at checkout</p>
             ) : null}
           </div>
           <div>
             {resolvedFee === 0 ? (
-              <span className="text-emerald-600 font-semibold text-xs bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+              <span className="border border-status-success-border bg-status-success-bg px-2 py-0.5 text-xs font-semibold text-status-success-text">
                 FREE
               </span>
             ) : resolvedFee !== undefined ? (
-              <span>{currency} {resolvedFee}.00</span>
+              <span className="tabular-nums">{currency} {Number(resolvedFee).toLocaleString()}.00</span>
+            ) : requireQuotedFee ? (
+              <span className="text-xs italic text-gray-500">Pending quote</span>
             ) : (
               <span className="text-gray-500 text-xs italic">Calculated at next step</span>
             )}
@@ -152,10 +161,10 @@ const CartTotal = ({
         {/* Grand Total */}
         <div className="flex justify-between text-base">
           <b>Total</b>
-          <b className="text-gray-900">
-            {currency} {grandTotal}.00
-            {isCartPage && resolvedFee === undefined && (
-              <span className="text-xs text-gray-400 font-normal ml-1">(+ shipping)</span>
+          <b className="tabular-nums text-gray-900">
+            {currency} {Number(grandTotal).toLocaleString()}.00
+            {(isCartPage || requireQuotedFee) && resolvedFee === undefined && (
+              <span className="ml-1 text-xs font-normal text-gray-400">(+ delivery charge pending)</span>
             )}
           </b>
         </div>

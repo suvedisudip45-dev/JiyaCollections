@@ -35,12 +35,13 @@ The frontend CSS is defined in `frontend/src/index.css` and uses the following d
 
 - base colors:
   - `--paper`: `#f8f7f4`
-  - `--ink`: `#171717`
+  - `--ink`: `#161714`
   - `--white`: `#ffffff`
-  - `--stone`: `#eceae5`
+  - `--stone`: `#eae8e2`
   - `--line`: `#dedbd3`
   - `--muted`: `#6f6d68`
   - `--accent`: `#d85b3f`
+- Tailwind also exposes canvas, ink, terracotta, and semantic status text/background/border tokens.
 - fonts:
   - `DM Sans` for body text
   - `Space Grotesk` for headings / title styling
@@ -48,7 +49,7 @@ The frontend CSS is defined in `frontend/src/index.css` and uses the following d
   - neutral paper background
   - compact storefront shell
   - minimal, editorial e-commerce presentation
-  - utility-first Tailwind composition with some custom CSS classes like `fashion-shell`, `.eyebrow`, `.announcement-bar`, and `.cart-count`
+  - utility-first Tailwind composition, visible terracotta focus states, reduced-motion support, and reusable classes like `fashion-shell`, `.eyebrow`, `.announcement-bar`, and `.cart-count`
 
 ## 2. Customer Storefront (`frontend/`)
 
@@ -111,7 +112,7 @@ The component tree includes:
 
 The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order.
 
-Checkout refreshes its shipping quote when the customer changes the delivery province, district, NCM branch, or cart. The quote API uses the prioritized active distributors with available distributor-ledger stock. If one hub has all requested variants, checkout uses the route rate from that hub; otherwise it plans separate product shipments across hubs and charges the admin-configured flat split-shipment fee once for the checkout group. The customer sees all shipment origins before placing the order. Order creation recalculates availability and the fee server-side, creates one independently assigned order per supplying hub, and stores a shared `checkoutGroupId` on those orders; each hub receives only its own item lines and creates its own delivery record. Existing free-shipping and loyalty rules continue to apply. The admin Shipping Rates page includes the split fee, an origin/destination simulator, and corridor overrides in a collapsed optional section.
+Checkout refreshes its shipping quote when the customer changes the delivery province, district, NCM branch, or cart. The quote API uses the prioritized active distributors with available distributor-ledger stock. If one hub has all requested variants, checkout uses the route rate from that hub; otherwise it plans separate product shipments across hubs and charges the admin-configured flat split-shipment fee once for the checkout group. Checkout shows the applicable delivery tier, fee, and a customer-friendly multiple-package notice without exposing distributor names or internal allocation details. Order creation recalculates availability and the fee server-side, creates one independently assigned order per supplying hub, and stores a shared `checkoutGroupId` on those orders; each hub receives only its own item lines and creates its own delivery record. Existing free-shipping and loyalty rules continue to apply. The admin Shipping Rates page includes the split fee, an origin/destination simulator, and corridor overrides in a collapsed optional section.
 
 `PlaceOrder.jsx` loads the customer's claimed Own Store discount rewards and eligible VIP loyalty reward in the Offers Available section. The customer may select one reward or none; the total reflects only that selection, and the order request sends the choice and selected card ID for authoritative backend validation. The UI does not stack card and loyalty discounts.
 

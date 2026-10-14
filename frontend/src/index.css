@@ -18,13 +18,14 @@ a.active hr {
   background: #f8f7f4;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --ink: #171717;
+  --ink: #161714;
   --paper: #f8f7f4;
   --white: #ffffff;
-  --stone: #eceae5;
+  --stone: #eae8e2;
   --line: #dedbd3;
   --muted: #6f6d68;
   --accent: #d85b3f;
+  --accent-hover: #c24e34;
 }
 
 body {
@@ -39,6 +40,23 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .prata-regular {
@@ -129,6 +147,18 @@ textarea {
   text-transform: uppercase;
 }
 
+.fashion-shell :where(h1, h2, h3, h4, .display-type) {
+  font-family: "Space Grotesk", sans-serif;
+}
+
+.fashion-shell :where(input, select, textarea) {
+  border-color: var(--line);
+}
+
+.fashion-shell :where(input, select, textarea):focus-visible {
+  border-color: var(--accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -141,11 +171,4 @@ textarea {
 
 ::-webkit-scrollbar {
   display: none;
-}
-
-@media (max-width: 640px) {
-  a.active {
-    background-color: var(--ink);
-    color: white;
-  }
 }

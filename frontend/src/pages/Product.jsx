@@ -1105,8 +1105,8 @@ const Product = () => {
                   isOutOfStock
                     ? "bg-stone-200 text-gray-400 cursor-not-allowed shadow-none border border-stone-300"
                     : isAddedAnimation
-                    ? "bg-emerald-600 text-white shadow-emerald-200 scale-102"
-                    : "bg-black text-white hover:bg-neutral-800 hover:shadow-xl"
+                      ? "bg-status-success-text text-white shadow-sm"
+                      : "bg-[var(--ink)] text-white hover:bg-[var(--accent)] hover:shadow-lift"
                 }`}
               >
                 {isAddedAnimation ? (
@@ -1333,7 +1333,7 @@ const Product = () => {
 
       {/* ================= STICKY MOBILE BOTTOM BAR ================= */}
       {showStickyBar && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-stone-200 px-4 py-3 shadow-2xl flex items-center justify-between gap-3 animate-slide-up lg:hidden">
+        <div className="product-sticky-bar fixed bottom-0 left-0 right-0 z-40 flex items-center justify-between gap-3 border-t border-[var(--line)] bg-[var(--paper)]/95 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-floating-bar backdrop-blur-md animate-slide-up lg:hidden">
           <div className="flex items-center gap-2.5 min-w-0">
             <img
               src={currentActiveImage}
@@ -1362,10 +1362,10 @@ const Product = () => {
             type="button"
             disabled={isOutOfStock}
             onClick={handleAddToCart}
-            className={`px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shrink-0 transition-all cursor-pointer ${
+            className={`flex min-h-11 shrink-0 items-center gap-1.5 px-5 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
               isOutOfStock
-                ? "bg-stone-200 text-gray-400"
-                : "bg-black text-white hover:bg-neutral-800 shadow-md"
+                ? "cursor-not-allowed bg-stone-200 text-gray-500"
+                : "bg-[var(--ink)] text-white hover:bg-[var(--accent)]"
             }`}
           >
             <ShoppingBag size={14} />

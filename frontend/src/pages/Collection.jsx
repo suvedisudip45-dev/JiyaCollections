@@ -199,7 +199,7 @@ const Collection = () => {
   return (
     <div className="mx-auto w-full max-w-[1440px] pb-16">
       {/* --- HERO BANNER & BREADCRUMBS SECTION (BONKERS CORNER STYLE) --- */}
-      <section className="relative w-full overflow-hidden bg-[var(--stone)]">
+      <section className="relative w-full overflow-hidden bg-stone-200">
         {heroImage ? (
           <div className="relative h-[280px] sm:h-[380px] md:h-[460px] w-full overflow-hidden">
             <img
@@ -245,7 +245,7 @@ const Collection = () => {
               {subCategory[0] && <><span>/</span><span className="font-bold text-[var(--ink)]">{subCategory[0]}</span></>}
             </div>
 
-            <h1 className="text-3xl sm:text-4xl md:text-5xl font-black uppercase tracking-wider text-[var(--ink)]">
+            <h1             className="font-display text-3xl font-bold uppercase tracking-[0.08em] text-[var(--ink)] sm:text-4xl md:text-5xl">
               {bannerTitle}
             </h1>
           </div>
@@ -276,10 +276,10 @@ const Collection = () => {
 
       <div className="sticky top-0 z-30 border-b border-[var(--line)] bg-[var(--paper)]/95 px-4 py-3 backdrop-blur-md sm:px-8">
           <div className="flex items-center justify-between gap-4">
-            <div className="text-xs font-bold uppercase tracking-widest text-[var(--ink)]"><span>{totalCount} PRODUCTS</span></div>
+            <div className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]"><span>{totalCount} PRODUCTS</span></div>
             <div className="flex items-center gap-2">
               <ArrowUpDown size={14} className="hidden text-[var(--muted)] sm:inline-block" />
-              <select value={sortType} onChange={(event) => setSortType(event.target.value)} className="border border-[var(--line)] bg-[var(--white)] px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[var(--ink)] outline-none">
+              <select aria-label="Sort products" value={sortType} onChange={(event) => setSortType(event.target.value)} className="min-h-11 border border-[var(--line)] bg-[var(--white)] px-3 py-2 text-xs font-bold uppercase tracking-wider text-[var(--ink)] outline-none focus-visible:border-[var(--accent)]">
                 <option value="relavent">Sort by: Relevant</option>
                 <option value="newest">Sort by: Newest Arrivals</option>
                 <option value="top-rated">Sort by: Top Rated</option>
@@ -292,17 +292,17 @@ const Collection = () => {
 
       <div className="px-4 pt-8 sm:px-8">
           {isLoading ? (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
-              {[...Array(8)].map((_, i) => <div key={i} className="animate-pulse flex flex-col space-y-3"><div className="bg-gray-200 aspect-[3/4] w-full rounded-md" /><div className="h-4 bg-gray-200 rounded w-3/4" /><div className="h-3 bg-gray-200 rounded w-1/2" /></div>)}
+            <div className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+              {[...Array(8)].map((_, i) => <div key={i} className="flex animate-pulse flex-col space-y-3"><div className="aspect-[3/4] w-full bg-stone-200" /><div className="h-4 w-3/4 bg-stone-200" /><div className="h-3 w-1/2 bg-stone-200" /></div>)}
             </div>
           ) : displayedProducts.length === 0 ? (
             <div className="py-20 text-center flex flex-col items-center justify-center">
               <p className="text-lg font-bold uppercase tracking-wider text-[var(--ink)]">No products found</p>
               <p className="mt-1 max-w-sm text-xs text-[var(--muted)]">We couldn&apos;t find any items in this category yet.</p>
-              <Link to="/shop" className="mt-6 bg-black px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-gray-800">View All Products</Link>
+              <Link to="/shop" className="mt-6 inline-flex min-h-11 items-center bg-[var(--ink)] px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-[var(--accent)]">View All Products</Link>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-9 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-5 md:grid-cols-3 lg:grid-cols-4 lg:gap-x-6">
               {displayedProducts.map((item, index) => <ProductItem key={`${item._id || item.id}-${index}`} name={item.name} id={item._id || item.id} price={item.price} image={item.image} discount={item.discount} stockStatus={item.stockStatus} stockQuantity={item.stockQuantity ?? 0} variants={item.variants} rating={item.rating} reviewCount={item.reviewCount} newInStore={item.newInStore} bestseller={item.bestseller} />)}
             </div>
           )}
