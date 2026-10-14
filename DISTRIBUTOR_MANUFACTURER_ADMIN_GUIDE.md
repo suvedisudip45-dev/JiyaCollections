@@ -98,13 +98,23 @@ service-area districts remain managed separately.
   to the manufacturer profile until an admin reviews it through
   `/api/admin/distributor-applications`; approval activates/provisions the
   linked distributor profile and grants the account the `DISTRIBUTOR` role.
+  Approval also ensures the distributor has a canonical registered origin,
+  retaining an existing valid distributor origin or resolving one from the
+  manufacturer's district city or NCM pickup branch. That origin is added as
+  the distributor's initial service area for allocation and shipping quotes.
+  Existing linked profiles without a stored origin can still resolve it from
+  their manufacturer's district city or pickup branch during allocation; update
+  the registered distributor province/district to make that origin explicit.
   In Distributor Management, these requests appear in the dedicated
   **Manufacturer requests** tab, separate from distributor sign-up applications.
   A dual-role account continues to log in with MANUFACTURER as its primary
   workspace, while authenticated requests carry both active workspace roles
   and profiles.
 - New automatic customer-order allocation requires an active distributor with
-  every requested SKU variant available in its distributor inventory balances.
+  a valid registered province/district shipping origin and every requested SKU
+  variant available in its distributor inventory balances. Service-area
+  coverage determines customer proximity, but is not a substitute for the
+  registered origin used to calculate shipment rates.
   Candidates are prioritized by exact configured service-district coverage.
   If a distributor has no configured service areas, its registered
   province/district is used as its coverage. If no stocked candidate covers the

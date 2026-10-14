@@ -169,6 +169,30 @@ test("split order allocation stays with the hub selected for its product", async
   assert.equal(getAssignment().distributorId, preferredHub.id);
 });
 
+test("allocator falls back from an out-of-stock preferred hub to a stocked hub by location tier", async (t) => {
+  const preferredHub = createDistributor({
+    id: "preferred-empty-hub",
+    stock: [createBalance("preferred-short-balance", 1)],
+  });
+  const sameProvinceHub = createDistributor({
+    id: "same-province-stocked-hub",
+    district: "Lalitpur",
+    locations: [],
+    qualityRating: 5,
+  });
+  const { getAssignment } = installAllocationMocks(t, {
+    distributors: [preferredHub, sameProvinceHub],
+  });
+
+  const result = await runAllocationEngine("order-1", {
+    preferredDistributorId: preferredHub.id,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, sameProvinceHub.id);
+  assert.equal(getAssignment().distributorId, sameProvinceHub.id);
+});
+
 test("shipping allocation preview uses the same priority-ranked stocked distributor", async (t) => {
   const exactDistrictHub = createDistributor({ id: "exact-hub", qualityRating: 2.5 });
   const sameProvinceHub = createDistributor({

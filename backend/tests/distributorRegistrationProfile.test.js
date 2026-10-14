@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../config/db.js";
 import {
   registerDistributor,
+  resolveManufacturerDistributorOrigin,
   updateDistributorAdminProfile,
 } from "../controllers/distributorController.js";
 
@@ -34,6 +35,37 @@ const responseRecorder = () => {
     result: () => result,
   };
 };
+
+test("manufacturer distributor origin resolves from a canonical city district", async () => {
+  const origin = await resolveManufacturerDistributorOrigin({}, {
+    city: "Kaski",
+    ncmPickupBranch: "",
+  });
+
+  assert.deepEqual(origin, {
+    province: "Gandaki Province",
+    district: "Kaski",
+  });
+});
+
+test("manufacturer distributor origin resolves from its NCM pickup branch when city is not a district", async () => {
+  const origin = await resolveManufacturerDistributorOrigin({
+    ncmBranch: {
+      findFirst: async ({ where }) => {
+        assert.deepEqual(where, { name: "POKHARA" });
+        return { provinceName: "Gandaki Province", districtName: "Kaski" };
+      },
+    },
+  }, {
+    city: "Pokhara",
+    ncmPickupBranch: "POKHARA",
+  });
+
+  assert.deepEqual(origin, {
+    province: "Gandaki Province",
+    district: "Kaski",
+  });
+});
 
 test("distributor registration persists manufacturer-equivalent location and pickup details", async (t) => {
   const calls = {};

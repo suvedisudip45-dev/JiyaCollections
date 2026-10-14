@@ -154,6 +154,160 @@ test("shipping quote uses the probable stocked distributor's route", async (t) =
   });
 });
 
+test("shipping quote skips a higher-rated covered distributor without a registered route origin", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "unrouteable-hub",
+    name: "Hub Missing Registered Location",
+    district: null,
+    province: null,
+    qualityRating: 5,
+    locations: [{ province: "Gandaki Province", district: "Kaski", isActive: true }],
+  }, {
+    id: "routeable-hub",
+    name: "Kathmandu Hub",
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    qualityRating: 2,
+    locations: [{ province: "Gandaki Province", district: "Kaski", isActive: true }],
+  }]);
+  stubMethod(t, prisma.inventoryBalance, "findMany", async () => [{
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "unrouteable-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }, {
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "routeable-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }]);
+
+  const result = await resolveDistrictShippingFee({
+    district: "Kaski",
+    province: "Gandaki Province",
+    items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
+  });
+
+  assert.equal(result.fee, 250);
+  assert.equal(result.probableDistributor.id, "routeable-hub");
+  assert.deepEqual(result.origin, {
+    province: "Bagmati Province",
+    district: "Kathmandu",
+  });
+});
+
+test("shipping quote resolves legacy manufacturer-distributor origins from their NCM pickup branch", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "upgraded-hub",
+    accountId: "manufacturer-account",
+    name: "Pokhara Hub",
+    city: "Pokhara",
+    province: null,
+    district: null,
+    ncmPickupBranch: "",
+    qualityRating: 5,
+    locations: [],
+  }]);
+  stubMethod(t, prisma.manufacturer, "findMany", async ({ where }) => {
+    assert.deepEqual(where.accountId.in, ["manufacturer-account"]);
+    return [{
+      accountId: "manufacturer-account",
+      city: "Pokhara",
+      ncmPickupBranch: "POKHARA",
+    }];
+  });
+  stubMethod(t, prisma.ncmBranch, "findMany", async ({ where }) => {
+    assert.deepEqual(where.name.in, ["POKHARA"]);
+    return [{
+      name: "POKHARA",
+      provinceName: "Gandaki Province",
+      districtName: "Kaski",
+    }];
+  });
+  stubMethod(t, prisma.inventoryBalance, "findMany", async () => [{
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "upgraded-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }]);
+
+  const result = await resolveDistrictShippingFee({
+    district: "Kaski",
+    province: "Gandaki Province",
+    items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
+  });
+
+  assert.equal(result.fee, 50);
+  assert.equal(result.probableDistributor.id, "upgraded-hub");
+  assert.deepEqual(result.origin, {
+    province: "Gandaki Province",
+    district: "Kaski",
+  });
+});
+
+test("shipping quote selects a lower-priority hub with the complete cart and applies its route rate", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => ({
+    ...config,
+    routeOverrides: [{
+      originProvince: "Bagmati Province",
+      originDistrict: "Bhaktapur",
+      destinationProvince: "Bagmati Province",
+      destinationDistrict: "Kathmandu",
+      fee: 75,
+    }],
+  }));
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "local-hub",
+    name: "Local Hub",
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    locations: [{ province: "Bagmati Province", district: "Kathmandu", isActive: true }],
+  }, {
+    id: "alternate-hub",
+    name: "Alternate Hub",
+    district: "Bhaktapur",
+    province: "Bagmati Province",
+    locations: [{ province: "Koshi Province", district: "Sunsari", isActive: true }],
+  }]);
+  const balances = [{
+    quantityOnHand: 2,
+    reservedQuantity: 0,
+    location: { distributorId: "local-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "s", colorKey: "blue" },
+  }, {
+    quantityOnHand: 2,
+    reservedQuantity: 0,
+    location: { distributorId: "alternate-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "s", colorKey: "blue" },
+  }, {
+    quantityOnHand: 2,
+    reservedQuantity: 0,
+    location: { distributorId: "alternate-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "m", colorKey: "black" },
+  }];
+  stubMethod(t, prisma.inventoryBalance, "findMany", async ({ where }) =>
+    balances.filter((balance) =>
+      where.location.distributorId.in.includes(balance.location.distributorId)
+    )
+  );
+
+  const result = await resolveDistrictShippingFee({
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    items: [
+      { productId: "product-1", size: "S", color: "Blue", quantity: 1 },
+      { productId: "product-1", size: "M", color: "Black", quantity: 1 },
+    ],
+  });
+
+  assert.equal(result.splitShipment, undefined);
+  assert.equal(result.fee, 75);
+  assert.equal(result.rateTier, "ROUTE_OVERRIDE");
+  assert.equal(result.probableDistributor.id, "alternate-hub");
+});
+
 test("split shipping quote uses the admin-configured flat fee and lists each shipment hub", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
   stubMethod(t, prisma.distributor, "findMany", async () => [{

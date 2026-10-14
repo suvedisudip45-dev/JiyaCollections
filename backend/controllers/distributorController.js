@@ -6,7 +6,7 @@ import { logAuthEvent } from "../services/authService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
-import { NEPAL_LOCATION_MAP } from "../utils/nepalLocationData.js";
+import { NEPAL_LOCATION_MAP, resolveLocationEntry } from "../utils/nepalLocationData.js";
 
 const clean = (value) => String(value || "").trim();
 
@@ -257,6 +257,22 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
   }
 };
 
+export const resolveManufacturerDistributorOrigin = async (client, manufacturer) => {
+  const cityEntry = resolveLocationEntry(manufacturer.city);
+  if (cityEntry?.type === "DISTRICT") {
+    const cityLocation = canonicalizeNepalLocation(cityEntry.province, cityEntry.name);
+    if (cityLocation) return cityLocation;
+  }
+
+  const pickupBranch = clean(manufacturer.ncmPickupBranch);
+  if (!pickupBranch) return null;
+  const branch = await client.ncmBranch.findFirst({
+    where: { name: pickupBranch },
+    select: { provinceName: true, districtName: true },
+  });
+  return canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
+};
+
 export const listManufacturerDistributorApplications = async (req, res) => {
   try {
     const status = clean(req.query?.status).toUpperCase() || "REQUESTED";
@@ -322,12 +338,23 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
         where: { accountId: manufacturer.accountId },
       });
       if (targetStatus === "APPROVED") {
+        const registeredOrigin = canonicalizeNepalLocation(distributor?.province, distributor?.district);
+        const origin = registeredOrigin || await resolveManufacturerDistributorOrigin(tx, manufacturer);
+        if (!origin) {
+          const error = new Error(
+            "Set a valid manufacturer city or NCM pickup branch before approving distributor access."
+          );
+          error.statusCode = 409;
+          throw error;
+        }
         const now = new Date();
         const profileData = {
           name: manufacturer.name,
           phone: manufacturer.phone,
           address: manufacturer.address,
           city: manufacturer.city,
+          province: origin.province,
+          district: origin.district,
           status: "ACTIVE",
           isActive: true,
           approvedAt: now,
@@ -338,6 +365,22 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
           : await tx.distributor.create({
               data: { ...profileData, accountId: manufacturer.accountId, appliedAt: manufacturer.updatedAt },
             });
+        await tx.distributorLocation.upsert({
+          where: {
+            distributorId_province_district: {
+              distributorId: distributor.id,
+              province: origin.province,
+              district: origin.district,
+            },
+          },
+          create: {
+            distributorId: distributor.id,
+            province: origin.province,
+            district: origin.district,
+            isActive: true,
+          },
+          update: { isActive: true },
+        });
         await assignAccountRole(manufacturer.accountId, "DISTRIBUTOR", { client: tx });
       } else {
         if (distributor && distributor.status === "PENDING_APPROVAL") {

@@ -15,6 +15,7 @@ import {
 } from "../services/giftService.js";
 import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
+import { resolveLocationEntry } from "../utils/nepalLocationData.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -146,6 +147,61 @@ const getStockShortages = (distributor, requirements) => requirements
 const distributorHasStock = (distributor, requirements) =>
   getStockShortages(distributor, requirements).length === 0;
 
+const resolveDistributorOrigins = async (distributors) => {
+  const unresolved = distributors.filter((distributor) =>
+    !canonicalizeNepalLocation(distributor.province, distributor.district)
+  );
+  if (!unresolved.length) return distributors;
+
+  const accountIds = unresolved.map((distributor) => distributor.accountId).filter(Boolean);
+  const manufacturerProfiles = accountIds.length
+    ? await prisma.manufacturer.findMany({
+      where: { accountId: { in: accountIds } },
+      select: { accountId: true, city: true, ncmPickupBranch: true },
+    })
+    : [];
+  const manufacturersByAccount = new Map(manufacturerProfiles.map((manufacturer) => [
+    manufacturer.accountId,
+    manufacturer,
+  ]));
+  const profiles = unresolved.map((distributor) => ({
+    distributor,
+    manufacturer: manufacturersByAccount.get(distributor.accountId),
+  }));
+  const branchNames = [...new Set(profiles
+    .map(({ distributor, manufacturer }) => manufacturer?.ncmPickupBranch || distributor.ncmPickupBranch)
+    .filter(Boolean))];
+  const branches = branchNames.length
+    ? await prisma.ncmBranch.findMany({
+      where: { name: { in: branchNames } },
+      select: { name: true, provinceName: true, districtName: true },
+    })
+    : [];
+  const branchesByName = new Map(branches.map((branch) => [
+    normalizeLocationKey(branch.name),
+    branch,
+  ]));
+  const originsByDistributor = new Map();
+  for (const { distributor, manufacturer } of profiles) {
+    const cityEntry = resolveLocationEntry(manufacturer?.city || distributor.city);
+    const cityOrigin = cityEntry?.type === "DISTRICT"
+      ? canonicalizeNepalLocation(cityEntry.province, cityEntry.name)
+      : null;
+    const branchName = manufacturer?.ncmPickupBranch || distributor.ncmPickupBranch;
+    const branch = branchesByName.get(normalizeLocationKey(branchName));
+    const origin = cityOrigin || canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
+    if (origin) originsByDistributor.set(distributor.id, origin);
+  }
+
+  return distributors.map((distributor) => {
+    const origin = canonicalizeNepalLocation(distributor.province, distributor.district) ||
+      originsByDistributor.get(distributor.id);
+    return origin
+      ? { ...distributor, province: origin.province, district: origin.district }
+      : distributor;
+  });
+};
+
 const selectDistributorForOrder = async ({
   address,
   items,
@@ -190,11 +246,27 @@ const selectDistributorForOrder = async ({
       message: "There are no active distributors available for allocation.",
     };
   }
+  const distributorsWithOrigins = await resolveDistributorOrigins(distributors);
+  const routeableDistributors = distributorsWithOrigins.filter((distributor) =>
+    canonicalizeNepalLocation(distributor.province, distributor.district)
+  );
+  if (!routeableDistributors.length) {
+    return {
+      success: false,
+      code: "DISTRIBUTOR_LOCATION_UNAVAILABLE",
+      message: "Active distributors need a valid registered province and district before they can be allocated.",
+    };
+  }
   const customerBranch = normalizeLocationKey(address.ncmBranch || address.ncmPickupBranch);
   const compareRating = (left, right) =>
     Number(right.qualityRating || 0) - Number(left.qualityRating || 0) ||
     Number(right.ratingCount || 0) - Number(left.ratingCount || 0) ||
     left.id.localeCompare(right.id);
+  const compareCandidatePriority = (left, right) => {
+    if (left.id === preferredDistributorId) return -1;
+    if (right.id === preferredDistributorId) return 1;
+    return compareRating(left, right);
+  };
   const getCoverageLocations = (distributor) => {
     const configuredLocations = (distributor.locations || [])
       .filter((serviceArea) => serviceArea.isActive !== false)
@@ -219,20 +291,20 @@ const selectDistributorForOrder = async ({
     getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
     canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
 
-  const coverageCandidates = distributors.filter(hasExactCoverage);
-  const districtCandidates = distributors.filter((distributor) =>
+  const coverageCandidates = routeableDistributors.filter(hasExactCoverage);
+  const districtCandidates = routeableDistributors.filter((distributor) =>
     !hasExactCoverage(distributor) && hasDistrictMatch(distributor)
   );
-  const branchCandidates = distributors.filter((distributor) =>
+  const branchCandidates = routeableDistributors.filter((distributor) =>
     !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
   );
-  const provinceCandidates = distributors.filter((distributor) =>
+  const provinceCandidates = routeableDistributors.filter((distributor) =>
     !hasExactCoverage(distributor) &&
     !hasDistrictMatch(distributor) &&
     !hasBranchMatch(distributor) &&
     hasProvinceMatch(distributor)
   );
-  const nationwideCandidates = distributors.filter((distributor) =>
+  const nationwideCandidates = routeableDistributors.filter((distributor) =>
     !hasExactCoverage(distributor) &&
     !hasDistrictMatch(distributor) &&
     !hasBranchMatch(distributor) &&
@@ -246,9 +318,7 @@ const selectDistributorForOrder = async ({
     ["review-ranked nationwide", nationwideCandidates],
   ].map(([tierName, tierCandidates]) => [
     tierName,
-    preferredDistributorId
-      ? tierCandidates.filter((distributor) => distributor.id === preferredDistributorId)
-      : tierCandidates,
+    tierCandidates.slice().sort(compareCandidatePriority),
   ]);
   let allocationTier = "";
   let candidates = [];
@@ -287,7 +357,7 @@ const selectDistributorForOrder = async ({
           .filter((balance) => balance.location.distributorId === distributor.id),
       }))
       .filter((distributor) => distributorHasStock(distributor, requirements))
-      .sort(compareRating);
+      .sort(compareCandidatePriority);
     if (stockedCandidates.length) {
       allocationTier = tierName;
       candidates = stockedCandidates;
@@ -296,7 +366,7 @@ const selectDistributorForOrder = async ({
   }
   const selected = candidates[0];
   if (!selected) {
-    const stockShortages = distributors.map((distributor) => ({
+    const stockShortages = routeableDistributors.map((distributor) => ({
       distributor: distributor.name,
       shortages: getStockShortages({
         ...distributor,
@@ -1227,11 +1297,16 @@ const getAssignmentById = async (req, res) => {
             id: true,
             name: true,
             city: true,
+            district: true,
             phone: true,
             ncmPickupBranch: true,
             pickupAddress: true,
             pickupContactName: true,
             pickupContactPhone: true,
+            locations: {
+              where: { isActive: true },
+              select: { district: true },
+            },
           },
         },
       },
