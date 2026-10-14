@@ -8,6 +8,7 @@ import {
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
 import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
+import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 
 const getNepalDateBoundary = (value, endOfDay = false) => {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
@@ -153,7 +154,10 @@ export const getJournalEntries = async (req, res) => {
       prisma.journalEntry.count({ where }),
     ]);
 
-    res.json(paginatedResponse("journalEntries", journalEntries, pagination, total));
+    res.json({
+      ...paginatedResponse("journalEntries", journalEntries, pagination, total),
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
+    });
   } catch (error) {
     console.error("Get Journal Entries Error:", error);
     res.json({ success: false, message: error.message });
@@ -359,6 +363,7 @@ export const getGeneralLedgerReport = async (req, res) => {
         linesCount: statementLines.length,
       },
       statementLines,
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get General Ledger Report Error:", error);
@@ -507,6 +512,7 @@ export const getTrialBalanceReport = async (req, res) => {
       isBalanced,
       rows: trialBalanceRows,
       trialBalance: trialBalanceRows,
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get Trial Balance Report Error:", error);
@@ -862,6 +868,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         totalLiabilitiesAndEquity,
         isBalanceSheetBalanced,
       },
+      accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {
     console.error("Get Realtime Financial Statements Error:", error);
@@ -875,7 +882,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 
 export const getSubledgerReconciliation = async (req, res) => {
   try {
-    const [arAccount, apAccount, payables, receivables, accounts] = await Promise.all([
+    const [arAccount, apAccount, payables, receivables, accounts, accountingPostingStatus] = await Promise.all([
       prisma.account.findUnique({ where: { accountCode: "1130" } }),
       prisma.account.findUnique({ where: { accountCode: "2110" } }),
       prisma.accountPayable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_PAID"] } } }),
@@ -884,6 +891,7 @@ export const getSubledgerReconciliation = async (req, res) => {
         where: { status: "ACTIVE" },
         include: { accountingAccount: true },
       }),
+      getDeliveryAccountingOutboxStatus(),
     ]);
 
     const arControlBalance = Number(arAccount?.currentBalance || 0);
@@ -900,14 +908,14 @@ export const getSubledgerReconciliation = async (req, res) => {
       coverageGaps: [
         "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
         "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-        "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+        "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
       ],
       reconciliation: {
         coverageStatus: "PARTIAL",
         coverageGaps: [
           "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
           "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-          "Source events without journals and failed accounting attempts are not yet exhaustively reconciled.",
+          "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
         ],
         accountsReceivable: {
           glControlAccount: "1130 Accounts Receivable",
@@ -929,7 +937,9 @@ export const getSubledgerReconciliation = async (req, res) => {
           glControlAccounts: "Explicitly mapped Treasury asset accounts",
           ...cashAndBankReconciliation,
         },
+        accountingPostingStatus,
       },
+      accountingPostingStatus,
     });
   } catch (error) {
     console.error("Get Subledger Reconciliation Error:", error);

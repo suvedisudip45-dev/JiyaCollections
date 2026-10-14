@@ -1563,11 +1563,14 @@ model AccountingEvent {
   attemptCount   Int           @default(0)
   lastError      String?       @db.Text
   processedAt    DateTime?
+  nextAttemptAt  DateTime?
+  claimedAt      DateTime?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   journalEntry   JournalEntry?
 
   @@index([status, createdAt])
+  @@index([sourceType, eventType, status, nextAttemptAt, createdAt])
   @@index([sourceType, sourceId])
   @@index([effectiveAt])
 }

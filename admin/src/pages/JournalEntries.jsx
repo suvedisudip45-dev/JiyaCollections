@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 
 const SOURCE_TYPE_BADGES = {
   SALES_INVOICE: "bg-blue-50 text-blue-700 border-blue-200",
@@ -34,6 +35,7 @@ const JournalEntries = ({ token }) => {
   const [expandedEntryId, setExpandedEntryId] = useState(null);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
+  const [accountingPostingStatus, setAccountingPostingStatus] = useState(null);
 
   // Manual Journal Entry Modal State
   const [showManualModal, setShowManualModal] = useState(false);
@@ -74,6 +76,7 @@ const JournalEntries = ({ token }) => {
       if (entriesRes.data.success) {
         setEntries(entriesRes.data.journalEntries || entriesRes.data.entries || []);
         setPagination(entriesRes.data.pagination || null);
+        setAccountingPostingStatus(entriesRes.data.accountingPostingStatus || null);
       } else {
         toast.error(entriesRes.data.message || "Failed to load journal entries");
       }
@@ -241,6 +244,8 @@ const JournalEntries = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={accountingPostingStatus} />
 
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs space-y-3">

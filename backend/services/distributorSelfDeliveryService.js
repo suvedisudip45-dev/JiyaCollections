@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
-import { postDeliveredOrderAccounting, postCustomerReturnAccounting } from "./accountingPostingEngine.js";
+import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
+import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import {
   createReturnExchangeSettlementPayable,
@@ -387,6 +388,7 @@ export const updateSelfDeliveryStatus = async ({
   const now = new Date();
 
   return client.$transaction(async (tx) => {
+    let accountingStatus = null;
     const order = await tx.order.findUnique({
       where: { id: assignment.orderId },
     });
@@ -431,14 +433,11 @@ export const updateSelfDeliveryStatus = async ({
       });
       orderUpdateData.items = inventoryConsumption.accountingItems;
 
-      try {
-        await postDeliveredOrderAccounting(
-          { order: { ...order, items: inventoryConsumption.accountingItems } },
-          { client: tx }
-        );
-      } catch (err) {
-        console.warn("Accounting posting note on self-delivery:", err.message);
-      }
+      const accountingEvent = await enqueueDeliveredSaleAccounting(
+        { order: { ...order, ...orderUpdateData, deliveredAt: now } },
+        { client: tx },
+      );
+      accountingStatus = accountingEvent.status;
     }
 
     const updatedAssignment = await tx.orderAssignment.update({
@@ -473,6 +472,7 @@ export const updateSelfDeliveryStatus = async ({
       message: `Order status successfully updated to '${canonicalStatus}'.`,
       assignment: updatedAssignment,
       order: serializeOrder(updatedOrder),
+      ...(accountingStatus ? { accountingStatus } : {}),
     };
   });
 };

@@ -45,6 +45,7 @@ The repository separates factory production and replenishment from customer-faci
 - Bulk stock-transfer NCM bookings omit the optional oversized vendor reference, remain `BOOKED` with factory stock reserved until pickup/custody confirmation, and persist webhook status events for manufacturer/distributor/admin views. Admins alone can reconcile carrier APIs; distributor receipt remains separate from carrier delivery. Manufacturer return requests are supported, and NCM freight remains platform/admin settlement rather than partner payables.
 - RBAC and auth system with user, admin, manufacturer, and partner roles plus permission checks and session validation.
 - Admin audit history backed by a transactional outbox, with redacted before/after diffs for business changes and reviewable authentication, MFA, rate-limit, refresh-token-reuse, and RBAC-denial security signals.
+- Delivered-sale accounting for NCM and distributor self-delivery now enqueues a versioned, hash-checked `AccountingEvent` in the delivery transaction. A scheduled worker retries journal posting, and accounting reports/screens expose unresolved amounts as excluded from posted GL totals; the required additive migration is still unapplied, so deployment is gated.
 - MySQL + Prisma schema covering auth, catalog, inventory, orders, finance, accounting, marketing, returns, delivery, and local pricing flows.
 - Distributor gift inventory is batch-based and auditable: orders reserve one accepted distributor batch atomically, pack/delivery transitions update the gift state, and distributor movement logs record allocation, reservation, deduction, restock, or loss. Legacy manufacturer gift records remain for historical orders and are not used for new distributor hub activity.
 
@@ -52,7 +53,8 @@ The repository separates factory production and replenishment from customer-faci
 
 - Notification worker exists as a separate subsystem, but business flows do not automatically send SMS/email and inbound SMS processing is not implemented.
 - The marketing portal backend analysis document explicitly notes that some flows such as signup, password reset, and email verification are not implemented yet.
-- The accounting architecture docs call out a manufacturer payable trigger gap: the current sales posting logic recognizes cost and commission data, but a manufacturer-specific payable trigger and cost basis are not fully implemented.
+- Accounting remains partially implemented; see the accounting audit for unresolved posting, report-snapshot, Treasury, tender, and subledger gaps. The delivered-sale outbox covers delivery posting only and does not close those wider gaps.
+- Delivered-sale outbox deployment requires applying `20261017000000_delivery_accounting_outbox_schedule` and regenerating Prisma Client first; migration and isolated-database concurrency verification are pending.
 - Prisma generation in a local Windows environment may be blocked by a native query-engine DLL lock while the backend server is running; this is an environment issue, not a schema-level application bug.
 - Loyalty gifts trigger automatically when the backend applies an eligible loyalty reward to an order; order-value promotions use separate configurable thresholds. Campaign/product-category triggers and automatic return-inspection reconciliation remain follow-up work; returned/lost gift outcomes can currently be recorded through the protected lifecycle API.
 

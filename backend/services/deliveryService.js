@@ -14,7 +14,8 @@ import {
 } from "./ncmClient.js";
 import { validateFulfillmentTransition } from "./fulfillmentStateMachine.js";
 import { ensureOrderCardAttached } from "./marketingCardService.js";
-import { postDeliveredOrderAccounting, postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
+import { postConfirmedDeliveryReturnAccounting } from "./accountingPostingEngine.js";
+import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
 import { accrueCollaborationSalesForOrder } from "./collaborationSalesService.js";
 import { applyExchangeNcmStatus } from "./orderExchangeService.js";
@@ -1184,6 +1185,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       };
 
       const record = await tx.deliveryOrder.update({ where: { id: delivery.id }, data: deliveryUpdateData });
+      let accountingStatus = null;
 
       // Synchronize Order model
       if (fulfillmentStatus) {
@@ -1290,42 +1292,41 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       // Post Delivered Order Double-Entry Accounting
       if (deliveryState === "DELIVERED") {
         const fullOrder = await tx.order.findUnique({ where: { id: delivery.orderId } });
-        if (fullOrder) {
-          const assignment = await tx.orderAssignment.findUnique({
-            where: { orderId: delivery.orderId },
-            select: { id: true, distributorId: true },
-          });
-          if (assignment?.distributorId) {
-            const inventoryConsumption = await consumeDistributorOrderInventory({
-              tx,
-              orderId: fullOrder.id,
-              distributorId: assignment.distributorId,
-              assignmentId: assignment.id,
-              items: parseJson(fullOrder.items, []),
-              actorRole: "NCM",
-            });
-            fullOrder.items = inventoryConsumption.accountingItems;
-            await tx.order.update({
-              where: { id: fullOrder.id },
-              data: { items: inventoryConsumption.accountingItems },
-            });
-          }
-          await postDeliveredOrderAccounting(
-            { order: fullOrder, deliveryOrder: delivery },
-            { client: tx }
-          ).catch((err) => {
-            logger.error("Delivered order accounting posting notice", { error: err.message, orderId: fullOrder.id });
-          });
-          await transitionOrderProductionAllocations({
+        if (!fullOrder) throw new Error(`Order ${delivery.orderId} was not found for delivered-sale accounting.`);
+
+        const assignment = await tx.orderAssignment.findUnique({
+          where: { orderId: delivery.orderId },
+          select: { id: true, distributorId: true },
+        });
+        if (assignment?.distributorId) {
+          const inventoryConsumption = await consumeDistributorOrderInventory({
             tx,
             orderId: fullOrder.id,
-            fromState: "RESERVED",
-            toState: "CONSUMED",
+            distributorId: assignment.distributorId,
+            assignmentId: assignment.id,
+            items: parseJson(fullOrder.items, []),
+            actorRole: "NCM",
+          });
+          fullOrder.items = inventoryConsumption.accountingItems;
+          await tx.order.update({
+            where: { id: fullOrder.id },
+            data: { items: inventoryConsumption.accountingItems },
           });
         }
+        const accountingEvent = await enqueueDeliveredSaleAccounting(
+          { order: fullOrder, deliveryOrder: record },
+          { client: tx },
+        );
+        accountingStatus = accountingEvent.status;
+        await transitionOrderProductionAllocations({
+          tx,
+          orderId: fullOrder.id,
+          fromState: "RESERVED",
+          toState: "CONSUMED",
+        });
       }
 
-      return record;
+      return { record, accountingStatus };
     });
 
     results.push({
@@ -1333,6 +1334,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       deliveryOrder: true,
       deliveryState,
       ncmStatus: canonicalStatus,
+      ...(updated.accountingStatus ? { accountingStatus: updated.accountingStatus } : {}),
     });
   }
   return results;

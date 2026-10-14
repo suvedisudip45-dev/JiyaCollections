@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 
 const GeneralLedger = ({ token }) => {
   const [accounts, setAccounts] = useState([]);
@@ -114,6 +115,8 @@ const GeneralLedger = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={statementData?.accountingPostingStatus} />
 
       {/* Control Bar: Account Selector & Date Range */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs grid grid-cols-1 md:grid-cols-4 gap-4 items-end">

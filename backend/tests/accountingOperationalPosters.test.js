@@ -118,6 +118,7 @@ const createComprehensiveHarness = () => {
       },
     },
     accountingEvent: {
+      findUnique: async ({ where }) => state.events.find((e) => e.id === where.id) || null,
       create: async ({ data }) => {
         if (state.events.some((e) => e.idempotencyKey === data.idempotencyKey)) {
           throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
@@ -374,6 +375,42 @@ test("duplicate delivery sale posting is idempotent and does not create duplicat
 
   assert.equal(first.id, second.id);
   assert.equal(state.entries.length, 1);
+});
+
+test("delivered sale posting consumes a claimed outbox event and includes the order delivery fee", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const sourcePayload = {
+    snapshotVersion: 1,
+    order: { id: "ord-outbox-005", amount: "226.00" },
+  };
+  const accountingEvent = {
+    id: "event-outbox-005",
+    idempotencyKey: "DELIVERY_SALE:ord-outbox-005",
+    sourceType: "DELIVERY_SALE",
+    sourceId: "ord-outbox-005",
+    status: "PROCESSING",
+    payload: sourcePayload,
+    payloadHash: "immutable-source-hash",
+  };
+  state.events.push(accountingEvent);
+
+  const journal = await postDeliveredOrderAccounting({
+    order: {
+      id: "ord-outbox-005",
+      amount: 226,
+      deliveryFee: 22.6,
+      paymentMethod: "COD",
+      orderType: "ONLINE_STORE",
+      items: [],
+    },
+    deliveryOrder: { deliveredAt: new Date("2026-10-16T10:00:00.000Z") },
+  }, { client, accountingEventId: accountingEvent.id });
+
+  assert.equal(journal.accountingEventId, accountingEvent.id);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "4200").credit.toFixed(2), "20.00");
+  assert.equal(accountingEvent.status, "POSTED");
+  assert.equal(accountingEvent.nextAttemptAt, null);
+  assert.deepEqual(accountingEvent.payload, sourcePayload);
 });
 
 test("delivered order posting reuses a transaction-scoped client", async () => {

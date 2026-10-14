@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 
 const getNepalDate = (date) => {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -238,6 +239,8 @@ const FinancialStatements = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={realtimeData?.accountingPostingStatus} />
 
       {/* STATEMENTS NAVIGATION TABS */}
       <div className="flex items-center gap-2 p-1.5 bg-slate-200/60 rounded-2xl w-fit">

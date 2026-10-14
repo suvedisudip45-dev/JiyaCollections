@@ -196,7 +196,7 @@ test("self-delivery selection rejects orders outside the distributor district", 
   );
 });
 
-test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inventory ledger", async (t) => {
+test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory and queues accounting", async (t) => {
   const mockAssignment = {
     id: "assign-1",
     orderId: "order-1",
@@ -208,6 +208,8 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
   const mockOrder = {
     id: "order-1",
     date: 1791566316000n,
+    amount: 200,
+    deliveryFee: 20,
     status: "On the Way",
     fulfillmentStatus: "out_for_delivery",
     items: JSON.stringify([{ productId: "prod-1", size: "M", color: "Black", quantity: 2 }]),
@@ -264,6 +266,9 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
           return { id: "ledger-1" };
         },
       },
+      accountingEvent: {
+        upsert: async ({ create }) => ({ id: "accounting-event-1", ...create }),
+      },
       systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
     })
   );
@@ -279,6 +284,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates order & inve
   assert.equal(res.order.date, 1791566316000);
   assert.equal(res.order.status, "Delivered");
   assert.equal(res.assignment.status, "delivered");
+  assert.equal(res.accountingStatus, "PENDING");
   assert.equal(balanceUpdated, true);
   assert.equal(ledgerCreated, true);
 });

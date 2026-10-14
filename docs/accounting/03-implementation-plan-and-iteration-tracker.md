@@ -1,8 +1,8 @@
 # Accounting Implementation Plan And Iteration Tracker
 
 **Owner:** Engineering + business/accounting approver  
-**Last updated:** 2026-09-29
-**Overall status:** Treasury mapping and a limited atomic posting slice are in progress; no migration has been applied.
+**Last updated:** 2026-10-17
+**Overall status:** Treasury mapping and a limited atomic posting slice are in progress. Delivered-sale accounting now has a durable outbox implementation; its additive migration remains unapplied and rollout is gated.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
 
 ## Goals And Invariants
@@ -78,6 +78,15 @@ No runtime source, schema, frontend, database or accounting records were changed
 | 12 | Admin accounting UI and permissions | NOT STARTED | Existing required finance capability covered with drill-down, filters, statuses, warnings and exports |
 | 13 | Failure, concurrency, security and portal regression | NOT STARTED | Duplicate/retry/out-of-order/concurrent/failure scenarios pass; customer/manufacturer/marketing/admin flows remain compatible |
 | 14 | Cutover and final audit | IN PROGRESS (sandbox gate) | Sandbox migration runbook, reconciliation gate, rollback plan and accountant sign-off are documented; live deployment remains blocked |
+
+## Delivery Accounting Outbox Follow-up (2026-10-17)
+
+- NCM and distributor self-delivery transactions persist a minimal version-1 source snapshot and SHA-256 payload hash in `AccountingEvent` with the delivered state change.
+- A scheduled worker claims due events with a database compare-and-set, retries transient failures with bounded exponential backoff, and recovers stale `PROCESSING` claims. Posting uses the same transaction-scoped client; the journal and event `POSTED` transition commit together.
+- Accounting report/reconciliation APIs return unresolved event counts and a bounded event list. Admin accounting pages warn that these amounts are not part of posted ledger totals until journal posting succeeds.
+- Focused test run: `node --test tests/accountingOutbox.test.js tests/accountingOperationalPosters.test.js tests/distributorSelfDeliveryAndFinance.test.js tests/deliveryAccountingOutboxIntegration.test.js` — **32 passed, 0 failed**. The NCM test confirms delivery state and outbox enqueueing share one transaction. Prisma schema validation passed in the prior validation pass.
+- Migration `20261017000000_delivery_accounting_outbox_schedule` is unapplied. Prisma Client generation is pending because the running Windows backend process held the native engine DLL; do not terminate that process as part of this work.
+- Remaining release checks: isolated-database claim concurrency/recovery test, Prisma Client generation, migration and post-migration verification in an approved environment, then deployment/worker monitoring. Do not claim project-wide ledger snapshot consistency from this slice.
 
 ## Iteration Checkpoint Template
 

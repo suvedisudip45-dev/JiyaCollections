@@ -256,6 +256,7 @@ export const postJournalEntry = async ({
   lines = [],
   createdBy = "system",
   allowClosedPeriod = false,
+  accountingEventId = null,
   client = prisma,
 }) => {
   const cleanDate = transactionDate ? new Date(transactionDate) : new Date();
@@ -328,19 +329,33 @@ export const postJournalEntry = async ({
           credit: line.credit.toFixed(2),
         })),
       };
-      const accountingEvent = await tx.accountingEvent.create({
-        data: {
-          idempotencyKey: accountingEventKey,
-          sourceType: eventSourceType,
-          sourceId: sourceId || journalNumber,
-          sourceVersion: 1,
-          eventType: eventSourceType,
-          effectiveAt: cleanDate,
-          status: "PROCESSING",
-          payload: eventPayload,
-          payloadHash: crypto.createHash("sha256").update(JSON.stringify(eventPayload)).digest("hex"),
-        },
-      });
+      let accountingEvent;
+      if (accountingEventId) {
+        accountingEvent = await tx.accountingEvent.findUnique({ where: { id: accountingEventId } });
+        if (
+          !accountingEvent ||
+          accountingEvent.idempotencyKey !== accountingEventKey ||
+          accountingEvent.sourceType !== eventSourceType ||
+          accountingEvent.sourceId !== (sourceId || journalNumber) ||
+          accountingEvent.status !== "PROCESSING"
+        ) {
+          throw new Error("Accounting outbox event is not claimed for this journal posting.");
+        }
+      } else {
+        accountingEvent = await tx.accountingEvent.create({
+          data: {
+            idempotencyKey: accountingEventKey,
+            sourceType: eventSourceType,
+            sourceId: sourceId || journalNumber,
+            sourceVersion: 1,
+            eventType: eventSourceType,
+            effectiveAt: cleanDate,
+            status: "PROCESSING",
+            payload: eventPayload,
+            payloadHash: crypto.createHash("sha256").update(JSON.stringify(eventPayload)).digest("hex"),
+          },
+        });
+      }
 
       const journalEntry = await tx.journalEntry.create({
         data: {
@@ -377,7 +392,13 @@ export const postJournalEntry = async ({
 
       await tx.accountingEvent.update({
         where: { id: accountingEvent.id },
-        data: { status: "POSTED", processedAt: new Date() },
+        data: {
+          status: "POSTED",
+          processedAt: new Date(),
+          claimedAt: null,
+          nextAttemptAt: null,
+          lastError: null,
+        },
       });
 
       return journalEntry;
@@ -423,7 +444,9 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   const grossAmount = new Prisma.Decimal(String(order.amount || 0));
   if (grossAmount.lessThanOrEqualTo(0)) return null;
 
-  const deliveryCharge = new Prisma.Decimal(String(order.deliveryCharge || deliveryOrder?.customerDeliveryCharge || 0));
+  const deliveryCharge = new Prisma.Decimal(String(
+    order.deliveryCharge || order.deliveryFee || deliveryOrder?.customerDeliveryCharge || 0
+  ));
   const productGross = grossAmount.minus(deliveryCharge);
 
   const productTaxable = productGross.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -675,6 +698,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     referenceNumber: `ORD-${order.id.slice(-6)}`,
     description: `Delivered sale, revenue, VAT, and manufacturer COGS for Order #${order.id.slice(-6)}`,
     lines,
+    accountingEventId: opts.accountingEventId,
     client,
   });
 };

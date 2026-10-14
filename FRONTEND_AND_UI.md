@@ -184,6 +184,8 @@ The application exposes modules such as:
 
 The `/finance` dashboard adds a period cost breakdown for Product COGS, delivery/other overhead, fixed overhead, marketing, and total operating expenses. Product COGS uses accepted production costs; delivery and other approved per-unit costs remain overhead and are reflected in operating profit and break-even calculations. The dashboard API includes `costsAndExpenses.deliveryAndOtherOverheads` alongside `directCOGS` and `totalOperatingExpenses`.
 
+Journal entries, general ledger, trial balance, financial statements, and accounting health display a shared delivered-sale posting warning when the backend reports unresolved outbox events. The warning shows pending/processing/failed/blocked counts and a bounded list of order amounts, and explicitly states that those amounts are excluded from posted ledger balances until posting succeeds.
+
 ### Admin UX behavior
 
 - requires a valid admin token and permission set before route access

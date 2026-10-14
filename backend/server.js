@@ -50,6 +50,7 @@ import notificationRouter from "./routes/notificationRoute.js";
 import { adminGiftRouter, distributorGiftRouter } from "./routes/giftRoute.js";
 import sanitizeMiddleware from "./middleware/sanitize.js";
 import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngine.js";
+import { startDeliveryAccountingOutboxWorker } from "./services/accountingOutboxService.js";
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
 import { syncAllProductsStock } from "./services/stockSyncService.js";
 import { invalidatePrismaQueryCache } from "./utils/prismaQueryCache.js";
@@ -66,6 +67,7 @@ const startServer = async () => {
   await ensureStandardChartOfAccounts();
   await syncAllProductsStock();
   startSystemAuditOutboxWorker();
+  startDeliveryAccountingOutboxWorker();
 
   app.listen(port, () => {
     logger.info("Server started", { port });

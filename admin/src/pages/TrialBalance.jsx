@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 
 const CATEGORY_COLORS = {
   ASSET: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -122,6 +123,8 @@ const TrialBalance = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={data?.accountingPostingStatus} />
 
       {/* Summary Invariant Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
