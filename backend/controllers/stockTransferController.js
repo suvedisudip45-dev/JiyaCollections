@@ -835,6 +835,8 @@ export const listAdminStockTransfers = async (req, res) => {
       ...(status ? { status } : {}),
       ...(bookingMode ? { shipments: { some: { bookingMode } } } : {}),
       ...(req.query.transferId ? { id: String(req.query.transferId) } : {}),
+      ...(req.query.distributorId ? { distributorId: String(req.query.distributorId) } : {}),
+      ...(req.query.manufacturerId ? { manufacturerId: String(req.query.manufacturerId) } : {}),
     };
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
     const limit = Math.min(MAX_PAGE_SIZE, Math.max(1, Number.parseInt(req.query.limit, 10) || 25));

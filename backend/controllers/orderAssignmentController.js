@@ -1153,15 +1153,16 @@ const updateAssignmentStatus = async (req, res) => {
 const getAllAssignments = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
-    const { status, manufacturerId } = req.query;
+    const { status, manufacturerId, distributorId } = req.query;
     const where = {};
     if (status && status !== "all") where.status = status;
     if (manufacturerId) where.manufacturerId = manufacturerId;
+    if (distributorId) where.distributorId = distributorId;
 
     const [assignments, total] = await prisma.$transaction([
       prisma.orderAssignment.findMany({
         where,
-        orderBy: [{ updatedAt: "desc" }, { assignedAt: "desc" }],
+        orderBy: [{ assignedAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
         include: {

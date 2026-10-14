@@ -13,6 +13,61 @@ checks in `backend/routes/` and `backend/middleware/unifiedAuth.js`.
 > receipt. The code does not expose a manufacturer accept/reject step for these
 > bulk requests.
 
+## Admin distributor directory and details
+
+The Admin portal has a separate `/distributors` searchable directory and a
+dedicated `/distributors/:distributorId` profile. The directory is server
+paginated. The detail route loads Profile, Finance, Inventory, Stock transfers,
+Orders & delivery, Returns, Exchanges, and Login history as separate
+on-demand sections; it does not combine those operational records into a
+single warehouse-style view.
+
+The detail API is mounted at `/api/admin/distributors`. Profile, login history,
+inventory, returns, exchanges, finance summary, paginated finance transactions,
+and paginated settlement requests have distinct endpoints and `distributor:admin_*`
+permissions. Every detail endpoint requires the `ADMIN` role. The distributor
+profile editor reuses the existing audited application-profile update flow,
+while delivery, return, commission, incentive, and VAT values reuse the
+approved distributor rate-card workflow.
+
+Manufacturer and distributor profiles remain independent when they share an
+`AuthAccount`; the distributor page links to the existing manufacturer detail
+page rather than mixing their inventory, production, or financial history.
+Inventory totals include current on-hand and available units and estimate
+retail/cost value from current product prices. These estimates are not a
+historical cost-layer valuation. The financial summary reuses the distributor
+statement service; its `receivables` value is currently zero and should not be
+interpreted as a complete accounting-party receivables balance.
+
+## Admin manufacturer directory and details
+
+The existing `/manufacturers` directory retains server-side search and
+pagination. Its detail link opens `/manufacturers/:manufacturerId`, where
+Profile, Factory inventory, Production, Distributor transfers, Finance,
+Transactions, and Payable requests are separate sections. History sections
+load on demand and are paginated.
+
+The page reuses `GET /api/manufacturer/admin/list`,
+`PUT /api/manufacturer/admin/update/:id`,
+`GET /api/manufacturer-production/admin/requests?manufacturerId=...`,
+`GET /api/stock-transfers/admin?manufacturerId=...`, and
+`GET /api/admin/finance/settlements?manufacturerId=...`. Additional
+manufacturer-scoped reads are `GET /api/admin/manufacturers/:id/inventory`,
+`GET /api/admin/manufacturers/:id/finance`, and
+`GET /api/admin/manufacturers/:id/finance/transactions`. Detail APIs enforce
+the `ADMIN` role and focused `manufacturer:admin_*` permissions; the seed does
+not grant these permissions to manufacturer workspaces.
+
+Factory quantities come from current `InventoryBalance` records at platform
+factory locations. Production history displays material/GSM and batch plan,
+MOQ, approved unit COGS, overhead, actual/good quantities, and QA. Finance
+combines the existing manufacturer settlement summary with receivables linked
+to the manufacturer accounting party; transaction history uses journal lines.
+The profile editor reuses the existing update API for business/contact,
+pickup, and contract-date fields. Email updates also synchronize the linked
+login account; contract/account status changes remain on the existing
+contract-status endpoint to avoid an inconsistent account state.
+
 ## 1. System architecture
 
 ```mermaid

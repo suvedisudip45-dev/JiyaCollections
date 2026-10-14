@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { Prisma } from "@prisma/client";
 import { v2 as cloudinary } from "cloudinary";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
@@ -173,125 +174,258 @@ export const searchAdminCustomers = async (req, res) => {
     }
 
     const pagination = getPagination(req.query);
-    const where = {
-      OR: [
-        { name: { contains: query } },
-        { firstName: { contains: query } },
-        { lastName: { contains: query } },
-        { email: { contains: query } },
-        { phone: { contains: query } },
-        { socialCustomerPhone: { contains: query } },
-        { socialCustomerCode: { contains: query } },
-      ],
-    };
-    const [total, pageUsers] = await Promise.all([
-      prisma.user.count({ where }),
-      prisma.user.findMany({
-        where,
-        select: {
-          id: true,
-          accountId: true,
-          firstName: true,
-          lastName: true,
-          name: true,
-          email: true,
-          phone: true,
-          gender: true,
-          socialCustomerCode: true,
-          socialCustomerPhone: true,
-          loyaltyTier: true,
-          isInactiveProfile: true,
-          isDisabled: true,
-          disabledAt: true,
-          addresses: true,
-        },
-        orderBy: [{ name: "asc" }, { id: "asc" }],
-        skip: pagination.skip,
-        take: pagination.limit,
+    const searchPattern = `%${query}%`;
+    const searchCondition = Prisma.sql`(
+      u.name LIKE ${searchPattern}
+      OR CONCAT_WS(' ', COALESCE(u.firstName, ''), COALESCE(u.lastName, '')) LIKE ${searchPattern}
+      OR COALESCE(u.firstName, '') LIKE ${searchPattern}
+      OR COALESCE(u.lastName, '') LIKE ${searchPattern}
+      OR u.email LIKE ${searchPattern}
+      OR COALESCE(u.phone, '') LIKE ${searchPattern}
+      OR COALESCE(u.socialCustomerPhone, '') LIKE ${searchPattern}
+      OR COALESCE(u.socialCustomerCode, '') LIKE ${searchPattern}
+      OR JSON_SEARCH(u.addresses, 'one', ${searchPattern}, NULL, '$[*].phone') IS NOT NULL
+    )`;
+    const [countRows, customers] = await Promise.all([
+      prisma.$queryRaw(Prisma.sql`
+        SELECT COUNT(*) AS total
+        FROM \`User\` u
+        WHERE ${searchCondition}
+      `),
+      prisma.$queryRaw(Prisma.sql`
+        SELECT
+          u.id,
+          u.firstName,
+          u.lastName,
+          u.name,
+          u.email,
+          u.phone,
+          u.socialCustomerPhone,
+          JSON_UNQUOTE(JSON_EXTRACT(u.addresses, '$[0].phone')) AS addressPhone,
+          u.isDisabled,
+          COALESCE(order_stats.totalSpend, 0) AS totalSpend,
+          COALESCE(order_stats.totalOrders, 0) AS totalOrders,
+          COALESCE(exchange_stats.exchangeCount, 0) AS exchangeCount,
+          order_stats.latestOrderDate
+        FROM \`User\` u
+        LEFT JOIN (
+          SELECT userId, SUM(amount) AS totalSpend, COUNT(*) AS totalOrders, MAX(date) AS latestOrderDate
+          FROM \`Order\`
+          WHERE status <> 'Cancelled'
+          GROUP BY userId
+        ) order_stats ON order_stats.userId = u.id
+        LEFT JOIN (
+          SELECT customerId, COUNT(*) AS exchangeCount
+          FROM \`OrderExchangeRequest\`
+          GROUP BY customerId
+        ) exchange_stats ON exchange_stats.customerId = u.id
+        WHERE ${searchCondition}
+        ORDER BY order_stats.latestOrderDate IS NULL ASC, order_stats.latestOrderDate DESC, u.id ASC
+        LIMIT ${pagination.limit} OFFSET ${pagination.skip}
+      `),
+    ]);
+    const total = Number(countRows[0]?.total || 0);
+    const formattedCustomers = customers.map((customer) => ({
+      id: customer.id,
+      firstName: customer.firstName || "",
+      lastName: customer.lastName || "",
+      name: customer.name || `${customer.firstName || ""} ${customer.lastName || ""}`.trim() || "Customer",
+      email: customer.email || "",
+      phone: customer.phone || customer.socialCustomerPhone || customer.addressPhone || "",
+      isDisabled: Boolean(customer.isDisabled),
+      totalSpend: Number(customer.totalSpend || 0),
+      totalOrders: Number(customer.totalOrders || 0),
+      exchangeCount: Number(customer.exchangeCount || 0),
+      latestOrderDate: customer.latestOrderDate == null ? null : Number(customer.latestOrderDate),
+    }));
+    return res.json(paginatedResponse("customers", formattedCustomers, pagination, total));
+  } catch (error) {
+    console.error("Error searching customers:", error);
+    return res.status(500).json({ success: false, message: "Unable to search customers." });
+  }
+};
+
+export const getCustomerAdminProfile = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) return res.status(404).json({ success: false, message: "Customer not found." });
+    const [account, orderSummary, cancelledOrderCount, exchangeCount, returnCount, reviewCount, letterCount] = await Promise.all([
+      user.accountId
+        ? prisma.authAccount.findUnique({
+            where: { id: user.accountId },
+            select: { status: true, createdAt: true, lastLoginAt: true, isEmailVerified: true, isPhoneVerified: true },
+          })
+        : null,
+      prisma.order.aggregate({
+        where: { userId, status: { not: "Cancelled" } },
+        _count: { _all: true },
+        _sum: { amount: true },
+        _min: { date: true },
+        _max: { date: true },
       }),
+      prisma.order.count({ where: { userId, status: "Cancelled" } }),
+      prisma.orderExchangeRequest.count({ where: { customerId: userId } }),
+      prisma.customerReturn.count({ where: { userId } }),
+      prisma.review.count({ where: { userId } }),
+      prisma.customerLetterImage.count({ where: { userId } }),
     ]);
-    const pageUserIds = pageUsers.map(({ id }) => id);
-    const [orders, letters, levels, accounts] = await Promise.all([
-      pageUserIds.length
-        ? prisma.order.findMany({
-            where: { userId: { in: pageUserIds }, status: { notIn: ["Cancelled"] } },
-            select: { id: true, userId: true, amount: true, date: true, status: true, address: true },
-          })
-        : [],
-      pageUserIds.length
-        ? prisma.customerLetterImage.findMany({
-            where: { userId: { in: pageUserIds } },
-            select: { id: true, userId: true },
-          })
-        : [],
-      prisma.customerLevel.findMany({ orderBy: { levelNumber: "asc" } }),
-      pageUsers.some(({ accountId }) => accountId)
-        ? prisma.authAccount.findMany({
-            where: { id: { in: pageUsers.map(({ accountId }) => accountId).filter(Boolean) } },
-            select: { id: true, createdAt: true, lastLoginAt: true, status: true },
-          })
-        : [],
-    ]);
-
-    const ordersByUser = new Map();
-    for (const order of orders) {
-      const userOrders = ordersByUser.get(order.userId) || [];
-      userOrders.push(order);
-      ordersByUser.set(order.userId, userOrders);
-    }
-    const letterCounts = new Map();
-    for (const letter of letters) letterCounts.set(letter.userId, (letterCounts.get(letter.userId) || 0) + 1);
-    const accountById = new Map(accounts.map((account) => [account.id, account]));
-
-    const customers = pageUsers.map((user) => {
-      const userOrders = ordersByUser.get(user.id) || [];
-      const totalSpend = userOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0);
-      let currentLevel = levels[0] || {
-        levelNumber: 1,
-        name: "Bronze Explorer",
-        badgeIcon: "🥉",
-        color: "#CD7F32",
-      };
-      for (const level of levels) {
-        if (totalSpend >= Number(level.minSpend) && userOrders.length >= Number(level.minOrders)) {
-          currentLevel = level;
-        }
-      }
-      const latestOrder = userOrders.reduce(
-        (latest, order) => (!latest || Number(order.date) > Number(latest.date) ? order : latest),
-        null,
-      );
-      const addresses = parseJson(user.addresses, []);
-      const latestAddress = latestOrder ? parseJson(latestOrder.address, {}) : {};
-      const account = accountById.get(user.accountId);
-      return {
+    const count = orderSummary._count._all;
+    const minimumOrderDate = orderSummary._min.date == null ? null : Number(orderSummary._min.date);
+    const maximumOrderDate = orderSummary._max.date == null ? null : Number(orderSummary._max.date);
+    const addresses = parseJson(user.addresses, []);
+    return res.json({
+      success: true,
+      customer: {
         id: user.id,
         firstName: user.firstName || "",
         lastName: user.lastName || "",
         name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Customer",
         email: user.email,
         phone: user.phone || user.socialCustomerPhone || addresses[0]?.phone || "",
-        gender: user.gender || "PREFER_NOT_TO_SAY",
         socialCustomerCode: user.socialCustomerCode || "",
-        loyaltyTier: user.loyaltyTier || "",
-        isInactiveProfile: Boolean(user.isInactiveProfile),
+        gender: user.gender || "PREFER_NOT_TO_SAY",
         isDisabled: Boolean(user.isDisabled),
         disabledAt: user.disabledAt,
-        city: addresses[0]?.city || latestAddress.city || latestAddress.district || "",
-        totalSpend,
-        totalOrders: userOrders.length,
-        letterCount: letterCounts.get(user.id) || 0,
-        currentLevel,
-        latestOrderDate: latestOrder ? Number(latestOrder.date) : null,
-        accountCreatedAt: account?.createdAt || null,
+        disabledReason: user.disabledReason || "",
+        addresses,
+        createdAt: account?.createdAt || null,
         lastLoginAt: account?.lastLoginAt || null,
+        accountStatus: account?.status || (user.isInactiveProfile ? "PROFILE_ONLY" : "NO_AUTH_ACCOUNT"),
+        emailVerified: Boolean(account?.isEmailVerified),
+        phoneVerified: Boolean(account?.isPhoneVerified),
+      },
+      metrics: {
+        orderCount: count,
+        cancelledOrderCount,
+        totalPurchaseAmount: Number(orderSummary._sum.amount || 0),
+        averageOrderAmount: count ? Number(orderSummary._sum.amount || 0) / count : 0,
+        firstOrderDate: minimumOrderDate,
+        lastOrderDate: maximumOrderDate,
+        averageDaysBetweenOrders: count > 1
+          ? (maximumOrderDate - minimumOrderDate) / (count - 1) / 86_400_000
+          : null,
+        exchangeCount,
+        returnCount,
+        reviewCount,
+        letterCount,
+      },
+      loyalty: await calculateUserLoyalty(userId),
+    });
+  } catch (error) {
+    console.error("Error getting customer admin profile:", error);
+    return res.status(500).json({ success: false, message: "Unable to load customer profile." });
+  }
+};
+
+export const getCustomerAdminOrders = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const pagination = getPagination(req.query);
+    const [user, total, orders] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+      prisma.order.count({ where: { userId } }),
+      prisma.order.findMany({
+        where: { userId },
+        orderBy: [{ date: "desc" }, { id: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+    ]);
+    if (!user) return res.status(404).json({ success: false, message: "Customer not found." });
+    const orderIds = orders.map(({ id }) => id);
+    const allProductIds = [...new Set(orders.flatMap((order) => {
+      const items = parseJson(order.items, []);
+      return Array.isArray(items) ? items.map((item) => item.productId || item._id || item.id).filter(Boolean) : [];
+    }))];
+    const [assignments, deliveries, products] = await Promise.all([
+      orderIds.length
+        ? prisma.orderAssignment.findMany({
+            where: { orderId: { in: orderIds } },
+            select: {
+              orderId: true,
+              deliveryType: true,
+              status: true,
+              assignedAt: true,
+              dispatchedAt: true,
+              onTheWayAt: true,
+              deliveredAt: true,
+              distributor: { select: { id: true, name: true } },
+              manufacturer: { select: { id: true, name: true } },
+            },
+          })
+        : [],
+      orderIds.length
+        ? prisma.deliveryOrder.findMany({
+            where: { orderId: { in: orderIds } },
+            select: {
+              orderId: true,
+              state: true,
+              deliveryType: true,
+              originBranchName: true,
+              destinationBranchName: true,
+              customerDeliveryCharge: true,
+              ncmDeliveryCharge: true,
+              codAmount: true,
+              ncmStatus: true,
+              ncmPaymentStatus: true,
+              pickedUpAt: true,
+              deliveredAt: true,
+              returnedAt: true,
+            },
+          })
+        : [],
+      allProductIds.length
+        ? prisma.product.findMany({
+            where: { id: { in: allProductIds } },
+            select: { id: true, name: true, image: true },
+          })
+        : [],
+    ]);
+    const assignmentByOrder = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
+    const deliveryByOrder = new Map(deliveries.map((delivery) => [delivery.orderId, delivery]));
+    const productById = new Map(products.map((product) => [product.id, product]));
+    const formattedOrders = orders.map((order) => {
+      const items = parseJson(order.items, []);
+      return {
+        ...order,
+        date: Number(order.date),
+        address: parseJson(order.address, {}),
+        items: (Array.isArray(items) ? items : []).map((item) => ({
+          ...item,
+          product: productById.get(item.productId || item._id || item.id) || null,
+        })),
+        assignment: assignmentByOrder.get(order.id) || null,
+        delivery: deliveryByOrder.get(order.id) || null,
       };
     });
-
-    return res.json(paginatedResponse("customers", customers, pagination, total));
+    return res.json(paginatedResponse("orders", formattedOrders, pagination, total));
   } catch (error) {
-    console.error("Error searching customers:", error);
-    return res.status(500).json({ success: false, message: "Unable to search customers." });
+    console.error("Error listing customer orders:", error);
+    return res.status(500).json({ success: false, message: "Unable to load customer order history." });
+  }
+};
+
+export const getCustomerAdminLetters = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const pagination = getPagination(req.query);
+    const [user, total, letters] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+      prisma.customerLetterImage.count({ where: { userId } }),
+      prisma.customerLetterImage.findMany({
+        where: { userId },
+        select: { id: true, title: true, notes: true, imageUrl: true, orderId: true, createdAt: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+    ]);
+    if (!user) return res.status(404).json({ success: false, message: "Customer not found." });
+    return res.json(paginatedResponse("letters", letters, pagination, total));
+  } catch (error) {
+    console.error("Error listing customer letters:", error);
+    return res.status(500).json({ success: false, message: "Unable to load customer letters." });
   }
 };
 
@@ -299,17 +433,20 @@ export const searchAdminCustomers = async (req, res) => {
 export const getCustomerDetails = async (req, res) => {
   try {
     const { userId } = req.params;
+    const includeOrders = req.query.includeOrders !== "false";
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       return res.status(404).json({ success: false, message: "Customer not found." });
     }
 
     const [orders, loyaltyStatus] = await Promise.all([
-      prisma.order.findMany({
-        where: { userId },
-        orderBy: { date: "desc" },
-      }),
-      calculateUserLoyalty(userId),
+      includeOrders
+        ? prisma.order.findMany({
+            where: { userId },
+            orderBy: { date: "desc" },
+          })
+        : [],
+      includeOrders ? calculateUserLoyalty(userId) : null,
     ]);
 
     const addresses = parseJson(user.addresses, []);
@@ -321,7 +458,10 @@ export const getCustomerDetails = async (req, res) => {
     });
     const productIds = [...new Set(orderItems.map((item) => item.productId || item.id).filter(Boolean))];
     const inactiveProfileData = parseJson(user.inactiveProfileData, {});
-    const historicalContacts = orders.map((order) => parseJson(order.address, {}));
+    const historicalContacts = includeOrders
+      ? orders.map((order) => parseJson(order.address, {}))
+      : (await prisma.order.findMany({ where: { userId }, select: { address: true } }))
+        .map((order) => parseJson(order.address, {}));
     const contactSources = [
       ...addresses,
       inactiveProfileData,

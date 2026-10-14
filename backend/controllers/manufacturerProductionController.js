@@ -143,8 +143,13 @@ export const listProductionRequests = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
     const status = String(req.query.status || "").trim().toUpperCase();
+    const requestedManufacturerId = String(req.query.manufacturerId || "").trim();
     const where = {
-      ...(req.manufacturerId ? { manufacturerId: req.manufacturerId } : {}),
+      ...(req.manufacturerId
+        ? { manufacturerId: req.manufacturerId }
+        : req.auth?.role === "ADMIN" && requestedManufacturerId
+          ? { manufacturerId: requestedManufacturerId }
+          : {}),
       ...(status && status !== "ALL" ? { status } : {}),
     };
     const [requests, total] = await prisma.$transaction([

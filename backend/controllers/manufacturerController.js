@@ -431,7 +431,10 @@ const listManufacturers = async (req, res) => {
         orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
-        include: { _count: { select: { assignments: true, inventory: true } } },
+        include: {
+          account: { select: { email: true, phone: true, status: true, lastLoginAt: true, createdAt: true } },
+          _count: { select: { assignments: true, inventory: true } },
+        },
       }),
       prisma.manufacturer.count({ where }),
     ]);
@@ -834,6 +837,7 @@ const updateManufacturer = async (req, res) => {
     const {
       name,
       businessName,
+      email,
       phone,
       city,
       ncmPickupBranch,
@@ -863,6 +867,14 @@ const updateManufacturer = async (req, res) => {
     const updateData = {};
     const mfgName = name || businessName;
     if (mfgName !== undefined) updateData.name = mfgName;
+    let normalizedEmail;
+    if (email !== undefined) {
+      normalizedEmail = String(email).trim().toLowerCase();
+      if (!validator.isEmail(normalizedEmail)) {
+        return res.status(400).json({ success: false, message: "Please enter a valid email address." });
+      }
+      updateData.email = normalizedEmail;
+    }
     if (phone !== undefined) updateData.phone = phone;
     if (city !== undefined) updateData.city = city;
     if (ncmPickupBranch !== undefined) updateData.ncmPickupBranch = ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "";
@@ -914,13 +926,35 @@ const updateManufacturer = async (req, res) => {
     if (endVal !== undefined) updateData.contractExpiryDate = endVal ? new Date(endVal) : null;
     if (agreementNotes !== undefined) updateData.agreementNotes = agreementNotes;
 
-    const updated = await prisma.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+    const existingManufacturer = await prisma.manufacturer.findUnique({
+      where: { id: manufacturerId },
+      select: { id: true, accountId: true },
+    });
+    if (!existingManufacturer) {
+      return res.status(404).json({ success: false, message: "Manufacturer profile not found." });
+    }
+    const updated = await prisma.$transaction(async (tx) => {
+      const manufacturer = await tx.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
+      if (normalizedEmail && existingManufacturer.accountId) {
+        await tx.authAccount.update({
+          where: { id: existingManufacturer.accountId },
+          data: { email: normalizedEmail },
+        });
+      }
+      return manufacturer;
+    });
     const { password: _, ...safe } = updated;
     safe.businessName = safe.name;
     res.json({ success: true, message: "Manufacturer updated", manufacturer: safe });
   } catch (error) {
     console.error("updateManufacturer error:", error);
-    res.json({ success: false, message: error.message });
+    const statusCode = error.code === "P2002" ? 409 : error.statusCode || 500;
+    res.status(statusCode).json({
+      success: false,
+      message: error.code === "P2002"
+        ? "That email address is already in use."
+        : error.statusCode ? error.message : "Unable to update manufacturer.",
+    });
   }
 };
 

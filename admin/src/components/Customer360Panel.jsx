@@ -32,7 +32,7 @@ const Empty = ({ children = "No records found." }) => (
   <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">{children}</p>
 );
 
-const Customer360Panel = ({ data, token, onStatusChange }) => {
+const Customer360Panel = ({ data, token, onStatusChange, hideProfile = false, hideOrders = false }) => {
   const { can } = usePermissions();
   const canManageAccount = can("customer:account_manage");
   const [savingStatus, setSavingStatus] = useState(false);
@@ -84,6 +84,8 @@ const Customer360Panel = ({ data, token, onStatusChange }) => {
 
   return (
     <div className="space-y-4 rounded-2xl border-2 border-indigo-100 bg-indigo-50/40 p-4">
+      {!hideProfile && (
+        <>
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Customer 360 profile</p>
@@ -141,7 +143,10 @@ const Customer360Panel = ({ data, token, onStatusChange }) => {
           </p>
         )}
       </Section>
+        </>
+      )}
 
+      {!hideOrders && (
       <Section title="Order history & delivery/COD" count={orders.length}>
         {orders.length === 0 ? <Empty /> : (
           <div className="space-y-3">
@@ -201,6 +206,7 @@ const Customer360Panel = ({ data, token, onStatusChange }) => {
           </div>
         )}
       </Section>
+      )}
 
       <Section title="Products purchased & reviews" count={products.length}>
         {products.length === 0 && productReviews.length === 0 && distributorReviews.length === 0 ? <Empty /> : (

@@ -10,33 +10,41 @@ import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const adminDistributorApplicationRouter = express.Router();
 
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only administrators can manage distributor applications.",
+    });
+  }
+  return next();
+};
+
+adminDistributorApplicationRouter.use(authenticate, requireAdminRole);
+
 adminDistributorApplicationRouter.get(
   "/coverage",
-  authenticate,
   authorize("distributor:admin_list"),
   getDistributorCoverage,
 );
 adminDistributorApplicationRouter.put(
   "/:id/coverage",
-  authenticate,
   authorize("distributor:admin_review"),
   updateDistributorCoverage,
 );
 adminDistributorApplicationRouter.put(
   "/:id/profile",
-  authenticate,
   authorize("distributor:admin_review"),
   updateDistributorAdminProfile,
 );
 adminDistributorApplicationRouter.get(
   "/",
-  authenticate,
   authorize("distributor:admin_list"),
   listManufacturerDistributorApplications,
 );
 adminDistributorApplicationRouter.patch(
   "/:id",
-  authenticate,
   authorize("distributor:admin_review"),
   reviewManufacturerDistributorApplication,
 );

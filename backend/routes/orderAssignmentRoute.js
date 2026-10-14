@@ -20,6 +20,12 @@ import {
 } from "../middleware/unifiedAuth.js";
 
 const orderAssignmentRouter = express.Router();
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({ success: false, code: "ADMIN_ROLE_REQUIRED", message: "Only administrators can access all assignments." });
+  }
+  return next();
+};
 
 // Internal / Admin
 orderAssignmentRouter.post("/assign", authenticate, authorize("assignment:create"), assignOrder);
@@ -30,7 +36,13 @@ orderAssignmentRouter.get(
   getUnassignedOrders,
 );
 orderAssignmentRouter.get("/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
-orderAssignmentRouter.get("/admin/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
+orderAssignmentRouter.get(
+  "/admin/all",
+  authenticate,
+  requireAdminRole,
+  authorizeAny("assignment:admin_list", "distributor:admin_fulfillment_read"),
+  getAllAssignments,
+);
 orderAssignmentRouter.post("/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
 orderAssignmentRouter.post("/admin/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);
 

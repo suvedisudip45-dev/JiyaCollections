@@ -15,9 +15,15 @@ import {
   reviewStockTransferRequest,
   updateStockTransferPreparation,
 } from "../controllers/stockTransferController.js";
-import { authenticate, authorize, setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
+import { authenticate, authorize, authorizeAny, setDistributorContext, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
 const stockTransferRouter = express.Router();
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({ success: false, code: "ADMIN_ROLE_REQUIRED", message: "Only administrators can access all stock transfers." });
+  }
+  return next();
+};
 
 stockTransferRouter.get(
   "/catalog",
@@ -85,7 +91,8 @@ stockTransferRouter.post(
 stockTransferRouter.get(
   "/admin",
   authenticate,
-  authorize("transfer:admin_read"),
+  requireAdminRole,
+  authorizeAny("transfer:admin_read", "distributor:admin_transfers_read", "manufacturer:admin_transfers_read"),
   listAdminStockTransfers,
 );
 stockTransferRouter.post(

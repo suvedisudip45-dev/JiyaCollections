@@ -17,6 +17,7 @@ import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
 import PlatformFeatureSettings from "./pages/PlatformFeatureSettings";
 import Customers from "./pages/Customers";
+import CustomerDetail from "./pages/CustomerDetail";
 import LoyaltyLevels from "./pages/LoyaltyLevels";
 import GiftPromotions from "./pages/GiftPromotions";
 import CreateOrder from "./pages/CreateOrder";
@@ -41,12 +42,15 @@ import TrialBalance from "./pages/TrialBalance";
 import FiscalPeriods from "./pages/FiscalPeriods";
 import AccountingHealth from "./pages/AccountingHealth";
 import Manufacturers from "./pages/Manufacturers";
+import ManufacturerDetail from "./pages/ManufacturerDetail";
 import LocationPricing from "./pages/LocationPricing";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
 import ManufacturerProductionRequests from "./pages/ManufacturerProductionRequests";
 import DistributorApplications from "./pages/DistributorApplications";
+import DistributorDirectory from "./pages/DistributorDirectory";
+import DistributorDetail from "./pages/DistributorDetail";
 import InventoryLedgerAudit from "./pages/InventoryLedgerAudit";
 import StockTransfers from "./pages/StockTransfers";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
@@ -216,16 +220,19 @@ const App = () => {
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
-                  <Route path="/manufacturers/:manufacturerId" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
+                  <Route path="/manufacturers/:manufacturerId" element={withPermission("/manufacturers/:manufacturerId", <ManufacturerDetail token={token} />)} />
                   <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />
                   <Route path="/manufacturer-inventory" element={withPermission("/manufacturer-inventory", <ManufacturerInventoryMonitor token={token} />)} />
                   <Route path="/manufacturer-production" element={withPermission("/manufacturer-production", <ManufacturerProductionRequests token={token} />)} />
                   <Route path="/distributor-applications" element={withPermission("/distributor-applications", <DistributorApplications token={token} />)} />
+                  <Route path="/distributors" element={withPermission("/distributors", <DistributorDirectory token={token} />)} />
+                  <Route path="/distributors/:distributorId" element={withPermission("/distributors/:distributorId", <DistributorDetail token={token} />)} />
                   <Route path="/inventory-ledger" element={withPermission("/inventory-ledger", <InventoryLedgerAudit token={token} />)} />
                   <Route path="/stock-transfers" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/stock-transfers/:transferId" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
+                  <Route path="/customers/:customerId" element={withPermission("/customers/:customerId", <CustomerDetail token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />
                   <Route path="/gift-promotions" element={withPermission("/gift-promotions", <GiftPromotions token={token} />)} />
                   <Route path="/categories" element={withPermission("/categories", <Categories token={token} />)} />
