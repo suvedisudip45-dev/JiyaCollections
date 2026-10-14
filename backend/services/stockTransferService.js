@@ -356,6 +356,34 @@ export const planCostLayerAllocations = (layers, quantity) => {
   return { allocations, uncostedQuantity: remaining };
 };
 
+export const planReceivedCostLayerAllocations = (layers, quantity, alreadyReceivedQuantity = 0) => {
+  const receivedQuantity = Number(quantity);
+  const offsetQuantity = Number(alreadyReceivedQuantity);
+  if (!Number.isSafeInteger(receivedQuantity) || receivedQuantity < 0
+    || !Number.isSafeInteger(offsetQuantity) || offsetQuantity < 0) {
+    throw fail("Receipt cost-layer quantities must be non-negative whole numbers.", "INVALID_COST_LAYER", 409);
+  }
+  let skip = offsetQuantity;
+  let remaining = receivedQuantity;
+  const allocations = [];
+  for (const layer of layers) {
+    const layerQuantity = Number(layer.quantity);
+    if (!Number.isSafeInteger(layerQuantity) || layerQuantity < 0) {
+      throw fail("Dispatched cost-layer quantities must be non-negative whole numbers.", "INVALID_COST_LAYER", 409);
+    }
+    const skipped = Math.min(skip, layerQuantity);
+    skip -= skipped;
+    const available = layerQuantity - skipped;
+    const allocatedQuantity = Math.min(remaining, available);
+    if (allocatedQuantity > 0) {
+      allocations.push({ costLayerId: layer.costLayerId, quantity: allocatedQuantity });
+      remaining -= allocatedQuantity;
+    }
+    if (!remaining) break;
+  }
+  return { allocations, uncostedQuantity: remaining };
+};
+
 export const deriveTransferStatus = ({ lines, shipmentLines }) => {
   const hasDispatched = lines.some((line) => Number(line.dispatchedQuantity || 0) > 0);
   const hasPendingBooking = lines.some((line) => Number(line.reservedShipmentQuantity || 0) > 0);

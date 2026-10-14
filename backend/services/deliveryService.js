@@ -1296,13 +1296,18 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
             select: { id: true, distributorId: true },
           });
           if (assignment?.distributorId) {
-            await consumeDistributorOrderInventory({
+            const inventoryConsumption = await consumeDistributorOrderInventory({
               tx,
               orderId: fullOrder.id,
               distributorId: assignment.distributorId,
               assignmentId: assignment.id,
               items: parseJson(fullOrder.items, []),
               actorRole: "NCM",
+            });
+            fullOrder.items = inventoryConsumption.accountingItems;
+            await tx.order.update({
+              where: { id: fullOrder.id },
+              data: { items: inventoryConsumption.accountingItems },
             });
           }
           await postDeliveredOrderAccounting(

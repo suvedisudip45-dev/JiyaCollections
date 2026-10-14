@@ -12,6 +12,7 @@ import {
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
 } from "../services/accountingPostingEngine.js";
+import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
 
 const createComprehensiveHarness = () => {
   const accounts = STANDARD_CHART_OF_ACCOUNTS.map((acc) => ({
@@ -220,6 +221,90 @@ test("production-layer delivery expenses COGS without accruing it twice to manuf
   assert.equal(inventoryLine.credit.toFixed(2), "200.00");
   assert.equal(deliveryExpenseLine.debit.toFixed(2), "20.00");
   assert.equal(manufacturerPayableLine.credit.toFixed(2), "20.00");
+});
+
+test("new manufacturer production layers flow through distributor delivery into P&L COGS", async () => {
+  const { client } = createComprehensiveHarness();
+  const fulfillmentMovements = [];
+  const balance = { id: "balance-1", locationId: "dist-location-1", quantityOnHand: 2, reservedQuantity: 2 };
+  client.inventorySku = {
+    findUnique: async () => ({ id: "sku-1", isActive: true }),
+  };
+  client.inventoryBalance = {
+    findMany: async ({ where }) => (where.location?.distributorId
+      ? [{ ...balance }]
+      : []),
+    updateMany: async () => {
+      balance.quantityOnHand = 0;
+      balance.reservedQuantity = 0;
+      return { count: 1 };
+    },
+  };
+  client.inventoryLedgerEntry = {
+    findMany: async ({ where }) => {
+      if (where.referenceType === "ORDER") return [];
+      return [
+        {
+          destinationLocationId: "dist-location-1",
+          sourceLocationId: null,
+          quantity: 1,
+          productionCostLayerId: "layer-a",
+          productionCostLayer: {
+            id: "layer-a",
+            unitCogs: "100.00",
+            unitDeliveryCost: "10.00",
+            createdAt: new Date("2026-01-01T00:00:00Z"),
+          },
+        },
+        {
+          destinationLocationId: "dist-location-1",
+          sourceLocationId: null,
+          quantity: 1,
+          productionCostLayerId: "layer-b",
+          productionCostLayer: {
+            id: "layer-b",
+            unitCogs: "125.00",
+            unitDeliveryCost: "15.00",
+            createdAt: new Date("2026-02-01T00:00:00Z"),
+          },
+        },
+      ];
+    },
+    create: async ({ data }) => {
+      fulfillmentMovements.push(data);
+      return data;
+    },
+  };
+  client.product = {
+    findUnique: async () => ({ id: "prod-new-mfg", variants: [] }),
+    update: async ({ data }) => data,
+  };
+  const inventoryConsumption = await consumeDistributorOrderInventory({
+    tx: client,
+    orderId: "ord-distributor-new-mfg-006",
+    distributorId: "dist-1",
+    assignmentId: "assignment-1",
+    actorId: "account-1",
+    items: [{ productId: "prod-new-mfg", size: "M", color: "Black", quantity: 2 }],
+  });
+  assert.deepEqual(fulfillmentMovements.map((movement) => movement.productionCostLayerId), ["layer-a", "layer-b"]);
+
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-distributor-new-mfg-006",
+    userId: "user-cust-006",
+    amount: 452,
+    paymentMethod: "ONLINE_BANK",
+    orderType: "ONLINE_STORE",
+    items: inventoryConsumption.accountingItems,
+  }, { client });
+
+  const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
+  const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
+  const overheadLine = journal.lines.find((line) => line.account.accountCode === "6430");
+  assert.equal(cogsLine.debit.toFixed(2), "225.00");
+  assert.equal(inventoryLine.credit.toFixed(2), "225.00");
+  assert.equal(overheadLine.debit.toFixed(2), "25.00");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
 
 test("delivered direct manufacturer COD sale recognizes commission expense and COD receivable", async () => {

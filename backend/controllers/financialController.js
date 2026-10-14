@@ -11,6 +11,7 @@ import {
   postDirectExpenseAccounting,
   postNcmRemittanceAccounting,
 } from "../services/accountingPostingEngine.js";
+import { calculateFinancialDashboardProductCosts } from "../services/financialDashboardCosting.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
@@ -752,33 +753,53 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       }),
     ]);
 
+    const orderedProductIds = [...new Set(orders.flatMap((order) =>
+      parseOrderItems(order.items)
+        .map((item) => item.productId || item._id || item.id)
+        .filter(Boolean)
+    ))];
+    const [productionCostLayers, approvedManufacturerInventories] = orderedProductIds.length
+      ? await Promise.all([
+        prisma.manufacturerInventoryCostLayer.findMany({
+          where: { productId: { in: orderedProductIds }, createdAt: { lte: endDate } },
+          select: {
+            productId: true,
+            producedQuantity: true,
+            unitCogs: true,
+            unitDeliveryCost: true,
+          },
+        }),
+        prisma.manufacturerInventory.findMany({
+          where: {
+            productId: { in: orderedProductIds },
+            priceStatus: "APPROVED",
+            agreedCostPrice: { not: null },
+          },
+          select: {
+            productId: true,
+            quantity: true,
+            agreedCostPrice: true,
+            priceStatus: true,
+          },
+        }),
+      ])
+      : [[], []];
+
     // Revenue calculations (Gross MRP, VAT Breakdown)
     const vatRate = 0.13; // 13% Nepal VAT
     let grossPeriodRevenueIncVat = 0;
-    let periodDirectCOGS = 0; // VAT inclusive Manufacturer COGS
-    let unitsSoldPeriod = 0;
-
-    // Build Product Cost lookup
-    const productCostMap = {};
-    products.forEach((p) => {
-      productCostMap[p.id] = Number(p.costPrice || 0);
+    const productCosts = calculateFinancialDashboardProductCosts({
+      orders,
+      costLayers: productionCostLayers,
+      manufacturerInventories: approvedManufacturerInventories,
+      products,
     });
+    const periodDirectCOGS = productCosts.directCOGS;
+    const deliveryAndOtherOverheads = productCosts.deliveryAndOtherOverheads;
+    const unitsSoldPeriod = productCosts.unitsSold;
 
     orders.forEach((ord) => {
       grossPeriodRevenueIncVat += Number(ord.amount || 0);
-      let items = [];
-      try {
-        items = typeof ord.items === "string" ? JSON.parse(ord.items) : (ord.items || []);
-      } catch {
-        items = [];
-      }
-      items.forEach((item) => {
-        const qty = Number(item.quantity || 1);
-        unitsSoldPeriod += qty;
-        const pId = item.productId || item._id || item.id;
-        const unitCost = productCostMap[pId] || 0;
-        periodDirectCOGS += unitCost * qty;
-      });
     });
 
     // Customer Returns adjustments in period
@@ -789,9 +810,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     const taxableRevenue = Number((netRevenueIncVat / (1 + vatRate)).toFixed(2));
     const outputVatCollected = Number((netRevenueIncVat - taxableRevenue).toFixed(2));
 
-    // Manufacturer COGS is 13% VAT Inclusive
-    const taxableDirectCOGS = Number((periodDirectCOGS / (1 + vatRate)).toFixed(2));
-    const cogsInputVatClaimable = Number((periodDirectCOGS - taxableDirectCOGS).toFixed(2));
+    const recognizedProductCOGS = periodDirectCOGS;
 
     // Categorized Operating Expenses
     let marketingSpend = 0;
@@ -802,7 +821,6 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     let miscExpenses = 0;
     let maintenance = 0;
     let softwareTools = 0;
-    let totalPackagingExpense = 0;
     let operatingExpenseVatClaimable = 0;
 
     operatingExpensesList.forEach((exp) => {
@@ -824,8 +842,8 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     });
 
     const totalFixedOverheads = officeRent + electricity + utilities + salaries + miscExpenses + maintenance;
-    const totalOperatingExpenses = totalFixedOverheads + marketingSpend;
-    const totalVariableCosts = taxableDirectCOGS + marketingSpend;
+    const totalOperatingExpenses = totalFixedOverheads + marketingSpend + deliveryAndOtherOverheads;
+    const totalVariableCosts = recognizedProductCOGS + deliveryAndOtherOverheads + marketingSpend;
 
     // Monthly Asset Depreciation
     let monthlyDepreciation = 0;
@@ -843,7 +861,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
 
     // Profitability Metrics
     // Gross Profit = Net Taxable Revenue - Net Taxable COGS
-    const grossProfit = Number((taxableRevenue - taxableDirectCOGS).toFixed(2));
+    const grossProfit = Number((taxableRevenue - recognizedProductCOGS).toFixed(2));
     const grossProfitMargin = taxableRevenue > 0 ? Number(((grossProfit / taxableRevenue) * 100).toFixed(1)) : 0;
     
     // Net Operating Profit (EBITDA) = Gross Profit - Operating Expenses
@@ -917,6 +935,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
         },
         costsAndExpenses: {
           directCOGS: periodDirectCOGS,
+          deliveryAndOtherOverheads,
           fixedOverheads: totalFixedOverheads,
           marketingSpend,
           salaries,
@@ -924,7 +943,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
           utilities,
           softwareTools,
           miscExpenses,
-          packagingExpense: totalPackagingExpense,
+          packagingExpense: 0,
           totalOperatingExpenses,
           monthlyDepreciation,
           damagedAssetLoss,

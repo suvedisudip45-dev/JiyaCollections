@@ -32,6 +32,7 @@ import {
   isSameProfileOwner,
   isPositiveLocalFreightCharge,
   planCostLayerAllocations,
+  planReceivedCostLayerAllocations,
   remainingApprovedQuantity,
   validateTransferRequestAvailability,
 } from "../services/stockTransferService.js";
@@ -559,6 +560,63 @@ const dispatchShipmentStock = async (tx, transfer, shipment, lines, actor, { rel
     data: { status: "IN_TRANSIT", dispatchedAt: transfer.dispatchedAt || new Date() },
   });
   return transitLocation;
+};
+
+const receiveCostedTransferStock = async (tx, {
+  shipmentLine,
+  inventorySkuId,
+  sourceLocationId,
+  destinationLocationId,
+  receiptId,
+  goodQuantity,
+  alreadyReceivedGood = 0,
+  actorId,
+  actorRole,
+  reason,
+  idempotencyPrefix,
+}) => {
+  const layerRows = await tx.stockTransferShipmentLineCostLayer.findMany({
+    where: { shipmentLineId: shipmentLine.id, status: "DISPATCHED" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { costLayerId: true, quantity: true },
+  });
+  const plan = planReceivedCostLayerAllocations(layerRows, goodQuantity, alreadyReceivedGood);
+  const movements = [
+    ...plan.allocations.map((allocation) => ({
+      ...allocation,
+      productionCostLayerId: allocation.costLayerId,
+      suffix: `layer:${allocation.costLayerId}`,
+    })),
+    ...(plan.uncostedQuantity > 0 ? [{
+      quantity: plan.uncostedQuantity,
+      productionCostLayerId: null,
+      suffix: "uncosted",
+    }] : []),
+  ];
+
+  let remainingGood = Number(goodQuantity);
+  for (const movement of movements) {
+    const quantity = Math.min(remainingGood, movement.quantity);
+    if (quantity <= 0) continue;
+    await applyInventoryMovement(tx, {
+      inventorySkuId,
+      sourceLocationId,
+      destinationLocationId,
+      quantity,
+      movementType: "TRANSFER_RECEIPT",
+      referenceType: "STOCK_TRANSFER_RECEIPT",
+      referenceId: receiptId,
+      productionCostLayerId: movement.productionCostLayerId,
+      idempotencyKey: `${idempotencyPrefix}:${movement.suffix}`,
+      actorId,
+      actorRole,
+      reason,
+    });
+    remainingGood -= quantity;
+  }
+  if (remainingGood !== 0) {
+    throw fail("Accepted-good receipt quantities could not be matched to the shipment cost layers.", "COST_LAYER_RECEIPT_MISMATCH", 409);
+  }
 };
 
 const releaseNcmReservations = async (tx, transfer, shipment, actorId) => {
@@ -1628,15 +1686,14 @@ export const deliverStockTransferToOwnStore = async (req, res) => {
       for (const line of shipment.lines) {
         const transferLine = transfer.lines.find((item) => item.id === line.stockTransferLineId);
         if (!transferLine) throw fail("A shipment line no longer belongs to this stock transfer.", "TRANSFER_LINE_NOT_FOUND", 409);
-        await applyInventoryMovement(tx, {
+        await receiveCostedTransferStock(tx, {
+          shipmentLine: line,
           inventorySkuId: transferLine.inventorySkuId,
           sourceLocationId: transitLocation.id,
           destinationLocationId: transfer.destinationLocationId,
-          quantity: line.quantity,
-          movementType: "TRANSFER_RECEIPT",
-          referenceType: "STOCK_TRANSFER_RECEIPT",
-          referenceId: receipt.id,
-          idempotencyKey: `stock-transfer:${receipt.id}:${line.id}:own-store`,
+          goodQuantity: line.quantity,
+          receiptId: receipt.id,
+          idempotencyPrefix: `stock-transfer:${receipt.id}:${line.id}:own-store`,
           actorId: actor.id,
           actorRole: actor.role,
           reason: "Accepted-good units delivered directly to the manufacturer's own distributor store.",
@@ -1942,15 +1999,17 @@ export const receiveStockTransferShipment = async (req, res) => {
         const shipmentLine = shipment.lines.find((line) => line.id === receiptLine.shipmentLineId);
         const inventorySkuId = shipmentLine.stockTransferLine.inventorySkuId;
         if (receiptLine.goodQuantity) {
-          await applyInventoryMovement(tx, {
+          const alreadyReceivedGood = shipmentLine.receiptLines.reduce((sum, priorReceiptLine) =>
+            sum + priorReceiptLine.goodQuantity, 0);
+          await receiveCostedTransferStock(tx, {
+            shipmentLine,
             inventorySkuId,
             sourceLocationId: transitLocation.id,
             destinationLocationId: shipment.stockTransfer.destinationLocationId,
-            quantity: receiptLine.goodQuantity,
-            movementType: "TRANSFER_RECEIPT",
-            referenceType: "STOCK_TRANSFER_RECEIPT",
-            referenceId: receipt.id,
-            idempotencyKey: `stock-transfer:${receipt.id}:${shipmentLine.id}:good`,
+            goodQuantity: receiptLine.goodQuantity,
+            alreadyReceivedGood,
+            receiptId: receipt.id,
+            idempotencyPrefix: `stock-transfer:${receipt.id}:${shipmentLine.id}:good`,
             actorId: req.auth.accountId,
             actorRole: "DISTRIBUTOR",
             reason: "Accepted-good units received at distributor location.",

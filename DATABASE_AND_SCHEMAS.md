@@ -190,6 +190,10 @@ The schema includes a full accounting engine with:
 
 This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
 
+`ManufacturerProductionRequest.approvedUnitCogs` is the admin-approved per-unit product cost and is copied to completed `ManufacturerInventoryCostLayer.unitCogs` records. `approvedDeliveryCost` is stored as `unitDeliveryCost` on those layers and remains overhead, not product COGS. The admin financial dashboard prefers order cost snapshots, then weights completed production-layer rates by produced quantity for distributor-fulfilled sales; approved manufacturer inventory pricing and legacy `Product.costPrice` are fallbacks when no production layer exists.
+
+For posted accounting, accepted production layers are traced to distributor stock through `StockTransferShipmentLineCostLayer` and good-receipt `InventoryLedgerEntry.productionCostLayerId` values. Distributor order fulfillment records the consumed layer ID on its `FULFILLMENT` ledger movement and persists its accepted cost allocation in `Order.items`; delivery accounting uses those quantities and layer rates to post COGS (5100), inventory relief (1140), and separate approved production overhead. This applies to new production-layer stock delivered through either distributor self-delivery or NCM. Existing received stock without ledger layer provenance is not assigned a guessed layer cost.
+
 ### 3.9 Gift promotions and distributor gift stock
 
 | Model | Core fields | Notes |

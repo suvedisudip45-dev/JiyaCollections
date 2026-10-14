@@ -421,7 +421,7 @@ export const updateSelfDeliveryStatus = async ({
       assignmentUpdateData.deliveredAt = now;
       orderUpdateData.payment = true; // Mark payment collected if COD
 
-      await consumeDistributorOrderInventory({
+      const inventoryConsumption = await consumeDistributorOrderInventory({
         tx,
         orderId: order.id,
         distributorId,
@@ -429,10 +429,13 @@ export const updateSelfDeliveryStatus = async ({
         items: parseJSON(order.items, []),
         actorId: actorContext.actorId || distributorId,
       });
+      orderUpdateData.items = inventoryConsumption.accountingItems;
 
-      // Post Delivered Order Accounting entries
       try {
-        await postDeliveredOrderAccounting(order.id, tx);
+        await postDeliveredOrderAccounting(
+          { order: { ...order, items: inventoryConsumption.accountingItems } },
+          { client: tx }
+        );
       } catch (err) {
         console.warn("Accounting posting note on self-delivery:", err.message);
       }

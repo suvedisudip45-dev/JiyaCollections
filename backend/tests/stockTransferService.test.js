@@ -21,6 +21,7 @@ import {
   isSameProfileOwner,
   isPositiveLocalFreightCharge,
   planCostLayerAllocations,
+  planReceivedCostLayerAllocations,
   remainingApprovedQuantity,
   validateTransferRequestAvailability,
 } from "../services/stockTransferService.js";
@@ -350,6 +351,28 @@ test("shipment COGS provenance is allocated FIFO and flags unlayered legacy unit
   });
   assert.deepEqual(planCostLayerAllocations([{ id: "layer-1", availableQuantity: 2 }], 5), {
     allocations: [{ costLayerId: "layer-1", quantity: 2 }],
+    uncostedQuantity: 3,
+  });
+});
+
+test("partial distributor receipts map accepted units to dispatched cost layers in FIFO order", () => {
+  const layers = [
+    { costLayerId: "layer-1", quantity: 2 },
+    { costLayerId: "layer-2", quantity: 3 },
+  ];
+  assert.deepEqual(planReceivedCostLayerAllocations(layers, 1), {
+    allocations: [{ costLayerId: "layer-1", quantity: 1 }],
+    uncostedQuantity: 0,
+  });
+  assert.deepEqual(planReceivedCostLayerAllocations(layers, 2, 1), {
+    allocations: [
+      { costLayerId: "layer-1", quantity: 1 },
+      { costLayerId: "layer-2", quantity: 1 },
+    ],
+    uncostedQuantity: 0,
+  });
+  assert.deepEqual(planReceivedCostLayerAllocations(layers, 3, 5), {
+    allocations: [],
     uncostedQuantity: 3,
   });
 });

@@ -180,6 +180,8 @@ The application exposes modules such as:
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
 
+The `/finance` dashboard adds a period cost breakdown for Product COGS, delivery/other overhead, fixed overhead, marketing, and total operating expenses. Product COGS uses accepted production costs; delivery and other approved per-unit costs remain overhead and are reflected in operating profit and break-even calculations. The dashboard API includes `costsAndExpenses.deliveryAndOtherOverheads` alongside `directCOGS` and `totalOperatingExpenses`.
+
 ### Admin UX behavior
 
 - requires a valid admin token and permission set before route access

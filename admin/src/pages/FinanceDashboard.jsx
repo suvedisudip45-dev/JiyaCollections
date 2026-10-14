@@ -295,6 +295,34 @@ const FinanceDashboard = ({ token }) => {
         </div>
       </div>
 
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Product Cost &amp; Overhead Breakdown</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Accepted production cost is counted as product COGS; delivery and other approved per-unit charges are operating overhead.
+            </p>
+          </div>
+          <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
+            {revenue.unitsSold || 0} units in period
+          </span>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {[
+            { label: "Product COGS", value: costs.directCOGS, style: "bg-blue-50 border-blue-100 text-blue-900" },
+            { label: "Delivery & other overhead", value: costs.deliveryAndOtherOverheads, style: "bg-amber-50 border-amber-100 text-amber-900" },
+            { label: "Fixed overhead", value: costs.fixedOverheads, style: "bg-slate-50 border-slate-100 text-slate-800" },
+            { label: "Marketing", value: costs.marketingSpend, style: "bg-violet-50 border-violet-100 text-violet-900" },
+            { label: "Total operating expenses", value: costs.totalOperatingExpenses, style: "bg-rose-50 border-rose-100 text-rose-900" },
+          ].map((row) => (
+            <div key={row.label} className={`rounded-xl border p-4 ${row.style}`}>
+              <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{row.label}</p>
+              <p className="mt-2 text-lg font-black">{currency}{Number(row.value || 0).toLocaleString()}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* ROW 3: QUICK NAVIGATION HUBS */}
       <div>
         <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">
