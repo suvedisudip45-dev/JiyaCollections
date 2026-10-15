@@ -122,7 +122,7 @@ export const processNotificationMessage = async ({ message, channel, providers, 
     return;
   }
 
-  if (["ADMIN_2FA", "PORTAL_2FA"].includes(notification.notificationType)) {
+  if (["ADMIN_2FA", "PORTAL_2FA", "PASSWORD_RESET"].includes(notification.notificationType)) {
     const challenge = await client.adminTwoFactorChallenge.findUnique({
       where: { notificationId: notification.id },
       select: { status: true, expiresAt: true },
@@ -135,7 +135,9 @@ export const processNotificationMessage = async ({ message, channel, providers, 
             status: "CANCELLED",
             failureCode: notification.notificationType === "ADMIN_2FA"
               ? "ADMIN_2FA_CHALLENGE_INACTIVE"
-              : "PORTAL_2FA_CHALLENGE_INACTIVE",
+              : notification.notificationType === "PASSWORD_RESET"
+                ? "PASSWORD_RESET_CHALLENGE_INACTIVE"
+                : "PORTAL_2FA_CHALLENGE_INACTIVE",
             failureReason: "Verification challenge is no longer valid.",
             claimToken: null,
             claimExpiresAt: null,

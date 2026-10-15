@@ -99,6 +99,19 @@ test("route rates fall back to same-district, same-province, and cross-province 
   assert.equal(acrossProvince.tier, "DIFFERENT_PROVINCE");
 });
 
+test("route rates normalize a district suffix instead of treating the route as outside the province", () => {
+  const result = resolveRouteShippingRate({
+    originProvince: "Bagmati Province",
+    originDistrict: "Kathmandu District",
+    destinationProvince: "Bagmati Province",
+    destinationDistrict: "Kathmandu",
+    config: { ...config, routeOverrides: [] },
+  });
+
+  assert.equal(result.fee, 50);
+  assert.equal(result.tier, "SAME_DISTRICT");
+});
+
 test("free delivery applies after resolving the route rate", () => {
   const result = resolveRouteShippingRate({
     originProvince: "Bagmati Province",

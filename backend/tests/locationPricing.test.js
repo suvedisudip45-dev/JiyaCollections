@@ -13,6 +13,10 @@ test("location pricing canonicalizes valid Nepal province and district pairs onl
     province: "Bagmati Province",
     district: "Kathmandu",
   });
+  assert.deepEqual(canonicalizeNepalLocation("Bagmati Province", "Kathmandu District"), {
+    province: "Bagmati Province",
+    district: "Kathmandu",
+  });
   assert.deepEqual(canonicalizeNepalLocation("Lumbini Province", "Nawalparasi West"), {
     province: "Lumbini Province",
     district: "Parasi",

@@ -12,6 +12,14 @@
 4. Successful verification consumes the challenge once and creates access/refresh sessions. The refresh token is issued as an HttpOnly cookie; portal code stores the access token in browser local storage.
 5. Authentication history is written to `AuthAuditLog`. Privileged authentication and unsuccessful authentication events are also enqueued for `SystemAuditLog`, with request correlation IDs when available.
 
+### SMS password recovery
+
+1. Customer, manufacturer, and distributor portals submit the login email, phone number, and portal to the public recovery endpoint. Both identifiers must match the same active account, and its primary role and active profile must match the selected portal; alternate workspace roles cannot be used for cross-portal recovery. If they do not, the API returns the corresponding customer, manufacturer, or distributor not-found message; this intentionally discloses portal eligibility to help users identify the correct login portal.
+2. For an eligible account, before issuing an OTP or queuing an SMS, the backend atomically enforces one password-reset request per rolling seven days and at most three requests per UTC calendar month. Limit violations return HTTP 429 without creating a challenge or sending SMS. Allowed requests create a bounded `PASSWORD_RESET` challenge and queue only an encrypted SMS payload. No email recovery is provided.
+3. OTP challenges expire and allow a configured number of attempts (`PASSWORD_RESET_MAX_ATTEMPTS`, default 5). Successful verification consumes the OTP and returns a random TFA token whose lifetime is controlled by `PASSWORD_RESET_TFA_TOKEN_LIFETIME_MINUTES` (default 5); the backend persists only its keyed hash.
+4. Password completion requires the TFA token, matching confirmation, and a single-use conditional state transition. It updates the bcrypt password hash and revokes all current sessions atomically, then the user returns to ordinary login.
+5. OTP verification, TFA token, and password values are not written to audit metadata. Password recovery currently uses the fixed code `111111` in every environment at the user's request; this is unsafe for production and must be replaced with a cryptographically random OTP before public production use.
+
 ### Customer checkout and fulfillment
 
 1. The storefront requests product, cart, and quote data from the API.
@@ -19,6 +27,7 @@
 3. Order placement writes the order and applicable reservations/financial state through backend services and Prisma transactions.
 4. Online customer fulfillment is assigned to an active, area-matched distributor and updates distributor-ledger inventory. Manufacturer production and replenishment remain separate workflows. Distributor hub actions (direct orders, hub inventory, gift stock, and physical marketing-card stock) require distributor permissions and authenticated distributor context; direct-order stock deductions and gift/card ownership checks are backend-enforced.
 5. Delivery booking and state reconciliation flow through the delivery service and NCM integration/webhooks. Returns and exchanges use approval, inspection, refund/replacement, and carrier workflows; relevant decisions and state changes are audited.
+6. Admin NCM tools call the server-side client only after delivery permissions are checked. Mutating operations enqueue redacted audit metadata; customer/contact and bank payloads are not logged. The client retries read-only GET requests on bounded 5xx responses, but does not automatically retry POST operations because their carrier outcome can be ambiguous. Ticket summaries and latest activity are persisted in `NcmSupportTicket` after successful create/detail/reply/close operations; the permission-protected active/closed list reads only this table and does not call NCM.
 
 ### Admin changes and audit review
 
@@ -48,6 +57,7 @@ The Admin Audit History screen supports filtering by result (`SUCCESS`, `FAILED`
 - Routine read-only page views and every API request are not copied into the audit log. Capturing all reads would create high volume and could expose sensitive usage patterns; use structured request logs and targeted access telemetry for that purpose.
 - Credentials, OTP values, tokens, and full request bodies are not audit event fields. Existing authentication storage may retain an identifier in its separate `AuthAuditLog`; avoid exporting that table broadly.
 - `ADMIN_2FA_DEVELOPMENT_OTP` is an optional fixed value for Admin MFA in local development only; it is accepted only when `NODE_ENV=development` and rejected in other environments. Other privileged portals continue to receive random codes. With the variable absent, Admin send and resend also use random codes.
+- Password recovery currently uses fixed OTP `111111` in every environment at the user's request. This materially weakens account security and must not be exposed in public production use; replace it with cryptographically random OTP generation before enabling public production recovery. The flow still requires `OTP_SERVER_SECRET` and the outbound SMS notification subsystem, and the notification worker must remain operational.
 - IP and user-agent context can be personal data. Define access controls and a retention schedule before enabling production collection at scale.
 - Audit rows are append-only by application convention, not cryptographically immutable against a database administrator. Production-grade tamper evidence requires separate restricted storage or an independently controlled archive.
 - The in-memory auth limiter is per backend process. Durable denial events improve observability but do not make the limiter distributed across replicas.
@@ -56,6 +66,7 @@ The Admin Audit History screen supports filtering by result (`SUCCESS`, `FAILED`
 
 | Priority | Finding | Recommendation |
 | --- | --- | --- |
+| Critical if publicly reachable | Password-recovery OTP is fixed to `111111` in every environment, so anyone who can initiate recovery for a known phone number can bypass possession of that phone. | Before public production use, restore cryptographically random per-challenge OTPs, retain expiry and attempt limits, and test the actual SMS-delivery path. |
 | High | `VITE_AES_KEY` and `VITE_AES_IV` are bundled into browser code. A browser-delivered key is not a secret; client-side AES must not be treated as protection for a password or API request. | Enforce HTTPS and use a coordinated migration to standard TLS-only credential submission. Remove the custom client encryption contract only after all portal clients and the server have been updated and tested. |
 | High | Access tokens are stored in local storage in the portal token helpers. XSS could expose a bearer token. | Reduce XSS risk with a restrictive Content Security Policy and dependency hygiene; plan a migration to short-lived in-memory access tokens and an HttpOnly refresh/session design. |
 | High if misconfigured | A fixed OTP for Admin MFA is permitted only by setting `ADMIN_2FA_DEVELOPMENT_OTP` with `NODE_ENV=development`. The service rejects that setting for any other environment; production must not carry the variable. | Use random codes by default. Keep the fixed value only in an untracked, local development environment and verify the variable is absent from staging/production secrets. |

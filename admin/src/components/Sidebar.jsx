@@ -212,10 +212,12 @@ const Sidebar = ({ isOpen = false, onClose }) => {
           label="Logistics & Supply Chain"
           icon={Icon.supply}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.supply}
-          routes={["/order-assignments", "/delivery-monitor", "/manufacturers", "/manufacturer-inventory", "/manufacturer-production", "/distributor-applications", "/distributors", "/stock-transfers"]}
+          routes={["/order-assignments", "/delivery-monitor", "/ncm-deliveries", "/self-deliveries", "/manufacturers", "/manufacturer-inventory", "/manufacturer-production", "/distributor-applications", "/distributors", "/stock-transfers"]}
         >
           <NavItem to="/order-assignments"     icon={Icon.routing}   label="Order Routing Engine" />
           <NavItem to="/delivery-monitor"      icon={Icon.shipping}  label="Delivery & COD Monitor" />
+          <NavItem to="/ncm-deliveries"        icon={Icon.shipping}  label="NCM Deliveries" />
+          <NavItem to="/self-deliveries"       icon={Icon.shipping}  label="Distributor Self-Delivery" />
           <NavItem to="/manufacturers"         icon={Icon.factory}   label="Manufacturers" />
           <NavItem to="/manufacturer-inventory" icon={Icon.box}      label="Multi-Hub Stock" />
           <NavItem to="/manufacturer-production" icon={Icon.factory} label="Production Requests" />

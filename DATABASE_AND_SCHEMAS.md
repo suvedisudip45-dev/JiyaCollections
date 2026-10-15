@@ -12,7 +12,7 @@ The primary schema definition is in:
 
 - `backend/prisma/schema.prisma`
 
-The schema currently contains a large multi-domain model set, including auth, product catalogs, finance, delivery, returns, marketing cards, manufacturer inventory, and access management. The schema includes 98 model definitions grouped by domain.
+The schema currently contains a large multi-domain model set, including auth, product catalogs, finance, delivery, returns, marketing cards, manufacturer inventory, and access management. The schema includes 136 model definitions grouped by domain.
 
 ## 2. Core Model Families
 
@@ -26,7 +26,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
-| Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, webhook handling |
+| Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, webhook handling |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
 | Platform configuration | `PlatformFeatureConfig` | singleton admin-managed feature flags for loyalty, marketing cards, and letters |
 
@@ -40,11 +40,14 @@ Customer disable state is stored on `User`, not by deleting or replacing the ide
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `AuthAccount` | `id`, `email`, `phone`, `passwordHash`, `role`, `status`, `failedLoginAttempts`, `lastLoginAt`, etc. | Base identity model |
+| `AuthAccount` | `id`, `email`, `phone`, `passwordHash`, `role`, `status`, `failedLoginAttempts`, `passwordResetLastRequestedAt`, `passwordResetMonthlyKey`, `passwordResetMonthlyCount`, `lastLoginAt`, etc. | Base identity; password recovery quota is stored per account |
 | `AuthSession` | `accountId`, `tokenFamilyId`, `jti`, `tokenType`, `expiresAt`, `revokedAt` | Tracks login sessions and JWT lifecycle |
+| `AdminTwoFactorChallenge` | `accountId`, `targetPortal`, `purpose`, `method`, `otpHash`, `status`, `attemptCount`, `expiresAt`, `consumedAt` | Also stores the SMS password-reset OTP and its one-use TFA-token lifecycle |
 | `Role` | `code`, `name`, `portalScope`, `permissions` | Portal-specific role definitions |
 | `Permission` | `code`, `description`, `isActive` | Fine-grained permission values |
 | `AuthAuditLog` | `identifier`, `action`, `status`, `metadata` | Security/audit trail |
+
+The password reset timestamp enforces a rolling seven-day interval, while the monthly quota key uses the UTC calendar month. Recovery requires matching account email and phone plus the active primary role/profile for the selected portal; role mappings for other workspaces do not grant cross-portal recovery. Ineligible accounts return a portal-specific not-found response, intentionally disclosing portal eligibility. Before creating a challenge or SMS, the flow enforces one OTP request per rolling seven days and at most three per month; quota violations return HTTP 429. Apply `20261016000000_add_password_reset_limits` before deploying the updated Prisma client.
 
 ### 3.2 Customer and profile models
 
@@ -74,13 +77,14 @@ Customer disable state is stored on `User`, not by deleting or replacing the ide
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety |
-| `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items |
+| `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items; admin self-delivery monitoring explicitly filters `deliveryType=SELF_DELIVERY` and excludes orders with a `DeliveryOrder` |
 | `ShippingConfig` | `sameDistrictFee`, `sameProvinceFee`, `differentProvinceFee`, `routeOverrides`, `splitShipmentFee`, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tiers plus optional route exceptions and company-paid return/exchange logistics rates; approved requests snapshot the settlement rate and create an accounts payable after logistics completion |
-| `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records |
+| `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; `createdAt,state` index supports the NCM admin monitor |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
 | `NcmRequestAttempt` | `deliveryOrderId`, `operation`, `requestUrl`, `result`, `httpStatus` | idempotent request tracking |
 | `NcmWebhookEvent` | `eventKey`, `event`, `orderId`, `status`, `payloadJson` | webhook ingestion |
+| `NcmSupportTicket` | `ncmTicketId`, `ticketType`, `message`, `status`, `addedOn`, `closedOn`, `lastActivityAt` | compact local ticket index; create/detail/reply/close operations update it, so active/closed lists are served from MySQL without a carrier call; latest comment/reply summaries are retained for activity tracking |
 
 For distributor-assigned customer orders, admins can enter package details and
 request NCM booking from Order Assignments. Confirmed booking data and webhook
@@ -89,6 +93,16 @@ Customer-order status reads use this database state rather than polling NCM's
 status/detail APIs. The webhook is acknowledged after event and status
 persistence. NCM delivery charges are platform/admin settlement amounts, not
 manufacturer or distributor payables.
+
+Admin monitoring lists are paginated and return compact row fields; detail
+routes load bounded event, return, exchange, rating, and settlement sections
+only after a record is opened. NCM date filters use `DeliveryOrder.createdAt`;
+self-delivery date filters use the customer order's epoch-millisecond `Order.date`.
+Both interpret today/week/month/year/custom boundaries in `Asia/Kathmandu`.
+The `OrderAssignment(deliveryType, distributorId, status, assignedAt)` index
+supports the explicit self-delivery filter. NCM has no documented full order
+listing or separate payable/receivable ledger endpoint, so reconciliation is
+limited to known local NCM order IDs.
 
 ### 3.5 Returns and exchange management
 
@@ -261,3 +275,4 @@ Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Or
 - Apply `20261001193000_return_exchange_lifecycle_overhaul`, run the RBAC seed to register new return/exchange permissions, and regenerate Prisma Client before restarting the API. The migration is additive, preserves existing processed return data, and maps its composite attempt indexes to MySQL-safe names under the 64-character identifier limit.
 - Apply `20261005000000_add_system_audit_outbox`, run the RBAC seed to grant `access:audit_read` to the system Admin role, and regenerate Prisma Client before enabling the audit-history API or worker. This migration adds the two audit tables and their query/claim indexes without changing existing business tables. Preserve audit records under a documented retention policy and monitor outbox rows in `FAILED`.
 - Apply `20261017000000_delivery_accounting_outbox_schedule` and regenerate Prisma Client before deploying the delivered-sale accounting worker. Verify migration state in an approved isolated environment; do not use production or an unverified database for validation.
+- Apply `20261015193000_admin_delivery_monitoring_indexes` to add the monitor query indexes before deploying the new paginated delivery views.

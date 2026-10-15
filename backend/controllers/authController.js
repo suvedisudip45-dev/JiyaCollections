@@ -24,6 +24,11 @@ import {
   verifyPortalTwoFactorCode,
 } from "../services/portalTwoFactorService.js";
 import {
+  completePasswordReset,
+  requestPasswordResetOtp,
+  verifyPasswordResetOtp as verifyPasswordResetOtpService,
+} from "../services/passwordResetService.js";
+import {
   clearRefreshCookie,
   getRefreshCookie,
   normalizeRefreshPortal,
@@ -171,6 +176,72 @@ const verifyTwoFactorResponse = async (req, res, expectedPortal = null) => {
 
 export const verifyPortalTwoFactor = (req, res) => verifyTwoFactorResponse(req, res);
 export const verifyAdminTwoFactor = (req, res) => verifyTwoFactorResponse(req, res, "ADMIN");
+
+const passwordResetRequestContext = (req) => ({
+  ipAddress: req.ip || req.headers["x-forwarded-for"] || "",
+  userAgent: req.headers["user-agent"] || "",
+  correlationId: req.correlationId || null,
+});
+
+export const requestPasswordReset = async (req, res) => {
+  try {
+    const result = await requestPasswordResetOtp({
+      email: req.body?.email,
+      phone: req.body?.phone,
+      portal: req.body?.portal,
+      ...passwordResetRequestContext(req),
+    });
+    return res.status(202).json({ success: true, ...result });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Password recovery could not be started.",
+      code: error.code || "PASSWORD_RESET_REQUEST_FAILED",
+    });
+  }
+};
+
+export const verifyPasswordResetOtp = async (req, res) => {
+  try {
+    const result = await verifyPasswordResetOtpService({
+      challengeId: req.body?.challengeId,
+      otp: req.body?.otp,
+      portal: req.body?.portal,
+      ...passwordResetRequestContext(req),
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return res.status(error.statusCode || 401).json({
+      success: false,
+      message: error.message || "Invalid or expired verification code.",
+      code: error.code || "PASSWORD_RESET_OTP_INVALID",
+    });
+  }
+};
+
+export const resetPasswordWithTfaToken = async (req, res) => {
+  try {
+    const result = await completePasswordReset({
+      challengeId: req.body?.challengeId,
+      tfaToken: req.body?.tfaToken,
+      newPassword: req.body?.newPassword,
+      confirmPassword: req.body?.confirmPassword,
+      portal: req.body?.portal,
+      ...passwordResetRequestContext(req),
+    });
+    return res.json({
+      success: true,
+      message: "Password reset successfully. You can now sign in.",
+      ...result,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Password could not be reset.",
+      code: error.code || "PASSWORD_RESET_FAILED",
+    });
+  }
+};
 
 /**
  * Rotates a refresh token and returns a new access/refresh pair.

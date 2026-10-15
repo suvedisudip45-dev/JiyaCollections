@@ -1,6 +1,6 @@
 # Notification Worker
 
-The notification subsystem is isolated from existing order, authentication, and OTP flows. No existing business flow automatically sends SMS or email.
+The notification subsystem is isolated from most order and business flows. Portal MFA and the SMS-only password-recovery flow explicitly enqueue notifications through its transactional outbox; no other business flow automatically sends SMS or email.
 
 ## Runtime configuration
 
@@ -18,6 +18,8 @@ Generate the Prisma client after reviewing the schema, then apply the checked-in
 
 A notification and outbox record are committed in one database transaction. The worker uses persistent RabbitMQ messages, durable exchanges and queues, publisher confirms, manual consumer acknowledgements, bounded retries, and dead-letter queues. Processing is at-least-once; duplicate publishes are possible and provider effects cannot be guaranteed exactly once. Provider acceptance is recorded as `ACCEPTED`, not `DELIVERED`.
 
+OTP and password-reset notifications are cancelled by the worker when their associated challenge is no longer pending or has expired, preventing delayed queue messages from sending unusable codes.
+
 If a provider request times out or a worker disappears after the provider may have accepted the request, the notification becomes `UNKNOWN`; it is not automatically resent because doing so could send duplicates. Operators must reconcile ambiguous outcomes before retrying.
 
 Retryable failures use bounded exponential backoff with jitter. Permanent failures are sent to the dead-letter queue. Insufficient Sparrow credits are stored as failed and are not retried automatically to avoid consuming attempts while the account has no credits.
@@ -29,6 +31,7 @@ The Sparrow incoming callback is disabled by default. It only accepts exact sour
 ## Current implementation limits
 
 - No API endpoint is exposed for general notification creation; the service layer is available to future explicitly approved flows.
+- Password recovery depends on the transactional SMS queue and requires the notification worker, Sparrow SMS, `OTP_SERVER_SECRET`, and SMS configuration to be available.
 - SMS delivery is disabled by default and the current provided URL is HTTP; the provider refuses to transmit the token to non-HTTPS endpoints.
 - SMTP is disabled by default until a verified sender is configured.
 - The email adapter uses SMTP and captures message IDs; it does not receive delivered/open/bounce callbacks.

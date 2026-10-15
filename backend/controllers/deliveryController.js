@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { saveNcmSupportTicket } from "../services/ncmSupportTicketService.js";
 import { readRecentLogs } from "../utils/logger.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
@@ -413,7 +414,13 @@ export const adminRequestSettlement = async (req, res) => {
     }
     try {
       const ticket = await requestCodSettlement({ bankName, bankAccountName, bankAccountNumber });
-      const ticketId = Number(ticket?.ticket || ticket?.id || 0) || null;
+      const savedTicket = await saveNcmSupportTicket(ticket, {
+        ticketType: "COD Transfer",
+        message: "COD transfer request",
+        addedOn: new Date(),
+        recordedByAccountId: req.auth?.accountId || null,
+      });
+      const ticketId = savedTicket.ncmTicketId;
       await prisma.deliveryFinancialSettlement.updateMany({
         where: { settlementState: { in: ["PENDING", "COD_RECEIVED", "REQUESTED"] } },
         data: { ncmTicketId: ticketId, settlementState: "REQUESTED" },

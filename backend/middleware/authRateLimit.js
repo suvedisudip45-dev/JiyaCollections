@@ -16,6 +16,9 @@ export const loadAuthRateLimitConfig = (env = process.env) => ({
   loginUsernameBucketSize: parsePositiveInteger(env, "AUTH_LOGIN_USERNAME_BUCKET_SIZE", 5, 100_000),
   loginIpBucketSize: parsePositiveInteger(env, "AUTH_LOGIN_IP_BUCKET_SIZE", 30, 100_000),
   publicRegisterIpBucketSize: parsePositiveInteger(env, "AUTH_PUBLIC_REGISTER_IP_BUCKET_SIZE", 5, 100_000),
+  passwordResetRequestIpBucketSize: parsePositiveInteger(env, "AUTH_PASSWORD_RESET_REQUEST_IP_BUCKET_SIZE", 10, 100_000),
+  passwordResetVerifyIpBucketSize: parsePositiveInteger(env, "AUTH_PASSWORD_RESET_VERIFY_IP_BUCKET_SIZE", 10, 100_000),
+  passwordResetCompleteIpBucketSize: parsePositiveInteger(env, "AUTH_PASSWORD_RESET_COMPLETE_IP_BUCKET_SIZE", 10, 100_000),
 });
 
 const hashKey = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
@@ -51,6 +54,9 @@ export const createAuthRateLimiters = (options = {}) => {
     loginUsernameBucketSize = 5,
     loginIpBucketSize = 30,
     publicRegisterIpBucketSize = 5,
+    passwordResetRequestIpBucketSize = 10,
+    passwordResetVerifyIpBucketSize = 10,
+    passwordResetCompleteIpBucketSize = 10,
     now = Date.now,
     auditRecorder = recordSystemAudit,
   } = options;
@@ -58,6 +64,9 @@ export const createAuthRateLimiters = (options = {}) => {
     username: new Map(),
     loginIp: new Map(),
     registerIp: new Map(),
+    passwordResetRequestIp: new Map(),
+    passwordResetVerifyIp: new Map(),
+    passwordResetCompleteIp: new Map(),
   };
   const auditedBlocks = new Map();
   let nextCleanupAt = 0;
@@ -180,6 +189,14 @@ export const createAuthRateLimiters = (options = {}) => {
     return next();
   };
 
+  const makePasswordResetLimiter = (bucket, limit, code) => (req, res, next) => {
+    const currentTime = now();
+    cleanupExpired(currentTime);
+    const result = consume(bucket, `password-reset:${getClientIp(req)}`, limit, currentTime);
+    if (result.limited) return reject(req, res, code, result.retryAfter, "PASSWORD_RESET");
+    return next();
+  };
+
   const resetOnSuccessfulLogin = (req, res, next) => {
     const originalJson = res.json.bind(res);
     res.json = (body) => {
@@ -201,7 +218,27 @@ export const createAuthRateLimiters = (options = {}) => {
     return next();
   };
 
-  return { login, publicRegistration, resetOnSuccessfulLogin, resetLoginBuckets };
+  return {
+    login,
+    publicRegistration,
+    resetOnSuccessfulLogin,
+    resetLoginBuckets,
+    passwordResetRequest: makePasswordResetLimiter(
+      buckets.passwordResetRequestIp,
+      passwordResetRequestIpBucketSize,
+      "PASSWORD_RESET_REQUEST_RATE_LIMITED",
+    ),
+    passwordResetVerify: makePasswordResetLimiter(
+      buckets.passwordResetVerifyIp,
+      passwordResetVerifyIpBucketSize,
+      "PASSWORD_RESET_VERIFY_RATE_LIMITED",
+    ),
+    passwordResetComplete: makePasswordResetLimiter(
+      buckets.passwordResetCompleteIp,
+      passwordResetCompleteIpBucketSize,
+      "PASSWORD_RESET_COMPLETE_RATE_LIMITED",
+    ),
+  };
 };
 
 let defaultLimiters;
@@ -224,3 +261,9 @@ export const resetLoginRateLimitOnSuccess = (req, res, next) =>
   getDefaultLimiters().resetOnSuccessfulLogin(req, res, next);
 export const publicRegistrationRateLimit = (req, res, next) =>
   getDefaultLimiters().publicRegistration(req, res, next);
+export const passwordResetRequestRateLimit = (req, res, next) =>
+  getDefaultLimiters().passwordResetRequest(req, res, next);
+export const passwordResetVerifyRateLimit = (req, res, next) =>
+  getDefaultLimiters().passwordResetVerify(req, res, next);
+export const passwordResetCompleteRateLimit = (req, res, next) =>
+  getDefaultLimiters().passwordResetComplete(req, res, next);

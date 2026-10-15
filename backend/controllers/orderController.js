@@ -24,6 +24,7 @@ import {
 } from "../services/comboBundleRules.js";
 import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
+import { getAddressProvince } from "../services/deliveryLocationService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
 
 const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
@@ -683,7 +684,7 @@ const placeOrder = async (req, res) => {
     let shipmentPlan = [];
     try {
       const customerDistrict = address?.district || address?.city || "";
-      const customerProvince = address?.state || address?.province || "";
+      const customerProvince = getAddressProvince(address);
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,
@@ -1509,7 +1510,7 @@ const adminCreateOrder = async (req, res) => {
     let expectedFee = 50;
     try {
       const customerDistrict = resolvedClient.district || resolvedClient.city || "";
-      const customerProvince = resolvedClient.state || resolvedClient.province || "";
+      const customerProvince = getAddressProvince(resolvedClient);
       const shippingResult = await resolveDistrictShippingFee({
         district: customerDistrict,
         province: customerProvince,

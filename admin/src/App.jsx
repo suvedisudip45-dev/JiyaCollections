@@ -46,6 +46,9 @@ import ManufacturerDetail from "./pages/ManufacturerDetail";
 import LocationPricing from "./pages/LocationPricing";
 import OrderAssignments from "./pages/OrderAssignments";
 import DeliveryMonitor from "./pages/DeliveryMonitor";
+import NcmDeliveries from "./pages/NcmDeliveries";
+import SelfDeliveries from "./pages/SelfDeliveries";
+import NcmTools from "./pages/NcmTools";
 import ManufacturerInventoryMonitor from "./pages/ManufacturerInventoryMonitor";
 import ManufacturerProductionRequests from "./pages/ManufacturerProductionRequests";
 import DistributorApplications from "./pages/DistributorApplications";
@@ -219,6 +222,9 @@ const App = () => {
                   <Route path="/orders/:orderId" element={withPermission("/orders", <AdminOrderDetail token={token} />)} />
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
+                  <Route path="/ncm-deliveries" element={withPermission("/ncm-deliveries", <NcmDeliveries token={token} />)} />
+                  <Route path="/self-deliveries" element={withPermission("/self-deliveries", <SelfDeliveries token={token} />)} />
+                  <Route path="/ncm-tools" element={withPermission("/ncm-tools", <NcmTools token={token} />)} />
                   <Route path="/manufacturers" element={withPermission("/manufacturers", <Manufacturers token={token} />)} />
                   <Route path="/manufacturers/:manufacturerId" element={withPermission("/manufacturers/:manufacturerId", <ManufacturerDetail token={token} />)} />
                   <Route path="/location-pricing" element={withPermission("/location-pricing", <LocationPricing token={token} />)} />

@@ -22,16 +22,19 @@ const PROVINCE_ALIASES = new Set(["province1", "province2", "province3", "provin
 
 export const canonicalizeNepalLocation = (provinceValue, districtValue) => {
   const provinceEntry = resolveLocationEntry(provinceValue);
-  const districtAlias = LOCATION_ALIASES.get(cleanKey(districtValue));
+  const normalizedDistrict = String(districtValue || "").trim().replace(/[\s,_-]+district$/i, "").trim();
+  const districtAlias = LOCATION_ALIASES.get(cleanKey(normalizedDistrict));
   const districtEntry = districtAlias
     ? resolveLocationEntry(districtAlias)
-    : resolveLocationEntry(districtValue);
+    : resolveLocationEntry(normalizedDistrict);
   if (!provinceEntry || provinceEntry.type !== "PROVINCE" || !districtEntry || districtEntry.type !== "DISTRICT") return null;
 
   const provinceMatches = cleanKey(provinceEntry.name) === cleanKey(provinceValue) ||
     cleanKey(provinceEntry.code) === cleanKey(provinceValue) ||
     PROVINCE_ALIASES.has(cleanKey(provinceValue));
-  const districtMatches = cleanKey(districtEntry.name) === cleanKey(districtValue) || cleanKey(districtEntry.code) === cleanKey(districtValue) || Boolean(districtAlias);
+  const districtMatches = cleanKey(districtEntry.name) === cleanKey(normalizedDistrict) ||
+    cleanKey(districtEntry.code) === cleanKey(normalizedDistrict) ||
+    Boolean(districtAlias);
   if (!provinceMatches || !districtMatches || cleanKey(districtEntry.province) !== cleanKey(provinceEntry.name)) return null;
   return { province: provinceEntry.name, district: districtEntry.name };
 };

@@ -2,6 +2,7 @@ import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { prepareReadyDelivery, submitDeliveryToNcm } from "./deliveryService.js";
+import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
 
 const parseNotes = (value) => {
   if (!value) return {};
@@ -74,17 +75,20 @@ export const holdDistributorOrderForDelivery = async ({
     const [distributor, address] = await Promise.all([
       client.distributor.findUnique({
         where: { id: distributorId },
-        include: { locations: { where: { isActive: true }, select: { district: true } } },
+        select: {
+          city: true,
+          province: true,
+          district: true,
+          locations: {
+            where: { isActive: true },
+            select: { province: true, district: true },
+          },
+        },
       }),
       Promise.resolve(parseNotes(order.address)),
     ]);
-    const customerDistrict = String(address.district || "").trim().toLowerCase();
-    const coveredDistricts = [
-      distributor?.district,
-      ...(distributor?.locations || []).map((location) => location.district),
-    ].map((district) => String(district || "").trim().toLowerCase()).filter(Boolean);
-    if (!customerDistrict || !coveredDistricts.includes(customerDistrict)) {
-      throw fail("Self-delivery is available only when the customer and distributor share a district.", 409, "SELF_DELIVERY_DISTRICT_MISMATCH");
+    if (!isDistributorLocalDeliveryEligible({ customerAddress: address, distributor: distributor || {} })) {
+      throw fail("Self-delivery is available only when the customer and distributor share a district or the same city.", 409, "SELF_DELIVERY_DISTRICT_MISMATCH");
     }
   }
 

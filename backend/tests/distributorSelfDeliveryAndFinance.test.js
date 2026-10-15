@@ -118,7 +118,7 @@ test("self-delivery listing excludes NCM assignments and legacy NCM bookings", a
   assert.equal(result.pagination.total, 1);
 });
 
-test("self-delivery selection requires matching districts and marks the assignment ready", async (t) => {
+test("self-delivery selection accepts the same city within the same province", async (t) => {
   const assignment = {
     id: "assign-1",
     orderId: "order-1",
@@ -129,7 +129,11 @@ test("self-delivery selection requires matching districts and marks the assignme
   const order = {
     id: "order-1",
     date: 1791566316000n,
-    address: JSON.stringify({ district: "Kathmandu" }),
+    address: JSON.stringify({
+      province: "Bagmati Province",
+      district: "Bhaktapur",
+      city: "Kathmandu",
+    }),
   };
   let assignmentUpdate;
   let orderUpdate;
@@ -137,7 +141,9 @@ test("self-delivery selection requires matching districts and marks the assignme
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => assignment);
   stubMethod(t, prisma.order, "findUnique", async () => order);
   stubMethod(t, prisma.distributor, "findUnique", async () => ({
+    province: "Bagmati Province",
     district: "Kathmandu",
+    city: "Kathmandu",
     locations: [{ district: "Lalitpur" }],
   }));
   stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);

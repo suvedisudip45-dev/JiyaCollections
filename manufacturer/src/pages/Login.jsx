@@ -6,6 +6,7 @@ import { ArrowLeft, Factory, Lock, Mail, ArrowRight, Shield, ShieldCheck, UserPl
 import { useManufacturer } from "../context/ManufacturerContext";
 import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { storeAuthTokens } from "../auth/tokenStorage";
+import PasswordResetFlow from "../components/PasswordResetFlow";
 
 const encryptValue = (plaintext) => {
   const key = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_KEY);
@@ -80,6 +81,7 @@ const Login = () => {
   const [resendAvailableAt, setResendAvailableAt] = useState("");
   const [clock, setClock] = useState(0);
   const [showRegister, setShowRegister] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [registrationType, setRegistrationType] = useState("MANUFACTURER");
   const [loginPortal, setLoginPortal] = useState("MANUFACTURER");
   const [distributorForm, setDistributorForm] = useState(defaultDistributorForm);
@@ -431,6 +433,21 @@ const Login = () => {
       setRegisterLoading(false);
     }
   };
+
+  if (showForgotPassword && !showRegister) {
+    return (
+      <PasswordResetFlow
+        backendUrl={backendUrl}
+        portal={loginPortal}
+        onBack={() => setShowForgotPassword(false)}
+        onComplete={() => {
+          setShowForgotPassword(false);
+          setPassword("");
+          toast.success("Password reset successfully. Sign in with your new password.");
+        }}
+      />
+    );
+  }
 
   if (showRegister && registrationType === "DISTRIBUTOR") {
     return (
@@ -1024,6 +1041,15 @@ const Login = () => {
                 />
               </div>
             </div>
+            {loginStep === "credentials" && (
+              <button
+                type="button"
+                onClick={() => setShowForgotPassword(true)}
+                className="text-xs font-semibold text-emerald-400 hover:text-emerald-300"
+              >
+                Forgot password?
+              </button>
+            )}
 
             <button
               type="submit"

@@ -18,6 +18,9 @@ model AuthAccount {
   failedLoginAttempts Int       @default(0)
   accountLockedUntil  DateTime?
   passwordChangedAt   DateTime?
+  passwordResetLastRequestedAt DateTime?
+  passwordResetMonthlyKey String? @db.VarChar(7)
+  passwordResetMonthlyCount Int   @default(0)
   lastLoginAt         DateTime?
   lastLoginIp         String?   @db.VarChar(64)
 
@@ -2747,6 +2750,7 @@ model OrderAssignment {
   @@index([manufacturerId])
   @@index([distributorId])
   @@index([status])
+  @@index([deliveryType, distributorId, status, assignedAt])
 }
 
 // One carrier package and NCM submission for an order.
@@ -2786,6 +2790,7 @@ model DeliveryOrder {
   events                 DeliveryEvent[]
 
   @@index([state])
+  @@index([createdAt, state])
   @@index([manufacturerId, state])
   @@index([distributorId, state])
   @@index([nextSyncAt])
@@ -2909,6 +2914,35 @@ model DeliveryFinancialSettlement {
 
   @@index([settlementState])
   @@index([ncmOrderId])
+}
+
+model NcmSupportTicket {
+  ncmTicketId       Int       @id
+  ticketType        String    @default("UNKNOWN") @db.VarChar(80)
+  message           String    @db.Text
+  status            String    @default("OPEN") @db.VarChar(32)
+  addedOn           DateTime?
+  closedOn          DateTime?
+  branch            String?   @db.VarChar(200)
+  attachment        String?   @db.Text
+  vendorId          String?   @db.VarChar(64)
+  vendorName        String?   @db.VarChar(200)
+  assignedToId      String?   @db.VarChar(64)
+  assignedToName    String?   @db.VarChar(200)
+  closedById        String?   @db.VarChar(64)
+  closedByName      String?   @db.VarChar(200)
+  latestComment     String?   @db.Text
+  latestCommentAt   DateTime?
+  latestResponse    String?   @db.Text
+  latestResponseAt  DateTime?
+  lastActivityAt    DateTime?
+  lastSyncedAt      DateTime  @default(now())
+  recordedByAccountId String? @db.VarChar(191)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([status, lastActivityAt])
+  @@index([addedOn])
 }
 
 // Operating, Marketing & Overhead Expenses Model

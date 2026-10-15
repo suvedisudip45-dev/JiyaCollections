@@ -15,6 +15,7 @@ import {
 } from "../services/giftService.js";
 import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
+import { isDistributorLocalDeliveryEligible } from "../services/deliveryLocationService.js";
 import { resolveLocationEntry } from "../utils/nepalLocationData.js";
 
 // Helper: Safely parse JSON
@@ -1313,6 +1314,7 @@ const getAssignmentById = async (req, res) => {
             id: true,
             name: true,
             city: true,
+            province: true,
             district: true,
             phone: true,
             ncmPickupBranch: true,
@@ -1321,7 +1323,7 @@ const getAssignmentById = async (req, res) => {
             pickupContactPhone: true,
             locations: {
               where: { isActive: true },
-              select: { district: true },
+              select: { province: true, district: true },
             },
           },
         },
@@ -1375,6 +1377,14 @@ const getAssignmentById = async (req, res) => {
           fulfillmentBenefits: buildFulfillmentBenefits(order, enrichedItems),
         }
       : null;
+    const selfDeliveryAvailable = Boolean(
+      req.distributorId &&
+      enrichedOrder &&
+      isDistributorLocalDeliveryEligible({
+        customerAddress: enrichedOrder.address,
+        distributor: assignment.distributor || {},
+      })
+    );
 
     res.json({
       success: true,
@@ -1384,6 +1394,7 @@ const getAssignmentById = async (req, res) => {
           ? { ...assignment.manufacturer, businessName: assignment.manufacturer.name }
           : null,
         distributor: assignment.distributor || null,
+        selfDeliveryAvailable,
         order: enrichedOrder,
         delivery: delivery ? { ...delivery, comments } : null,
         createdAt: assignment.assignedAt,

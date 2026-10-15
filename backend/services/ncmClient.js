@@ -64,11 +64,9 @@ const requestNcmOnce = async (path, { method = "GET", query, body } = {}) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const payloadForLog = body ? JSON.parse(JSON.stringify(body)) : null;
     logger.info("NCM request started", {
       method,
-      url: sanitizeUrl(url.toString()),
-      requestBody: payloadForLog,
+      path: url.pathname,
     });
 
     const response = await fetch(url, {
@@ -98,32 +96,25 @@ const requestNcmOnce = async (path, { method = "GET", query, body } = {}) => {
 
       logger.error("NCM request failed", {
         method,
-        url: sanitizeUrl(url.toString()),
+        path: url.pathname,
         httpStatus: response.status,
-        requestBody: payloadForLog,
-        responseBody: data,
       });
       throw error;
     }
 
     logger.info("NCM request succeeded", {
       method,
-      url: sanitizeUrl(url.toString()),
+      path: url.pathname,
       httpStatus: response.status,
-      requestBody: payloadForLog,
-      responseBody: data,
     });
 
     return { data, httpStatus: response.status, url: sanitizeUrl(url.toString()) };
   } catch (error) {
     logger.error("NCM request exception", {
       method,
-      url: sanitizeUrl(url.toString()),
-      requestBody: body ? JSON.parse(JSON.stringify(body)) : null,
+      path: url.pathname,
       errorName: error.name,
       errorCode: error.code,
-      errorMessage: error.message,
-      errorResponse: error.response || null,
     });
     if (error.name === "AbortError") {
       const timeoutError = new Error("NCM request timed out");
@@ -150,6 +141,7 @@ const requestNcm = async (path, options = {}) => {
       return { ...result, attemptHistory };
     } catch (error) {
       const isServerFailure = Number(error.httpStatus) >= 500 && Number(error.httpStatus) < 600;
+      const isReadOnlyRequest = String(options.method || "GET").toUpperCase() === "GET";
       attemptHistory.push({
         attemptNumber,
         httpStatus: error.httpStatus || null,
@@ -159,7 +151,12 @@ const requestNcm = async (path, options = {}) => {
         response: error.response || null,
       });
       error.attemptHistory = attemptHistory;
-      if (!isServerFailure || attemptNumber === maximumAttempts) throw error;
+      if (!isReadOnlyRequest || !isServerFailure || attemptNumber === maximumAttempts) {
+        if (!isReadOnlyRequest && (!error.httpStatus || isServerFailure)) {
+          error.outcomeUnknown = true;
+        }
+        throw error;
+      }
       const delayMs = delayBaseMs * (2 ** (attemptNumber - 1));
       if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
@@ -169,6 +166,7 @@ const requestNcm = async (path, options = {}) => {
 
 export const getBranches = () => requestNcm("/api/v2/branches");
 export const getAssignedBranches = () => requestNcm("/api/v2/vendor/assigned-branches");
+export const getVendorStaffs = (query) => requestNcm("/api/v2/vendor/staffs", { query });
 
 export const getNcmBranchRows = (response) => {
   const payload = response?.data ?? response;

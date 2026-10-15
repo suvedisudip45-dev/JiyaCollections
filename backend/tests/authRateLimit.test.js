@@ -6,6 +6,9 @@ import {
   loginRateLimit,
   loginRateLimitForPortal,
   publicRegistrationRateLimit,
+  passwordResetRequestRateLimit,
+  passwordResetVerifyRateLimit,
+  passwordResetCompleteRateLimit,
   resetLoginRateLimitOnSuccess,
 } from "../middleware/authRateLimit.js";
 import authRouter from "../routes/authRoute.js";
@@ -138,6 +141,9 @@ test("rate-limit bucket size and window load from environment values", () => {
     loginUsernameBucketSize: 4,
     loginIpBucketSize: 25,
     publicRegisterIpBucketSize: 3,
+    passwordResetRequestIpBucketSize: 10,
+    passwordResetVerifyIpBucketSize: 10,
+    passwordResetCompleteIpBucketSize: 10,
   });
   assert.throws(() => loadAuthRateLimitConfig({ AUTH_RATE_LIMIT_WINDOW_MS: "0" }), /AUTH_RATE_LIMIT_WINDOW_MS/);
 });
@@ -156,8 +162,12 @@ test("all public login routes use the shared login limiter", () => {
   for (const [router, path, expectedLimiter] of loginRoutes) {
     const [route] = getPostRoutes(router, path);
     assert.ok(route, `POST ${path} route exists`);
-    assert.equal(route.route.stack[0].handle, expectedLimiter);
-    assert.equal(route.route.stack[1].handle, resetLoginRateLimitOnSuccess);
+    const handlers = route.route.stack.map(({ handle }) => handle);
+    const limiterIndex = handlers.indexOf(expectedLimiter);
+    const resetIndex = handlers.indexOf(resetLoginRateLimitOnSuccess);
+    assert.ok(limiterIndex >= 0, `POST ${path} uses its login limiter`);
+    assert.ok(resetIndex > limiterIndex, `POST ${path} resets limits only after the limiter`);
+    assert.ok(resetIndex < handlers.length - 1, `POST ${path} resets limits before the login handler`);
   }
 });
 
@@ -172,7 +182,10 @@ test("only public portal signup routes use the registration limiter", () => {
   assert.notEqual(adminManufacturerRegisterPath.route.stack[0].handle, publicRegistrationRateLimit);
 
   const [partnerSignup] = getPostRoutes(marketingCardRouter, "/partner/signup");
-  assert.equal(partnerSignup.route.stack[0].handle, publicRegistrationRateLimit);
+  const partnerSignupHandlers = partnerSignup.route.stack.map(({ handle }) => handle);
+  const partnerRegistrationLimiterIndex = partnerSignupHandlers.indexOf(publicRegistrationRateLimit);
+  assert.ok(partnerRegistrationLimiterIndex >= 0);
+  assert.ok(partnerRegistrationLimiterIndex < partnerSignupHandlers.length - 1);
 
   const [adminPartnerCreate] = getPostRoutes(marketingCardRouter, "/admin/partners");
   assert.notEqual(adminPartnerCreate.route.stack[0].handle, publicRegistrationRateLimit);
@@ -244,4 +257,51 @@ test("successful MFA verification routes reset the associated login quota", () =
     assert.ok(route, `POST ${path} route exists`);
     assert.equal(route.route.stack[0].handle, resetLoginRateLimitOnSuccess);
   }
+});
+
+test("password reset endpoints use separate request, OTP verification and completion limiters", () => {
+  const routes = [
+    ["/password-reset/request", passwordResetRequestRateLimit],
+    ["/password-reset/verify", passwordResetVerifyRateLimit],
+    ["/password-reset/complete", passwordResetCompleteRateLimit],
+  ];
+  for (const [path, limiter] of routes) {
+    const [route] = getPostRoutes(authRouter, path);
+    assert.ok(route, `POST ${path} route exists`);
+    assert.equal(route.route.stack[0].handle, limiter);
+  }
+});
+
+test("password reset request and OTP verification are rate limited by client IP", () => {
+  const limiter = createTestLimiters({
+    windowMs: 60_000,
+    passwordResetRequestIpBucketSize: 1,
+    passwordResetVerifyIpBucketSize: 1,
+    passwordResetCompleteIpBucketSize: 1,
+    now: () => 5_000,
+  });
+  const makeRequest = (ip) => ({ body: { phone: "9812345678", challengeId: "challenge-1" }, ip, headers: {} });
+
+  assert.equal(invoke(limiter.passwordResetRequest, makeRequest("reset-ip")).nextValue, undefined);
+  assert.equal(invoke(limiter.passwordResetRequest, makeRequest("reset-ip")).body.code, "PASSWORD_RESET_REQUEST_RATE_LIMITED");
+  assert.equal(invoke(limiter.passwordResetVerify, makeRequest("verify-ip")).nextValue, undefined);
+  const blockedOtp = invoke(limiter.passwordResetVerify, makeRequest("verify-ip"));
+  assert.equal(blockedOtp.statusCode, 429);
+  assert.equal(blockedOtp.body.code, "PASSWORD_RESET_VERIFY_RATE_LIMITED");
+});
+
+test("password reset limits support explicit environment configuration", () => {
+  assert.deepEqual(loadAuthRateLimitConfig({
+    AUTH_PASSWORD_RESET_REQUEST_IP_BUCKET_SIZE: "4",
+    AUTH_PASSWORD_RESET_VERIFY_IP_BUCKET_SIZE: "6",
+    AUTH_PASSWORD_RESET_COMPLETE_IP_BUCKET_SIZE: "7",
+  }), {
+    windowMs: 900_000,
+    loginUsernameBucketSize: 5,
+    loginIpBucketSize: 30,
+    publicRegisterIpBucketSize: 5,
+    passwordResetRequestIpBucketSize: 4,
+    passwordResetVerifyIpBucketSize: 6,
+    passwordResetCompleteIpBucketSize: 7,
+  });
 });

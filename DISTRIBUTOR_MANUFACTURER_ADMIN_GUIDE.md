@@ -50,6 +50,16 @@ historical cost-layer valuation. The financial summary reuses the distributor
 statement service; its `receivables` value is currently zero and should not be
 interpreted as a complete accounting-party receivables balance.
 
+The Logistics sidebar also exposes `/ncm-deliveries` and
+`/self-deliveries` as separate admin monitoring views. The first lists local
+NCM delivery records; the second lists only explicit `SELF_DELIVERY`
+assignments and can be filtered by distributor. Both provide Kathmandu-local
+date filters and load return/exchange and order detail only on demand. The
+self-delivery view is not a directory of direct distributor phone/walk-in
+orders. NCM COD settlement requests use the existing NCM ticket and local
+settlement workflow; no carrier-wide payable/receivable ledger is exposed in
+the supplied NCM contract.
+
 ## Admin manufacturer directory and details
 
 The existing `/manufacturers` directory retains server-side search and
@@ -558,7 +568,7 @@ Relevant endpoints:
 | `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings and return per-order outcomes. |
 | `POST /api/distributor/orders/:id/hold` | Distributor | `distributor:assignments_read` | Select self-delivery or NCM and place a package-complete order on hold. |
 | `GET /api/order-assignment/distributor/:id` | Distributor | `distributor:assignment_detail` | Read an assignment through the active distributor profile, including dual-role manufacturer/distributor accounts. |
-| `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; the customer district must match the distributor's district or an active coverage district. |
+| `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; customer and distributor must share a district (registered or active coverage), or have an exact same-city match within the same province. |
 | `PATCH /api/distributor/orders/:id/status` | Distributor | `distributor:assignments_read` | Update status sequentially (`Dispatched` → `On the Way` → `Delivered`). |
 | `POST /api/distributor/orders/:id/return` | Distributor | `distributor:assignments_read` | Process QA and inventory movements for an admin-approved self-delivery return request. |
 | `GET /api/returns/customer/manufacturer` | Distributor | `distributor:delivery_return` | List admin-approved return requests assigned to this distributor hub. |

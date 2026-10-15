@@ -35,8 +35,6 @@ const parseBoolean = (value) => {
   return ["true", "1", "yes", "y"].includes(String(value || "").trim().toLowerCase());
 };
 
-const normalizeDistrict = (value) => String(value || "").trim().toLowerCase();
-
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -550,16 +548,7 @@ const OrderDetail = () => {
     : ["ready_for_pickup", "picked_up", "in_transit", "out_for_delivery", "delivered"].includes(workflowStatus)
       ? WORKFLOW_STEPS.length - (isDistributor ? 2 : 1)
       : 0;
-  const customerDistrict = normalizeDistrict(order?.address?.district);
-  const distributorDistricts = [
-    assignment.distributor?.district,
-    ...(assignment.distributor?.locations || []).map((location) => location.district),
-  ].map(normalizeDistrict).filter(Boolean);
-  const selfDeliveryAvailable = Boolean(
-    isDistributor &&
-    customerDistrict &&
-    distributorDistricts.includes(customerDistrict)
-  );
+  const selfDeliveryAvailable = Boolean(isDistributor && assignment.selfDeliveryAvailable);
   const deliveryActionLabel = workflowStatus === "package_details_complete"
     ? isDistributor
       ? "Hold order"
@@ -693,7 +682,7 @@ const OrderDetail = () => {
               </div>
             ) : (
               <p className="mt-2 text-xs text-emerald-900">
-                The customer is outside your district, so this order must be sent through NCM.
+                Self-delivery is available when the customer is in your district or shares your exact city and province; otherwise use NCM.
               </p>
             )}
           </div>

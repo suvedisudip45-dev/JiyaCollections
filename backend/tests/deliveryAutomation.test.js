@@ -404,3 +404,32 @@ test("NCM client retries bounded 5xx responses and returns attempt history", asy
     restoreEnv("NCM_HTTP_RETRY_DELAY_MS", originalRetryDelay);
   }
 });
+
+test("NCM client does not retry a mutating POST after an ambiguous 5xx response", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  const originalRetryDelay = process.env.NCM_HTTP_RETRY_DELAY_MS;
+  let calls = 0;
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  process.env.NCM_HTTP_RETRY_DELAY_MS = "0";
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ detail: "temporary outage" }), { status: 503 });
+  };
+
+  try {
+    await assert.rejects(() => createOrder({ name: "Test Customer" }), (error) => {
+      assert.match(error.message, /HTTP 503/);
+      assert.equal(error.outcomeUnknown, true);
+      return true;
+    });
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+    restoreEnv("NCM_HTTP_RETRY_DELAY_MS", originalRetryDelay);
+  }
+});

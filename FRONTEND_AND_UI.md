@@ -78,6 +78,8 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 | `/wishlist` | Wishlist |
 | `/verify` | Verification flow |
 
+Customer, manufacturer, and distributor login screens expose a **Forgot password?** flow. Recovery collects the account email and phone number, which must both match the active account for the selected portal. It shows the masked SMS destination returned by the API, verifies the SMS code, requires matching new-password and confirmation fields, and returns the user to normal sign-in. It does not offer email recovery or automatically log the user in.
+
 ### Key client state
 
 The store is driven by `frontend/src/context/ShopContext.jsx` and manages:
@@ -176,7 +178,7 @@ The application exposes modules such as:
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
-- `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`
+- `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
@@ -201,6 +203,8 @@ Journal entries, general ledger, trial balance, financial statements, and accoun
 - `/platform-features` lets authorized admins enable or disable loyalty, marketing cards, and letters. The customer storefront, marketing-partner portal, and distributor portal hide disabled features; backend APIs enforce the same flags.
 - `/customers` starts empty and searches only after an admin submits a query. The detail view aggregates orders and delivery/COD, loyalty, cards, letters, returns/exchanges, reviews, and recorded notification history. Account disable/re-enable is separately guarded by `customer:account_manage`.
 - `/audit-history` requires `access:audit_read` and displays paginated actor/action/entity/date/result-filtered system audit records, including authentication and security signals, with before/after diffs and CSV export. Failed/blocked entries are visually distinguished and explicitly described as signals rather than confirmed breaches. Its in-memory query cache is bounded to 20 entries with a 15-second TTL; Refresh clears the cache and reloads the current query.
+- `/ncm-deliveries` and `/self-deliveries` are distinct compact paginated tables with Kathmandu-local today/week/month/year/all/custom filters. They show only summary fields until a row is opened; NCM detail lazily loads event, return/exchange, financial-settlement, and customer data, while self-delivery detail loads the explicit assignment, distributor location/quality rating, customer order, and return/exchange history. Self-delivery excludes direct distributor phone/walk-in orders and NCM-linked assignments.
+- NCM order, branch/rate, staff/customer, label/comment, and support-ticket tools are split into focused tabs on `/ncm-tools`; NCM COD settlement requests use the existing settlement workflow. NCM support lists active and closed tickets from the local database without a carrier request; support and COD tickets are indexed using the scalar `ticket` ID in NCM's create response. Fetching a ticket by ID loads its latest details and records a local summary. Older tickets can be added to the local index by fetching them once by ID. Webhook callbacks are handled by the backend rather than an admin URL control. The supplied carrier docs provide no full date-range NCM order listing or payable/receivable ledger, so the UI does not claim to reconcile carrier-only orders or a complete external financial ledger.
 - an authenticated visit to `/` redirects to `/orders`; unmatched admin paths render a 404 page with a return-to-orders link
 - `/marketing-cards` supports Own Store campaign creation, public-to-everyone distribution with an admin-configured per-account campaign scan cap (default one), and separate partner/custom-organization distribution tracking while allowing all Own Store cards to be scanned by signed-in customers without a delivered order; physical stock is assigned to distributors, with batch generation, QR export, and print flows. Customer-order card attachment and delivery handoff validate distributor ownership against the order's `OrderAssignment`, including automatically allocated orders that do not store a direct `Order.distributorId`.
 - integrates `react-toastify` for action feedback

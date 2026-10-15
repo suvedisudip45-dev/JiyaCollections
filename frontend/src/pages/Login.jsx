@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { ShopContext } from "../context/ShopContext";
 import axios from "axios";
@@ -8,6 +8,7 @@ import CryptoJS from "crypto-js";
 
 import { sanitizeInput } from "../utils/sanitize";
 import { storeAuthTokens } from "../auth/tokenStorage";
+import PasswordResetFlow from "../components/PasswordResetFlow";
 
 const encryptValue = (plaintext) => {
   const keyHex = import.meta.env.VITE_AES_KEY;
@@ -46,6 +47,7 @@ const Login = () => {
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [isTermsOpen, setIsTermsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [showExistingClient, setShowExistingClient] = useState(false);
   const [existingCustomerPhone, setExistingCustomerPhone] = useState("");
   const [existingCustomerCode, setExistingCustomerCode] = useState("");
@@ -208,6 +210,20 @@ const Login = () => {
       navigate(redirectTo, { replace: true });
     }
   }, [token, redirectTo]);
+
+  if (showForgotPassword) {
+    return (
+      <PasswordResetFlow
+        backendUrl={backendUrl}
+        onBack={() => setShowForgotPassword(false)}
+        onComplete={() => {
+          setShowForgotPassword(false);
+          setPassword("");
+          toast.success("Password reset successfully. Sign in with your new password.");
+        }}
+      />
+    );
+  }
 
   return (
     <>
@@ -462,9 +478,13 @@ const Login = () => {
         {/* Switch Between Login and Sign Up */}
         <div className="w-full flex justify-between text-sm mt-1">
           {currentState === "Login" ? (
-            <p className="cursor-pointer text-xs text-gray-500 hover:text-black">
+            <button
+              type="button"
+              onClick={() => setShowForgotPassword(true)}
+              className="cursor-pointer text-xs text-gray-500 hover:text-black"
+            >
               Forgot your password?
-            </p>
+            </button>
           ) : (
             <div></div>
           )}

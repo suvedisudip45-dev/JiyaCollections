@@ -13,9 +13,18 @@ import {
   verifyPortalTwoFactor,
   sendAdminTwoFactor,
   verifyAdminTwoFactor,
+  requestPasswordReset,
+  verifyPasswordResetOtp,
+  resetPasswordWithTfaToken,
 } from "../controllers/authController.js";
 import { authenticate } from "../middleware/unifiedAuth.js";
-import { loginRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
+import {
+  loginRateLimit,
+  resetLoginRateLimitOnSuccess,
+  passwordResetRequestRateLimit,
+  passwordResetVerifyRateLimit,
+  passwordResetCompleteRateLimit,
+} from "../middleware/authRateLimit.js";
 
 const authRouter = express.Router();
 
@@ -28,6 +37,9 @@ authRouter.post("/2fa/resend", resendPortalTwoFactor);
 authRouter.post("/2fa/verify", resetLoginRateLimitOnSuccess, verifyPortalTwoFactor);
 authRouter.post("/admin/2fa/send", sendAdminTwoFactor);
 authRouter.post("/admin/2fa/verify", resetLoginRateLimitOnSuccess, verifyAdminTwoFactor);
+authRouter.post("/password-reset/request", passwordResetRequestRateLimit, requestPasswordReset);
+authRouter.post("/password-reset/verify", passwordResetVerifyRateLimit, verifyPasswordResetOtp);
+authRouter.post("/password-reset/complete", passwordResetCompleteRateLimit, resetPasswordWithTfaToken);
 authRouter.post("/logout", authenticate, logout);
 
 // OTP Endpoints

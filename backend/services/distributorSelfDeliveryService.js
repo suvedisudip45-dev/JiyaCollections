@@ -4,6 +4,7 @@ import { recordSystemAudit } from "./auditService.js";
 import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
+import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
 import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
@@ -271,23 +272,18 @@ export const markDistributorSelfDeliveryReady = async ({
   }
 
   const address = parseJSON(order.address, {});
-  const customerDistrict = normalize(address.district);
   const distributor = await client.distributor.findUnique({
     where: { id: distributorId },
     include: {
       locations: {
         where: { isActive: true },
-        select: { district: true },
+        select: { province: true, district: true },
       },
     },
   });
-  const coveredDistricts = [
-    distributor?.district,
-    ...(distributor?.locations || []).map((location) => location.district),
-  ].map(normalize).filter(Boolean);
-  if (!customerDistrict || !coveredDistricts.includes(customerDistrict)) {
+  if (!isDistributorLocalDeliveryEligible({ customerAddress: address, distributor: distributor || {} })) {
     throw fail(
-      "Self-delivery is available only when the customer and distributor share a district.",
+      "Self-delivery is available only when the customer and distributor share a district or the same city.",
       409,
       "SELF_DELIVERY_DISTRICT_MISMATCH",
     );

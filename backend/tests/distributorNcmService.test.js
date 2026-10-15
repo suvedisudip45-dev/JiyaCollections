@@ -13,6 +13,10 @@ const makeHoldClient = ({
   deliveryType = "SELF_DELIVERY",
   notes = JSON.stringify({ packageWeight: 1 }),
   district = "Kaski",
+  customerCity = "",
+  customerProvince = "Gandaki Province",
+  distributorCity = "Pokhara",
+  distributorProvince = "Gandaki Province",
   hasDelivery = false,
   latestAttempt = null,
 } = {}) => {
@@ -37,7 +41,7 @@ const makeHoldClient = ({
       findUnique: async () => ({
         id: "order-1",
         status: "Confirmed",
-        address: { district },
+        address: { district, city: customerCity, province: customerProvince },
       }),
       update: async (query) => {
         calls.push({ type: "order.update", query });
@@ -45,7 +49,12 @@ const makeHoldClient = ({
       },
     },
     distributor: {
-      findUnique: async () => ({ district: "Kaski", locations: [] }),
+      findUnique: async () => ({
+        city: distributorCity,
+        province: distributorProvince,
+        district: "Kaski",
+        locations: [],
+      }),
     },
     deliveryOrder: {
       findUnique: async () => hasDelivery
@@ -85,7 +94,42 @@ test("holding a packed distributor order stores selected delivery and on-hold st
 });
 
 test("holding a self-delivery order rejects a customer outside the distributor district", async () => {
-  const { client } = makeHoldClient({ district: "Dharan" });
+  const { client } = makeHoldClient({ district: "Dharan", customerCity: "Dharan" });
+  await assert.rejects(
+    holdDistributorOrderForDelivery({
+      distributorId: "distributor-1",
+      assignmentId: "assignment-1",
+      deliveryType: "SELF_DELIVERY",
+      client,
+    }),
+    { code: "SELF_DELIVERY_DISTRICT_MISMATCH", statusCode: 409 },
+  );
+});
+
+test("holding a self-delivery order accepts the same city when the district fields differ", async () => {
+  const { client, calls } = makeHoldClient({
+    district: "Bhaktapur",
+    customerCity: "Kathmandu",
+    distributorCity: "kathmandu",
+  });
+  const result = await holdDistributorOrderForDelivery({
+    distributorId: "distributor-1",
+    assignmentId: "assignment-1",
+    deliveryType: "SELF_DELIVERY",
+    client,
+  });
+  assert.equal(result.status, "on_hold");
+  assert.equal(calls.find((call) => call.type === "assignment.updateMany").query.data.deliveryType, "SELF_DELIVERY");
+});
+
+test("holding a self-delivery order rejects a same-city match across provinces", async () => {
+  const { client } = makeHoldClient({
+    district: "Sunsari",
+    customerCity: "Pokhara",
+    customerProvince: "Koshi Province",
+    distributorCity: "Pokhara",
+    distributorProvince: "Gandaki Province",
+  });
   await assert.rejects(
     holdDistributorOrderForDelivery({
       distributorId: "distributor-1",
