@@ -10,6 +10,10 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { serializeRegistrationResponse } from "../dtos/registrationDto.js";
 import { assignAccountRole } from "../services/rbacService.js";
 import { setRefreshCookie } from "../utils/refreshCookie.js";
+import {
+  invalidateLocationLookupCache,
+  validateNcmLocationSelection,
+} from "../services/locationLookupService.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -74,6 +78,7 @@ const syncNcmBranches = async (req, res) => {
     });
 
     ncmBranchesCache = { expiresAt: 0, branches: [] };
+    invalidateLocationLookupCache();
     res.json({ success: true, message: `Synchronized ${rows.length} NCM branches`, count: rows.length, syncedAt });
   } catch (error) {
     console.error("syncNcmBranches error:", error);
@@ -163,6 +168,9 @@ const registerManufacturer = async (req, res) => {
       phone,
       city,
       ncmPickupBranch,
+      province,
+      district,
+      street,
       pickupAddress,
       pickupContactName,
       pickupContactPhone,
@@ -183,6 +191,17 @@ const registerManufacturer = async (req, res) => {
     const mfgName = (name || businessName || "").trim();
     if (!mfgName || !email || !password || !phone || !city) {
       return res.json({ success: false, message: "Business name, email, password, phone, and city are required" });
+    }
+    let branchSelection;
+    try {
+      branchSelection = await validateNcmLocationSelection({
+        province,
+        district,
+        branch: ncmPickupBranch || city,
+        coveredArea: street,
+      });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, message: error.message });
     }
 
     if (!validator.isEmail(String(email).trim())) {
@@ -254,8 +273,8 @@ const registerManufacturer = async (req, res) => {
           email: cleanEmail,
           password: hashed,
           phone: normalizedPhone,
-          city: city.trim(),
-          ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
+          city: branchSelection.branch.name,
+          ncmPickupBranch: branchSelection.branch.name.toUpperCase(),
           pickupBranchStatus: "UNVERIFIED",
           pickupAddress: pickupAddress || address || null,
           pickupContactName: pickupContactName || "",
@@ -298,6 +317,9 @@ const registerManufacturerSelf = async (req, res) => {
       phone,
       city,
       ncmPickupBranch,
+      province,
+      district,
+      street,
       pickupAddress,
       pickupContactName,
       pickupContactPhone,
@@ -318,6 +340,17 @@ const registerManufacturerSelf = async (req, res) => {
     const mfgName = (name || businessName || "").trim();
     if (!mfgName || !email || !password || !phone || !city || !pickupAddress) {
       return res.json({ success: false, message: "Business name, email, password, phone, city, and pickup address are required" });
+    }
+    let branchSelection;
+    try {
+      branchSelection = await validateNcmLocationSelection({
+        province,
+        district,
+        branch: ncmPickupBranch || city,
+        coveredArea: street,
+      });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, message: error.message });
     }
 
     const normalizedPhone = normalizePhoneNumber(phone);
@@ -375,8 +408,8 @@ const registerManufacturerSelf = async (req, res) => {
           email: normalizedEmail,
           password: hashed,
           phone: normalizedPhone,
-          city: city.trim(),
-          ncmPickupBranch: ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "",
+          city: branchSelection.branch.name,
+          ncmPickupBranch: branchSelection.branch.name.toUpperCase(),
           pickupBranchStatus: "UNVERIFIED",
           pickupAddress: pickupAddress || address || null,
           pickupContactName: pickupContactName || "",
@@ -676,7 +709,16 @@ export const resolveCommissionUpdate = ({ currentManufacturer, actorRole, body =
   }
 
   const lockUntil = currentManufacturer?.commissionLockUntil ? new Date(currentManufacturer.commissionLockUntil) : null;
-  if (currentManufacturer?.commissionStatus === "APPROVED" && lockUntil && lockUntil > now) {
+  const isAdminProposal =
+    normalizedActor === "ADMIN" &&
+    body?.proposedCommissionRate !== undefined &&
+    body?.agreedCommissionRate === undefined;
+  if (
+    currentManufacturer?.commissionStatus === "APPROVED" &&
+    lockUntil &&
+    lockUntil > now &&
+    !isAdminProposal
+  ) {
     const formattedDate = lockUntil.toLocaleDateString("en-GB", {
       day: "2-digit",
       month: "short",
@@ -689,9 +731,20 @@ export const resolveCommissionUpdate = ({ currentManufacturer, actorRole, body =
     };
   }
 
-  const normalizedProposed = normalizeCommissionRate(body?.proposedCommissionRate ?? currentManufacturer?.proposedCommissionRate);
-  const normalizedAgreed = normalizeCommissionRate(body?.agreedCommissionRate ?? currentManufacturer?.agreedCommissionRate);
+  const normalizedProposed = normalizeCommissionRate(body?.proposedCommissionRate);
+  const normalizedAgreed = normalizeCommissionRate(body?.agreedCommissionRate);
   const commissionStatus = String(body?.commissionStatus || currentManufacturer?.commissionStatus || "PENDING").trim().toUpperCase();
+
+  if (commissionStatus === "REJECTED") {
+    return {
+      allowed: true,
+      message: "Commission rejected. Please revise and send a new proposal.",
+      updateData: {
+        commissionStatus: "PENDING",
+        proposedCommissionRate: currentManufacturer?.proposedCommissionRate ?? null,
+      },
+    };
+  }
 
   if (normalizedAgreed !== null) {
     const lastProposedBy = String(currentManufacturer?.commissionLastProposedBy || "").trim().toUpperCase();
@@ -749,17 +802,6 @@ export const resolveCommissionUpdate = ({ currentManufacturer, actorRole, body =
         commissionLastProposedBy: normalizedActor,
         commissionNote: body?.commissionNote ?? currentManufacturer?.commissionNote ?? null,
         adminCommissionFeedback: body?.adminCommissionFeedback ?? currentManufacturer?.adminCommissionFeedback ?? null,
-      },
-    };
-  }
-
-  if (commissionStatus === "REJECTED") {
-    return {
-      allowed: true,
-      message: "Commission rejected. Please revise and send a new proposal.",
-      updateData: {
-        commissionStatus: "PENDING",
-        proposedCommissionRate: currentManufacturer?.proposedCommissionRate ?? null,
       },
     };
   }
@@ -864,6 +906,27 @@ const updateManufacturer = async (req, res) => {
       adminCommissionFeedback,
     } = req.body;
 
+    const existingManufacturer = await prisma.manufacturer.findUnique({
+      where: { id: manufacturerId },
+      select: {
+        id: true,
+        accountId: true,
+        ncmPickupBranch: true,
+        pickupBranchStatus: true,
+        pickupBranchVerifiedAt: true,
+        proposedCommissionRate: true,
+        agreedCommissionRate: true,
+        commissionStatus: true,
+        commissionLastProposedBy: true,
+        commissionFinalizedAt: true,
+        commissionLockUntil: true,
+        commissionHistory: true,
+      },
+    });
+    if (!existingManufacturer) {
+      return res.status(404).json({ success: false, message: "Manufacturer profile not found." });
+    }
+
     const updateData = {};
     const mfgName = name || businessName;
     if (mfgName !== undefined) updateData.name = mfgName;
@@ -876,9 +939,37 @@ const updateManufacturer = async (req, res) => {
       updateData.email = normalizedEmail;
     }
     if (phone !== undefined) updateData.phone = phone;
-    if (city !== undefined) updateData.city = city;
-    if (ncmPickupBranch !== undefined) updateData.ncmPickupBranch = ncmPickupBranch ? String(ncmPickupBranch).trim().toUpperCase() : "";
-    if (pickupBranchStatus !== undefined) updateData.pickupBranchStatus = String(pickupBranchStatus || "UNVERIFIED").trim().toUpperCase();
+    const submittedBranch = ncmPickupBranch !== undefined ? ncmPickupBranch : city;
+    if (submittedBranch !== undefined) {
+      let branchSelection = null;
+      try {
+        branchSelection = await validateNcmLocationSelection({ branch: submittedBranch });
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+      }
+      const nextBranch = branchSelection?.branch.name || "";
+      updateData.city = nextBranch || String(submittedBranch || "").trim();
+      updateData.ncmPickupBranch = nextBranch.toUpperCase();
+      if (String(existingManufacturer.ncmPickupBranch || "").trim().toLocaleLowerCase() !== nextBranch.toLocaleLowerCase()
+        && pickupBranchStatus === undefined) {
+        updateData.pickupBranchStatus = "UNVERIFIED";
+        updateData.pickupBranchVerifiedAt = null;
+      }
+    }
+    if (pickupBranchStatus !== undefined) {
+      const normalizedStatus = String(pickupBranchStatus || "UNVERIFIED").trim().toUpperCase();
+      if (!["UNVERIFIED", "VERIFIED", "REJECTED"].includes(normalizedStatus)) {
+        return res.status(400).json({ success: false, message: "Invalid manufacturer pickup status." });
+      }
+      updateData.pickupBranchStatus = normalizedStatus;
+      if (normalizedStatus === "VERIFIED") {
+        updateData.pickupBranchVerifiedAt = existingManufacturer.pickupBranchStatus === "VERIFIED"
+          ? existingManufacturer.pickupBranchVerifiedAt || new Date()
+          : new Date();
+      } else {
+        updateData.pickupBranchVerifiedAt = null;
+      }
+    }
     if (pickupAddress !== undefined) updateData.pickupAddress = pickupAddress || null;
     if (pickupContactName !== undefined) updateData.pickupContactName = String(pickupContactName || "").trim();
     if (pickupContactPhone !== undefined) updateData.pickupContactPhone = String(pickupContactPhone || "").trim();
@@ -889,12 +980,30 @@ const updateManufacturer = async (req, res) => {
     if (isAvailable !== undefined) updateData.isAvailable = Boolean(isAvailable);
     if (contractStatus !== undefined) updateData.contractStatus = String(contractStatus).trim().toUpperCase();
 
-    const normalizedCommission = normalizeCommissionRate(commissionRate ?? proposedCommissionRate ?? agreedCommissionRate);
-    if (normalizedCommission !== null) {
-      if (agreedCommissionRate !== undefined || commissionStatus === "APPROVED") {
+    const commissionValue = commissionRate ?? proposedCommissionRate ?? agreedCommissionRate;
+    if (commissionValue !== undefined && commissionValue !== null && commissionValue !== "") {
+      const normalizedCommission = normalizeCommissionRate(commissionValue);
+      if (normalizedCommission === null) {
+        return res.status(400).json({ success: false, message: "Commission rate must be a number between 0% and 100%." });
+      }
+      if (req.adminId) {
         const decision = resolveCommissionUpdate({
-          currentManufacturer: await prisma.manufacturer.findUnique({ where: { id: manufacturerId } }),
-          actorRole: req.adminId ? "ADMIN" : "MANUFACTURER",
+          currentManufacturer: existingManufacturer,
+          actorRole: "ADMIN",
+          body: {
+            proposedCommissionRate: normalizedCommission,
+            commissionNote,
+            adminCommissionFeedback,
+          },
+        });
+        if (!decision.allowed) {
+          return res.status(409).json({ success: false, message: decision.message });
+        }
+        Object.assign(updateData, decision.updateData);
+      } else if (agreedCommissionRate !== undefined || commissionStatus === "APPROVED") {
+        const decision = resolveCommissionUpdate({
+          currentManufacturer: existingManufacturer,
+          actorRole: "MANUFACTURER",
           body: { agreedCommissionRate: normalizedCommission, commissionStatus: "APPROVED" },
         });
         if (!decision.allowed) {
@@ -904,10 +1013,10 @@ const updateManufacturer = async (req, res) => {
       } else if (proposedCommissionRate !== undefined || commissionRate !== undefined) {
         updateData.proposedCommissionRate = normalizedCommission;
         updateData.commissionStatus = "PENDING";
-        updateData.commissionLastProposedBy = req.adminId ? "ADMIN" : "MANUFACTURER";
+        updateData.commissionLastProposedBy = "MANUFACTURER";
       }
     }
-    if (commissionStatus) {
+    if (commissionStatus && !req.adminId) {
       const normalizedStatus = String(commissionStatus).trim().toUpperCase();
       if (["PENDING", "APPROVED", "REJECTED"].includes(normalizedStatus)) {
         if (normalizedStatus === "REJECTED") {
@@ -926,13 +1035,6 @@ const updateManufacturer = async (req, res) => {
     if (endVal !== undefined) updateData.contractExpiryDate = endVal ? new Date(endVal) : null;
     if (agreementNotes !== undefined) updateData.agreementNotes = agreementNotes;
 
-    const existingManufacturer = await prisma.manufacturer.findUnique({
-      where: { id: manufacturerId },
-      select: { id: true, accountId: true },
-    });
-    if (!existingManufacturer) {
-      return res.status(404).json({ success: false, message: "Manufacturer profile not found." });
-    }
     const updated = await prisma.$transaction(async (tx) => {
       const manufacturer = await tx.manufacturer.update({ where: { id: manufacturerId }, data: updateData });
       if (normalizedEmail && existingManufacturer.accountId) {

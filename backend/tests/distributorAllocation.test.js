@@ -67,10 +67,14 @@ const installAllocationMocks = (t, {
   order = createOrder(),
   distributors = [],
   inactiveInTransaction = [],
+  missingProductIds = [],
 } = {}) => {
   let assignmentData;
   const stockQueryDistributorIds = [];
   stubMethod(t, prisma.order, "findUnique", async () => order);
+  stubMethod(t, prisma.product, "findMany", async ({ where }) =>
+    where.id.in.filter((productId) => !missingProductIds.includes(productId)).map((id) => ({ id }))
+  );
   stubMethod(t, prisma.distributor, "findMany", async (args) => {
     assert.deepEqual(args.where, { status: "ACTIVE", isActive: true });
     return distributors;
@@ -444,6 +448,17 @@ test("allocator returns variant shortages when no active distributor has suffici
       availableQuantity: 1,
     }],
   }]);
+});
+
+test("allocator reports missing products before checking distributor stock", async (t) => {
+  installAllocationMocks(t, { missingProductIds: ["product-1"] });
+
+  const result = await runAllocationEngine("order-1");
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "PRICE_PRODUCT_NOT_FOUND");
+  assert.equal(result.productId, "product-1");
+  assert.match(result.message, /Product not found: product-1/);
 });
 
 test("allocator does not assign an order if the selected distributor became inactive", async (t) => {

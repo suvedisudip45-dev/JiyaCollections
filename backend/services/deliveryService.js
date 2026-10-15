@@ -248,7 +248,7 @@ const normalizeBranch = (value) => String(value || "").trim().toUpperCase();
 
 const resolvePickupBranch = (manufacturer, address, assignment) => {
   if (assignment?.distributorId) {
-    return normalizeBranch(address?.ncmBranch || address?.city || address?.district || "");
+    return normalizeBranch(manufacturer?.ncmPickupBranch || manufacturer?.pickupBranch || "");
   }
   const direct = normalizeBranch(manufacturer?.ncmPickupBranch || manufacturer?.pickupBranch || "");
   return direct;
@@ -449,7 +449,7 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
   if (!origin) {
     const error = new Error(
       assignment?.distributorId
-        ? "Customer NCM branch or location is required before booking distributor delivery."
+        ? "Distributor NCM pickup branch is required before booking customer delivery."
         : "Manufacturer NCM pickup branch is required. Ask admin to assign and verify the pickup branch before readying the order.",
     );
     error.code = "NCM_PICKUP_BRANCH_REQUIRED";

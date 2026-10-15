@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { MapPinned, Save } from "lucide-react";
-import { NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getBranchesForLocation, getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { usePermissions } from "../auth/PermissionsContext";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL;
 
 const DistributorApplications = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { can } = usePermissions();
   const canEditCoverage = can("distributor:admin_review");
   const [activeTab, setActiveTab] = useState("applications");
@@ -22,9 +22,6 @@ const DistributorApplications = ({ token }) => {
   const [updatingId, setUpdatingId] = useState("");
   const [editingDistributor, setEditingDistributor] = useState(null);
   const [distributorForm, setDistributorForm] = useState(null);
-  const [distributorNcmBranches, setDistributorNcmBranches] = useState([]);
-  const [distributorCoveredAreas, setDistributorCoveredAreas] = useState([]);
-  const [loadingDistributorBranches, setLoadingDistributorBranches] = useState(false);
   const [savingDistributorProfile, setSavingDistributorProfile] = useState(false);
   const [coverageDistributors, setCoverageDistributors] = useState([]);
   const [coverageAreas, setCoverageAreas] = useState([]);
@@ -57,6 +54,13 @@ const DistributorApplications = ({ token }) => {
   const editDistributorDistrict = distributorForm?.district;
   const editDistributorCity = distributorForm?.city;
   const editDistributorStreet = distributorForm?.street;
+  const distributorNcmBranches = getBranchesForLocation(locationLookups, editDistributorProvince, editDistributorDistrict)
+    .map(({ name }) => name);
+  const selectedNcmBranch = locationLookups?.branches?.find(
+    (branch) => branch.name.toLocaleLowerCase() === String(editDistributorCity || "").toLocaleLowerCase(),
+  );
+  const distributorCoveredAreas = selectedNcmBranch?.coveredAreas || [];
+  const loadingDistributorBranches = !locationLookups && !lookupError;
 
   const loadApplications = useCallback(async () => {
     setLoading(true);
@@ -163,60 +167,23 @@ const DistributorApplications = ({ token }) => {
   }, [coverageDistributors, selectedCoverageDistributorId]);
 
   useEffect(() => {
-    const fetchBranches = async () => {
-      if (!editDistributorProvince || !editDistributorDistrict) {
-        setDistributorNcmBranches([]);
-        setDistributorCoveredAreas([]);
-        return;
-      }
-      setLoadingDistributorBranches(true);
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { province: editDistributorProvince, district: editDistributorDistrict },
-        });
-        const branches = response.data.success ? response.data.branches || [] : [];
-        setDistributorNcmBranches(branches);
-        if (branches.length > 0 && !branches.includes(editDistributorCity)) {
-          setDistributorForm((current) => current ? { ...current, city: branches[0], ncmPickupBranch: branches[0] } : current);
-        }
-      } catch (requestError) {
-        setDistributorNcmBranches([]);
-        setError(requestError.response?.data?.message || "NCM branches could not be loaded.");
-      } finally {
-        setLoadingDistributorBranches(false);
-      }
-    };
-
-    fetchBranches();
-  }, [editDistributorProvince, editDistributorDistrict, editDistributorCity]);
+    if (!locationLookups || !editDistributorProvince || !editDistributorDistrict) return;
+    if (distributorNcmBranches.length > 0 && !distributorNcmBranches.some((branch) => branch.toLocaleLowerCase() === editDistributorCity?.toLocaleLowerCase())) {
+      setDistributorForm((current) => current ? {
+        ...current,
+        city: distributorNcmBranches[0],
+        ncmPickupBranch: distributorNcmBranches[0],
+        street: "",
+      } : current);
+    }
+  }, [locationLookups, editDistributorProvince, editDistributorDistrict, distributorNcmBranches, editDistributorCity]);
 
   useEffect(() => {
-    const fetchAreas = async () => {
-      if (!editDistributorCity) {
-        setDistributorCoveredAreas([]);
-        return;
-      }
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: {
-            branch: editDistributorCity,
-            district: editDistributorDistrict,
-            province: editDistributorProvince,
-          },
-        });
-        const areas = response.data.success ? response.data.coveredAreas || [] : [];
-        setDistributorCoveredAreas(areas);
-        if (areas.length > 0 && !areas.includes(editDistributorStreet)) {
-          setDistributorForm((current) => current ? { ...current, street: areas[0] } : current);
-        }
-      } catch (requestError) {
-        setDistributorCoveredAreas([]);
-        setError(requestError.response?.data?.message || "NCM covered areas could not be loaded.");
-      }
-    };
-
-    fetchAreas();
-  }, [editDistributorCity, editDistributorDistrict, editDistributorProvince, editDistributorStreet]);
+    if (!locationLookups || !distributorCoveredAreas.length) return;
+    if (!distributorCoveredAreas.some((area) => area.toLocaleLowerCase() === editDistributorStreet?.toLocaleLowerCase())) {
+      setDistributorForm((current) => current ? { ...current, street: distributorCoveredAreas[0] } : current);
+    }
+  }, [locationLookups, editDistributorCity, distributorCoveredAreas, editDistributorStreet]);
 
   const reviewApplication = async (application, nextStatus) => {
     setUpdatingId(application.id);
@@ -573,8 +540,18 @@ const DistributorApplications = ({ token }) => {
                     <td className="px-4 py-3 text-slate-600">
                       <div>{application.account?.email || "—"}</div>
                       <div className="text-xs text-slate-500">{application.phone || application.account?.phone || "—"}</div>
+                      {application.pickupContactName && <div className="mt-1 text-xs text-slate-500">Pickup: {application.pickupContactName}{application.pickupContactPhone ? ` · ${application.pickupContactPhone}` : ""}</div>}
                     </td>
-                    <td className="px-4 py-3 text-slate-600">{[application.city, application.address].filter(Boolean).join(", ") || "—"}</td>
+                    <td className="px-4 py-3 text-slate-600">
+                      <div>{[application.city, application.address].filter(Boolean).join(", ") || "—"}</div>
+                      {application.locations?.length > 0 && (
+                        <div className="mt-1 text-xs text-slate-500">
+                          {application.locations.map((location) => `${location.district}, ${location.province}`).join(" · ")}
+                        </div>
+                      )}
+                      {application.pickupAddress && <div className="mt-1 text-xs text-slate-500">Pickup: {application.pickupAddress}</div>}
+                      {application.ncmPickupBranch && <div className="mt-1 text-xs text-slate-500">NCM: {application.ncmPickupBranch}</div>}
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{new Date(application.updatedAt).toLocaleDateString()}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${
@@ -621,6 +598,7 @@ const DistributorApplications = ({ token }) => {
             <MapPinned className="h-5 w-5" />
             Distributor service-area coverage
           </h2>
+          {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-64 flex-1">
               <label htmlFor="coverage-distributor" className="mb-1 block text-sm font-semibold text-slate-700">
@@ -649,12 +627,12 @@ const DistributorApplications = ({ token }) => {
                 id="coverage-province"
                 value={selectedCoverageProvince}
                 onChange={(event) => setSelectedCoverageProvince(event.target.value)}
-                disabled={coverageLoading}
+                disabled={coverageLoading || !locationLookups}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
               >
                 <option value="">Choose a province</option>
-                {coverageAreas.filter((area) => area.type === "PROVINCE").map((province) => (
-                  <option key={province.name} value={province.name}>{province.name}</option>
+                {(locationLookups?.provinces || []).map((province) => (
+                  <option key={province} value={province}>{province}</option>
                 ))}
               </select>
             </div>
@@ -685,7 +663,7 @@ const DistributorApplications = ({ token }) => {
             </p>
           ) : (
             <div className="grid max-h-96 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-3">
-              {(NEPAL_DISTRICTS_BY_PROVINCE[selectedCoverageProvince] || []).map((district) => {
+              {getDistrictsForProvince(locationLookups, selectedCoverageProvince).map((district) => {
                 const canonicalDistrict = district === "Nawalparasi West" ? "Parasi" : district;
                 const key = `${selectedCoverageProvince}|${canonicalDistrict}`;
                 const isSupportedLocation = coverageAreas.some(
@@ -981,16 +959,16 @@ const DistributorApplications = ({ token }) => {
                 <input required value={distributorForm.phone} onChange={(event) => setDistributorForm((current) => ({ ...current, phone: event.target.value.replace(/[^0-9]/g, "") }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
               </label>
               <label className="text-xs font-semibold text-slate-700">Province *
-                <select required value={distributorForm.province} onChange={(event) => {
+                <select required value={distributorForm.province} disabled={!locationLookups} onChange={(event) => {
                   const province = event.target.value;
-                  setDistributorForm((current) => ({ ...current, province, district: NEPAL_DISTRICTS_BY_PROVINCE[province]?.[0] || "", city: "", street: "" }));
+                  setDistributorForm((current) => ({ ...current, province, district: getDistrictsForProvince(locationLookups, province)[0] || "", city: "", ncmPickupBranch: "", street: "" }));
                 }} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
-                  {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                  {(locationLookups?.provinces || []).map((province) => <option key={province} value={province}>{province}</option>)}
                 </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">District *
-                <select required value={distributorForm.district} onChange={(event) => setDistributorForm((current) => ({ ...current, district: event.target.value, city: "", street: "" }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
-                  {(NEPAL_DISTRICTS_BY_PROVINCE[distributorForm.province] || []).map((district) => <option key={district} value={district}>{district}</option>)}
+                <select required value={distributorForm.district} disabled={!locationLookups} onChange={(event) => setDistributorForm((current) => ({ ...current, district: event.target.value, city: "", ncmPickupBranch: "", street: "" }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                  {getDistrictsForProvince(locationLookups, distributorForm.province).map((district) => <option key={district} value={district}>{district}</option>)}
                 </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">NCM Town / Branch *
@@ -1001,14 +979,10 @@ const DistributorApplications = ({ token }) => {
                 </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">Street / Covered Area *
-                {distributorCoveredAreas.length > 0 ? (
-                  <select required value={distributorForm.street} onChange={(event) => setDistributorForm((current) => ({ ...current, street: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
-                    {distributorForm.street && !distributorCoveredAreas.includes(distributorForm.street) && <option value={distributorForm.street}>{distributorForm.street}</option>}
-                    {distributorCoveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
-                  </select>
-                ) : (
-                  <input required value={distributorForm.street} onChange={(event) => setDistributorForm((current) => ({ ...current, street: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-                )}
+                <select required value={distributorForm.street} onChange={(event) => setDistributorForm((current) => ({ ...current, street: event.target.value }))} disabled={!distributorCoveredAreas.length} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100">
+                  <option value="">{distributorCoveredAreas.length ? "Select a covered area" : "No covered area available"}</option>
+                  {distributorCoveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">Nearest Landmark / Unit Details *
                 <input required value={distributorForm.landmark} onChange={(event) => setDistributorForm((current) => ({ ...current, landmark: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />

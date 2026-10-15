@@ -122,6 +122,9 @@ const NAME_INDEX = new Map();
 for (const loc of NEPAL_LOCATION_MAP) {
   CODE_INDEX.set(loc.code.toUpperCase(), loc);
   NAME_INDEX.set(cleanStr(loc.name), loc);
+  if (loc.type === "PROVINCE") {
+    NAME_INDEX.set(cleanStr(loc.name.replace(/\s+Province$/i, "")), loc);
+  }
 }
 
 // Extra aliases (e.g. Kathmandu Valley variants, Nawalparasi variants, Rukum variants)
@@ -144,15 +147,21 @@ NAME_INDEX.set(cleanStr("Province 5"), CODE_INDEX.get("LUMB"));
 NAME_INDEX.set(cleanStr("Province 6"), CODE_INDEX.get("KARN"));
 NAME_INDEX.set(cleanStr("Province 7"), CODE_INDEX.get("SUDU"));
 
-/**
- * Resolves any string location (name or code) to its canonical LocationMapping entry
- */
-export const resolveLocationEntry = (query) => {
+export const resolveExactLocationEntry = (query) => {
   if (!query) return null;
   const raw = String(query).trim().toUpperCase();
   if (CODE_INDEX.has(raw)) return CODE_INDEX.get(raw);
   const cleaned = cleanStr(query);
-  if (NAME_INDEX.has(cleaned)) return NAME_INDEX.get(cleaned);
+  return NAME_INDEX.get(cleaned) || null;
+};
+
+/**
+ * Resolves any string location (name or code) to its canonical LocationMapping entry
+ */
+export const resolveLocationEntry = (query) => {
+  const exact = resolveExactLocationEntry(query);
+  if (exact) return exact;
+  const cleaned = cleanStr(query);
   // Partial search
   for (const loc of NEPAL_LOCATION_MAP) {
     if (cleanStr(loc.name).includes(cleaned) || cleaned.includes(cleanStr(loc.name))) {

@@ -613,8 +613,14 @@ const listProducts = async (req, res) => {
     const requestedFeatured = String(req.query.featured || "").trim().toLowerCase();
     const requestedBestseller = String(req.query.bestseller || "").trim().toLowerCase();
     const search = String(req.query.search || "").trim();
+    const requestedProductIds = String(req.query.ids || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
     // Synchronize current stockQuantity & variant stock from ManufacturerInventory
-    await syncAllProductsStock();
+    if (requestedProductIds.length === 0) {
+      await syncAllProductsStock();
+    }
 
     // Admin sees all products; Public customers see only published products
     // Both views exclude soft-deleted products
@@ -644,6 +650,9 @@ const listProducts = async (req, res) => {
     if (requestedFeatured === "bestseller") whereCondition.bestseller = true;
     if (requestedBestseller === "true") whereCondition.bestseller = true;
     if (requestedBestseller === "false") whereCondition.bestseller = false;
+    if (requestedProductIds.length > 0) {
+      whereCondition.id = { in: requestedProductIds };
+    }
     if (search) {
       whereCondition.AND = [
         ...(whereCondition.AND || []),

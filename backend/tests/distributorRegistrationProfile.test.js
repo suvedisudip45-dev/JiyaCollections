@@ -6,7 +6,9 @@ import { prisma } from "../config/db.js";
 import {
   registerDistributor,
   resolveManufacturerDistributorOrigin,
+  reviewManufacturerDistributorApplication,
   updateDistributorAdminProfile,
+  updateDistributorPickupProfile,
 } from "../controllers/distributorController.js";
 
 const stubMethod = (t, target, name, implementation) => {
@@ -15,6 +17,22 @@ const stubMethod = (t, target, name, implementation) => {
   t.after(() => {
     target[name] = original;
   });
+};
+
+const stubLocationLookupData = (t) => {
+  stubMethod(t, prisma.locationMapping, "findMany", async () => [
+    { code: "BAGM", name: "Bagmati Province", type: "PROVINCE", province: null },
+    { code: "0KTM", name: "Kathmandu", type: "DISTRICT", province: "Bagmati Province" },
+    { code: "LUMB", name: "Lumbini Province", type: "PROVINCE", province: null },
+    { code: "0NWP", name: "Nawalparasi West", type: "DISTRICT", province: "Lumbini Province" },
+    { code: "GAND", name: "Gandaki Province", type: "PROVINCE", province: null },
+    { code: "0KSK", name: "Kaski", type: "DISTRICT", province: "Gandaki Province" },
+  ]);
+  stubMethod(t, prisma.ncmBranch, "findMany", async () => [
+    { name: "Kathmandu", provinceName: "Bagmati Province", districtName: "Kathmandu", coveredAreas: ["Balaju"] },
+    { name: "Parasi", provinceName: "Lumbini Province", districtName: "Parasi", coveredAreas: ["Main Road"] },
+    { name: "Pokhara", provinceName: "Gandaki Province", districtName: "Kaski", coveredAreas: ["Lakeside Road"] },
+  ]);
 };
 
 const responseRecorder = () => {
@@ -67,8 +85,100 @@ test("manufacturer distributor origin resolves from its NCM pickup branch when c
   });
 });
 
+test("manufacturer distributor origin falls back to its first canonical active location", async () => {
+  const origin = await resolveManufacturerDistributorOrigin({}, {
+    city: "Unknown Factory Hub",
+    ncmPickupBranch: "",
+    locations: [
+      { province: "Gandaki Province", district: "Kaski", isActive: true },
+      { province: "Koshi Province", district: "Sankhuwasabha", isActive: true },
+      { province: "Bagmati Province", district: "Kathmandu", isActive: false },
+    ],
+  });
+
+  assert.deepEqual(origin, {
+    province: "Gandaki Province",
+    district: "Kaski",
+  });
+});
+
+test("approving manufacturer distributor access copies the business and pickup profile", async (t) => {
+  const calls = {};
+  const manufacturer = {
+    id: "manufacturer-1",
+    accountId: "account-1",
+    name: "Factory One",
+    phone: "9841234567",
+    address: "Factory business address",
+    city: "Unknown Factory Hub",
+    ncmPickupBranch: "POKHARA",
+    pickupAddress: "Factory pickup address",
+    pickupContactName: "Dispatch Contact",
+    pickupContactPhone: "9801234567",
+    pickupWindow: "10 AM - 5 PM",
+    returnInstructions: "Call before return",
+    distributorApplicationStatus: "REQUESTED",
+    locations: [{ province: "Gandaki Province", district: "Kaski", isActive: true }],
+  };
+  const tx = {
+    manufacturer: {
+      findUnique: async () => manufacturer,
+      updateMany: async () => ({ count: 1 }),
+    },
+    ncmBranch: { findFirst: async () => null },
+    distributor: {
+      findUnique: async () => null,
+      create: async ({ data }) => {
+        calls.distributor = data;
+        return { id: "distributor-1", ...data };
+      },
+    },
+    distributorLocation: {
+      upsert: async (data) => {
+        calls.location = data;
+        return data.create;
+      },
+    },
+    role: { findUnique: async () => ({ id: "role-distributor", isActive: true }) },
+    authAccountRoleMapping: { upsert: async () => ({}) },
+    authAuditLog: { create: async () => ({}) },
+    systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
+  };
+  stubMethod(t, prisma, "$transaction", async (callback) => callback(tx));
+
+  const recorder = responseRecorder();
+  await reviewManufacturerDistributorApplication({
+    params: { id: manufacturer.id },
+    body: { status: "APPROVED" },
+    auth: { accountId: "admin-1", profileId: "admin-profile-1" },
+    headers: {},
+    ip: "127.0.0.1",
+  }, recorder.res);
+
+  assert.equal(recorder.result().status, 200);
+  assert.equal(calls.distributor.name, "Factory One");
+  assert.equal(calls.distributor.address, "Factory business address");
+  assert.equal(calls.distributor.city, "Unknown Factory Hub");
+  assert.equal(calls.distributor.province, "Gandaki Province");
+  assert.equal(calls.distributor.district, "Kaski");
+  assert.equal(calls.distributor.ncmPickupBranch, "POKHARA");
+  assert.equal(calls.distributor.pickupBranchStatus, "UNVERIFIED");
+  assert.equal(calls.distributor.pickupAddress, "Factory pickup address");
+  assert.equal(calls.distributor.pickupContactName, "Dispatch Contact");
+  assert.equal(calls.distributor.pickupContactPhone, "9801234567");
+  assert.equal(calls.distributor.pickupWindow, "10 AM - 5 PM");
+  assert.equal(calls.distributor.returnInstructions, "Call before return");
+  assert.deepEqual(calls.location.create, {
+    distributorId: "distributor-1",
+    province: "Gandaki Province",
+    district: "Kaski",
+    isActive: true,
+  });
+});
+
 test("distributor registration persists manufacturer-equivalent location and pickup details", async (t) => {
   const calls = {};
+  stubLocationLookupData(t);
   stubMethod(t, bcrypt, "hash", async () => "hashed-password");
   stubMethod(t, prisma.authAccount, "findFirst", async () => null);
   stubMethod(t, prisma, "$transaction", async (callback) => callback({
@@ -139,6 +249,7 @@ test("distributor registration persists manufacturer-equivalent location and pic
 
 test("admin distributor profile updates edit account contact and registration details transactionally", async (t) => {
   const calls = {};
+  stubLocationLookupData(t);
   const existing = {
     id: "distributor-1",
     accountId: "account-1",
@@ -222,4 +333,55 @@ test("admin distributor profile updates edit account contact and registration de
   });
   assert.equal(calls.audit.action, "DISTRIBUTOR_PROFILE_UPDATED");
   assert.equal(calls.audit.entityId, "distributor-1");
+});
+
+test("distributor self-service pickup profile updates business details and registered coverage", async (t) => {
+  const calls = {};
+  stubLocationLookupData(t);
+  const tx = {
+    distributor: {
+      findUnique: async () => ({ ncmPickupBranch: "POKHARA" }),
+      update: async ({ data }) => {
+        calls.profile = data;
+        return { id: "distributor-1", accountId: null, ...data };
+      },
+    },
+    distributorLocation: {
+      upsert: async (data) => {
+        calls.location = data;
+        return data.create;
+      },
+    },
+  };
+  stubMethod(t, prisma, "$transaction", async (callback) => callback(tx));
+
+  const recorder = responseRecorder();
+  await updateDistributorPickupProfile({
+    distributorId: "distributor-1",
+    body: {
+      name: "Updated Hub",
+      phone: "9841234567",
+      address: "Updated address",
+      city: "Pokhara",
+      province: "Gandaki Province",
+      district: "Kaski",
+      street: "Lakeside Road",
+      landmark: "Near the lake",
+      pickupAddress: "Warehouse entrance",
+      pickupContactName: "Hub Contact",
+      pickupContactPhone: "9801234567",
+    },
+  }, recorder.res);
+
+  assert.equal(recorder.result().status, 200);
+  assert.equal(calls.profile.name, "Updated Hub");
+  assert.equal(calls.profile.address, "Updated address");
+  assert.equal(calls.profile.phone, "9841234567");
+  assert.equal(calls.profile.pickupAddress, "Warehouse entrance");
+  assert.deepEqual(calls.location.create, {
+    distributorId: "distributor-1",
+    province: "Gandaki Province",
+    district: "Kaski",
+    isActive: true,
+  });
 });

@@ -49,6 +49,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/admin/access` | Access management and RBAC control |
 | `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local pricing |
 | `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
+| `/api/lookups` | Public Nepal province, district, active NCM branch, and covered-area lookups |
 | `/api/admin/gifts` | Gift catalog, spend-rule configuration, distributor distributions, and admin return review |
 | `/api/distributor/gifts` | Distributor gift-stock inbox, allocation decisions, order options, and return/loss recording |
 | `/api/distributor` | Distributor direct orders, ledger-backed inventory reads, transfers, delivery, finance, and workspace profile |
@@ -81,6 +82,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 - `POST /api/auth/2fa/send` and `/api/auth/2fa/verify`
 - `GET /api/admin/manufacturer-locations`
 - `POST /api/admin/manufacturer-locations`
+- `GET /api/lookups/nepal` returns canonical `LocationMapping` provinces/districts and active `NcmBranch` records, with optional province, district, and branch filters. The backend caches the combined lookup for ten minutes and invalidates it after NCM branch synchronization.
 - `GET /api/admin/location-discounts`
 - `POST /api/admin/location-discounts`
 - `POST /api/product/add`
@@ -128,10 +130,10 @@ The distributor NCM desk provides on-hold, failed NCM, active booked, delivered,
 Admins can submit package details from Order Assignments and request NCM
 delivery for a distributor-assigned order. The request uses the assigned hub's
 pickup branch and the standard NCM order-creation contract. For distributor
-orders, the customer's selected NCM branch supplies the NCM pickup-origin
-branch (falling back to the saved customer city/location for older orders);
-manufacturer-originated bookings continue using the assigned manufacturer's
-pickup branch. Customer-order
+orders, the assigned distributor's NCM pickup branch is the NCM pickup origin
+(`fbranch`); the customer's selected NCM branch, or saved customer city/location
+for older orders, is the destination (`branch`). Manufacturer-originated
+bookings continue using the assigned manufacturer's pickup branch. Customer-order
 carrier status is updated from NCM webhooks and persisted in the database;
 customer-order reads do not poll NCM status/detail APIs. Webhook success is
 returned only after the event and status update have been saved. NCM delivery
@@ -229,7 +231,7 @@ Admins configure service districts through the Service-area coverage tab in Dist
 
 Checkout shipping preview calls the same distributor-selection logic without reserving inventory. Only distributors with a valid registered province/district origin are eligible, even if their service-area coverage is configured; legacy manufacturer-linked distributors can resolve that origin from their canonical district city or NCM pickup branch. This keeps quoted and actual shipment routes resolvable. A hub with the full cart is preferred over split fulfillment, including when a higher-priority hub has only partial stock. Any distributor included in a checkout shipment plan is only a preference during final assignment: if its stock is no longer sufficient, allocation continues through the location tiers and assigns a stocked hub. Single-hub orders use the selected hub's route rate; split orders list the supplying hubs and use the admin-configured flat split fee once (unless existing free-shipping or loyalty rules waive it). Order creation reruns the quote and allocation plan server-side and persists the fee on one product order in the group. Existing district-only consumers retain their prior same-/different-district calculation when they do not provide a shipment origin.
 
-Approving manufacturer distributor access copies a valid registered origin from the linked distributor profile, or resolves it from the manufacturer's district city or NCM pickup branch. The origin is saved on the distributor and added as its initial service area so upgraded hubs remain eligible for stock-based allocation and route-specific shipping rates.
+Approving manufacturer distributor access copies the manufacturer's business name, phone, address, city, NCM pickup branch, pickup address/contact/window, and return instructions into the linked distributor profile. Distributor pickup verification starts as `UNVERIFIED`. Approval retains a valid existing distributor origin; otherwise it resolves the origin from the manufacturer's canonical district city, then NCM pickup branch, then the first active manufacturer location in province/district order. The origin is saved on the distributor and upserted as its initial service area so upgraded hubs remain eligible for stock-based allocation and route-specific shipping rates. Admins can edit the profile in Distributor Management; distributors can update business/contact/location and pickup details from the distributor workspace's Pickup Profile page.
 
 A failed NCM courier-booking request must remain in a failed state (`submission_failed`, `failed_to_book_courier`, or equivalent) and must never be converted to a success label by the UI. The backend is the only component allowed to transition the delivery state to a successful carrier booking state.
 

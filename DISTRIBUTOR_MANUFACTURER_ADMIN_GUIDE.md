@@ -13,6 +13,17 @@ checks in `backend/routes/` and `backend/middleware/unifiedAuth.js`.
 > receipt. The code does not expose a manufacturer accept/reject step for these
 > bulk requests.
 
+## Nepal location lookups
+
+Province and district selections across the storefront and operational portals
+come from `GET /api/lookups/nepal`, backed by `LocationMapping`. Active NCM
+branches and each branch's covered areas come from `NcmBranch`. The backend
+caches these combined lookups for ten minutes and clears the cache after an NCM
+branch synchronization. NCM province and district labels are normalized to
+the canonical lookup names before branches are filtered or returned.
+Registration and profile APIs validate submitted branch/covered-area
+selections against the active lookup records.
+
 ## Admin distributor directory and details
 
 The Admin portal has a separate `/distributors` searchable directory and a
@@ -148,15 +159,25 @@ one audited transaction; changed contact values are marked unverified, and
 service-area districts remain managed separately.
 - Manufacturer registration and admin management support contracts, availability,
   pickup branch details, commission proposals, and quality/performance data.
+  In Manufacturer Management, admins can change pickup status at any time and
+  propose a commission rate. A proposed rate remains pending until the
+  manufacturer accepts it; admins do not directly set the agreed rate.
 - A manufacturer can apply for distributor access through
   `POST /api/manufacturer/apply-distributor`. The application remains attached
   to the manufacturer profile until an admin reviews it through
   `/api/admin/distributor-applications`; approval activates/provisions the
   linked distributor profile and grants the account the `DISTRIBUTOR` role.
-  Approval also ensures the distributor has a canonical registered origin,
-  retaining an existing valid distributor origin or resolving one from the
-  manufacturer's district city or NCM pickup branch. That origin is added as
-  the distributor's initial service area for allocation and shipping quotes.
+  Approval copies the manufacturer business name, phone, business address,
+  city, NCM pickup branch, pickup address/contact/window, and return
+  instructions into the distributor profile; distributor pickup verification
+  starts as `UNVERIFIED`. The registered origin is resolved from a canonical
+  existing distributor origin when present; otherwise it is resolved from the
+  manufacturer's canonical city, NCM pickup branch, or first active
+  manufacturer location in province/district order. The origin is added as the
+  initial distributor service area. Admins can edit the distributor
+  registration profile in Distributor Management, and distributors can edit
+  their business address/contact and operational pickup profile in the
+  distributor workspace's Pickup Profile page.
   Existing linked profiles without a stored origin can still resolve it from
   their manufacturer's district city or pickup branch during allocation; update
   the registered distributor province/district to make that origin explicit.
@@ -493,8 +514,11 @@ transfer flow:
    same stored NCM state intentionally return the same matching orders.
    A failed NCM submission can be reapplied directly from its order row by the
    distributor without admin review.
-   The customer's selected NCM branch is used for the NCM pickup-origin
-   branch, with customer city/location as a fallback for older orders.
+   The assigned distributor's NCM pickup branch is used as the NCM pickup
+   origin; the customer's selected NCM branch is the destination, with
+   customer city/location as a fallback for older orders. Manufacturer-to-
+   distributor replenishment continues using the manufacturer's and
+   distributor's pickup branches, respectively.
    Distributor
    checklist and transition validation do not require stitching or branding
    checks. The user-entered product description and the NCM `package` field

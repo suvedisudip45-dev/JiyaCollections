@@ -3,10 +3,21 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { MapPin, Phone, Clock3, RefreshCcw, ShieldCheck, Building, Factory, Truck } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
+import { getBranchesForLocation, getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 
 const PickupProfile = () => {
   const { token, manufacturer, distributor, activeProfile, activeWorkspace, backendUrl, fetchProfile } = useManufacturer();
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    address: "",
+    city: "",
+    ncmPickupBranch: "",
+    province: "",
+    district: "",
+    street: "",
+    landmark: "",
     pickupAddress: "",
     pickupContactName: "",
     pickupContactPhone: "",
@@ -20,7 +31,22 @@ const PickupProfile = () => {
 
   useEffect(() => {
     if (profile) {
+      const profileBranch = locationLookups?.branches?.find((branch) => (
+        branch.name.toLocaleLowerCase() === String(profile.ncmPickupBranch || profile.city || "").toLocaleLowerCase()
+      ));
+      const profileArea = profileBranch?.coveredAreas.find((area) => (
+        area.toLocaleLowerCase() === String(profile.street || "").toLocaleLowerCase()
+      ));
       setForm({
+        name: profile.name || profile.businessName || "",
+        phone: profile.phone || "",
+        address: profile.address || "",
+        city: profileBranch?.name || profile.city || "",
+        ncmPickupBranch: profileBranch?.name || profile.ncmPickupBranch || "",
+        province: profile.province || "",
+        district: profile.district || "",
+        street: profileArea || profile.street || "",
+        landmark: profile.landmark || "",
         pickupAddress: profile.pickupAddress || "",
         pickupContactName: profile.pickupContactName || "",
         pickupContactPhone: profile.pickupContactPhone || "",
@@ -28,7 +54,7 @@ const PickupProfile = () => {
         returnInstructions: profile.returnInstructions || "",
       });
     }
-  }, [profile]);
+  }, [profile, locationLookups]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -40,7 +66,16 @@ const PickupProfile = () => {
         ? `${backendUrl}/api/distributor/pickup-profile`
         : `${backendUrl}/api/manufacturer/pickup-profile`;
 
-      const res = await axios.post(endpoint, form, { headers: { token } });
+      const payload = isDistributor
+        ? form
+        : {
+            pickupAddress: form.pickupAddress,
+            pickupContactName: form.pickupContactName,
+            pickupContactPhone: form.pickupContactPhone,
+            pickupWindow: form.pickupWindow,
+            returnInstructions: form.returnInstructions,
+          };
+      const res = await axios.post(endpoint, payload, { headers: { token } });
       if (res.data.success) {
         toast.success(
           isDistributor
@@ -108,6 +143,56 @@ const PickupProfile = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-5 text-xs">
+          {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
+          {isDistributor && (
+            <section className="space-y-4 border-b border-[#dedbd3] pb-5">
+              <div>
+                <h2 className="text-sm font-bold text-[#171717]">Distributor business profile</h2>
+                <p className="mt-1 text-xs text-[#575757]">Review and update the business and registered hub address copied from your manufacturer profile.</p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="font-bold text-[#171717]">Business name
+                  <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal" />
+                </label>
+                <label className="font-bold text-[#171717]">Business contact number
+                  <input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal" />
+                </label>
+                <label className="font-bold text-[#171717]">Province
+                  <select required value={form.province} onChange={(event) => {
+                    const province = event.target.value;
+                    setForm({ ...form, province, district: getDistrictsForProvince(locationLookups, province)[0] || "", city: "", ncmPickupBranch: "", street: "" });
+                  }} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal">
+                    <option value="">Select province</option>
+                    {(locationLookups?.provinces || []).map((province) => <option key={province} value={province}>{province}</option>)}
+                  </select>
+                </label>
+                <label className="font-bold text-[#171717]">District
+                  <select required value={form.district} onChange={(event) => setForm({ ...form, district: event.target.value, city: "", ncmPickupBranch: "", street: "" })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal">
+                    <option value="">Select district</option>
+                    {getDistrictsForProvince(locationLookups, form.province).map((district) => <option key={district} value={district}>{district}</option>)}
+                  </select>
+                </label>
+                <label className="font-bold text-[#171717]">City / hub
+                  <select required value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value, ncmPickupBranch: event.target.value, street: "" })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal">
+                    <option value="">Select an NCM branch</option>
+                    {getBranchesForLocation(locationLookups, form.province, form.district).map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
+                  </select>
+                </label>
+                <label className="font-bold text-[#171717]">Street / covered area
+                  <select required value={form.street} onChange={(event) => setForm({ ...form, street: event.target.value })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal">
+                    <option value="">Select a covered area</option>
+                    {locationLookups?.branches?.find((branch) => branch.name.toLocaleLowerCase() === form.ncmPickupBranch.toLocaleLowerCase())?.coveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                  </select>
+                </label>
+                <label className="font-bold text-[#171717]">Landmark
+                  <input value={form.landmark} onChange={(event) => setForm({ ...form, landmark: event.target.value })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal" />
+                </label>
+                <label className="font-bold text-[#171717] md:col-span-2">Business address
+                  <textarea rows={2} value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#f8f7f4] px-3.5 py-2.5 text-sm font-normal" />
+                </label>
+              </div>
+            </section>
+          )}
           <div>
             <label className="font-bold text-[#171717] mb-1.5 flex items-center gap-1.5">
               <MapPin className="w-3.5 h-3.5 text-emerald-600" />

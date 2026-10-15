@@ -16,6 +16,12 @@ const stubMethod = (t, target, name, implementation) => {
   });
 };
 
+const stubExistingProducts = (t) => {
+  stubMethod(t, prisma.product, "findMany", async ({ where }) =>
+    where.id.in.map((id) => ({ id }))
+  );
+};
+
 const config = {
   sameDistrictFee: 50,
   differentDistrictFee: 120,
@@ -125,6 +131,7 @@ test("route override configuration rejects invalid and duplicate routes", () => 
 
 test("shipping quote uses the probable stocked distributor's route", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => [{
     id: "hub-1",
     name: "Kathmandu Hub",
@@ -156,6 +163,7 @@ test("shipping quote uses the probable stocked distributor's route", async (t) =
 
 test("shipping quote skips a higher-rated covered distributor without a registered route origin", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => [{
     id: "unrouteable-hub",
     name: "Hub Missing Registered Location",
@@ -199,6 +207,7 @@ test("shipping quote skips a higher-rated covered distributor without a register
 
 test("shipping quote resolves legacy manufacturer-distributor origins from their NCM pickup branch", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => [{
     id: "upgraded-hub",
     accountId: "manufacturer-account",
@@ -258,6 +267,7 @@ test("shipping quote selects a lower-priority hub with the complete cart and app
       fee: 75,
     }],
   }));
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => [{
     id: "local-hub",
     name: "Local Hub",
@@ -310,6 +320,7 @@ test("shipping quote selects a lower-priority hub with the complete cart and app
 
 test("split shipping quote uses the admin-configured flat fee and lists each shipment hub", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => [{
     id: "hub-1",
     name: "Kathmandu Hub",
@@ -355,6 +366,7 @@ test("split shipping quote uses the admin-configured flat fee and lists each shi
 
 test("shipping quote fails instead of returning a generic rate without a distributor", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubExistingProducts(t);
   stubMethod(t, prisma.distributor, "findMany", async () => []);
 
   await assert.rejects(
@@ -364,5 +376,21 @@ test("shipping quote fails instead of returning a generic rate without a distrib
       items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
     }),
     (error) => error.status === 409 && error.code === "NO_ACTIVE_DISTRIBUTOR"
+  );
+});
+
+test("shipping quote reports a missing product instead of a stock shortage", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => config);
+  stubMethod(t, prisma.product, "findMany", async () => []);
+
+  await assert.rejects(
+    resolveDistrictShippingFee({
+      district: "Kaski",
+      province: "Gandaki Province",
+      items: [{ productId: "missing-product", size: "Medium", color: "Navy", quantity: 1 }],
+    }),
+    (error) => error.status === 404
+      && error.code === "PRICE_PRODUCT_NOT_FOUND"
+      && error.message === "Product not found: missing-product"
   );
 });

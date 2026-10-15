@@ -10,12 +10,7 @@ import { clearAuthTokens } from "../auth/tokenStorage";
 import axios from "axios";
 import { toast } from "react-toastify";
 import NepalMapModal from "../components/NepalMapModal";
-import {
-  NEPAL_CITIES,
-  NEPAL_PROVINCES,
-  getCityInfo,
-} from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, getBranchesForLocation, useLocationLookups } from "../utils/locationLookups";
 
 const isValidNepalMobileNumber = (value = "") => {
   const digits = String(value || "").replace(/\D/g, "");
@@ -43,6 +38,7 @@ const PlaceOrder = () => {
     getMaxStock,
     getProductsData,
   } = useContext(ShopContext);
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -202,9 +198,12 @@ const PlaceOrder = () => {
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [ncmBranches, setNcmBranches] = useState([]);
-  const [coveredAreas, setCoveredAreas] = useState([]);
-  const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
+  const ncmBranches = getBranchesForLocation(locationLookups, formData.province, formData.district);
+  const selectedNcmBranch = ncmBranches.find((branch) => (
+    branch.name.toLocaleLowerCase() === String(formData.ncmBranch || formData.city).toLocaleLowerCase()
+  ));
+  const coveredAreas = selectedNcmBranch?.coveredAreas || [];
+  const loadingNcmBranches = !locationLookups && !lookupError;
 
   // Dynamic delivery fee - recalculated when address or cart contents change
   const [dynamicDeliveryFee, setDynamicDeliveryFee] = useState(undefined);
@@ -351,48 +350,6 @@ const PlaceOrder = () => {
     const hasLoyaltyReward = Boolean(loyaltyData?.activeReward?.isEligible);
     setRewardChoice(hasCardReward ? "CARD" : hasLoyaltyReward ? "LOYALTY" : "NONE");
   }, [claimedCardRewards, loyaltyData, rewardChoice, rewardsInitialized]);
-
-  useEffect(() => {
-    const fetchDistrictBranches = async () => {
-      if (!formData.province || !formData.district) {
-        setNcmBranches([]);
-        setCoveredAreas([]);
-        return;
-      }
-      setLoadingNcmBranches(true);
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { province: formData.province, district: formData.district },
-        });
-        setNcmBranches(response.data.success ? response.data.branches || [] : []);
-      } catch (error) {
-        setNcmBranches([]);
-        console.error("Failed to load NCM branches for district", error);
-      } finally {
-        setLoadingNcmBranches(false);
-      }
-    };
-
-    fetchDistrictBranches();
-  }, [backendUrl, formData.province, formData.district]);
-
-  useEffect(() => {
-    const fetchCoveredAreas = async () => {
-      if (!formData.city) {
-        setCoveredAreas([]);
-        return;
-      }
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: { branch: formData.city, district: formData.district, province: formData.province },
-        });
-        setCoveredAreas(response.data.success ? response.data.coveredAreas || [] : []);
-      } catch (error) {
-        setCoveredAreas([]);
-      }
-    };
-    fetchCoveredAreas();
-  }, [backendUrl, formData.city, formData.district, formData.province]);
 
   useEffect(() => {
     if (hasComboBundle || cartPricingItems.length === 0) {
@@ -592,7 +549,7 @@ const PlaceOrder = () => {
     const { name, value } = event.target;
 
     if (name === "province") {
-      const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+      const nextDistrict = getDistrictsForProvince(locationLookups, value)[0] || "";
       setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "", street: "" }));
       return;
     }
@@ -609,13 +566,13 @@ const PlaceOrder = () => {
 
     // Keep the submitted branch synchronized with the live NCM selection.
     if (name === "city") {
-      const cityInfo = getCityInfo(value);
+      const branchInfo = ncmBranches.find((branch) => branch.name === value);
       setFormData((data) => ({
         ...data,
         city: value,
         ncmBranch: value,
         street: "",
-        state: cityInfo?.province || data.state,
+        state: branchInfo?.province || data.state,
       }));
       return;
     }
@@ -731,7 +688,7 @@ const PlaceOrder = () => {
       toast.error("Please select your province, district, and NCM delivery town");
       return;
     }
-    if (!ncmBranches.includes(formData.city)) {
+    if (!ncmBranches.some((branch) => branch.name.toLocaleLowerCase() === formData.city.toLocaleLowerCase())) {
       toast.error("Please select a valid NCM branch for this district");
       return;
     }
@@ -1005,7 +962,7 @@ const PlaceOrder = () => {
                 onChange={onChangeHandler}
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
               >
-                {NEPAL_PROVINCES.map((province) => (
+                {(locationLookups?.provinces || []).map((province) => (
                   <option key={province} value={province}>{province}</option>
                 ))}
               </select>
@@ -1022,7 +979,7 @@ const PlaceOrder = () => {
                 onChange={onChangeHandler}
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
               >
-                {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((district) => (
+                {getDistrictsForProvince(locationLookups, formData.province).map((district) => (
                   <option key={district} value={district}>{district}</option>
                 ))}
               </select>
@@ -1039,7 +996,7 @@ const PlaceOrder = () => {
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
               >
                 <option value="">{loadingNcmBranches ? "Loading NCM branches..." : "Select NCM branch"}</option>
-                {ncmBranches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                {ncmBranches.map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
               </select>
               {!loadingNcmBranches && ncmBranches.length === 0 && (
                 <p className="text-[10px] text-rose-600 mt-1">NCM has no branch listed for this district.</p>

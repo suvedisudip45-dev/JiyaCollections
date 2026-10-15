@@ -31,6 +31,8 @@ The Admin Customers screen does not load customer records until an explicit sear
 
 All four portals use a bounded in-memory cache for JSON GET responses only (10-second TTL, 100 entries maximum). Keys are scoped by request URL, query parameters, access token and, in the manufacturer portal, active workspace. Successful mutations and auth token changes clear cached responses. Binary downloads bypass this cache. It is browser-memory only, is not shared across tabs/devices, and is intentionally short-lived.
 
+Location-entry forms across the storefront, Admin, and Manufacturer/Distributor portals load province and district choices from `GET /api/lookups/nepal`; active NCM branches and their covered areas are also database-backed. The API and each portal reuse successful lookup responses for ten minutes. Branch and covered-area fields are selects, while street, landmark, and other address-detail fields remain editable where they are not NCM coverage values. Lookup failures are shown in the affected forms rather than silently allowing stale or empty options to appear valid.
+
 ### Styling setup
 
 The frontend CSS is defined in `frontend/src/index.css` and uses the following design tokens:
@@ -88,7 +90,7 @@ The store is driven by `frontend/src/context/ShopContext.jsx` and manages:
 - `shippingConfig`
 - `platformFeatures` (public feature flags fetched from `/api/features`)
 
-The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present.
+The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present. Cart product IDs are revalidated against the public catalog; valid products are loaded even when outside the initial catalog page, while deleted or unavailable products are removed from guest and authenticated carts.
 
 ### Major customer components
 
@@ -178,6 +180,11 @@ The application exposes modules such as:
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
+
+In Manufacturer Management, admins can edit pickup status and commission in
+the profile and Pickup Config views. Pickup status changes can be saved at any
+time. Commission edits send a proposal that remains pending until the
+manufacturer accepts it; admin edits do not directly change the agreed rate.
 - `/platform-features` (requires `platform:features_manage`)
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
@@ -201,6 +208,7 @@ Journal entries, general ledger, trial balance, financial statements, and accoun
 - `/returns` includes customer RMA review, NCM attempt/charge details, verified timeout reconciliation, inspection/refund milestones, and supplier-return tools
 - the exchange panel supports admin-created cases, replacement-stock tracking, charge allocation, and NCM attempt history
 - `/distributor-applications` separates regular distributor sign-up applications from manufacturer requests for distributor access; manufacturer requests are listed from `/api/admin/distributor-applications` and approved or rejected through its review endpoint
+- Manufacturer request rows expose the existing pickup contact, pickup address, NCM branch, and active manufacturer province/district locations for review. Approval provisions those business and pickup details in the distributor profile; distributors can later edit their copied business/contact/location and pickup details from the Distributor workspace's Pickup Profile page.
 - Distributor sign-up uses the manufacturer registration fields for business/contact credentials, province/district, NCM branch and covered area, address, pickup/return details, and contract dates. Admins can edit those stored registration details from each application row; service-district coverage remains editable separately.
 - `/distributors` is a searchable, server-paginated directory; searches require at least two characters and results are fetched only after submit. Rows include contact/location, account status, assignment count, and latest assignment. “View details” opens `/distributors/:distributorId`, a dedicated page with independent Profile, Finance, Inventory, Stock transfers, Orders & delivery, Returns, Exchanges, and Login history sections. Each section loads only when selected and uses paginated history APIs.
 - The profile section edits distributor contact/address/pickup fields through the existing audited profile endpoint and provides an approved general rate-card editor for delivery/return charge, commission, incentive, and VAT values. Linked manufacturer accounts are shown separately with a link to `/manufacturers/:manufacturerId`; their operational records are not merged.

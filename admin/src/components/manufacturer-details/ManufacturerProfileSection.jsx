@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../../App";
 import { usePermissions } from "../../auth/PermissionsContext";
+import { useLocationLookups } from "../../utils/locationLookups";
 
 const inputClass = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 read-only:bg-slate-50";
 
@@ -11,26 +12,40 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
   const { can } = usePermissions();
   const [profile, setProfile] = useState({});
   const [saving, setSaving] = useState(false);
+  const [commissionRate, setCommissionRate] = useState("");
+  const [commissionSaving, setCommissionSaving] = useState(false);
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const canEdit = can("manufacturer:admin_update");
+  const canProposeCommission = can("manufacturer:admin_commission_update");
 
   useEffect(() => {
+    const branch = locationLookups?.branches?.find((entry) => (
+      entry.name.toLocaleLowerCase() === String(manufacturer.ncmPickupBranch || manufacturer.city || "").toLocaleLowerCase()
+    ));
     setProfile({
       name: manufacturer.name || "",
       email: manufacturer.email || "",
       phone: manufacturer.phone || "",
-      city: manufacturer.city || "",
+      city: branch?.name || manufacturer.city || "",
+      ncmPickupBranch: branch?.name.toUpperCase() || manufacturer.ncmPickupBranch || "",
       address: manufacturer.address || "",
       pickupAddress: manufacturer.pickupAddress || "",
       pickupContactName: manufacturer.pickupContactName || "",
       pickupContactPhone: manufacturer.pickupContactPhone || "",
       pickupWindow: manufacturer.pickupWindow || "",
+      pickupBranchStatus: manufacturer.pickupBranchStatus || "UNVERIFIED",
       returnInstructions: manufacturer.returnInstructions || "",
       contractStartDate: manufacturer.contractStartDate ? new Date(manufacturer.contractStartDate).toISOString().slice(0, 10) : "",
       contractExpiryDate: manufacturer.contractExpiryDate ? new Date(manufacturer.contractExpiryDate).toISOString().slice(0, 10) : "",
     });
-  }, [manufacturer]);
+    setCommissionRate(String(manufacturer.proposedCommissionRate ?? manufacturer.agreedCommissionRate ?? 0));
+  }, [manufacturer, locationLookups]);
 
-  const update = (field, value) => setProfile((current) => ({ ...current, [field]: value }));
+  const update = (field, value) => setProfile((current) => ({
+    ...current,
+    [field]: value,
+    ...(field === "city" ? { ncmPickupBranch: value.toUpperCase() } : {}),
+  }));
   const save = async (event) => {
     event.preventDefault();
     setSaving(true);
@@ -51,11 +66,38 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
     }
   };
 
+  const proposeCommission = async (event) => {
+    event.preventDefault();
+    const rate = Number(commissionRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      toast.error("Commission rate must be between 0% and 100%.");
+      return;
+    }
+    setCommissionSaving(true);
+    try {
+      const response = await axios.put(
+        `${backendUrl}/api/manufacturer/admin/commission/${manufacturer.id}`,
+        {
+          proposedCommissionRate: rate,
+          adminCommissionFeedback: `Commission proposal sent at ${rate.toFixed(2)}%. Awaiting manufacturer acceptance.`,
+        },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to propose commission rate.");
+      toast.success("Commission proposal sent. The manufacturer must accept it.");
+      onUpdated();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Unable to propose commission rate.");
+    } finally {
+      setCommissionSaving(false);
+    }
+  };
+
   const fields = [
     ["name", "Business name", "text"],
     ["email", "Email / login email", "email"],
     ["phone", "Contact number", "tel"],
-    ["city", "City / hub", "text"],
     ["pickupContactName", "Pickup contact", "text"],
     ["pickupContactPhone", "Pickup contact number", "tel"],
     ["pickupWindow", "Pickup window", "text"],
@@ -67,10 +109,24 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
       <form onSubmit={save} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div><h2 className="font-bold text-slate-900">Business profile</h2><p className="mt-1 text-xs text-slate-500">Updates reuse the existing manufacturer admin endpoint. Email changes synchronize the linked login account.</p></div>
+        {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
         <div className="grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-semibold text-slate-600">City / NCM branch
+            <select value={profile.city || ""} onChange={(event) => update("city", event.target.value)} disabled={!canEdit || !locationLookups} className={`${inputClass} bg-white disabled:bg-slate-50`}>
+              <option value="">Select NCM branch</option>
+              {(locationLookups?.branches || []).map((branch) => <option key={branch.name} value={branch.name}>{branch.name}</option>)}
+            </select>
+          </label>
           {fields.map(([field, label, type]) => (
             <label key={field} className="text-xs font-semibold text-slate-600">{label}<input type={type} value={profile[field] || ""} onChange={(event) => update(field, event.target.value)} readOnly={!canEdit} className={inputClass} /></label>
           ))}
+          <label className="text-xs font-semibold text-slate-600">Pickup status
+            <select value={profile.pickupBranchStatus || "UNVERIFIED"} onChange={(event) => update("pickupBranchStatus", event.target.value)} disabled={!canEdit} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-70`}>
+              <option value="UNVERIFIED">UNVERIFIED</option>
+              <option value="VERIFIED">VERIFIED</option>
+              <option value="REJECTED">REJECTED</option>
+            </select>
+          </label>
           <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Business address
             <textarea rows={2} value={profile.address || ""} onChange={(event) => update("address", event.target.value)} readOnly={!canEdit} className={inputClass} />
           </label>
@@ -97,6 +153,26 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
         <Metric label="Commission" value={`${manufacturer.agreedCommissionRate ?? manufacturer.proposedCommissionRate ?? 0}% · ${manufacturer.commissionStatus || "PENDING"}`} />
         <Metric label="NCM pickup branch" value={`${manufacturer.ncmPickupBranch || "—"} · ${manufacturer.pickupBranchStatus || "UNVERIFIED"}`} />
         <Metric label="Login account" value={`${manufacturer.account?.email || manufacturer.email} · ${manufacturer.account?.status || "No linked account"}`} />
+        {canProposeCommission && (
+          <form onSubmit={proposeCommission} className="space-y-2 border-t border-slate-100 pt-3">
+            <label className="block text-xs font-semibold text-slate-600">
+              Propose commission rate (%)
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                value={commissionRate}
+                onChange={(event) => setCommissionRate(event.target.value)}
+                className={inputClass}
+              />
+            </label>
+            <p className="text-xs text-slate-500">The rate remains pending until the manufacturer accepts it.</p>
+            <button type="submit" disabled={commissionSaving} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+              {commissionSaving ? "Sending proposal…" : "Send commission proposal"}
+            </button>
+          </form>
+        )}
       </section>
     </div>
   );

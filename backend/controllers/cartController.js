@@ -173,10 +173,36 @@ const getUserCart = async (req, res) => {
   try {
     const { userId } = req.body;
     const userData = await prisma.user.findUnique({ where: { id: userId } });
+
     if (!userData) {
       return res.json({ success: false, message: "User not found" });
     }
-    let cartData = userData.cartData || {};
+    const storedCart = userData.cartData || {};
+    const productIds = Object.keys(storedCart);
+    const products = productIds.length > 0
+      ? await prisma.product.findMany({
+        where: {
+          id: { in: productIds },
+          published: true,
+          deletedAt: null,
+          OR: [
+            { collaborationLink: null },
+            { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
+          ],
+        },
+        select: { id: true },
+      })
+      : [];
+    const availableProductIds = new Set(products.map((product) => product.id));
+    const cartData = Object.fromEntries(
+      Object.entries(storedCart).filter(([productId]) => availableProductIds.has(productId))
+    );
+    if (Object.keys(cartData).length !== productIds.length) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { cartData },
+      });
+    }
 
     res.json({ success: true, cartData });
   } catch (error) {
@@ -228,5 +254,4 @@ const syncCart = async (req, res) => {
 };
 
 export { addToCart, updateCart, getUserCart, syncCart };
-
 

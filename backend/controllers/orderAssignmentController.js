@@ -230,6 +230,21 @@ const selectDistributorForOrder = async ({
   }
   const requirements = [...requirementsBySku.values()];
   const productIds = [...new Set(requirements.map((item) => item.productId))];
+  const existingProducts = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true },
+  });
+  const existingProductIds = new Set(existingProducts.map((product) => product.id));
+  const missingProductId = productIds.find((productId) => !existingProductIds.has(productId));
+  if (missingProductId) {
+    return {
+      success: false,
+      code: "PRICE_PRODUCT_NOT_FOUND",
+      message: `Product not found: ${missingProductId}`,
+      productId: missingProductId,
+    };
+  }
+
   const distributors = await prisma.distributor.findMany({
     where: {
       status: "ACTIVE",

@@ -5,7 +5,7 @@ import {
   saveLocationProductDiscount,
   saveManufacturerLocationMappings,
 } from "../services/locationPricingService.js";
-import { NEPAL_LOCATION_MAP } from "../utils/nepalLocationData.js";
+import { getLocationLookupData } from "../services/locationLookupService.js";
 
 const sendError = (res, error) => res.status(error.status || 400).json({
   success: false,
@@ -37,7 +37,8 @@ export const updateManufacturerLocations = async (req, res) => {
 export const getLocationDiscounts = async (_req, res) => {
   try {
     const { discounts, products } = await listLocationProductDiscounts();
-    const locations = NEPAL_LOCATION_MAP.filter((entry) => entry.type !== "NATIONWIDE");
+    const { locations: locationMappings } = await getLocationLookupData();
+    const locations = locationMappings.filter((entry) => entry.type !== "NATIONWIDE");
     return res.json({ success: true, discounts, products, locations });
   } catch (error) {
     return sendError(res, error);

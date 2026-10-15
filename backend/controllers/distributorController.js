@@ -6,7 +6,8 @@ import { logAuthEvent } from "../services/authService.js";
 import { isValidMobileNumber, normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
-import { NEPAL_LOCATION_MAP, resolveLocationEntry } from "../utils/nepalLocationData.js";
+import { resolveLocationEntry } from "../utils/nepalLocationData.js";
+import { getLocationLookupData, validateNcmLocationSelection } from "../services/locationLookupService.js";
 
 const clean = (value) => String(value || "").trim();
 
@@ -127,6 +128,17 @@ export const registerDistributor = async (req, res) => {
       message: "Business name, valid email, password, phone, province, district, NCM branch, covered area, and landmark are required.",
     });
   }
+  let branchSelection;
+  try {
+    branchSelection = await validateNcmLocationSelection({
+      province: location.province,
+      district: location.district,
+      branch: req.body?.ncmPickupBranch || city,
+      coveredArea: street,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+  }
   if (password.length < 8) {
     return res.status(400).json({ success: false, message: "Password must be at least 8 characters long." });
   }
@@ -159,12 +171,12 @@ export const registerDistributor = async (req, res) => {
       passwordHash,
       phone,
       address,
-      city,
+      city: branchSelection.branch.name,
       province: location.province,
       district: location.district,
-      street,
+      street: branchSelection.coveredArea,
       landmark,
-      ncmPickupBranch: clean(req.body?.ncmPickupBranch || city).toUpperCase(),
+      ncmPickupBranch: branchSelection.branch.name.toUpperCase(),
       pickupAddress: clean(req.body?.pickupAddress),
       pickupContactName: clean(req.body?.pickupContactName),
       pickupContactPhone,
@@ -265,12 +277,21 @@ export const resolveManufacturerDistributorOrigin = async (client, manufacturer)
   }
 
   const pickupBranch = clean(manufacturer.ncmPickupBranch);
-  if (!pickupBranch) return null;
-  const branch = await client.ncmBranch.findFirst({
-    where: { name: pickupBranch },
-    select: { provinceName: true, districtName: true },
-  });
-  return canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
+  if (pickupBranch) {
+    const branch = await client.ncmBranch.findFirst({
+      where: { name: pickupBranch },
+      select: { provinceName: true, districtName: true },
+    });
+    const branchLocation = canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
+    if (branchLocation) return branchLocation;
+  }
+
+  const manufacturerLocation = [...(manufacturer.locations || [])]
+    .filter((location) => location.isActive !== false)
+    .sort((left, right) => left.province.localeCompare(right.province) || left.district.localeCompare(right.district))
+    .map((location) => canonicalizeNepalLocation(location.province, location.district))
+    .find(Boolean);
+  return manufacturerLocation || null;
 };
 
 export const listManufacturerDistributorApplications = async (req, res) => {
@@ -288,6 +309,11 @@ export const listManufacturerDistributorApplications = async (req, res) => {
         where,
         include: {
           account: { select: { id: true, email: true, phone: true, role: true, status: true } },
+          locations: {
+            where: { isActive: true },
+            select: { province: true, district: true },
+            orderBy: [{ province: "asc" }, { district: "asc" }],
+          },
         },
         orderBy: { updatedAt: "desc" },
         skip: (page - 1) * limit,
@@ -311,7 +337,14 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
     const result = await prisma.$transaction(async (tx) => {
       const manufacturer = await tx.manufacturer.findUnique({
         where: { id: req.params.id },
-        include: { account: { select: { id: true } } },
+        include: {
+          account: { select: { id: true } },
+          locations: {
+            where: { isActive: true },
+            select: { province: true, district: true, isActive: true },
+            orderBy: [{ province: "asc" }, { district: "asc" }],
+          },
+        },
       });
       if (!manufacturer || !manufacturer.accountId) {
         const error = new Error("Manufacturer distributor application not found.");
@@ -342,7 +375,7 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
         const origin = registeredOrigin || await resolveManufacturerDistributorOrigin(tx, manufacturer);
         if (!origin) {
           const error = new Error(
-            "Set a valid manufacturer city or NCM pickup branch before approving distributor access."
+            "Set a valid manufacturer city, NCM pickup branch, or province/district location before approving distributor access."
           );
           error.statusCode = 409;
           throw error;
@@ -351,10 +384,20 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
         const profileData = {
           name: manufacturer.name,
           phone: manufacturer.phone,
-          address: manufacturer.address,
+          address: manufacturer.address || manufacturer.pickupAddress || null,
           city: manufacturer.city,
           province: origin.province,
           district: origin.district,
+          street: null,
+          landmark: null,
+          ncmPickupBranch: clean(manufacturer.ncmPickupBranch).toUpperCase(),
+          pickupBranchStatus: "UNVERIFIED",
+          pickupBranchVerifiedAt: null,
+          pickupAddress: manufacturer.pickupAddress || manufacturer.address || null,
+          pickupContactName: manufacturer.pickupContactName || "",
+          pickupContactPhone: manufacturer.pickupContactPhone || "",
+          pickupWindow: manufacturer.pickupWindow || "",
+          returnInstructions: manufacturer.returnInstructions || null,
           status: "ACTIVE",
           isActive: true,
           approvedAt: now,
@@ -521,16 +564,34 @@ export const updateDistributorAdminProfile = async (req, res) => {
     }
   }
 
+  const submittedBranch = ncmPickupBranch !== undefined ? ncmPickupBranch : city;
+  let ncmSelection = null;
+  if (submittedBranch !== undefined || street !== undefined) {
+    try {
+      ncmSelection = await validateNcmLocationSelection({
+        province: normalizedLocation?.province || province,
+        district: normalizedLocation?.district || district,
+        branch: submittedBranch,
+        coveredArea: street,
+      });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+    }
+  }
+
   const updateData = {};
   if (name !== undefined) updateData.name = clean(name);
   if (normalizedPhone !== undefined) updateData.phone = normalizedPhone;
   if (address !== undefined) updateData.address = clean(address) || null;
-  if (city !== undefined) updateData.city = clean(city);
+  if (submittedBranch !== undefined) {
+    updateData.city = ncmSelection?.branch.name || clean(submittedBranch);
+    updateData.ncmPickupBranch = ncmSelection?.branch.name.toUpperCase() || "";
+  }
   if (normalizedLocation) {
     updateData.province = normalizedLocation.province;
     updateData.district = normalizedLocation.district;
   }
-  if (street !== undefined) updateData.street = clean(street);
+  if (street !== undefined) updateData.street = ncmSelection?.coveredArea || clean(street);
   if (landmark !== undefined) updateData.landmark = clean(landmark);
   if (ncmPickupBranch !== undefined) updateData.ncmPickupBranch = clean(ncmPickupBranch).toUpperCase();
   if (pickupBranchStatus !== undefined) {
@@ -557,6 +618,14 @@ export const updateDistributorAdminProfile = async (req, res) => {
       });
       if (!before) {
         throw Object.assign(new Error("Distributor not found."), { statusCode: 404 });
+      }
+      if (submittedBranch !== undefined) {
+        const currentBranch = clean(before.ncmPickupBranch).toLocaleLowerCase();
+        const nextBranch = ncmSelection?.branch.name.toLocaleLowerCase() || "";
+        if (currentBranch !== nextBranch && pickupBranchStatus === undefined) {
+          updateData.pickupBranchStatus = "UNVERIFIED";
+          updateData.pickupBranchVerifiedAt = null;
+        }
       }
       const updated = await tx.distributor.update({
         where: { id: req.params.id },
@@ -658,7 +727,8 @@ const permittedTransitions = {
 
 export const getDistributorCoverage = async (_req, res) => {
   try {
-    const distributors = await prisma.distributor.findMany({
+    const [distributors, { locations }] = await Promise.all([
+      prisma.distributor.findMany({
       select: {
         id: true,
         name: true,
@@ -672,11 +742,13 @@ export const getDistributorCoverage = async (_req, res) => {
         },
       },
       orderBy: { name: "asc" },
-    });
+      }),
+      getLocationLookupData(),
+    ]);
     return res.json({
       success: true,
       distributors,
-      locations: NEPAL_LOCATION_MAP.filter((location) => ["PROVINCE", "DISTRICT"].includes(location.type)),
+      locations: locations.filter((location) => ["PROVINCE", "DISTRICT"].includes(location.type)),
     });
   } catch (error) {
     return sendFailure(res, error, "getDistributorCoverage");
@@ -835,6 +907,15 @@ export const updateDistributorPickupProfile = async (req, res) => {
   try {
     const distributorId = req.distributorId || req.body?.distributorId;
     const {
+      name,
+      phone,
+      address,
+      city,
+      province,
+      district,
+      street,
+      landmark,
+      ncmPickupBranch,
       pickupAddress,
       pickupContactName,
       pickupContactPhone,
@@ -842,34 +923,118 @@ export const updateDistributorPickupProfile = async (req, res) => {
       returnInstructions,
     } = req.body;
 
-    const updateData = {};
-    if (pickupAddress !== undefined) updateData.pickupAddress = pickupAddress || null;
-    if (pickupContactName !== undefined) updateData.pickupContactName = String(pickupContactName || "").trim();
-    if (pickupContactPhone !== undefined) updateData.pickupContactPhone = String(pickupContactPhone || "").trim();
-    if (pickupWindow !== undefined) updateData.pickupWindow = String(pickupWindow || "").trim();
-    if (returnInstructions !== undefined) updateData.returnInstructions = returnInstructions || null;
+    const normalizedPhone = phone === undefined ? undefined : normalizePhoneNumber(phone);
+    const normalizedPickupPhone = pickupContactPhone === undefined
+      ? undefined
+      : (pickupContactPhone ? normalizePhoneNumber(pickupContactPhone) : "");
+    if (name !== undefined && !clean(name)) {
+      return res.status(400).json({ success: false, message: "Business name is required." });
+    }
+    if (normalizedPhone !== undefined && !isValidMobileNumber(normalizedPhone)) {
+      return res.status(400).json({ success: false, message: "Please enter a valid mobile number starting with 98 or 97." });
+    }
+    if (normalizedPickupPhone && !isValidMobileNumber(normalizedPickupPhone)) {
+      return res.status(400).json({ success: false, message: "Please enter a valid pickup contact mobile number starting with 98 or 97." });
+    }
 
-    const updated = await prisma.distributor.update({
-      where: { id: distributorId },
-      data: updateData,
-    });
-
-    // If this distributor account also has a linked manufacturer profile, sync to manufacturer
-    if (updated.accountId) {
-      const linkedManufacturer = await prisma.manufacturer.findUnique({
-        where: { accountId: updated.accountId },
-      });
-      if (linkedManufacturer) {
-        await prisma.manufacturer.update({
-          where: { id: linkedManufacturer.id },
-          data: {
-            ...updateData,
-            ncmPickupBranch: updated.ncmPickupBranch,
-            pickupBranchStatus: updated.pickupBranchStatus,
-          },
-        });
+    let normalizedLocation;
+    if (province !== undefined || district !== undefined) {
+      try {
+        [normalizedLocation] = normalizeDistributorCoverage([{ province, district }]);
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({ success: false, message: error.message });
       }
     }
+
+    let ncmSelection = null;
+    const submittedBranch = ncmPickupBranch !== undefined ? ncmPickupBranch : city;
+    if (submittedBranch !== undefined || street !== undefined) {
+      try {
+        ncmSelection = await validateNcmLocationSelection({
+          province: normalizedLocation?.province || province,
+          district: normalizedLocation?.district || district,
+          branch: submittedBranch,
+          coveredArea: street,
+        });
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({ success: false, message: error.message });
+      }
+    }
+
+    const profileData = {};
+    if (name !== undefined) profileData.name = clean(name);
+    if (normalizedPhone !== undefined) profileData.phone = normalizedPhone;
+    if (address !== undefined) profileData.address = clean(address) || null;
+    if (submittedBranch !== undefined) {
+      profileData.city = ncmSelection?.branch.name || clean(submittedBranch);
+      profileData.ncmPickupBranch = ncmSelection?.branch.name.toUpperCase() || "";
+    }
+    if (normalizedLocation) {
+      profileData.province = normalizedLocation.province;
+      profileData.district = normalizedLocation.district;
+    }
+    if (street !== undefined) profileData.street = ncmSelection?.coveredArea || clean(street);
+    if (landmark !== undefined) profileData.landmark = clean(landmark);
+
+    const pickupData = {};
+    if (pickupAddress !== undefined) pickupData.pickupAddress = clean(pickupAddress) || null;
+    if (pickupContactName !== undefined) pickupData.pickupContactName = clean(pickupContactName);
+    if (normalizedPickupPhone !== undefined) pickupData.pickupContactPhone = normalizedPickupPhone;
+    if (pickupWindow !== undefined) pickupData.pickupWindow = clean(pickupWindow);
+    if (returnInstructions !== undefined) pickupData.returnInstructions = clean(returnInstructions) || null;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const current = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { ncmPickupBranch: true },
+      });
+      const nextBranchName = ncmSelection?.branch.name || clean(submittedBranch);
+      const branchChanged = submittedBranch !== undefined
+        && clean(current?.ncmPickupBranch).toLocaleLowerCase() !== nextBranchName.toLocaleLowerCase();
+      if (branchChanged) {
+        profileData.pickupBranchStatus = "UNVERIFIED";
+        profileData.pickupBranchVerifiedAt = null;
+      }
+      const distributor = await tx.distributor.update({
+        where: { id: distributorId },
+        data: { ...profileData, ...pickupData },
+      });
+      if (normalizedLocation) {
+        await tx.distributorLocation.upsert({
+          where: {
+            distributorId_province_district: {
+              distributorId,
+              province: normalizedLocation.province,
+              district: normalizedLocation.district,
+            },
+          },
+          create: {
+            distributorId,
+            province: normalizedLocation.province,
+            district: normalizedLocation.district,
+            isActive: true,
+          },
+          update: { isActive: true },
+        });
+      }
+      if (distributor.accountId && (Object.keys(pickupData).length || ncmSelection)) {
+        const linkedManufacturer = await tx.manufacturer.findUnique({
+          where: { accountId: distributor.accountId },
+          select: { id: true },
+        });
+        if (linkedManufacturer) {
+          await tx.manufacturer.update({
+            where: { id: linkedManufacturer.id },
+            data: {
+              ...pickupData,
+              ncmPickupBranch: distributor.ncmPickupBranch,
+              pickupBranchStatus: distributor.pickupBranchStatus,
+            },
+          });
+        }
+      }
+      return distributor;
+    });
 
     return res.json({ success: true, message: "Distributor pickup profile updated successfully.", distributor: updated });
   } catch (error) {

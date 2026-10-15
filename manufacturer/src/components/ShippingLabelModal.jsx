@@ -1,5 +1,4 @@
 import React, { useState, useMemo } from "react";
-import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
 import { useManufacturer } from "../context/ManufacturerContext";
 
 const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) => {

@@ -2,11 +2,10 @@ import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { getPlatformFeatures } from "./platformFeatureService.js";
 import {
-  NEPAL_LOCATION_MAP,
-  NEPAL_PROVINCES,
   get4CharCodeForCampaign,
   resolveLocationEntry,
 } from "../utils/nepalLocationData.js";
+import { getLocationLookupData } from "./locationLookupService.js";
 
 const MAX_BATCH_SIZE = 5000;
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["ACTIVE"]);
@@ -1067,15 +1066,8 @@ export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufactur
 };
 
 export const getLocationMappingsService = async () => {
-  try {
-    const locations = await prisma.locationMapping.findMany({
-      orderBy: [{ type: "asc" }, { name: "asc" }],
-    });
-    if (locations && locations.length > 0) return locations;
-  } catch (_err) {
-    // Fallback if table not ready
-  }
-  return NEPAL_LOCATION_MAP;
+  const { locations } = await getLocationLookupData();
+  return locations;
 };
 
 export const cardTokenHash = hashToken;

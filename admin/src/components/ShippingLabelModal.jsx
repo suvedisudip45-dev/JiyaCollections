@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
+import { useLocationLookups } from "../utils/locationLookups";
 import axios from "axios";
 import { backendUrl } from "../App";
 
 const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   // Normalize order list: if orders array is provided, use it; otherwise wrap single order
   const orderList = useMemo(() => {
     if (orders && orders.length > 0) return orders;
@@ -97,12 +98,11 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
 
   // Handle city selection change in sender form
   const handleCityChange = (cityName) => {
-    const matched = NEPAL_CITIES.find((c) => c.name === cityName);
+    const matched = locationLookups?.branches?.find((branch) => branch.name === cityName);
     setSenderForm((prev) => ({
       ...prev,
       city: cityName,
       state: matched ? matched.province : prev.state,
-      zipcode: matched ? matched.zipcode : prev.zipcode,
     }));
   };
 
@@ -587,6 +587,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
                   onSubmit={handleSaveSender}
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3"
                 >
+                  {lookupError && <p role="alert" className="sm:col-span-2 lg:col-span-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
                   <div>
                     <label className="block text-[11px] font-semibold text-gray-700 uppercase mb-1">
                       Store / Sender Name
@@ -640,9 +641,9 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
                       value={senderForm.city}
                       onChange={(e) => handleCityChange(e.target.value)}
                     >
-                      {NEPAL_CITIES.map((c) => (
-                        <option key={c.name} value={c.name}>
-                          {c.name} ({c.province})
+                      {(locationLookups?.branches || []).map((branch) => (
+                        <option key={branch.name} value={branch.name}>
+                          {branch.name} ({branch.province})
                         </option>
                       ))}
                     </select>
@@ -658,7 +659,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
                         setSenderForm({ ...senderForm, state: e.target.value })
                       }
                     >
-                      {NEPAL_PROVINCES.map((p) => (
+                      {(locationLookups?.provinces || []).map((p) => (
                         <option key={p} value={p}>
                           {p}
                         </option>

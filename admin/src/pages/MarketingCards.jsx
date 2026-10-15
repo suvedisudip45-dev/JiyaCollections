@@ -3,11 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import PrintSheetModal from "../components/PrintSheetModal";
-import {
-  NEPAL_PROVINCES,
-  DISTRICTS_BY_PROVINCE,
-  ALL_DISTRICTS,
-} from "../data/nepalLocations";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 const fmt = (n) => (n ?? 0).toLocaleString();
@@ -148,6 +144,7 @@ const TABS = [
 
 // ════════════════════════════════════════════════════════════════════════════
 const MarketingCards = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [tab, setTab] = useState("overview");
 
   // Core data
@@ -1007,6 +1004,7 @@ const MarketingCards = ({ token }) => {
                 </div>
 
                 <div className="mt-4 space-y-4">
+                  {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
                   {/* Basic info */}
                   <label className="flex items-start gap-3 rounded-xl border border-[#e6c5ba] bg-[#f8f7f4] p-3">
                     <input
@@ -1075,9 +1073,9 @@ const MarketingCards = ({ token }) => {
                         <div>
                           <label className="text-[11px] font-bold uppercase text-slate-500">Target Province</label>
                           <select className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" value={campaign.targetProvince || ""}
-                            onChange={(e) => { const p = e.target.value; const allowed = DISTRICTS_BY_PROVINCE[p] || []; setCampaign({ ...campaign, targetProvince: p, targetDistrict: allowed.includes(campaign.targetDistrict) ? campaign.targetDistrict : "" }); }}>
+                            onChange={(e) => { const p = e.target.value; const allowed = getDistrictsForProvince(locationLookups, p); setCampaign({ ...campaign, targetProvince: p, targetDistrict: allowed.includes(campaign.targetDistrict) ? campaign.targetDistrict : "" }); }}>
                             <option value="">-- Select Province --</option>
-                            {NEPAL_PROVINCES.map((p) => <option key={p} value={p}>{p}</option>)}
+                            {(locationLookups?.provinces || []).map((p) => <option key={p} value={p}>{p}</option>)}
                           </select>
                         </div>
                       )}
@@ -1085,9 +1083,11 @@ const MarketingCards = ({ token }) => {
                         <div>
                           <label className="text-[11px] font-bold uppercase text-slate-500">Target District</label>
                           <select className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm" value={campaign.targetDistrict || ""}
-                            onChange={(e) => { const d = e.target.value; let prov = campaign.targetProvince; if (!prov && d) { for (const [pName, dList] of Object.entries(DISTRICTS_BY_PROVINCE)) { if (dList.includes(d)) { prov = pName; break; } } } setCampaign({ ...campaign, targetProvince: prov, targetDistrict: d }); }}>
+                            onChange={(e) => { const d = e.target.value; const prov = campaign.targetProvince || locationLookups?.districts?.find((district) => district.name === d)?.province || ""; setCampaign({ ...campaign, targetProvince: prov, targetDistrict: d }); }}>
                             <option value="">{campaign.targetProvince ? `-- District in ${campaign.targetProvince} --` : "-- Select District --"}</option>
-                            {(campaign.targetProvince ? DISTRICTS_BY_PROVINCE[campaign.targetProvince] || [] : ALL_DISTRICTS).map((d) => <option key={d} value={d}>{d}</option>)}
+                            {(campaign.targetProvince
+                              ? getDistrictsForProvince(locationLookups, campaign.targetProvince)
+                              : locationLookups?.districts?.map(({ name }) => name) || []).map((d) => <option key={d} value={d}>{d}</option>)}
                           </select>
                         </div>
                       )}

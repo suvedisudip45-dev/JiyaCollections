@@ -82,7 +82,7 @@ export const resolveDistrictShippingFee = async ({
     });
     if (!allocation.success) {
       throw Object.assign(new Error(allocation.message || "No distributor is currently available for this delivery location."), {
-        status: 409,
+        status: allocation.code === "PRICE_PRODUCT_NOT_FOUND" ? 404 : 409,
         code: allocation.code || "DISTRIBUTOR_UNAVAILABLE",
         stockShortages: allocation.stockShortages,
       });

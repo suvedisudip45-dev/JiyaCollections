@@ -19,8 +19,7 @@ import {
   Percent,
 } from "lucide-react";
 import { backendUrl, currency } from "../App";
-import { NEPAL_PROVINCES, NEPAL_CITIES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import Pagination from "../components/Pagination";
 
 const defaultFormData = {
@@ -47,6 +46,7 @@ const defaultFormData = {
 };
 
 const Manufacturers = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { manufacturerId } = useParams();
   const [manufacturers, setManufacturers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -301,31 +301,46 @@ const Manufacturers = ({ token }) => {
           ? formData.pickupAddress
           : [formData.street, formData.landmark, formData.city].filter(Boolean).join(", ");
 
+        const { commissionRate, ...manufacturerForm } = formData;
         const payload = {
-          ...formData,
+          ...manufacturerForm,
           name: formData.businessName,
           city: formData.city,
           ncmPickupBranch: formData.city || formData.ncmPickupBranch,
           address: formattedAddress,
           pickupAddress: formattedPickupAddress,
           pickupBranchStatus: formData.pickupBranchStatus || "UNVERIFIED",
-          proposedCommissionRate: Number(formData.commissionRate || 12),
-          commissionStatus: "PENDING",
-          commissionLastProposedBy: "ADMIN",
         };
 
         if (editingManufacturerId) {
+          const previousCommissionRate = Number(
+            selectedMfg?.commissionStatus === "PENDING"
+              ? selectedMfg.proposedCommissionRate ?? selectedMfg.agreedCommissionRate ?? 12
+              : selectedMfg?.agreedCommissionRate ?? selectedMfg?.proposedCommissionRate ?? 12
+          );
+          const commissionChanged = Number(commissionRate) !== previousCommissionRate;
+          if (commissionChanged) {
+            payload.proposedCommissionRate = Number(commissionRate);
+            payload.adminCommissionFeedback = `Commission proposal sent at ${Number(commissionRate).toFixed(2)}%. Awaiting manufacturer acceptance.`;
+          }
           const res = await axios.put(
             `${backendUrl}/api/manufacturer/admin/update/${editingManufacturerId}`,
             payload,
             { headers: { token } }
           );
           if (res.data.success) {
-            toast.success("Manufacturer pickup settings updated successfully!");
+            toast.success(
+              commissionChanged
+                ? "Manufacturer settings updated; commission proposal is awaiting manufacturer acceptance."
+                : "Manufacturer settings updated successfully."
+            );
           } else {
             throw new Error(res.data.message || "Failed to update manufacturer settings");
           }
         } else {
+          payload.proposedCommissionRate = Number(commissionRate ?? 12);
+          payload.commissionStatus = "PENDING";
+          payload.commissionLastProposedBy = "ADMIN";
           const res = await axios.post(
             `${backendUrl}/api/manufacturer/admin/register`,
             payload,
@@ -798,7 +813,11 @@ const Manufacturers = ({ token }) => {
                         pickupWindow: m.pickupWindow || "",
                         returnInstructions: m.returnInstructions || "",
                         pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
-                        commissionRate: Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12),
+                        commissionRate: Number(
+                          m.commissionStatus === "PENDING"
+                            ? m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12
+                            : m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12
+                        ),
                         contractStart: m.contractStartDate
                           ? new Date(m.contractStartDate).toISOString().split("T")[0]
                           : m.contractStart
@@ -898,6 +917,11 @@ const Manufacturers = ({ token }) => {
                         onChange={(e) => setFormData({ ...formData, commissionRate: Number(e.target.value || 0) })}
                         className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                       />
+                      {editingManufacturerId && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Saving sends a proposal; the rate takes effect only after the manufacturer accepts it.
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -955,6 +979,7 @@ const Manufacturers = ({ token }) => {
                     <MapPin className="w-3.5 h-3.5 text-emerald-600" />
                     2. Regional Location & NCM Hub Selection
                   </h4>
+                  {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -963,9 +988,10 @@ const Manufacturers = ({ token }) => {
                       </label>
                       <select
                         value={formData.province}
+                        disabled={!locationLookups}
                         onChange={(e) => {
                           const newProv = e.target.value;
-                          const defaultDist = NEPAL_DISTRICTS_BY_PROVINCE[newProv]?.[0] || "";
+                          const defaultDist = getDistrictsForProvince(locationLookups, newProv)[0] || "";
                           setFormData({
                             ...formData,
                             province: newProv,
@@ -976,7 +1002,7 @@ const Manufacturers = ({ token }) => {
                         }}
                         className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
                       >
-                        {NEPAL_PROVINCES.map((p) => (
+                        {(locationLookups?.provinces || []).map((p) => (
                           <option key={p} value={p}>
                             {p}
                           </option>
@@ -990,6 +1016,7 @@ const Manufacturers = ({ token }) => {
                       </label>
                       <select
                         value={formData.district}
+                        disabled={!locationLookups}
                         onChange={(e) =>
                           setFormData({
                             ...formData,
@@ -1000,7 +1027,7 @@ const Manufacturers = ({ token }) => {
                         }
                         className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
                       >
-                        {(NEPAL_DISTRICTS_BY_PROVINCE[formData.province] || []).map((d) => (
+                        {getDistrictsForProvince(locationLookups, formData.province).map((d) => (
                           <option key={d} value={d}>
                             {d}
                           </option>
@@ -1038,27 +1065,16 @@ const Manufacturers = ({ token }) => {
                       <label className="block font-semibold text-slate-700 mb-1">
                         Street / Covered Area
                       </label>
-                      {coveredAreas.length > 0 ? (
-                        <select
-                          value={formData.street}
-                          onChange={(e) => setFormData({ ...formData, street: e.target.value })}
-                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                        >
-                          {coveredAreas.map((area) => (
-                            <option key={area} value={area}>
-                              {area}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          placeholder="e.g. Ward No. 4, Balaju Industrial Area"
-                          value={formData.street}
-                          onChange={(e) => setFormData({ ...formData, street: e.target.value })}
-                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                        />
-                      )}
+                      <select
+                        required
+                        value={formData.street}
+                        disabled={!formData.city || coveredAreas.length === 0}
+                        onChange={(e) => setFormData({ ...formData, street: e.target.value })}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 disabled:opacity-50"
+                      >
+                        <option value="">{formData.city && coveredAreas.length === 0 ? "No covered areas available" : "Select a covered area"}</option>
+                        {coveredAreas.map((area) => <option key={area} value={area}>{area}</option>)}
+                      </select>
                     </div>
                   </div>
 
@@ -1202,6 +1218,7 @@ const Manufacturers = ({ token }) => {
                   </button>
                   <button
                     type="submit"
+                    disabled={!locationLookups || !formData.street}
                     className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer transition shadow-md hover:shadow-lg"
                   >
                     {editingManufacturerId ? "Save Changes" : "Register Partner"}

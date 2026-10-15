@@ -142,6 +142,7 @@ The schema includes explicit coverage and pricing metadata for Nepal-specific lo
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `LocationMapping` | `code`, `name`, `type`, `province` | canonical Nepal province/district code map used for normalization and matching |
+| `NcmBranch` | `name`, `provinceName`, `districtName`, `coveredAreas`, `isActive` | active branch and covered-area choices exposed by the shared location lookup API |
 | `ManufacturerLocation` | `manufacturerId`, `province`, `district`, `isActive` | local dispatch coverage by manufacturer, keyed to deliverable province/district pairs |
 | `LocationProductDiscount` | `productId`, `province`, `district`, `discountPercentage`, `isActive` | per-product local discount overrides by geography |
 

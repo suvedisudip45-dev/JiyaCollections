@@ -417,9 +417,7 @@ const ShopContextProvider = (props) => {
           { headers: { token: userToken } }
         );
         if (syncRes.data.success) {
-          setCartItems(syncRes.data.cartData || {});
           localStorage.removeItem("cartItems");
-          return;
         }
       }
 
@@ -455,6 +453,74 @@ const ShopContextProvider = (props) => {
   useEffect(() => {
     getProductsData(priceLocation);
   }, [priceLocation?.province, priceLocation?.district]);
+
+  const cartProductIds = Object.entries(cartItems)
+    .filter(([, variants]) => Object.values(variants || {}).some((quantity) => Number(quantity) > 0))
+    .map(([productId]) => productId);
+  const cartProductIdsKey = cartProductIds.join(",");
+
+  useEffect(() => {
+    if (!cartProductIdsKey) return undefined;
+    let active = true;
+    const requestedIds = cartProductIdsKey.split(",");
+    const fetchCartProducts = async () => {
+      try {
+        const productPages = await Promise.all(
+          Array.from({ length: Math.ceil(requestedIds.length / 50) }, (_, index) =>
+            axios.get(`${backendUrl}/api/product/list`, {
+              params: {
+                ids: requestedIds.slice(index * 50, (index + 1) * 50).join(","),
+                limit: 50,
+              },
+            })
+          )
+        );
+        if (!active) return;
+        const cartProducts = productPages.flatMap((response) => {
+          if (!response.data?.success) {
+            throw new Error(response.data?.message || "Unable to verify cart products.");
+          }
+          return response.data.products || [];
+        });
+        const availableProductIds = new Set(
+          cartProducts.map((product) => product._id || product.id)
+        );
+        const removedProductIds = requestedIds.filter((productId) => !availableProductIds.has(productId));
+
+        setProducts((currentProducts) => {
+          const mergedProducts = [...currentProducts];
+          let changed = false;
+          cartProducts.forEach((product) => {
+            const productId = product._id || product.id;
+            if (productId && !mergedProducts.some((entry) => (entry._id || entry.id) === productId)) {
+              mergedProducts.push(product);
+              changed = true;
+            }
+          });
+          return changed ? mergedProducts : currentProducts;
+        });
+
+        if (removedProductIds.length > 0) {
+          setCartItems((currentCart) => {
+            const nextCart = { ...currentCart };
+            removedProductIds.forEach((productId) => delete nextCart[productId]);
+            if (!token) localStorage.setItem("cartItems", JSON.stringify(nextCart));
+            return nextCart;
+          });
+          toast.info("Unavailable products were removed from your cart.");
+        }
+      } catch (error) {
+        if (active) {
+          console.error("Unable to verify products saved in the cart:", error);
+        }
+      }
+    };
+
+    fetchCartProducts();
+    return () => {
+      active = false;
+    };
+  }, [backendUrl, cartProductIdsKey, products, token]);
 
   useEffect(() => {
     const storedToken = getAccessToken();

@@ -4,8 +4,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
-import { NEPAL_CITIES, NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -27,6 +26,7 @@ const PAYMENT_METHODS = [
 ];
 
 const CreateOrder = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const navigate = useNavigate();
 
   // Client Details state
@@ -184,7 +184,7 @@ const CreateOrder = ({ token }) => {
       }
 
       if (name === "province") {
-        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "";
+        const nextDistrict = getDistrictsForProvince(locationLookups, value)[0] || "";
         updated.province = value;
         updated.state = value;
         updated.district = nextDistrict;
@@ -204,13 +204,12 @@ const CreateOrder = ({ token }) => {
       if (name === "city") {
         updated.city = value;
         updated.ncmBranch = value;
-        const found = NEPAL_CITIES.find(
-          (c) => c.name.toLowerCase() === value.trim().toLowerCase()
+        const found = locationLookups?.branches?.find(
+          (branch) => branch.name.toLowerCase() === value.trim().toLowerCase()
         );
         if (found) {
           updated.state = found.province;
           updated.province = found.province;
-          updated.zipcode = found.zipcode;
         }
       }
 
@@ -1079,6 +1078,7 @@ const CreateOrder = ({ token }) => {
                 For 4x6 Dispatch Slip
               </span>
             </div>
+            {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
 
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -1089,9 +1089,10 @@ const CreateOrder = ({ token }) => {
                   name="province"
                   value={client.province}
                   onChange={handleClientChange}
+                  disabled={!locationLookups}
                   className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
                 >
-                  {NEPAL_PROVINCES.map((province) => (
+                  {(locationLookups?.provinces || []).map((province) => (
                     <option key={province} value={province}>{province}</option>
                   ))}
                 </select>
@@ -1105,9 +1106,10 @@ const CreateOrder = ({ token }) => {
                   name="district"
                   value={client.district}
                   onChange={handleClientChange}
+                  disabled={!locationLookups}
                   className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
                 >
-                  {(NEPAL_DISTRICTS_BY_PROVINCE[client.province] || []).map((district) => (
+                  {getDistrictsForProvince(locationLookups, client.province).map((district) => (
                     <option key={district} value={district}>{district}</option>
                   ))}
                 </select>

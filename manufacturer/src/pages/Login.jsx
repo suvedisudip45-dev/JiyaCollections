@@ -4,8 +4,7 @@ import CryptoJS from "crypto-js";
 import { toast } from "react-toastify";
 import { ArrowLeft, Factory, Lock, Mail, ArrowRight, Shield, ShieldCheck, UserPlus, MapPin, Building, Phone, Calendar, Clock, RotateCcw, MailCheck, RefreshCw, Smartphone } from "lucide-react";
 import { useManufacturer } from "../context/ManufacturerContext";
-import { NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { storeAuthTokens } from "../auth/tokenStorage";
 
 const encryptValue = (plaintext) => {
@@ -69,6 +68,7 @@ const formatCountdown = (seconds) => `${String(Math.floor(seconds / 60)).padStar
 
 const Login = () => {
   const { setToken, setManufacturer, backendUrl } = useManufacturer();
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -464,18 +464,19 @@ const Login = () => {
 
             <section className="border-t border-slate-800 pt-5">
               <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-emerald-400">2. Location &amp; Nepal Can Move (NCM) Logistics Integration</h3>
+              {lookupError && <p role="alert" className="mb-3 rounded-lg bg-rose-950 px-3 py-2 text-xs text-rose-200">{lookupError}</p>}
               <div className="grid gap-4 sm:grid-cols-3">
                 <label className="block text-xs font-semibold text-slate-300">Province *
-                  <select required value={distributorForm.province} onChange={(event) => {
+                  <select required value={distributorForm.province} disabled={!locationLookups} onChange={(event) => {
                     const province = event.target.value;
-                    setDistributorForm((prev) => ({ ...prev, province, district: NEPAL_DISTRICTS_BY_PROVINCE[province]?.[0] || "", city: "", street: "" }));
+                    setDistributorForm((prev) => ({ ...prev, province, district: getDistrictsForProvince(locationLookups, province)[0] || "", city: "", street: "" }));
                   }} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
-                    {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                    {(locationLookups?.provinces || []).map((province) => <option key={province} value={province}>{province}</option>)}
                   </select>
                 </label>
                 <label className="block text-xs font-semibold text-slate-300">District *
-                  <select required value={distributorForm.district} onChange={(event) => setDistributorForm((prev) => ({ ...prev, district: event.target.value, city: "", street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
-                    {(NEPAL_DISTRICTS_BY_PROVINCE[distributorForm.province] || []).map((district) => <option key={district} value={district}>{district}</option>)}
+                  <select required value={distributorForm.district} disabled={!locationLookups} onChange={(event) => setDistributorForm((prev) => ({ ...prev, district: event.target.value, city: "", street: "" }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white">
+                    {getDistrictsForProvince(locationLookups, distributorForm.province).map((district) => <option key={district} value={district}>{district}</option>)}
                   </select>
                 </label>
                 <label className="block text-xs font-semibold text-slate-300">NCM Town / Branch *
@@ -530,7 +531,7 @@ const Login = () => {
                 <input type="date" value={distributorForm.contractExpiryDate} onChange={(event) => setDistributorForm((prev) => ({ ...prev, contractExpiryDate: event.target.value }))} className="mt-1.5 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white" />
               </label>
             </section>
-            <button type="submit" disabled={registerLoading} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
+            <button type="submit" disabled={registerLoading || !locationLookups} className="w-full rounded-xl bg-emerald-500 px-4 py-3 font-bold text-slate-950 disabled:opacity-50">
               {registerLoading ? "Submitting..." : "Submit distributor application"}
             </button>
           </form>
@@ -627,6 +628,7 @@ const Login = () => {
                 <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3 flex items-center gap-2">
                   <MapPin className="w-4 h-4" /> 2. Location &amp; Nepal Can Move (NCM) Logistics Integration
                 </h3>
+                {lookupError && <p role="alert" className="mb-3 rounded-lg bg-rose-950 px-3 py-2 text-xs text-rose-200">{lookupError}</p>}
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                   <div>
@@ -634,9 +636,10 @@ const Login = () => {
                     <select
                       required
                       value={registerForm.province}
+                      disabled={!locationLookups}
                       onChange={(e) => {
                         const nextProvince = e.target.value;
-                        const nextDistrict = NEPAL_DISTRICTS_BY_PROVINCE[nextProvince]?.[0] || "";
+                        const nextDistrict = getDistrictsForProvince(locationLookups, nextProvince)[0] || "";
                         setRegisterForm({
                           ...registerForm,
                           province: nextProvince,
@@ -647,7 +650,7 @@ const Login = () => {
                       }}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
                     >
-                      {NEPAL_PROVINCES.map((prov) => (
+                      {(locationLookups?.provinces || []).map((prov) => (
                         <option key={prov} value={prov} className="bg-slate-900 text-white">
                           {prov}
                         </option>
@@ -660,6 +663,7 @@ const Login = () => {
                     <select
                       required
                       value={registerForm.district}
+                      disabled={!locationLookups}
                       onChange={(e) => {
                         setRegisterForm({
                           ...registerForm,
@@ -670,7 +674,7 @@ const Login = () => {
                       }}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500 cursor-pointer"
                     >
-                      {(NEPAL_DISTRICTS_BY_PROVINCE[registerForm.province] || []).map((dist) => (
+                      {getDistrictsForProvince(locationLookups, registerForm.province).map((dist) => (
                         <option key={dist} value={dist} className="bg-slate-900 text-white">
                           {dist}
                         </option>
@@ -848,7 +852,7 @@ const Login = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={registerLoading}
+                  disabled={registerLoading || !locationLookups}
                   className="px-8 py-3 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 cursor-pointer flex items-center gap-2"
                 >
                   {registerLoading ? (

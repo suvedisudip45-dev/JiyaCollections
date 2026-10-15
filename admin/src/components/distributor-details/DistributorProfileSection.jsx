@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../../App";
 import { toast } from "react-toastify";
 import { usePermissions } from "../../auth/PermissionsContext";
+import { getBranchesForLocation, getDistrictsForProvince, useLocationLookups } from "../../utils/locationLookups";
 
 const fieldClass = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500";
 const numericValue = (value, fallback = 0) => (value === null || value === undefined ? fallback : Number(value));
@@ -14,6 +15,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
   const [rate, setRate] = useState({});
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingRate, setSavingRate] = useState(false);
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { can } = usePermissions();
   const canEdit = can("distributor:admin_review");
 
@@ -44,9 +46,32 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       vatRate: numericValue(generalRate.vatRate, 13),
       vatInclusive: Boolean(generalRate.vatInclusive),
     });
-  }, [distributor]);
+  }, [distributor, locationLookups]);
 
-  const updateField = (field, value) => setProfile((current) => ({ ...current, [field]: value }));
+  const updateField = (field, value) => setProfile((current) => {
+    if (field === "province") {
+      return {
+        ...current,
+        province: value,
+        district: getDistrictsForProvince(locationLookups, value)[0] || "",
+        city: "",
+        ncmPickupBranch: "",
+        street: "",
+      };
+    }
+    if (field === "district") {
+      return { ...current, district: value, city: "", ncmPickupBranch: "", street: "" };
+    }
+    if (field === "city") {
+      return { ...current, city: value, ncmPickupBranch: value.toUpperCase(), street: "" };
+    }
+    return { ...current, [field]: value };
+  });
+
+  const selectedBranch = locationLookups?.branches?.find(
+    (branch) => branch.name.toLocaleLowerCase() === String(profile.ncmPickupBranch || "").toLocaleLowerCase(),
+  );
+  const streetOptions = selectedBranch?.coveredAreas || [];
 
   const saveProfile = async (event) => {
     event.preventDefault();
@@ -104,11 +129,33 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
       <form onSubmit={saveProfile} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div><h2 className="font-bold text-slate-900">Business profile</h2><p className="mt-1 text-xs text-slate-500">Update contact, address and pickup details. Changes use the existing audited admin profile endpoint.</p></div>
+        {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
         <div className="grid gap-3 sm:grid-cols-2">
           {[
-            ["name", "Business name"], ["phone", "Contact number"], ["city", "City"], ["province", "Province"], ["district", "District"], ["street", "Street"], ["landmark", "Landmark"], ["ncmPickupBranch", "NCM pickup branch"], ["pickupContactName", "Pickup contact"], ["pickupContactPhone", "Pickup contact number"], ["pickupWindow", "Pickup window"], ["pickupAddress", "Pickup address"],
+            ["name", "Business name"], ["phone", "Contact number"], ["province", "Province"], ["district", "District"], ["city", "City / NCM branch"], ["street", "Street / covered area"], ["landmark", "Landmark"], ["pickupContactName", "Pickup contact"], ["pickupContactPhone", "Pickup contact number"], ["pickupWindow", "Pickup window"], ["pickupAddress", "Pickup address"],
           ].map(([field, label]) => (
-            <label key={field} className="text-xs font-semibold text-slate-600">{label}<input value={profile[field] || ""} onChange={(event) => updateField(field, event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} /></label>
+            <label key={field} className="text-xs font-semibold text-slate-600">{label}
+              {["province", "district", "city", "street"].includes(field) ? (
+                <select
+                  value={profile[field] || ""}
+                  onChange={(event) => updateField(field, event.target.value)}
+                  disabled={!canEdit || !locationLookups}
+                  className={`${fieldClass} bg-white disabled:bg-slate-50`}
+                >
+                  <option value="">Select {label.toLowerCase()}</option>
+                  {(field === "province"
+                    ? locationLookups?.provinces || []
+                    : field === "district"
+                      ? getDistrictsForProvince(locationLookups, profile.province)
+                      : field === "city"
+                        ? getBranchesForLocation(locationLookups, profile.province, profile.district).map(({ name }) => name)
+                        : streetOptions
+                  ).map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              ) : (
+                <input value={profile[field] || ""} onChange={(event) => updateField(field, event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} />
+              )}
+            </label>
           ))}
           <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Address<textarea rows={2} value={profile.address || ""} onChange={(event) => updateField("address", event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} /></label>
           <label className="text-xs font-semibold text-slate-600 sm:col-span-2">Return instructions<textarea rows={2} value={profile.returnInstructions || ""} onChange={(event) => updateField("returnInstructions", event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} /></label>

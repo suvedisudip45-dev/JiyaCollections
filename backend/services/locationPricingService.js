@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { NEPAL_LOCATION_MAP, resolveLocationEntry } from "../utils/nepalLocationData.js";
+import { getLocationLookupData } from "./locationLookupService.js";
 
 const cleanKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 const parseArray = (value) => {
@@ -270,14 +271,15 @@ export const reserveLocationManufacturerInventory = async (tx, manufacturerId, i
 };
 
 export const listManufacturerLocationMappings = async () => {
-  const [mappings, manufacturers] = await Promise.all([
+  const [mappings, manufacturers, { locations }] = await Promise.all([
     prisma.manufacturerLocation.findMany({
       include: { manufacturer: { select: { id: true, name: true, city: true, isActive: true, isAvailable: true } } },
       orderBy: [{ province: "asc" }, { district: "asc" }, { manufacturer: { name: "asc" } }],
     }),
     prisma.manufacturer.findMany({ where: { isActive: true }, select: { id: true, name: true, city: true }, orderBy: { name: "asc" } }),
+    getLocationLookupData(),
   ]);
-  return { mappings, manufacturers, locations: NEPAL_LOCATION_MAP.filter((entry) => entry.type !== "NATIONWIDE") };
+  return { mappings, manufacturers, locations: locations.filter((entry) => entry.type !== "NATIONWIDE") };
 };
 
 export const saveManufacturerLocationMappings = async ({ manufacturerId, locations }) => {

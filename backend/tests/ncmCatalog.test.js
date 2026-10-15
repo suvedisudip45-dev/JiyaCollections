@@ -43,7 +43,7 @@ test("uses the selected NCM branch instead of a city mapping", () => {
   assert.deepEqual(input.destinationCandidates, ["POKHARA"]);
 });
 
-test("uses the customer's selected NCM branch as pickup origin for distributor bookings", () => {
+test("uses the distributor pickup branch as origin and customer's selected branch as destination", () => {
   const input = buildDeliveryInput({
     order: {
       id: "order-distributor",
@@ -51,22 +51,23 @@ test("uses the customer's selected NCM branch as pickup origin for distributor b
       address: JSON.stringify({
         name: "Customer",
         phone: "9800000000",
-        street: "Lakeside",
-        city: "Pokhara",
-        ncmBranch: "POKHARA",
+        street: "Sankhu",
+        city: "Kathmandu",
+        ncmBranch: "SANKHU",
       }),
       items: "[]",
     },
     assignment: { id: "assignment-distributor", distributorId: "distributor-1" },
-    manufacturer: { ncmPickupBranch: "KATHMANDU" },
+    manufacturer: { ncmPickupBranch: "POKHARA" },
   });
 
   assert.equal(input.origin, "POKHARA");
-  assert.equal(input.destination, "POKHARA");
+  assert.equal(input.destination, "SANKHU");
   assert.deepEqual(input.originCandidates, ["POKHARA"]);
+  assert.deepEqual(input.destinationCandidates, ["SANKHU"]);
 });
 
-test("falls back to the customer's city when an older distributor order has no selected NCM branch", () => {
+test("uses customer city as the destination when no specific NCM branch is selected", () => {
   const input = buildDeliveryInput({
     order: {
       id: "order-distributor-city",
@@ -75,14 +76,38 @@ test("falls back to the customer's city when an older distributor order has no s
         name: "Customer",
         phone: "9800000000",
         street: "Lakeside",
-        city: "Pokhara",
+        city: "Kathmandu",
       }),
       items: "[]",
     },
     assignment: { id: "assignment-distributor-city", distributorId: "distributor-1" },
-    manufacturer: { ncmPickupBranch: "" },
+    manufacturer: { ncmPickupBranch: "POKHARA" },
   });
 
   assert.equal(input.origin, "POKHARA");
-  assert.equal(input.destination, "POKHARA");
+  assert.equal(input.destination, "KATHMANDU");
+  assert.deepEqual(input.originCandidates, ["POKHARA"]);
+  assert.deepEqual(input.destinationCandidates, ["KATHMANDU"]);
+});
+
+test("rejects distributor delivery when its NCM pickup branch is not configured", () => {
+  assert.throws(
+    () => buildDeliveryInput({
+      order: {
+        id: "order-distributor-no-origin",
+        amount: 1000,
+        address: JSON.stringify({
+          name: "Customer",
+          phone: "9800000000",
+          street: "Sankhu",
+          city: "Kathmandu",
+          ncmBranch: "SANKHU",
+        }),
+        items: "[]",
+      },
+      assignment: { id: "assignment-distributor-no-origin", distributorId: "distributor-1" },
+      manufacturer: { ncmPickupBranch: "" },
+    }),
+    { code: "NCM_PICKUP_BRANCH_REQUIRED" },
+  );
 });

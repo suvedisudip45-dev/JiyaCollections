@@ -3,10 +3,10 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
-import { NEPAL_PROVINCES } from "../data/nepalLocations";
-import { NEPAL_DISTRICTS_BY_PROVINCE } from "../data/nepalDistricts";
+import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 
 const ShippingSettings = ({ token }) => {
+  const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [config, setConfig] = useState({
     sameDistrictFee: 50,
     differentDistrictFee: 120,
@@ -106,10 +106,10 @@ const ShippingSettings = ({ token }) => {
               ...route,
               [field]: value,
               ...(field === "originProvince" ? {
-                originDistrict: NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "",
+                originDistrict: getDistrictsForProvince(locationLookups, value)[0] || "",
               } : {}),
               ...(field === "destinationProvince" ? {
-                destinationDistrict: NEPAL_DISTRICTS_BY_PROVINCE[value]?.[0] || "",
+                destinationDistrict: getDistrictsForProvince(locationLookups, value)[0] || "",
               } : {}),
             }
           : route
@@ -210,6 +210,7 @@ const ShippingSettings = ({ token }) => {
             </h2>
           </div>
           <div className="p-5 space-y-5">
+            {lookupError && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{lookupError}</p>}
 
             {/* Same District Fee */}
             <div>
@@ -334,14 +335,15 @@ const ShippingSettings = ({ token }) => {
                         const isProvince = field.endsWith("Province");
                         const provinceField = field.startsWith("origin") ? "originProvince" : "destinationProvince";
                         const options = isProvince
-                          ? NEPAL_PROVINCES
-                          : NEPAL_DISTRICTS_BY_PROVINCE[route[provinceField]] || [];
+                          ? locationLookups?.provinces || []
+                          : getDistrictsForProvince(locationLookups, route[provinceField]);
                         return (
                           <label key={field} className="block text-[11px] font-semibold text-gray-600">
                             {label}
                             <select
                               value={route[field]}
                               onChange={(event) => updateRouteOverride(index, field, event.target.value)}
+                              disabled={!locationLookups}
                               className="mt-1 w-full rounded-md border border-gray-200 bg-white px-2 py-2 text-xs"
                             >
                               {options.map((option) => <option key={option} value={option}>{option}</option>)}
@@ -469,18 +471,20 @@ const ShippingSettings = ({ token }) => {
                       value={location.province}
                       onChange={(event) => {
                         location.setProvince(event.target.value);
-                        location.setDistrict(NEPAL_DISTRICTS_BY_PROVINCE[event.target.value]?.[0] || "");
+                        location.setDistrict(getDistrictsForProvince(locationLookups, event.target.value)[0] || "");
                       }}
+                      disabled={!locationLookups}
                       className="w-full border border-gray-200 rounded-lg py-2 px-2 text-xs bg-white"
                     >
-                      {NEPAL_PROVINCES.map((province) => <option key={province} value={province}>{province}</option>)}
+                      {(locationLookups?.provinces || []).map((province) => <option key={province} value={province}>{province}</option>)}
                     </select>
                     <select
                       value={location.district}
                       onChange={(event) => location.setDistrict(event.target.value)}
+                      disabled={!locationLookups}
                       className="w-full border border-gray-200 rounded-lg py-2 px-2 text-xs bg-white"
                     >
-                      {(NEPAL_DISTRICTS_BY_PROVINCE[location.province] || []).map((district) => (
+                      {getDistrictsForProvince(locationLookups, location.province).map((district) => (
                         <option key={district} value={district}>{district}</option>
                       ))}
                     </select>
