@@ -8,6 +8,7 @@ import { Link } from "react-router-dom";
 const FinanceDashboard = ({ token }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [costDetailsView, setCostDetailsView] = useState(null);
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -55,6 +56,23 @@ const FinanceDashboard = ({ token }) => {
   const breakEven = data?.breakEven || {};
   const bs = data?.balanceSheetSnapshot || {};
   const analytics = data?.analytics || {};
+  const costDetails = costs.details || {};
+  const openCostDetails = (title, groups) => {
+    const rows = groups.flatMap(({ category, entries }) =>
+      (Array.isArray(entries) ? entries : []).map((entry) => ({ ...entry, detailCategory: category }))
+    );
+    setCostDetailsView({ title, rows });
+  };
+  const getDetailAmount = (entry) => Number(entry.totalAmount ?? entry.amount ?? 0);
+  const formatDetailAmount = (value) => Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const formatDetailDate = (value) => {
+    if (!value) return "—";
+    const date = new Date(typeof value === "number" || /^\d+$/.test(String(value)) ? Number(value) : value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleDateString();
+  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -300,7 +318,7 @@ const FinanceDashboard = ({ token }) => {
           <div>
             <h2 className="text-base font-bold text-slate-900">Product Cost &amp; Overhead Breakdown</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Accepted production cost is counted as product COGS; delivery and other approved per-unit charges are operating overhead.
+              Batch transportation and other approved batch costs are allocated across good units and shown separately from product COGS.
             </p>
           </div>
           <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
@@ -309,19 +327,140 @@ const FinanceDashboard = ({ token }) => {
         </div>
         <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           {[
-            { label: "Product COGS", value: costs.directCOGS, style: "bg-blue-50 border-blue-100 text-blue-900" },
-            { label: "Delivery & other overhead", value: costs.deliveryAndOtherOverheads, style: "bg-amber-50 border-amber-100 text-amber-900" },
-            { label: "Fixed overhead", value: costs.fixedOverheads, style: "bg-slate-50 border-slate-100 text-slate-800" },
-            { label: "Marketing", value: costs.marketingSpend, style: "bg-violet-50 border-violet-100 text-violet-900" },
-            { label: "Total operating expenses", value: costs.totalOperatingExpenses, style: "bg-rose-50 border-rose-100 text-rose-900" },
+            { label: "Product COGS", value: costs.directCOGS, style: "bg-blue-50 border-blue-100 text-blue-900", details: [{ category: "Product COGS", entries: costDetails.productCOGS }] },
+            { label: "Manufacturer-to-distributor logistics", value: costs.deliveryAndOtherOverheads, style: "bg-amber-50 border-amber-100 text-amber-900", details: [{ category: "Manufacturer-to-distributor logistics", entries: costDetails.deliveryAndOtherOverheads }] },
+            { label: "Fixed overhead", value: costs.fixedOverheads, style: "bg-slate-50 border-slate-100 text-slate-800", details: [{ category: "Fixed overhead", entries: costDetails.fixedOverheads }] },
+            { label: "Marketing", value: costs.marketingSpend, style: "bg-violet-50 border-violet-100 text-violet-900", details: [{ category: "Marketing", entries: costDetails.marketingSpend }] },
+            {
+              label: "Total operating expenses",
+              value: costs.totalOperatingExpenses,
+              style: "bg-rose-50 border-rose-100 text-rose-900",
+              details: [
+                { category: "Manufacturer-to-distributor logistics", entries: costDetails.deliveryAndOtherOverheads },
+                { category: "Fixed overhead", entries: costDetails.fixedOverheads },
+                { category: "Marketing", entries: costDetails.marketingSpend },
+              ],
+            },
           ].map((row) => (
             <div key={row.label} className={`rounded-xl border p-4 ${row.style}`}>
               <p className="text-[11px] font-bold uppercase tracking-wide opacity-70">{row.label}</p>
               <p className="mt-2 text-lg font-black">{currency}{Number(row.value || 0).toLocaleString()}</p>
+              <button
+                type="button"
+                onClick={() => openCostDetails(row.label, row.details)}
+                className="mt-2 text-[11px] font-bold underline decoration-current/40 underline-offset-2 hover:decoration-current"
+              >
+                View details
+              </button>
             </div>
           ))}
         </div>
       </section>
+
+      {costDetailsView && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCostDetailsView(null);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cost-details-title"
+            className="max-h-[90vh] w-full max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+              <div>
+                <h2 id="cost-details-title" className="text-lg font-black text-slate-900">{costDetailsView.title} details</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Itemized cost entries for {selectedMonth}. Amounts follow the same cost rules as the dashboard totals.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCostDetailsView(null)}
+                aria-label="Close cost details"
+                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </header>
+            <div className="max-h-[calc(90vh-150px)] overflow-auto">
+              {!costDetailsView.rows.length ? (
+                <p className="p-8 text-center text-sm text-slate-500">No itemized entries for this category in the selected period.</p>
+              ) : (
+                <table className="w-full min-w-[850px] text-left text-xs">
+                  <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Date</th>
+                      <th className="px-4 py-3">Order / shipment</th>
+                      <th className="px-4 py-3">Cost detail</th>
+                      <th className="px-4 py-3">Quantity / rate</th>
+                      <th className="px-4 py-3">Source / vendor</th>
+                      <th className="px-4 py-3 text-right">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {costDetailsView.rows.map((entry) => {
+                      const isProductionCost = entry.orderId || entry.productId;
+                      const detail = isProductionCost
+                        ? [entry.detailCategory, entry.productName, entry.size, entry.color].filter(Boolean).join(" · ")
+                        : entry.transferId
+                          ? [entry.detailCategory, "Batch transportation and logistics"].filter(Boolean).join(" · ")
+                          : [entry.detailCategory, entry.title, entry.category].filter(Boolean).join(" · ");
+                      return (
+                        <tr key={`${entry.detailCategory}-${entry.id}`} className="align-top hover:bg-slate-50/70">
+                          <td className="whitespace-nowrap px-4 py-3 text-slate-600">{formatDetailDate(entry.date)}</td>
+                          <td className="px-4 py-3 font-mono text-[10px] text-slate-700">
+                            {entry.orderId
+                              ? `Order #${String(entry.orderId).slice(0, 10)}`
+                              : entry.transferId
+                                ? `Transfer #${String(entry.transferId).slice(0, 10)}`
+                                : entry.invoiceNumber || "—"}
+                          </td>
+                          <td className="max-w-sm px-4 py-3 font-semibold text-slate-800">{detail}</td>
+                          <td className="whitespace-nowrap px-4 py-3 text-slate-600">
+                            {entry.transferId
+                              ? "One dispatched batch"
+                              : entry.quantity
+                                ? `${entry.quantity} × ${currency}${formatDetailAmount(entry.unitAmount)}`
+                                : "—"}
+                          </td>
+                          <td className="max-w-xs px-4 py-3 text-slate-600">
+                            <p className="font-semibold text-slate-800">
+                              {entry.vendorName || entry.source || "Recorded operating expense"}
+                            </p>
+                            {entry.source && entry.vendorName && <p className="mt-1 text-[10px]">{entry.source}</p>}
+                            {entry.trackingNumber && <p className="mt-1 font-mono text-[10px]">Tracking: {entry.trackingNumber}</p>}
+                            {entry.manufacturerName && <p className="mt-1 text-[10px]">Manufacturer: {entry.manufacturerName}</p>}
+                            {entry.distributorName && <p className="mt-1 text-[10px]">Distributor: {entry.distributorName}</p>}
+                            {entry.transferId && <p className="mt-1 font-mono text-[10px]">Transfer: {entry.transferId}</p>}
+                            {entry.referenceId && <p className="mt-1 font-mono text-[10px]">Cost layer: {String(entry.referenceId).slice(0, 12)}</p>}
+                            {entry.paymentStatus && <p className="mt-1 text-[10px]">Payment: {entry.paymentStatus}</p>}
+                            {entry.notes && <p className="mt-1 break-words text-[10px]">{entry.notes}</p>}
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-3 text-right font-bold text-slate-900">
+                            {currency}{formatDetailAmount(getDetailAmount(entry))}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="sticky bottom-0 bg-slate-50">
+                    <tr>
+                      <td colSpan="5" className="px-4 py-3 text-right text-xs font-bold text-slate-700">Total</td>
+                      <td className="px-4 py-3 text-right text-xs font-black text-slate-950">
+                        {currency}{formatDetailAmount(costDetailsView.rows.reduce((total, entry) => total + getDetailAmount(entry), 0))}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* ROW 3: QUICK NAVIGATION HUBS */}
       <div>

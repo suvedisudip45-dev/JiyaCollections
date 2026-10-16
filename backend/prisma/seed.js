@@ -139,6 +139,17 @@ async function seedRbac() {
 }
 
 async function main() {
+  await prisma.platformFeatureConfig.upsert({
+    where: { id: "default" },
+    update: {},
+    create: {
+      id: "default",
+      loyaltyEnabled: false,
+      marketingCardsEnabled: false,
+      lettersEnabled: false,
+    },
+  });
+
   const adminEmail = (process.env.ADMIN_EMAIL || "sudeepsubedi72@gmail.com").toLowerCase().trim();
   const adminPhone = (process.env.ADMIN_SEED_PHONE || "9846008536").trim();
   const rawPassword = process.env.ADMIN_SEED_PASSWORD || "Admin@1234";

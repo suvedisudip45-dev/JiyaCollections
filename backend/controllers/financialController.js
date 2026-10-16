@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import {
   postFixedAssetPurchaseAccounting,
@@ -11,7 +12,11 @@ import {
   postDirectExpenseAccounting,
   postNcmRemittanceAccounting,
 } from "../services/accountingPostingEngine.js";
-import { calculateFinancialDashboardProductCosts } from "../services/financialDashboardCosting.js";
+import {
+  calculateFinancialDashboardProductCosts,
+  calculateInventoryValuationAtCost,
+  calculateManufacturerLogisticsExpenseDetails,
+} from "../services/financialDashboardCosting.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
@@ -65,6 +70,69 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     paid: Number(paid.toFixed(2)),
     outstanding,
   };
+};
+
+const getPlatformInventoryValuation = async (products) => {
+  const balances = await prisma.inventoryBalance.findMany({
+    where: {
+      location: {
+        inventoryOwner: "PLATFORM",
+        kind: { not: "LOST" },
+      },
+    },
+    select: {
+      locationId: true,
+      inventorySkuId: true,
+      quantityOnHand: true,
+      inventorySku: {
+        select: {
+          productId: true,
+          product: { select: { id: true, costPrice: true } },
+        },
+      },
+    },
+  });
+  const locationIds = [...new Set(balances.map(({ locationId }) => locationId))];
+  const ledgerEntries = locationIds.length
+    ? await prisma.$queryRaw(Prisma.sql`
+        SELECT
+          movements.locationId,
+          movements.inventorySkuId,
+          movements.productionCostLayerId,
+          SUM(movements.quantityDelta) AS quantity,
+          layer.unitCogs
+        FROM (
+          SELECT
+            sourceLocationId AS locationId,
+            inventorySkuId,
+            productionCostLayerId,
+            -quantity AS quantityDelta
+          FROM InventoryLedgerEntry
+          WHERE inventoryOwner = 'PLATFORM'
+            AND productionCostLayerId IS NOT NULL
+            AND sourceLocationId IN (${Prisma.join(locationIds)})
+          UNION ALL
+          SELECT
+            destinationLocationId AS locationId,
+            inventorySkuId,
+            productionCostLayerId,
+            quantity AS quantityDelta
+          FROM InventoryLedgerEntry
+          WHERE inventoryOwner = 'PLATFORM'
+            AND productionCostLayerId IS NOT NULL
+            AND destinationLocationId IN (${Prisma.join(locationIds)})
+        ) movements
+        INNER JOIN ManufacturerInventoryCostLayer layer
+          ON layer.id = movements.productionCostLayerId
+        GROUP BY
+          movements.locationId,
+          movements.inventorySkuId,
+          movements.productionCostLayerId,
+          layer.unitCogs
+      `)
+    : [];
+
+  return calculateInventoryValuationAtCost({ balances, ledgerEntries, products });
 };
 
 // Helper to get current Year-Month
@@ -716,6 +784,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       supplierReturns,
       payables,
       receivables,
+      localLogisticsShipments,
     ] = await Promise.all([
       prisma.order.findMany({
         where: {
@@ -751,6 +820,31 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       prisma.accountReceivable.findMany({
         where: { status: { in: ["UNPAID", "PARTIALLY_RECEIVED"] } },
       }),
+      prisma.stockTransferShipment.findMany({
+        where: {
+          bookingMode: "MANUAL",
+          freightCharge: { gt: 0 },
+          dispatchedAt: { gte: startDate, lte: endDate },
+        },
+        select: {
+          id: true,
+          stockTransferId: true,
+          bookingMode: true,
+          deliveryPartner: true,
+          trackingNumber: true,
+          externalReference: true,
+          freightCharge: true,
+          freightSettlementStatus: true,
+          dispatchedAt: true,
+          stockTransfer: {
+            select: {
+              id: true,
+              manufacturer: { select: { name: true } },
+              distributor: { select: { name: true } },
+            },
+          },
+        },
+      }),
     ]);
 
     const orderedProductIds = [...new Set(orders.flatMap((order) =>
@@ -763,10 +857,18 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
         prisma.manufacturerInventoryCostLayer.findMany({
           where: { productId: { in: orderedProductIds }, createdAt: { lte: endDate } },
           select: {
+            id: true,
+            productionRequestId: true,
             productId: true,
             producedQuantity: true,
             unitCogs: true,
             unitDeliveryCost: true,
+            productionRequest: {
+              select: {
+                approvedUnitCogs: true,
+                approvedDeliveryCost: true,
+              },
+            },
           },
         }),
         prisma.manufacturerInventory.findMany({
@@ -794,9 +896,25 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       manufacturerInventories: approvedManufacturerInventories,
       products,
     });
+    const localLogisticsExpenses = calculateManufacturerLogisticsExpenseDetails({
+      shipments: localLogisticsShipments,
+    });
     const periodDirectCOGS = productCosts.directCOGS;
-    const deliveryAndOtherOverheads = productCosts.deliveryAndOtherOverheads;
+    const deliveryAndOtherOverheads = localLogisticsExpenses.total;
     const unitsSoldPeriod = productCosts.unitsSold;
+    const operatingExpenseDetails = operatingExpensesList.map((expense) => ({
+      id: expense.id,
+      date: expense.date,
+      title: expense.title,
+      category: (expense.category || "MISCELLANEOUS").toUpperCase(),
+      amount: Number(expense.amount || 0),
+      vendorName: expense.vendorName || null,
+      invoiceNumber: expense.invoiceNumber || null,
+      paymentStatus: expense.paymentStatus || null,
+      notes: expense.notes || null,
+    }));
+    const marketingExpenseDetails = operatingExpenseDetails.filter((expense) => expense.category === "MARKETING");
+    const fixedExpenseDetails = operatingExpenseDetails.filter((expense) => expense.category !== "MARKETING");
 
     orders.forEach((ord) => {
       grossPeriodRevenueIncVat += Number(ord.amount || 0);
@@ -884,8 +1002,8 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       .filter((a) => a.status === "ACTIVE")
       .reduce((acc, a) => acc + Number(a.currentBookValue || 0), 0);
     
-    // Inventory Valuation at Cost Price
-    const inventoryValuationCost = products.reduce((acc, p) => acc + (Number(p.costPrice || 0) * Number(p.stockQuantity || 0)), 0);
+    // Value current platform-owned stock at its production cost where tracked.
+    const inventoryValuationCost = await getPlatformInventoryValuation(products);
 
     // Outstanding Accounts Receivable (Money owed to business)
     const totalOutstandingReceivables = receivables.reduce((acc, r) => acc + Number(r.remainingBalance || 0), 0);
@@ -936,6 +1054,12 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
         costsAndExpenses: {
           directCOGS: periodDirectCOGS,
           deliveryAndOtherOverheads,
+          details: {
+            productCOGS: productCosts.details.productCOGS,
+            deliveryAndOtherOverheads: localLogisticsExpenses.details,
+            fixedOverheads: fixedExpenseDetails,
+            marketingSpend: marketingExpenseDetails,
+          },
           fixedOverheads: totalFixedOverheads,
           marketingSpend,
           salaries,
@@ -4564,7 +4688,7 @@ export const getFinancialStatements = async (req, res) => {
     // Balance Sheet Calculations
     const cashAndEquivalents = accounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
     const accountsReceivableTotal = receivables.reduce((acc, r) => acc + Number(r.remainingBalance || 0), 0);
-    const inventoryValuation = products.reduce((acc, p) => acc + (Number(p.costPrice || 0) * Number(p.stockQuantity || 0)), 0);
+    const inventoryValuation = await getPlatformInventoryValuation(products);
     const totalCurrentAssets = Number((cashAndEquivalents + accountsReceivableTotal + inventoryValuation).toFixed(2));
 
     const fixedAssetsGross = fixedAssets.reduce((acc, a) => acc + Number(a.purchaseCost || 0), 0);

@@ -1,6 +1,7 @@
 import {
   listAssignedDistributorOrders,
   markDistributorSelfDeliveryReady,
+  dispatchDistributorSelfDeliveryOrders,
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
@@ -104,7 +105,7 @@ export const bookDistributorNcmOrders = async (req, res) => {
     }
     const result = await bookDistributorNcmOrdersService({
       distributorId,
-      assignmentIds: req.body.assignmentIds,
+      assignmentIds: req.body?.assignmentIds,
     });
     return res.status(200).json(result);
   } catch (error) {
@@ -201,6 +202,38 @@ export const updateSelfDeliveryOrderStatus = async (req, res) => {
       success: false,
       message: error.message || "Failed to update order delivery status.",
       code: error.code || "DELIVERY_STATUS_ERROR",
+    });
+  }
+};
+
+export const bulkDispatchSelfDeliveryOrders = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({
+        success: false,
+        message: "An approved distributor profile is required.",
+      });
+    }
+
+    const result = await dispatchDistributorSelfDeliveryOrders({
+      distributorId,
+      assignmentIds: req.body.assignmentIds,
+      actorContext: {
+        actorId: req.auth?.accountId || req.auth?.userId || null,
+        actorRole: req.auth?.role || "DISTRIBUTOR",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("bulkDispatchSelfDeliveryOrders error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to dispatch selected self-delivery orders.",
+      code: error.code || "SELF_DELIVERY_BULK_DISPATCH_ERROR",
     });
   }
 };

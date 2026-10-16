@@ -468,16 +468,13 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   let totalAgreedCogs = new Prisma.Decimal(0);
   let productionLayerCogs = new Prisma.Decimal(0);
   let legacyManufacturerCogs = new Prisma.Decimal(0);
-  let deliveryOverhead = new Prisma.Decimal(0);
   for (const item of items) {
     const qty = Number(item.quantity || 1);
     if (Array.isArray(item.productionCostAllocations)) {
       for (const allocation of item.productionCostAllocations) {
         const allocationQty = new Prisma.Decimal(String(allocation.quantity || 0));
         const unitCogs = new Prisma.Decimal(String(allocation.unitCogs || 0));
-        const unitOverhead = new Prisma.Decimal(String(allocation.unitDeliveryCost || 0));
         productionLayerCogs = productionLayerCogs.plus(unitCogs.mul(allocationQty));
-        deliveryOverhead = deliveryOverhead.plus(unitOverhead.mul(allocationQty));
       }
       const legacyQty = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
       const legacyUnitCost = new Prisma.Decimal(String(
@@ -498,7 +495,6 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  deliveryOverhead = deliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const hasValidTaxInvoice = Boolean(orderOrParams.hasValidTaxInvoice || opts.hasValidTaxInvoice);
   let recoverableInputVat = new Prisma.Decimal(0);
@@ -668,26 +664,6 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     );
   }
 
-  if (deliveryOverhead.greaterThan(0)) {
-    lines.push(
-      {
-        mappingKey: "DELIVERY_EXPENSE",
-        debit: deliveryOverhead,
-        credit: 0,
-        description: `Manufacturer packaging and delivery overhead for Order #${order.id.slice(-6)}`,
-        accountingPartyId: manufacturerParty?.id,
-      },
-      {
-        mappingKey: "MANUFACTURER_PAYABLE",
-        debit: 0,
-        credit: deliveryOverhead,
-        description: `Delivered-unit packaging and overhead payable for Order #${order.id.slice(-6)}`,
-        supplierId: manufacturerId,
-        accountingPartyId: manufacturerParty?.id,
-      }
-    );
-  }
-
   const transactionDate = order.deliveredAt || deliveryOrder?.deliveredAt || new Date();
 
   return await postJournalEntry({
@@ -737,7 +713,6 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   let totalAgreedCogs = new Prisma.Decimal(0);
   let productionLayerCogs = new Prisma.Decimal(0);
   let legacyManufacturerCogs = new Prisma.Decimal(0);
-  let deliveryOverhead = new Prisma.Decimal(0);
   for (const item of items) {
     const qty = new Prisma.Decimal(String(item.quantity || 1));
     if (Array.isArray(item.productionCostAllocations)) {
@@ -745,9 +720,6 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         const allocatedQuantity = new Prisma.Decimal(String(allocation.quantity || 0));
         productionLayerCogs = productionLayerCogs.plus(
           new Prisma.Decimal(String(allocation.unitCogs || 0)).mul(allocatedQuantity)
-        );
-        deliveryOverhead = deliveryOverhead.plus(
-          new Prisma.Decimal(String(allocation.unitDeliveryCost || 0)).mul(allocatedQuantity)
         );
       }
       const legacyQuantity = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
@@ -767,7 +739,6 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   }
   productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  deliveryOverhead = deliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   totalAgreedCogs = productionLayerCogs.plus(legacyManufacturerCogs).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
@@ -852,26 +823,6 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         debit: 0,
         credit: productionLayerCogs,
         description: `Reverse production-batch COGS for returned Order #${order.id.slice(-6)}`,
-        accountingPartyId: manufacturerParty?.id,
-      }
-    );
-  }
-
-  if (deliveryOverhead.greaterThan(0)) {
-    lines.push(
-      {
-        mappingKey: "MANUFACTURER_PAYABLE",
-        debit: deliveryOverhead,
-        credit: 0,
-        description: `Reverse delivered-unit overhead payable for returned Order #${order.id.slice(-6)}`,
-        supplierId: manufacturerId,
-        accountingPartyId: manufacturerParty?.id,
-      },
-      {
-        mappingKey: "DELIVERY_EXPENSE",
-        debit: 0,
-        credit: deliveryOverhead,
-        description: `Reverse packaging and delivery overhead for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
       }
     );

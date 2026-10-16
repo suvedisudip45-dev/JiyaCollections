@@ -1,16 +1,37 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
   RotateCcw,
-  Clock,
-  MapPin,
-  Phone,
-  User,
   RotateCw,
   Search,
+  CheckSquare,
+  Clock3,
+  ExternalLink,
+  Package,
 } from "lucide-react";
 import { backendUrl, useManufacturer, currency } from "../context/ManufacturerContext";
+
+const PAGE_SIZE = 25;
+const DISPATCHABLE_STATUSES = new Set([
+  "assigned",
+  "pending_acceptance",
+  "accepted",
+  "packed",
+  "package_details_complete",
+  "ready_for_pickup",
+  "on_hold",
+]);
+
+const formatDate = (value) => {
+  if (!value) return "—";
+  const date = new Date(typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+};
+
+const getCustomerName = (address = {}) =>
+  String(address.name || `${address.firstName || ""} ${address.lastName || ""}`).trim() || "Customer";
 
 const DistributorSelfDelivery = () => {
   const { token, manufacturer: distributor } = useManufacturer();
@@ -21,6 +42,11 @@ const DistributorSelfDelivery = () => {
   const [statusFilter, setStatusFilter] = useState("all");
   const [updatingId, setUpdatingId] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [batchResults, setBatchResults] = useState([]);
+  const [dispatching, setDispatching] = useState(false);
 
   // Return QA Modal state
   const [returnOrder, setReturnOrder] = useState(null);
@@ -35,17 +61,24 @@ const DistributorSelfDelivery = () => {
   const [exchangeInspectionNotes, setExchangeInspectionNotes] = useState("");
   const [submittingExchange, setSubmittingExchange] = useState(false);
 
-  const loadOrders = useCallback(async () => {
+  const loadOrders = useCallback(async ({ preserveBatchResults = false } = {}) => {
+    if (!preserveBatchResults) setBatchResults([]);
     setLoading(true);
     try {
       const response = await axios.get(
         `${backendUrl}/api/distributor/orders/assigned`,
         {
           headers: { token },
-          params: { status: statusFilter !== "all" ? statusFilter : undefined },
+          params: {
+            status: statusFilter !== "all" ? statusFilter : undefined,
+            page,
+            limit: PAGE_SIZE,
+          },
         }
       );
       setOrders(response.data.orders || []);
+      setPagination(response.data.pagination || null);
+      setSelectedIds(new Set());
       const [returnsResult, exchangesResult] = await Promise.allSettled([
         axios.get(`${backendUrl}/api/returns/customer/manufacturer`, { headers: { token } }),
         axios.get(`${backendUrl}/api/returns/exchange/distributor`, { headers: { token } }),
@@ -67,7 +100,7 @@ const DistributorSelfDelivery = () => {
     } finally {
       setLoading(false);
     }
-  }, [token, statusFilter]);
+  }, [token, statusFilter, page]);
 
   useEffect(() => {
     loadOrders();
@@ -87,6 +120,37 @@ const DistributorSelfDelivery = () => {
       toast.error(error.response?.data?.message || "Failed to update delivery status.");
     } finally {
       setUpdatingId(null);
+    }
+  };
+
+  const handleBulkDispatch = async () => {
+    if (!selectedIds.size || dispatching) return;
+    const count = selectedIds.size;
+    if (!window.confirm(`Dispatch ${count} selected self-delivery order${count === 1 ? "" : "s"}?`)) return;
+
+    setDispatching(true);
+    setBatchResults([]);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/orders/self-delivery/bulk-dispatch`,
+        { assignmentIds: [...selectedIds] },
+        { headers: { token } }
+      );
+      const results = response.data?.results || [];
+      setBatchResults(results);
+      const succeeded = results.filter((result) => result.success).length;
+      if (succeeded === results.length && results.length > 0) {
+        toast.success(response.data.message || `Dispatched ${succeeded} orders.`);
+      } else if (succeeded > 0) {
+        toast.warning(response.data.message || `Dispatched ${succeeded} of ${results.length} orders.`);
+      } else {
+        toast.error(response.data?.message || "None of the selected orders could be dispatched.");
+      }
+      await loadOrders({ preserveBatchResults: true });
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Failed to dispatch selected orders.");
+    } finally {
+      setDispatching(false);
     }
   };
 
@@ -198,12 +262,35 @@ const DistributorSelfDelivery = () => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     const orderId = (o.orderId || "").toLowerCase();
-    const customer = (
-      `${o.order?.address?.firstName || ""} ${o.order?.address?.lastName || ""}`
-    ).toLowerCase();
+    const customer = getCustomerName(o.order?.address || {}).toLowerCase();
     const city = (o.order?.address?.city || "").toLowerCase();
-    return orderId.includes(q) || customer.includes(q) || city.includes(q);
+    const phone = String(o.order?.address?.phone || "").toLowerCase();
+    return orderId.includes(q) || customer.includes(q) || city.includes(q) || phone.includes(q);
   });
+
+  const dispatchableOrders = filteredOrders.filter((orderRef) =>
+    DISPATCHABLE_STATUSES.has(String(orderRef.status || "").toLowerCase())
+  );
+  const allVisibleDispatchableSelected = dispatchableOrders.length > 0 &&
+    dispatchableOrders.every(({ assignmentId }) => selectedIds.has(assignmentId));
+  const toggleSelectVisible = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      dispatchableOrders.forEach(({ assignmentId }) => {
+        if (allVisibleDispatchableSelected) next.delete(assignmentId);
+        else next.add(assignmentId);
+      });
+      return next;
+    });
+  };
+  const toggleSelected = (assignmentId) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(assignmentId)) next.delete(assignmentId);
+      else next.add(assignmentId);
+      return next;
+    });
+  };
 
   const openApprovedReturn = async (returnRecord) => {
     let orderRef = orders.find((order) => order.orderId === returnRecord.orderId);
@@ -349,7 +436,10 @@ const DistributorSelfDelivery = () => {
         ].map((f) => (
           <button
             key={f.key}
-            onClick={() => setStatusFilter(f.key)}
+            onClick={() => {
+              setStatusFilter(f.key);
+              setPage(1);
+            }}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all border ${
               statusFilter === f.key
                 ? "bg-[#171717] text-white border-[#171717]"
@@ -361,6 +451,36 @@ const DistributorSelfDelivery = () => {
         ))}
       </div>
 
+      {dispatchableOrders.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2 text-xs text-amber-950">
+            <CheckSquare className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>Select ready orders to dispatch them together. Each order is dispatched and recorded individually.</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleBulkDispatch}
+            disabled={!selectedIds.size || dispatching}
+            className="shrink-0 rounded-xl bg-[#171717] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#262626] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {dispatching ? "Dispatching orders..." : `Dispatch selected (${selectedIds.size})`}
+          </button>
+        </div>
+      )}
+
+      {batchResults.some((result) => !result.success) && (
+        <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+          <p className="font-bold">Some orders need attention:</p>
+          <ul className="mt-1 list-inside list-disc space-y-1">
+            {batchResults.filter((result) => !result.success).map((result) => (
+              <li key={result.assignmentId}>
+                {String(result.orderId || result.assignmentId).slice(0, 12)} — {result.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Orders List */}
       {loading ? (
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-8 text-center text-xs text-[#575757]">
@@ -371,141 +491,174 @@ const DistributorSelfDelivery = () => {
           No self-delivery orders found matching filter.
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredOrders.map((orderRef) => {
-            const currentStatus = String(orderRef.status || "").toLowerCase();
-            const order = orderRef.order || {};
-            const address = order.address || {};
-            const customerName = `${address.firstName || ""} ${address.lastName || ""}`.trim() || "Customer";
+        <div className="overflow-x-auto rounded-2xl border border-[#dedbd3] bg-white shadow-sm">
+          <table className="w-full min-w-[1120px] text-left text-xs">
+            <thead className="bg-[#f8f7f4] text-[10px] uppercase tracking-wider text-[#575757]">
+              <tr>
+                <th className="w-10 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all dispatchable visible orders"
+                    checked={allVisibleDispatchableSelected}
+                    onChange={toggleSelectVisible}
+                  />
+                </th>
+                <th className="px-4 py-3">Order / Products</th>
+                <th className="px-4 py-3">Customer / Destination</th>
+                <th className="px-4 py-3">Payment / COD</th>
+                <th className="px-4 py-3">Delivery status</th>
+                <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3">Expected delivery charge income</th>
+                <th className="px-4 py-3">Details</th>
+                <th className="px-4 py-3">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#dedbd3]/70">
+              {filteredOrders.map((orderRef) => {
+                const currentStatus = String(orderRef.status || "").toLowerCase().replaceAll(" ", "_");
+                const order = orderRef.order || {};
+                const address = order.address || {};
+                const items = Array.isArray(order.items) ? order.items : [];
+                const firstImage = items.find((item) => item?.image)?.image;
+                const image = Array.isArray(firstImage) ? firstImage[0] : firstImage;
+                const canDispatch = DISPATCHABLE_STATUSES.has(currentStatus);
+                const statusLabel = currentStatus === "on_hold"
+                  ? "On hold"
+                  : currentStatus.replaceAll("_", " ");
 
-            return (
-              <div
-                key={orderRef.assignmentId}
-                className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-5 shadow-xs flex flex-col justify-between space-y-4 hover:border-[#171717]/40 transition-colors"
-              >
-                <div className="space-y-3">
-                  {/* Order header */}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-bold text-[#171717]">Order #{orderRef.orderId?.slice(0, 8)}</span>
-                      <p className="text-[10px] text-[#575757] flex items-center gap-1 mt-0.5">
-                        <Clock className="w-3 h-3" />
-                        {new Date(orderRef.assignedAt).toLocaleDateString()}
+                return (
+                  <tr key={orderRef.assignmentId} className="hover:bg-[#f8f7f4]/70">
+                    <td className="px-3 py-3 align-top">
+                      {canDispatch && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select order ${orderRef.orderId}`}
+                          checked={selectedIds.has(orderRef.assignmentId)}
+                          onChange={() => toggleSelected(orderRef.assignmentId)}
+                        />
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex min-w-64 items-start gap-3">
+                        {image
+                          ? <img src={image} alt="" className="h-11 w-11 shrink-0 rounded-lg border border-[#dedbd3] object-cover" />
+                          : <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#f8f7f4] text-[#575757]"><Package className="h-5 w-5" /></div>}
+                        <div>
+                          <p className="font-bold text-[#171717]">
+                            #{String(orderRef.orderId || "").slice(0, 12).toUpperCase()}
+                          </p>
+                          <p className="mt-1 max-w-xs text-[#575757]">
+                            {items.map((item) =>
+                              `${item.name || "Product"}${item.size || item.color ? ` (${item.size || "One size"}/${item.color || "Default"})` : ""} ×${item.quantity || 1}`
+                            ).join(", ") || "Order items unavailable"}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="font-semibold text-[#171717]">{getCustomerName(address)}</p>
+                      <p className="mt-1 text-[#575757]">{address.phone || "No phone"}</p>
+                      <p className="mt-1 max-w-xs text-[#575757]">
+                        {[address.street, address.city, address.district, address.province].filter(Boolean).join(", ") || "No destination"}
                       </p>
-                    </div>
-
-                    <span
-                      className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
-                        currentStatus === "delivered"
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : currentStatus === "on_hold"
-                          ? "bg-amber-50 text-amber-800 border-amber-200"
-                          : currentStatus === "on_the_way"
-                          ? "bg-amber-50 text-amber-700 border-amber-200"
-                          : currentStatus === "dispatched"
-                          ? "bg-blue-50 text-blue-700 border-blue-200"
-                          : currentStatus === "returned"
-                          ? "bg-rose-50 text-rose-700 border-rose-200"
-                          : "bg-[#f8f7f4] text-[#171717] border-[#dedbd3]"
-                      }`}
-                    >
-                      {currentStatus === "on_hold" ? "On hold" : currentStatus.replace("_", " ")}
-                    </span>
-                  </div>
-
-                  {/* Customer & Address Details */}
-                  <div className="p-3 bg-[#f8f7f4] rounded-xl border border-[#dedbd3] space-y-1.5 text-xs text-[#575757]">
-                    <p className="font-semibold text-[#171717] flex items-center gap-1.5">
-                      <User className="w-3.5 h-3.5 text-[#171717]" />
-                      {customerName}
-                    </p>
-                    <p className="flex items-center gap-1.5 text-[11px]">
-                      <Phone className="w-3.5 h-3.5" />
-                      {address.phone || "No contact phone"}
-                    </p>
-                    <p className="flex items-start gap-1.5 text-[11px]">
-                      <MapPin className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                      <span>
-                        {address.street || address.city}, {address.district || ""}, {address.province || ""}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${order.payment ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-800"}`}>
+                        {order.payment ? "Paid" : String(order.paymentMethod || "COD").toUpperCase() === "COD" ? "COD due" : `Unpaid · ${order.paymentMethod || "Unknown"}`}
                       </span>
-                    </p>
-                  </div>
+                      <p className="mt-1 font-semibold text-[#171717]">
+                        {currency}{Number(order.amount || 0).toLocaleString()}
+                      </p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`whitespace-nowrap rounded-full px-2 py-1 text-[10px] font-bold capitalize ${
+                        currentStatus === "delivered" ? "bg-emerald-50 text-emerald-700" :
+                          currentStatus === "on_hold" ? "bg-amber-50 text-amber-800" :
+                            currentStatus === "dispatched" || currentStatus === "on_the_way" ? "bg-sky-50 text-sky-800" :
+                              currentStatus === "returned" ? "bg-rose-50 text-rose-700" : "bg-[#f1f0ec] text-[#575757]"
+                      }`}>
+                        {statusLabel}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-[#575757]">
+                      <span className="inline-flex items-center gap-1">
+                        <Clock3 className="h-3 w-3" />
+                        {formatDate(order.date || orderRef.assignedAt)}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 font-semibold text-emerald-800">
+                      {currency}{Number(orderRef.expectedDeliveryCharge || 0).toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link to={`/orders/${orderRef.assignmentId}`} className="inline-flex items-center gap-1 font-bold text-[#171717] hover:text-[#575757]">
+                        Open <ExternalLink className="h-3 w-3" />
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3">
+                      {canDispatch && (
+                        <button
+                          type="button"
+                          onClick={() => handleStatusUpdate(orderRef, "Dispatched")}
+                          disabled={updatingId === orderRef.assignmentId || dispatching}
+                          className="whitespace-nowrap rounded-lg bg-[#171717] px-3 py-2 text-[10px] font-bold text-white hover:bg-[#262626] disabled:opacity-50"
+                        >
+                          {updatingId === orderRef.assignmentId ? "Updating..." : "Mark dispatched"}
+                        </button>
+                      )}
+                      {currentStatus === "dispatched" && (
+                        <button
+                          type="button"
+                          onClick={() => handleStatusUpdate(orderRef, "On the Way")}
+                          disabled={updatingId === orderRef.assignmentId || dispatching}
+                          className="whitespace-nowrap rounded-lg bg-amber-600 px-3 py-2 text-[10px] font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+                        >
+                          {updatingId === orderRef.assignmentId ? "Updating..." : "Mark on the way"}
+                        </button>
+                      )}
+                      {currentStatus === "on_the_way" && (
+                        <button
+                          type="button"
+                          onClick={() => handleStatusUpdate(orderRef, "Delivered")}
+                          disabled={updatingId === orderRef.assignmentId || dispatching}
+                          className="whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                        >
+                          {updatingId === orderRef.assignmentId ? "Updating..." : "Mark delivered & collect"}
+                        </button>
+                      )}
+                      {currentStatus === "delivered" && <span className="font-bold text-emerald-700">Delivered</span>}
+                      {currentStatus === "returned" && <span className="font-bold text-rose-700">Returned</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-                  {/* Items list */}
-                  <div className="text-xs space-y-1">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#575757]">Package Items</p>
-                    <ul className="divide-y divide-[#dedbd3]/50">
-                      {(order.items || []).map((item, idx) => (
-                        <li key={idx} className="py-1 flex justify-between text-[11px]">
-                          <span className="text-[#171717]">
-                            {item.quantity}x {item.name || "Item"} ({item.size}/{item.color})
-                          </span>
-                          <span className="font-semibold text-[#171717]">
-                            {currency}
-                            {(item.price || item.purchasedUnitPrice || 0) * (item.quantity || 1)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  {/* Financial Total */}
-                  <div className="flex items-center justify-between text-xs pt-2 border-t border-[#dedbd3]/60 font-semibold">
-                    <span className="text-[#575757]">Total Collection ({order.paymentMethod || "COD"}):</span>
-                    <span className="text-sm font-bold text-[#171717]">
-                      {currency}
-                      {order.amount?.toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Status Action Buttons */}
-                <div className="space-y-2 pt-2">
-                  {["assigned", "pending_acceptance", "accepted", "packed", "ready_for_pickup", "package_details_complete", "on_hold"].includes(currentStatus) && (
-                    <button
-                      onClick={() => handleStatusUpdate(orderRef, "Dispatched")}
-                      disabled={updatingId === orderRef.assignmentId}
-                      className="w-full py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors"
-                    >
-                      {updatingId === orderRef.assignmentId ? "Updating..." : "1. Mark Dispatched"}
-                    </button>
-                  )}
-
-                  {currentStatus === "dispatched" && (
-                    <button
-                      onClick={() => handleStatusUpdate(orderRef, "On the Way")}
-                      disabled={updatingId === orderRef.assignmentId}
-                      className="w-full py-2 bg-amber-600 text-white text-xs font-bold rounded-xl hover:bg-amber-700 transition-colors"
-                    >
-                      {updatingId === orderRef.assignmentId ? "Updating..." : "2. Mark On The Way"}
-                    </button>
-                  )}
-
-                  {currentStatus === "on_the_way" && (
-                    <button
-                      onClick={() => handleStatusUpdate(orderRef, "Delivered")}
-                      disabled={updatingId === orderRef.assignmentId}
-                      className="w-full py-2 bg-emerald-700 text-white text-xs font-bold rounded-xl hover:bg-emerald-800 transition-colors"
-                    >
-                      {updatingId === orderRef.assignmentId ? "Completing..." : "3. Mark Delivered & Collect"}
-                    </button>
-                  )}
-
-                  {currentStatus === "delivered" && (
-                    <div className="w-full py-1.5 text-center text-xs font-bold text-emerald-700 bg-emerald-50 rounded-xl border border-emerald-200">
-                      ✓ Delivered
-                    </div>
-                  )}
-
-                  {currentStatus === "returned" && (
-                    <div className="w-full py-1.5 text-center text-xs font-bold text-rose-700 bg-rose-50 rounded-xl border border-rose-200">
-                      Returned &amp; Reconciled
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+      {!loading && pagination?.pages > 1 && (
+        <div className="flex items-center justify-between gap-3 text-xs text-[#575757]">
+          <span>
+            Page {pagination.page} of {pagination.pages} · {pagination.total} orders
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={page <= 1}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              className="rounded-lg border border-[#dedbd3] bg-white px-3 py-2 font-semibold disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              disabled={page >= pagination.pages}
+              onClick={() => setPage((current) => Math.min(pagination.pages, current + 1))}
+              className="rounded-lg border border-[#dedbd3] bg-white px-3 py-2 font-semibold disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
 

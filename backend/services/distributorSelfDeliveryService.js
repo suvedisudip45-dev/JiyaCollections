@@ -5,6 +5,7 @@ import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
+import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
@@ -223,10 +224,15 @@ export const listAssignedDistributorOrders = async ({
         : null,
     };
   });
+  const rateCard = await resolveActiveRateCard({ distributorId, client });
+  const expectedDeliveryCharge = Number(rateCard.deliveryCharge || 0);
 
   return {
     success: true,
-    orders: enriched,
+    orders: enriched.map((assignment) => ({
+      ...assignment,
+      expectedDeliveryCharge,
+    })),
     pagination: {
       page: numPage,
       limit: numLimit,
@@ -471,6 +477,67 @@ export const updateSelfDeliveryStatus = async ({
       ...(accountingStatus ? { accountingStatus } : {}),
     };
   });
+};
+
+export const dispatchDistributorSelfDeliveryOrders = async ({
+  distributorId,
+  assignmentIds,
+  actorContext = {},
+  client = prisma,
+} = {}) => {
+  if (!distributorId) throw fail("Distributor ID is required.", 400);
+  if (!Array.isArray(assignmentIds) || assignmentIds.length === 0) {
+    throw fail("Select at least one self-delivery order to dispatch.");
+  }
+  if (assignmentIds.length > 50) {
+    throw fail("A maximum of 50 orders can be dispatched in one batch.");
+  }
+
+  const uniqueIds = [...new Set(assignmentIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!uniqueIds.length) throw fail("Select at least one valid order.");
+
+  const results = [];
+  for (const assignmentId of uniqueIds) {
+    let orderId = null;
+    try {
+      const assignment = await client.orderAssignment.findFirst({
+        where: { id: assignmentId, distributorId },
+        select: { orderId: true },
+      });
+      if (!assignment) {
+        throw fail("Order assignment not found in this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
+      }
+      orderId = assignment.orderId;
+      const result = await updateSelfDeliveryStatus({
+        distributorId,
+        assignmentIdOrOrderId: assignmentId,
+        status: "Dispatched",
+        actorContext,
+        client,
+      });
+      results.push({ assignmentId, orderId, success: true, status: result.assignment.status });
+    } catch (error) {
+      results.push({
+        assignmentId,
+        ...(orderId ? { orderId } : {}),
+        success: false,
+        code: error.code || "SELF_DELIVERY_DISPATCH_FAILED",
+        message: error.message || "Self-delivery dispatch failed.",
+      });
+    }
+  }
+
+  const successful = results.filter((result) => result.success).length;
+  return {
+    success: successful === results.length,
+    partial: successful > 0 && successful < results.length,
+    message: successful === results.length
+      ? `Dispatched ${successful} order${successful === 1 ? "" : "s"}.`
+      : successful > 0
+        ? `Dispatched ${successful} of ${results.length} orders. Review failed orders before retrying.`
+        : "None of the selected orders could be dispatched.",
+    results,
+  };
 };
 
 /**

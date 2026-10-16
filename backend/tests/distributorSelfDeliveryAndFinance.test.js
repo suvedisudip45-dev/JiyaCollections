@@ -5,6 +5,7 @@ import {
   validateSelfDeliveryTransition,
   listAssignedDistributorOrders,
   markDistributorSelfDeliveryReady,
+  dispatchDistributorSelfDeliveryOrders,
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
@@ -84,6 +85,15 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
   stubMethod(t, prisma.orderAssignment, "findMany", async () => [mockAssignment]);
   stubMethod(t, prisma.deliveryOrder, "findMany", async () => []);
   stubMethod(t, prisma.order, "findMany", async () => [mockOrder]);
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => ({
+    deliveryCharge: 175,
+    returnCharge: 50,
+    commissionRate: 0,
+    bonusRate: 0,
+    incentiveRate: 0,
+    vatRate: 13,
+    vatInclusive: false,
+  }));
 
   const result = await listAssignedDistributorOrders({
     distributorId: "dist-1",
@@ -94,6 +104,7 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
   assert.equal(result.orders.length, 1);
   assert.equal(result.orders[0].orderId, "order-1");
   assert.equal(result.orders[0].order.amount, 1500);
+  assert.equal(result.orders[0].expectedDeliveryCharge, 175);
 });
 
 test("self-delivery listing excludes NCM assignments and legacy NCM bookings", async (t) => {
@@ -106,6 +117,7 @@ test("self-delivery listing excludes NCM assignments and legacy NCM bookings", a
 
   stubMethod(t, prisma.orderAssignment, "findMany", async () => assignments);
   stubMethod(t, prisma.deliveryOrder, "findMany", async () => [{ orderId: "order-ncm-legacy" }]);
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => null);
   stubMethod(t, prisma.order, "findMany", async ({ where }) => {
     loadedOrderIds = where.id.in;
     return [{ id: "order-self", amount: 1000, address: "{}", items: "[]" }];
@@ -116,6 +128,85 @@ test("self-delivery listing excludes NCM assignments and legacy NCM bookings", a
   assert.deepEqual(loadedOrderIds, ["order-self"]);
   assert.deepEqual(result.orders.map((order) => order.orderId), ["order-self"]);
   assert.equal(result.pagination.total, 1);
+});
+
+test("bulk self-delivery dispatch validates input and returns individual assignment failures", async () => {
+  await assert.rejects(
+    dispatchDistributorSelfDeliveryOrders({ distributorId: "dist-1", assignmentIds: [] }),
+    /Select at least one self-delivery order/,
+  );
+  await assert.rejects(
+    dispatchDistributorSelfDeliveryOrders({
+      distributorId: "dist-1",
+      assignmentIds: Array.from({ length: 51 }, (_, index) => `assign-${index}`),
+    }),
+    /maximum of 50 orders/,
+  );
+
+  const client = {
+    orderAssignment: {
+      findFirst: async () => null,
+    },
+  };
+  const result = await dispatchDistributorSelfDeliveryOrders({
+    distributorId: "dist-1",
+    assignmentIds: ["missing-1", "missing-1", "missing-2"],
+    client,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.results.length, 2);
+  assert.ok(result.results.every((entry) => !entry.success && entry.code === "ASSIGNMENT_NOT_FOUND"));
+});
+
+test("bulk self-delivery dispatch runs the existing dispatch transition once per assignment", async () => {
+  const assignments = new Map(["assign-1", "assign-2"].map((id, index) => [
+    id,
+    {
+      id,
+      orderId: `order-${index + 1}`,
+      distributorId: "dist-1",
+      deliveryType: "SELF_DELIVERY",
+      status: "on_hold",
+      notes: "{}",
+    },
+  ]));
+  let transactionCount = 0;
+  const client = {
+    orderAssignment: {
+      findFirst: async ({ where }) => {
+        const assignmentId = where.id || where.OR?.find((condition) => condition.id)?.id;
+        return assignments.get(assignmentId) || null;
+      },
+    },
+    deliveryOrder: { findUnique: async () => null },
+    $transaction: async (callback) => {
+      transactionCount += 1;
+      return callback({
+        order: {
+          findUnique: async ({ where }) => ({ id: where.id, items: "[]" }),
+          update: async ({ where, data }) => ({ id: where.id, ...data }),
+        },
+        orderAssignment: {
+          update: async ({ where, data }) => ({ ...assignments.get(where.id), ...data }),
+        },
+        systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
+      });
+    },
+  };
+
+  const result = await dispatchDistributorSelfDeliveryOrders({
+    distributorId: "dist-1",
+    assignmentIds: ["assign-1", "assign-2"],
+    client,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(transactionCount, 2);
+  assert.deepEqual(result.results.map(({ success, status }) => ({ success, status })), [
+    { success: true, status: "dispatched" },
+    { success: true, status: "dispatched" },
+  ]);
 });
 
 test("self-delivery selection accepts the same city within the same province", async (t) => {

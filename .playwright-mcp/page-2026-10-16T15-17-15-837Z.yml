@@ -1,0 +1,209 @@
+- generic [ref=f2e3]:
+  - generic [ref=f2e83]:
+    - alert [ref=f2e84]:
+      - generic [ref=f2e88]: Password changed successfully!
+    - button "close" [ref=f2e89] [cursor=pointer]
+    - progressbar "notification timer" [ref=f2e94]
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - img "Aama Clothings" [ref=f2e6]
+      - generic [ref=f2e7]:
+        - heading "Aama Clothings" [level=1] [ref=f2e8]
+        - paragraph [ref=f2e9]: Admin Management Console
+    - generic [ref=f2e10]:
+      - button "Jump to an admin page" [ref=f2e11] [cursor=pointer]:
+        - generic [ref=f2e15]: Jump to a page
+        - generic [ref=f2e16]: K
+      - generic [ref=f2e19]: Fri, 16 Oct NPT
+      - generic [ref=f2e23]:
+        - generic [ref=f2e24]: AD
+        - generic [ref=f2e25]:
+          - generic [ref=f2e26]: Administrator
+          - generic [ref=f2e27]: Admin console
+      - button "Logout" [ref=f2e28] [cursor=pointer]
+  - generic [ref=f2e95]:
+    - complementary "Admin navigation" [ref=f2e96]:
+      - generic [ref=f2e97]:
+        - generic [ref=f2e98]:
+          - button "Access Control" [ref=f2e99] [cursor=pointer]
+          - navigation [ref=f2e106]:
+            - link "Portal Users" [ref=f2e107] [cursor=pointer]:
+              - /url: /access-control/users
+            - link "Admin Roles" [ref=f2e112] [cursor=pointer]:
+              - /url: /access-control/roles
+            - link "Permissions" [ref=f2e117] [cursor=pointer]:
+              - /url: /access-control/permissions
+            - link "Audit History" [ref=f2e122] [cursor=pointer]:
+              - /url: /audit-history
+        - generic [ref=f2e128]:
+          - button "Merchandising" [ref=f2e129] [cursor=pointer]
+          - navigation [ref=f2e137]:
+            - link "All Products" [ref=f2e138] [cursor=pointer]:
+              - /url: /list
+            - link "Add Product" [ref=f2e143] [cursor=pointer]:
+              - /url: /add
+            - link "Categories & Types" [ref=f2e148] [cursor=pointer]:
+              - /url: /categories
+            - link "Combo Bundles" [ref=f2e153] [cursor=pointer]:
+              - /url: /combo-bundles
+            - link "Collaborations" [ref=f2e158] [cursor=pointer]:
+              - /url: /collaborations
+            - link "Festive Campaigns" [ref=f2e163] [cursor=pointer]:
+              - /url: /special-offers
+        - generic [ref=f2e169]:
+          - button "Sales & Orders" [ref=f2e170] [cursor=pointer]
+          - navigation [ref=f2e177]:
+            - link "Customer Orders" [ref=f2e178] [cursor=pointer]:
+              - /url: /orders
+            - link "Create Direct Order" [ref=f2e183] [cursor=pointer]:
+              - /url: /create-order
+        - generic [ref=f2e189]:
+          - button "Logistics & Supply Chain" [ref=f2e190] [cursor=pointer]
+          - navigation [ref=f2e198]:
+            - link "Order Routing Engine" [ref=f2e199] [cursor=pointer]:
+              - /url: /order-assignments
+            - link "Delivery & COD Monitor" [ref=f2e204] [cursor=pointer]:
+              - /url: /delivery-monitor
+            - link "NCM Deliveries" [ref=f2e209] [cursor=pointer]:
+              - /url: /ncm-deliveries
+            - link "Distributor Self-Delivery" [ref=f2e214] [cursor=pointer]:
+              - /url: /self-deliveries
+            - link "Manufacturers" [ref=f2e219] [cursor=pointer]:
+              - /url: /manufacturers
+            - link "Multi-Hub Stock" [ref=f2e224] [cursor=pointer]:
+              - /url: /manufacturer-inventory
+            - link "Production Requests" [ref=f2e229] [cursor=pointer]:
+              - /url: /manufacturer-production
+            - link "Distributor Applications" [ref=f2e234] [cursor=pointer]:
+              - /url: /distributor-applications
+            - link "Distributor Directory" [ref=f2e239] [cursor=pointer]:
+              - /url: /distributors
+            - link "Bulk Stock Transfers" [ref=f2e244] [cursor=pointer]:
+              - /url: /stock-transfers
+        - generic [ref=f2e249]:
+          - button "Location Pricing" [ref=f2e250] [cursor=pointer]
+          - navigation [ref=f2e257]:
+            - link "District Rules" [ref=f2e258] [cursor=pointer]:
+              - /url: /location-pricing
+        - generic [ref=f2e264]:
+          - button "Marketing Partners" [ref=f2e265] [cursor=pointer]
+          - navigation [ref=f2e272]:
+            - link "Card Assignment" [ref=f2e273] [cursor=pointer]:
+              - /url: /marketing-cards
+        - generic [ref=f2e279]:
+          - button "Operations & Costing" [ref=f2e280] [cursor=pointer]
+          - navigation [ref=f2e288]:
+            - link "Inventory & Stock" [ref=f2e289] [cursor=pointer]:
+              - /url: /inventory
+            - link "Inventory Ledger Audit" [ref=f2e294] [cursor=pointer]:
+              - /url: /inventory-ledger
+            - link "COGS & Margins" [ref=f2e299] [cursor=pointer]:
+              - /url: /cogs
+            - link "Shipping Rates" [ref=f2e304] [cursor=pointer]:
+              - /url: /shipping
+        - generic [ref=f2e310]:
+          - button "Platform Settings" [ref=f2e311] [cursor=pointer]
+          - navigation [ref=f2e319]:
+            - link "Feature Settings" [ref=f2e320] [cursor=pointer]:
+              - /url: /platform-features
+        - generic [ref=f2e327]:
+          - button "Finance & Banking" [ref=f2e328] [cursor=pointer]
+          - navigation [ref=f2e335]:
+            - link "Financial Dashboard" [ref=f2e336] [cursor=pointer]:
+              - /url: /finance
+            - link "Cash & Banks" [ref=f2e341] [cursor=pointer]:
+              - /url: /treasury
+            - link "Assets & Depreciation" [ref=f2e346] [cursor=pointer]:
+              - /url: /assets
+            - link "Partners & Investors" [ref=f2e351] [cursor=pointer]:
+              - /url: /partners
+            - link "Expenses & Overhead" [ref=f2e356] [cursor=pointer]:
+              - /url: /expenses
+            - link "13% VAT & Tax" [ref=f2e361] [cursor=pointer]:
+              - /url: /tax
+            - link "Returns & Debit Notes" [ref=f2e366] [cursor=pointer]:
+              - /url: /returns
+            - link "Payables & Receivables" [ref=f2e371] [cursor=pointer]:
+              - /url: /payables
+            - link "Financial Statements" [ref=f2e376] [cursor=pointer]:
+              - /url: /statements
+        - generic [ref=f2e382]:
+          - button "General Ledger" [ref=f2e383] [cursor=pointer]
+          - navigation [ref=f2e390]:
+            - link "Chart of Accounts" [ref=f2e391] [cursor=pointer]:
+              - /url: /chart-of-accounts
+            - link "Journal Entries" [ref=f2e396] [cursor=pointer]:
+              - /url: /journal-entries
+            - link "General Ledger" [ref=f2e401] [cursor=pointer]:
+              - /url: /general-ledger
+            - link "Trial Balance" [ref=f2e406] [cursor=pointer]:
+              - /url: /trial-balance
+            - link "Fiscal Periods" [ref=f2e411] [cursor=pointer]:
+              - /url: /fiscal-periods
+            - link "Accounting Health" [ref=f2e416] [cursor=pointer]:
+              - /url: /accounting-health
+        - generic [ref=f2e423]:
+          - button "Customers & CRM" [ref=f2e424] [cursor=pointer]
+          - navigation [ref=f2e431]:
+            - link "Customer Profiles" [ref=f2e432] [cursor=pointer]:
+              - /url: /customers
+            - link "VIP Loyalty Tiers" [ref=f2e437] [cursor=pointer]:
+              - /url: /loyalty-levels
+            - link "Gift Promotions" [ref=f2e442] [cursor=pointer]:
+              - /url: /gift-promotions
+            - link "Product Reviews" [ref=f2e447] [cursor=pointer]:
+              - /url: /reviews
+            - link "Story Letter Library" [ref=f2e452] [cursor=pointer]:
+              - /url: /story-letter-library
+      - generic [ref=f2e457]:
+        - link "Change Password" [ref=f2e458] [cursor=pointer]:
+          - /url: /change-password
+        - generic [ref=f2e467]:
+          - paragraph [ref=f2e468]: Aama Clothings
+          - paragraph [ref=f2e469]: Admin workspace
+    - main [ref=f2e470]:
+      - generic [ref=f2e471]:
+        - navigation "Breadcrumb" [ref=f2e472]:
+          - link "Home" [ref=f2e474] [cursor=pointer]:
+            - /url: /
+          - generic [ref=f2e475]: Details
+        - generic [ref=f2e479]:
+          - generic [ref=f2e480]:
+            - generic [ref=f2e481]:
+              - heading "Product Catalog Management" [level=1] [ref=f2e482]
+              - paragraph [ref=f2e483]:
+                - text: Define styles, pricing, unisex discovery, and
+                - strong [ref=f2e484]: Subcategory Best Sellers ⭐
+                - text: .
+            - button "Refresh Catalog" [ref=f2e485] [cursor=pointer]
+          - generic [ref=f2e493]:
+            - textbox "Search by title, Nepali name or subcategory..." [ref=f2e494]
+            - combobox [ref=f2e495]:
+              - option "All Categories" [selected]
+              - option "Kids"
+              - option "Men"
+              - option "Women"
+            - combobox [ref=f2e496]:
+              - option "All Subcategories" [selected]
+              - option "Bottomwear"
+              - option "Topwear"
+              - option "Winterwear"
+            - combobox [ref=f2e497]:
+              - option "All Best Seller Status" [selected]
+              - option "⭐ Best Sellers Only"
+              - option "Standard Products"
+          - table [ref=f2e500]:
+            - rowgroup [ref=f2e501]:
+              - row [ref=f2e502]:
+                - columnheader "Garment Showcase" [ref=f2e503]
+                - columnheader "Categories" [ref=f2e504]
+                - columnheader "Subcategory Best Seller" [ref=f2e505]
+                - columnheader "Retail Price" [ref=f2e506]
+                - columnheader "Varieties" [ref=f2e507]
+                - columnheader "Hub Stock" [ref=f2e508]
+                - columnheader "Status" [ref=f2e509]
+                - columnheader "Actions" [ref=f2e510]
+            - rowgroup [ref=f2e511]:
+              - row [ref=f2e512]:
+                - cell [ref=f2e513]:
+                  - paragraph [ref=f2e514]: No products found matching filters.

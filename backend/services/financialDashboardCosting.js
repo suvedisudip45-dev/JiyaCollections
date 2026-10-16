@@ -38,9 +38,40 @@ const weightedRates = (map) => new Map([...map].map(([key, value]) => [
 
 const getOrderItemProductId = (item) => item.productId || item._id || item.id;
 
-export const calculateProductFixedOverheadPerSoldUnit = ({ orders = [] } = {}) => {
+const normalizeProductionCostLayers = (costLayers = []) => {
+  const producedByRequest = new Map();
+  for (const layer of costLayers) {
+    const requestId = layer.productionRequestId;
+    if (!requestId || layer.productionRequest?.approvedDeliveryCost == null) continue;
+    producedByRequest.set(
+      requestId,
+      (producedByRequest.get(requestId) || 0) + asAmount(layer.producedQuantity),
+    );
+  }
+
+  return new Map(costLayers.filter((layer) => layer.id).map((layer) => {
+    const request = layer.productionRequest;
+    const batchQuantity = request?.approvedDeliveryCost == null
+      ? 0
+      : producedByRequest.get(layer.productionRequestId) || 0;
+    const hasBatchOtherCost = request?.approvedDeliveryCost != null && batchQuantity > 0;
+    return [layer.id, {
+      ...layer,
+      unitCogs: request?.approvedUnitCogs ?? layer.unitCogs,
+      unitDeliveryCost: hasBatchOtherCost
+        ? Number(request.approvedDeliveryCost) / batchQuantity
+        : layer.unitDeliveryCost,
+      hasBatchOtherCost,
+      batchOtherCost: hasBatchOtherCost ? Number(request.approvedDeliveryCost) : null,
+      batchGoodQuantity: hasBatchOtherCost ? batchQuantity : null,
+    }];
+  }));
+};
+
+export const calculateProductFixedOverheadPerSoldUnit = ({ orders = [], costLayers = [] } = {}) => {
   const overheadTotals = new Map();
   const soldQuantities = new Map();
+  const costLayersById = normalizeProductionCostLayers(costLayers);
 
   for (const order of orders) {
     for (const item of parseItems(order.items)) {
@@ -57,9 +88,11 @@ export const calculateProductFixedOverheadPerSoldUnit = ({ orders = [] } = {}) =
         for (const allocation of allocations) {
           const allocated = asAmount(allocation.quantity);
           allocatedQuantity += allocated;
+          const costLayer = costLayersById.get(allocation.costLayerId);
           overheadTotals.set(
             productId,
-            (overheadTotals.get(productId) || 0) + asAmount(allocation.unitDeliveryCost) * allocated,
+            (overheadTotals.get(productId) || 0) +
+              asAmount(costLayer?.unitDeliveryCost ?? allocation.unitDeliveryCost) * allocated,
           );
         }
         const legacyQuantity = Math.max(0, Number(item.legacyCostQuantity ?? (quantity - allocatedQuantity)) || 0);
@@ -105,20 +138,128 @@ export const countPurchaseTransactions = (orders = []) => new Set(
   orders.map((order, index) => order.checkoutGroupId || order.id || `unkeyed-${index}`),
 ).size;
 
+export const calculateInventoryValuationAtCost = ({
+  balances = [],
+  ledgerEntries = [],
+  products = [],
+} = {}) => {
+  const remainingByLocationSkuLayer = new Map();
+  for (const entry of ledgerEntries) {
+    const layerId = entry.productionCostLayerId;
+    const rawUnitCogs = entry.productionCostLayer
+      ? entry.productionCostLayer.unitCogs
+      : entry.unitCogs;
+    if (!layerId || rawUnitCogs == null) continue;
+    const unitCogs = asAmount(rawUnitCogs);
+    if (entry.locationId) {
+      const balanceKey = JSON.stringify([entry.locationId, entry.inventorySkuId]);
+      const layers = remainingByLocationSkuLayer.get(balanceKey) || new Map();
+      layers.set(layerId, {
+        quantity: Number(entry.quantity) || 0,
+        unitCogs,
+      });
+      remainingByLocationSkuLayer.set(balanceKey, layers);
+      continue;
+    }
+    const quantity = Number(entry.quantity) || 0;
+    for (const [locationId, delta] of [
+      [entry.sourceLocationId, -quantity],
+      [entry.destinationLocationId, quantity],
+    ]) {
+      if (!locationId) continue;
+      const balanceKey = JSON.stringify([locationId, entry.inventorySkuId]);
+      const layers = remainingByLocationSkuLayer.get(balanceKey) || new Map();
+      const current = layers.get(layerId) || {
+        quantity: 0,
+        unitCogs,
+      };
+      current.quantity += delta;
+      layers.set(layerId, current);
+      remainingByLocationSkuLayer.set(balanceKey, layers);
+    }
+  }
+
+  let total = 0;
+  const productsWithLedgerBalances = new Set();
+  for (const balance of balances) {
+    const quantityOnHand = Math.max(0, Number(balance.quantityOnHand) || 0);
+    const sku = balance.inventorySku || {};
+    const product = sku.product || {};
+    if (sku.productId || product.id) productsWithLedgerBalances.add(sku.productId || product.id);
+
+    const layers = [...(remainingByLocationSkuLayer.get(
+      JSON.stringify([balance.locationId, balance.inventorySkuId]),
+    )?.values() || [])].filter((layer) => layer.quantity > 0);
+    const layerQuantity = layers.reduce((sum, layer) => sum + layer.quantity, 0);
+    const scale = layerQuantity > quantityOnHand && layerQuantity > 0
+      ? quantityOnHand / layerQuantity
+      : 1;
+    for (const layer of layers) {
+      total += layer.quantity * scale * layer.unitCogs;
+    }
+    const uncostedQuantity = Math.max(0, quantityOnHand - Math.min(quantityOnHand, layerQuantity));
+    total += uncostedQuantity * asAmount(product.costPrice);
+  }
+
+  for (const product of products) {
+    if (productsWithLedgerBalances.has(product.id)) continue;
+    total += asAmount(product.stockQuantity) * asAmount(product.costPrice);
+  }
+
+  return roundMoney(total);
+};
+
+export const calculateManufacturerLogisticsExpenseDetails = ({ shipments = [] } = {}) => {
+  const seen = new Set();
+  const details = shipments.flatMap((shipment) => {
+    if (
+      !shipment?.id ||
+      seen.has(shipment.id) ||
+      !shipment.dispatchedAt ||
+      String(shipment.bookingMode || "").toUpperCase() !== "MANUAL"
+    ) return [];
+    seen.add(shipment.id);
+
+    const amount = asAmount(shipment.freightCharge);
+    if (!amount) return [];
+    return [{
+      id: shipment.id,
+      date: shipment.dispatchedAt || null,
+      transferId: shipment.stockTransferId || shipment.stockTransfer?.id || null,
+      title: "Transportation and logistics - manufacturer to distributor",
+      category: "LOCAL_MANUFACTURER_TO_DISTRIBUTOR",
+      amount: roundMoney(amount),
+      vendorName: shipment.deliveryPartner || "Local delivery company not recorded",
+      trackingNumber: shipment.trackingNumber || shipment.externalReference || null,
+      manufacturerName: shipment.stockTransfer?.manufacturer?.name || null,
+      distributorName: shipment.stockTransfer?.distributor?.name || null,
+      paymentStatus: shipment.freightSettlementStatus || null,
+      source: "Dispatched local stock-transfer shipment",
+    }];
+  });
+
+  return {
+    total: roundMoney(details.reduce((total, entry) => total + entry.amount, 0)),
+    details,
+  };
+};
+
 export const calculateFinancialDashboardProductCosts = ({
   orders = [],
   costLayers = [],
   manufacturerInventories = [],
   products = [],
 } = {}) => {
+  const costLayersById = normalizeProductionCostLayers(costLayers);
   const layerTotals = new Map();
   for (const layer of costLayers) {
+    const normalizedLayer = layer.id ? costLayersById.get(layer.id) || layer : layer;
     addWeightedRates(
       layerTotals,
-      layer.productId,
-      layer.unitCogs,
-      layer.unitDeliveryCost,
-      layer.producedQuantity,
+      normalizedLayer.productId,
+      normalizedLayer.unitCogs,
+      normalizedLayer.unitDeliveryCost,
+      normalizedLayer.producedQuantity,
     );
   }
 
@@ -151,6 +292,26 @@ export const calculateFinancialDashboardProductCosts = ({
   let directCOGS = 0;
   let deliveryAndOtherOverheads = 0;
   let unitsSold = 0;
+  const productCostDetails = [];
+  const deliveryAndOtherOverheadDetails = [];
+  const addDetail = (details, order, item, quantity, unitAmount, source, referenceId = null) => {
+    const totalAmount = unitAmount * quantity;
+    if (totalAmount <= 0) return;
+    details.push({
+      id: `${order.id || "order"}-${item.productId || item._id || item.id || "item"}-${details.length}`,
+      orderId: order.id || null,
+      date: order.date == null ? null : Number(order.date),
+      productId: item.productId || item._id || item.id || null,
+      productName: item.name || item.productName || "Product",
+      size: item.size || null,
+      color: item.color || null,
+      quantity,
+      unitAmount: Number(unitAmount.toFixed(6)),
+      totalAmount,
+      source,
+      referenceId,
+    });
+  };
   for (const order of orders) {
     for (const item of parseItems(order.items)) {
       const quantity = asAmount(item.quantity || 1);
@@ -167,8 +328,19 @@ export const calculateFinancialDashboardProductCosts = ({
         for (const allocation of allocations) {
           const allocated = asAmount(allocation.quantity);
           allocatedQuantity += allocated;
-          directCOGS += asAmount(allocation.unitCogs) * allocated;
-          deliveryAndOtherOverheads += asAmount(allocation.unitDeliveryCost) * allocated;
+          const costLayer = costLayersById.get(allocation.costLayerId);
+          const unitCogs = asAmount(costLayer?.unitCogs ?? allocation.unitCogs);
+          const unitDeliveryCost = asAmount(costLayer?.unitDeliveryCost ?? allocation.unitDeliveryCost);
+          directCOGS += unitCogs * allocated;
+          deliveryAndOtherOverheads += unitDeliveryCost * allocated;
+          const costSource = costLayer?.hasBatchOtherCost
+            ? `Accepted batch unit COGS · production batch ${costLayer.productionRequestId}`
+            : "Accepted production cost allocation";
+          const overheadSource = costLayer?.hasBatchOtherCost
+            ? `Batch transportation/other cost ÷ ${costLayer.batchGoodQuantity} good units`
+            : "Accepted production cost allocation";
+          addDetail(productCostDetails, order, item, allocated, unitCogs, costSource, allocation.costLayerId || null);
+          addDetail(deliveryAndOtherOverheadDetails, order, item, allocated, unitDeliveryCost, overheadSource, allocation.costLayerId || null);
         }
 
         const legacyQuantity = Math.max(0, Number(item.legacyCostQuantity ?? (quantity - allocatedQuantity)) || 0);
@@ -176,8 +348,18 @@ export const calculateFinancialDashboardProductCosts = ({
           const acceptedUnitCogs = item.legacyUnitCogsVatInclusiveAtAcceptance
             ?? item.agreedUnitCogsVatInclusiveAtAcceptance
             ?? null;
-          directCOGS += resolveUnitAmount(acceptedUnitCogs, rates.unitCogs, item.costPrice) * legacyQuantity;
-          deliveryAndOtherOverheads += asAmount(item.unitDeliveryCost ?? rates.unitOverhead) * legacyQuantity;
+          const unitCogs = resolveUnitAmount(acceptedUnitCogs, rates.unitCogs, item.costPrice);
+          const unitDeliveryCost = asAmount(item.unitDeliveryCost ?? rates.unitOverhead);
+          const cogsSource = acceptedUnitCogs !== null
+            ? "Accepted legacy unit COGS snapshot"
+            : rates.unitCogs > 0 ? "Weighted production cost-layer rate" : "Product cost fallback";
+          const overheadSource = item.unitDeliveryCost !== undefined && item.unitDeliveryCost !== null
+            ? "Accepted legacy delivery/other cost snapshot"
+            : rates.unitOverhead > 0 ? "Weighted production cost-layer rate (legacy fallback)" : "No recorded per-unit overhead";
+          directCOGS += unitCogs * legacyQuantity;
+          deliveryAndOtherOverheads += unitDeliveryCost * legacyQuantity;
+          addDetail(productCostDetails, order, item, legacyQuantity, unitCogs, cogsSource);
+          addDetail(deliveryAndOtherOverheadDetails, order, item, legacyQuantity, unitDeliveryCost, overheadSource);
         }
         continue;
       }
@@ -186,9 +368,20 @@ export const calculateFinancialDashboardProductCosts = ({
         ?? item.agreedUnitCogsVatInclusiveAtAcceptance
         ?? null;
       const unitCogs = resolveUnitAmount(acceptedUnitCogs, rates.unitCogs, item.costPrice);
-      const unitOverhead = asAmount(item.unitDeliveryCost ?? item.approvedDeliveryCost ?? rates.unitOverhead);
+      const explicitOverhead = item.unitDeliveryCost ?? item.approvedDeliveryCost;
+      const unitOverhead = asAmount(explicitOverhead ?? rates.unitOverhead);
       directCOGS += unitCogs * quantity;
       deliveryAndOtherOverheads += unitOverhead * quantity;
+      const cogsSource = acceptedUnitCogs !== null
+        ? "Accepted legacy unit COGS snapshot"
+        : rates.unitCogs > 0 ? "Weighted production cost-layer rate" : "Product cost fallback";
+      const overheadSource = explicitOverhead !== null && explicitOverhead !== undefined
+        ? item.unitDeliveryCost !== undefined && item.unitDeliveryCost !== null
+          ? "Order delivery/other cost snapshot"
+          : "Approved delivery/other cost snapshot"
+        : rates.unitOverhead > 0 ? "Weighted production cost-layer rate (legacy fallback)" : "No recorded per-unit overhead";
+      addDetail(productCostDetails, order, item, quantity, unitCogs, cogsSource);
+      addDetail(deliveryAndOtherOverheadDetails, order, item, quantity, unitOverhead, overheadSource);
     }
   }
 
@@ -196,5 +389,9 @@ export const calculateFinancialDashboardProductCosts = ({
     directCOGS: roundMoney(directCOGS),
     deliveryAndOtherOverheads: roundMoney(deliveryAndOtherOverheads),
     unitsSold,
+    details: {
+      productCOGS: productCostDetails,
+      deliveryAndOtherOverheads: deliveryAndOtherOverheadDetails,
+    },
   };
 };

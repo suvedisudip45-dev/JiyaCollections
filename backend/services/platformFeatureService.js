@@ -1,9 +1,9 @@
 import { prisma } from "../config/db.js";
 
 export const DEFAULT_PLATFORM_FEATURES = Object.freeze({
-  loyaltyEnabled: true,
-  marketingCardsEnabled: true,
-  lettersEnabled: true,
+  loyaltyEnabled: false,
+  marketingCardsEnabled: false,
+  lettersEnabled: false,
 });
 
 export const getPlatformFeatures = async (client = prisma) => {

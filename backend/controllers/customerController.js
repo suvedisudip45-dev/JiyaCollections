@@ -427,7 +427,20 @@ export const getCustomerAdminAnalytics = async (req, res) => {
       productIds.length
         ? prisma.manufacturerInventoryCostLayer.findMany({
             where: { productId: { in: productIds } },
-            select: { productId: true, producedQuantity: true, unitCogs: true, unitDeliveryCost: true },
+            select: {
+              id: true,
+              productionRequestId: true,
+              productId: true,
+              producedQuantity: true,
+              unitCogs: true,
+              unitDeliveryCost: true,
+              productionRequest: {
+                select: {
+                  approvedUnitCogs: true,
+                  approvedDeliveryCost: true,
+                },
+              },
+            },
           })
         : [],
       productIds.length
@@ -458,6 +471,7 @@ export const getCustomerAdminAnalytics = async (req, res) => {
     }
     const overheadPerProduct = calculateProductFixedOverheadPerSoldUnit({
       orders: salesOrders,
+      costLayers,
     });
     const costData = { costLayers, manufacturerInventories, products, overheadPerProduct };
     const formattedProvinceSales = formatLocationSales(

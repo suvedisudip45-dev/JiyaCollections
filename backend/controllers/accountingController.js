@@ -9,6 +9,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
 import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
+import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
 
 const getNepalDateBoundary = (value, endOfDay = false) => {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
@@ -558,7 +559,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           },
         },
         include: {
-          journalEntry: { select: { transactionDate: true } },
+          journalEntry: { select: { transactionDate: true, sourceType: true } },
           account: true,
         },
       }),
@@ -577,6 +578,10 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     });
 
     journalLines.forEach((l) => {
+      if (isLegacyPerOrderDeliveryExpenseEntry({
+        accountCode: l.account.accountCode,
+        sourceType: l.journalEntry.sourceType,
+      })) return;
       const isPeriod = new Date(l.journalEntry.transactionDate) >= start;
       const dr = Number(l.debit || 0);
       const cr = Number(l.credit || 0);

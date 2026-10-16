@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_PLATFORM_FEATURES, getPlatformFeatures, updatePlatformFeatures } from "../services/platformFeatureService.js";
 
-test("platform features use enabled defaults when no config row exists", async () => {
+test("platform features are disabled by default when no config row exists", async () => {
   const client = {
     platformFeatureConfig: {
       findUnique: async () => null,

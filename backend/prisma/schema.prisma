@@ -755,9 +755,9 @@ model ShippingConfig {
 
 model PlatformFeatureConfig {
   id                    String   @id @default("default")
-  loyaltyEnabled        Boolean  @default(true)
-  marketingCardsEnabled Boolean  @default(true)
-  lettersEnabled        Boolean  @default(true)
+  loyaltyEnabled        Boolean  @default(false)
+  marketingCardsEnabled Boolean  @default(false)
+  lettersEnabled        Boolean  @default(false)
   updatedAt             DateTime @updatedAt
 }
 

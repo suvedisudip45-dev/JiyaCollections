@@ -13,6 +13,7 @@ import {
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
 } from "../services/accountingPostingEngine.js";
+import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
 import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
 
 const createComprehensiveHarness = () => {
@@ -195,7 +196,7 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(mfgApLine.credit.toFixed(2), "6000.00");
 });
 
-test("production-layer delivery expenses COGS without accruing it twice to manufacturer payable", async () => {
+test("delivery accounting does not multiply batch logistics overhead across sold orders", async () => {
   const { client } = createComprehensiveHarness();
   const order = {
     id: "ord-production-005",
@@ -215,14 +216,11 @@ test("production-layer delivery expenses COGS without accruing it twice to manuf
   const journal = await postDeliveredOrderAccounting(order, { client });
   const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
   const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
-  const deliveryExpenseLine = journal.lines.find((line) => line.account.accountCode === "6430");
-  const manufacturerPayableLine = journal.lines.find((line) => line.account.accountCode === "2160");
 
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
   assert.equal(cogsLine.debit.toFixed(2), "200.00");
   assert.equal(inventoryLine.credit.toFixed(2), "200.00");
-  assert.equal(deliveryExpenseLine.debit.toFixed(2), "20.00");
-  assert.equal(manufacturerPayableLine.credit.toFixed(2), "20.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
 });
 
 test("new manufacturer production layers flow through distributor delivery into P&L COGS", async () => {
@@ -302,11 +300,33 @@ test("new manufacturer production layers flow through distributor delivery into 
 
   const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
   const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
-  const overheadLine = journal.lines.find((line) => line.account.accountCode === "6430");
   assert.equal(cogsLine.debit.toFixed(2), "225.00");
   assert.equal(inventoryLine.credit.toFixed(2), "225.00");
-  assert.equal(overheadLine.debit.toFixed(2), "25.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+});
+
+test("financial statement excludes legacy per-order batch overhead but keeps carrier charges", () => {
+  assert.equal(isLegacyPerOrderDeliveryExpenseEntry({
+    accountCode: "6430",
+    sourceType: "DELIVERY_SALE",
+  }), true);
+  assert.equal(isLegacyPerOrderDeliveryExpenseEntry({
+    accountCode: "6430",
+    sourceType: "DELIVERY_RETURN",
+  }), true);
+  assert.equal(isLegacyPerOrderDeliveryExpenseEntry({
+    accountCode: "6430",
+    sourceType: "MANUFACTURER_LOGISTICS",
+  }), false);
+  assert.equal(isLegacyPerOrderDeliveryExpenseEntry({
+    accountCode: "6430",
+    sourceType: "NCM_SETTLEMENT",
+  }), false);
+  assert.equal(isLegacyPerOrderDeliveryExpenseEntry({
+    accountCode: "5100",
+    sourceType: "DELIVERY_SALE",
+  }), false);
 });
 
 test("delivered direct manufacturer COD sale recognizes commission expense and COD receivable", async () => {
@@ -573,7 +593,7 @@ test("confirmed delivery return reverses sales revenue, output VAT, and manufact
   assert.equal(cogsReversal.credit.toFixed(2), "6000.00");
 });
 
-test("production-layer return restores inventory without reversing production COGS payable", async () => {
+test("production-layer return restores inventory without reversing batch freight overhead per order", async () => {
   const { client } = createComprehensiveHarness();
   client.order.findUnique = async () => ({
     id: "ord-production-return-006",
@@ -594,12 +614,12 @@ test("production-layer return restores inventory without reversing production CO
     returnRecord: { id: "ret-production-006", orderId: "ord-production-return-006", manufacturerId: "mfg-001" },
     client,
   });
-  const payableReversal = journal.lines.find((line) => line.account.accountCode === "2160");
   const inventoryRestock = journal.lines.find((line) => line.account.accountCode === "1140");
   const cogsReversal = journal.lines.find((line) => line.account.accountCode === "5100");
 
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
-  assert.equal(payableReversal.debit.toFixed(2), "20.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "2160"), false);
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
   assert.equal(inventoryRestock.debit.toFixed(2), "200.00");
   assert.equal(cogsReversal.credit.toFixed(2), "200.00");
 });

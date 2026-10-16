@@ -53,6 +53,9 @@ export const isManufacturerCommissionEligible = ({ order, deliveryState, returne
   classifySaleChannel(order) === "MANUFACTURER_DIRECT" &&
   isDeliveredAndNotReturnedToManufacturer({ order, deliveryState, returnedToManufacturer });
 
+export const isLegacyPerOrderDeliveryExpenseEntry = ({ accountCode, sourceType } = {}) =>
+  accountCode === "6430" && ["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType);
+
 export const calculateManufacturerCommission = ({
   productRevenueExVat,
   agreedCogsVatInclusive,

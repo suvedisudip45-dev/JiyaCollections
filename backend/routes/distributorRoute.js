@@ -27,6 +27,7 @@ import {
   holdDistributorOrder,
   bookDistributorNcmOrders,
   selectDistributorSelfDelivery,
+  bulkDispatchSelfDeliveryOrders,
   updateSelfDeliveryOrderStatus,
   processDistributorOrderReturn,
 } from "../controllers/distributorDeliveryController.js";
@@ -166,6 +167,13 @@ distributorRouter.post(
   authorize("distributor:assignments_read"),
   setDistributorContext,
   selectDistributorSelfDelivery,
+);
+distributorRouter.post(
+  "/orders/self-delivery/bulk-dispatch",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  bulkDispatchSelfDeliveryOrders,
 );
 distributorRouter.patch(
   "/orders/:id/status",
