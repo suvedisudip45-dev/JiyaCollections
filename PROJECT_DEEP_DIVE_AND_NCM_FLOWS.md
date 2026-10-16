@@ -163,11 +163,13 @@ Local/manual dispatch is an explicit manufacturer-paid carrier handoff, not an N
 1. The manufacturer submits shipment lines, `deliveryPartner`, optional tracking/reference values, positive `freightCharge`, and an `Idempotency-Key`.
 2. Backend verifies manufacturer ownership, approved remaining quantities, saved passing preparation checks, shipment details and non-own-store eligibility.
 3. A serializable database transaction creates a `MANUAL` shipment, allocates/consumes the applicable factory cost-layer stock, and writes a `TRANSFER_DISPATCH` ledger movement from `FACTORY` to a shipment-scoped `IN_TRANSIT` location.
-4. The same transaction records the manufacturer-paid logistics expense/payable through the accounting party and journal-posting path (`MANUFACTURER_LOGISTICS` source and idempotency key).
+4. The same transaction recognizes local delivery expense 6430 and accrues manufacturer payable 2160 (`MANUFACTURER_LOGISTICS` source and idempotency key), because the carrier service and reimbursement obligation arise at dispatch.
 5. The shipment is immediately `DISPATCHED`; it does not wait for a carrier webhook.
 6. Distributor receipt is a separate request. Each SKU line must account for all remaining shipped units as good, damaged, or missing. The transaction posts `TRANSFER_RECEIPT`, `DAMAGE`, and/or `LOSS` movements, creates discrepancy rows as needed, recalculates the product stock projection, and updates shipment/transfer status.
 
 The normal internal endpoint is `POST /api/stock-transfers/:id/dispatch`. The manufacturer compatibility endpoint `POST /api/manufacturer/stock-requests/:id/dispatch` accepts `deliveryMethod: "LOCAL"` / `"LOCAL_LOGISTICS"` and routes to the same manual dispatch logic. Local logistics requires positive freight; a no-freight own-store shipment is not allowed through this path.
+
+When a manufacturer LOGISTICS settlement is paid, the finance transaction reduces manufacturer payable against cash. The delivery expense was recognized at dispatch and is not recorded again at payment.
 
 ### Own-store exception
 

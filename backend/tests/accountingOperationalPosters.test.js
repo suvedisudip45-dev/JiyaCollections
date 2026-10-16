@@ -8,6 +8,7 @@ import {
   postMarketingCpaRedemptionAccounting,
   postNcmRemittanceAccounting,
   postNcmSettlementAccounting,
+  postJournalEntry,
   postSupplierPaymentAccounting,
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
@@ -451,6 +452,40 @@ test("manufacturer payment reduces the manufacturer payable control account", as
   assert.equal(retry.id, journal.id);
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "1200.00");
   assert.equal(journal.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "1200.00");
+});
+
+test("manufacturer local freight is expensed and accrued to payable when dispatched", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+  const journal = await postJournalEntry({
+    sourceType: "MANUFACTURER_LOGISTICS",
+    sourceId: "transfer-001",
+    idempotencyKey: "MANUFACTURER_LOGISTICS:TRANSFER:transfer-001",
+    lines: [
+      { mappingKey: "DELIVERY_EXPENSE", debit: 100, credit: 0, supplierId: "mfg-001", supplierName: "Alpha Textiles" },
+      { accountCode: "2160", debit: 0, credit: 100, supplierId: "mfg-001", supplierName: "Alpha Textiles" },
+    ],
+    client,
+  });
+  assert.equal(journal.sourceType, "MANUFACTURER_LOGISTICS");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "6430").debit.toFixed(2), "100.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "100.00");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  const payment = await postSupplierPaymentAccounting({
+    payableId: "mfg-logistics-001",
+    payeeName: "Alpha Textiles",
+    amount: 100,
+    settlementAmount: 100,
+    payableAccountCode: "2160",
+    fromAccountType: "CASH",
+    idempotencyKey: "SUPPLIER_PAYMENT:mfg-logistics-001",
+    client,
+  });
+  assert.equal(payment.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "100.00");
+  assert.equal(payment.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "100.00");
+  assert.equal(state.entries.flatMap((entry) => entry.lines)
+    .filter((line) => line.account.accountCode === "6430")
+    .reduce((total, line) => total + Number(line.debit), 0), 100);
 });
 
 test("customer receipt uses its mapped clearing account and stable idempotency key", async () => {

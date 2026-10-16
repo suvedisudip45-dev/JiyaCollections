@@ -1031,7 +1031,10 @@ export const dispatchManualStockTransfer = async (req, res) => {
               mappingKey: "DELIVERY_EXPENSE",
               debit: freightCharge,
               credit: 0,
-              description: `Local logistics for stock transfer ${transfer.id}`,
+              description: `Local logistics expense for stock transfer ${transfer.id}`,
+              supplierId: transfer.manufacturerId,
+              supplierName: transfer.manufacturer.name,
+              accountingPartyId: party.id,
             },
             {
               mappingKey: "MANUFACTURER_PAYABLE",

@@ -518,6 +518,27 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
   };
 };
 
+export const buildNcmOrderPayload = ({
+  input,
+  delivery,
+  origin,
+  destination,
+  packageName,
+}) => ({
+  name: input.name,
+  phone: input.phone,
+  phone2: input.address.phone2 || "",
+  cod_charge: String(input.codAmount),
+  address: input.customerAddress,
+  fbranch: origin,
+  branch: destination,
+  package: packageName,
+  vref_id: input.vendorReference,
+  instruction: String(input.instruction || input.address.deliveryInstruction || "").slice(0, 500),
+  delivery_type: input.deliveryType,
+  weight: String(Math.max(0.1, Number(delivery.packageWeight || 1))),
+});
+
 const parsePackagingMeta = (payload) => {
   if (!payload) return {};
   if (typeof payload === "string") {
@@ -865,20 +886,13 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
       throw error;
     }
     const rateValue = Number(rate.data?.delivery_charge ?? rate.data?.charge ?? rate.data?.shipping_charge ?? 0);
-    const ncmPayload = {
-      name: input.name,
-      phone: input.phone,
-      phone2: input.address.phone2 || "",
-      cod_charge: String(input.codAmount + rateValue),
-      address: input.customerAddress,
-      fbranch: resolvedOrigin,
-      branch: resolvedDestination,
-      package: ncmPackageName,
-      vref_id: input.vendorReference,
-      instruction: String(input.instruction || input.address.deliveryInstruction || "").slice(0, 500),
-      delivery_type: input.deliveryType,
-      weight: String(Math.max(0.1, Number(delivery.packageWeight || 1))),
-    };
+    const ncmPayload = buildNcmOrderPayload({
+      input,
+      delivery,
+      origin: resolvedOrigin,
+      destination: resolvedDestination,
+      packageName: ncmPackageName,
+    });
 
     logger.info("NCM create payload ready", {
       deliveryId: delivery.id,

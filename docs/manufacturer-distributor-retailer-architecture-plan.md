@@ -61,7 +61,7 @@ The manufacturer portal currently combines production, inventory, customer order
 ### Accounting
 
 - Existing accounting uses `JournalEntry`, `JournalLine`, accounting parties and account mappings. Manufacturer payouts flow through the existing payable/treasury pathway.
-- The recent production workflow recognizes product COGS payable at production completion, excluding delivery/packaging overhead; successful customer delivery currently recognizes per-unit delivery overhead.
+- New version-2 production terms allocate batch-total production other cost across actual good units and include it in unit COGS payable at production completion. Legacy version-1 per-unit delivery overhead retains its successful-delivery recognition behavior; local freight payable is expensed only when paid.
 - The platform owns all inventory. Recognize product COGS payable to the manufacturer when finished production is completed; later movement to a distributor is a custody/location transfer, not a wholesale sale or second payable. Distributor compensation creates a distinct earnings payable. Manufacturer-set packaging/overhead is excluded from product COGS and becomes payable only for successfully delivered units, under approved cost terms.
 - A manufacturer who is also a distributor may have two profiles attached to one login. Keep manufacturer COGS/overhead payables and distributor earnings in distinct subledgers; do not silently net balances or treat an inter-profile transfer as cash.
 

@@ -125,14 +125,14 @@ Other report and legacy paths calculate COGS differently. For example, `postSale
 
 ## 5. Manufacturer payables, logistics and settlements
 
-Manufacturer production settlement summaries in `backend/services/manufacturerSettlementService.js` derive production payables from manufacturer production journals, logistics payables from `MANUFACTURER_LOGISTICS` journals, and subtract payments/settled settlement requests. The manufacturer settlement payment flow is designed to validate outstanding payable and treasury funds, update cash, post a supplier-payment journal, update the request and audit the action in a transaction.
+Manufacturer production settlement summaries in `backend/services/manufacturerSettlementService.js` derive production payables from manufacturer production journals, logistics payables from `MANUFACTURER_LOGISTICS` journals, and subtract payments/settled settlement requests. The manufacturer settlement payment flow validates outstanding payable and treasury funds, updates cash, posts supplier-payment accounting, updates the request and audit record in one transaction. A LOGISTICS settlement clears the freight payable recognized at dispatch; it does not recognize freight expense again.
 
 Manufacturer payable categories represented in the reviewed flows include:
 
 - Approved production value for accepted good units.
 - Certain legacy/direct order COGS and manufacturer commissions.
 - Per-unit packaging/delivery overhead when its production-layer allocation is expensed at order delivery.
-- Manufacturer-paid manual/local StockTransfer freight. Dispatch accrues the freight as delivery expense 6430 and manufacturer payable 2160; this is separate from product COGS.
+- Manufacturer-paid manual/local StockTransfer freight. Dispatch debits delivery expense (6430) and credits manufacturer payable (2160) when the carrier service is performed; settlement later clears the payable against cash. This is separate from product COGS.
 
 NCM bookings are a separate carrier flow. Do not treat the existence of an NCM booking or a manufacturer logistics payable as proof that it is in the same payable subledger.
 
@@ -148,7 +148,7 @@ This distributor rate card concerns distributor compensation. It is distinct fro
 
 ### NCM versus distributor self-delivery
 
-- **NCM delivery:** carrier settlement records expected/actual COD and delivery fees. On remittance, the admin settlement operation credits treasury with net COD and records a cash transaction; the GL poster debits cash/bank for net COD, debits delivery expense 6430 for the carrier fee, and credits NCM COD receivable 1170 for gross COD.
+- **NCM delivery:** the NCM booking COD is the system-provided order COD and does not include the carrier's delivery fee. The admin is responsible for that fee. Carrier settlement records expected/actual COD and delivery fees; on remittance, treasury receives net COD after the fee, and the GL poster debits cash/bank for net COD, debits delivery expense 6430 for the carrier fee, and credits NCM COD receivable 1170 for gross COD.
 - **Distributor self-delivery:** completion consumes distributor inventory and calls the delivered-sale poster. The distributor finance statement separately calculates delivery earnings and settlements. Its COD tender mapping currently shares the NCM COD mapping, as noted above.
 - **Stock and goods:** distributor on-hand quantities are inventory-location/ledger concerns, not the same as distributor financial receivables. Distributor replenishment is a `StockTransfer`; it should not be conflated with the customer-order `OrderAssignment`.
 

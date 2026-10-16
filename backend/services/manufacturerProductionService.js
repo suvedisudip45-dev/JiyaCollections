@@ -2,18 +2,32 @@ import { Prisma } from "@prisma/client";
 
 const normalizeVariantValue = (value) => String(value || "Standard").trim().toLowerCase();
 
-export const validateProductionRequestInput = ({ lines, unitCogs, minimumOrderQuantity, deliveryCost }) => {
+export const calculateFullyLoadedUnitCogs = ({ unitCogs, batchOtherCost, goodQuantity }) => {
+  const baseCogs = new Prisma.Decimal(String(unitCogs));
+  const otherCost = new Prisma.Decimal(String(batchOtherCost ?? 0));
+  if (!baseCogs.isFinite() || baseCogs.isNegative() || !otherCost.isFinite() || otherCost.isNegative()) {
+    throw new Error("Production unit COGS and batch other cost must be valid non-negative amounts.");
+  }
+  if (!Number.isInteger(goodQuantity) || goodQuantity < 0) {
+    throw new Error("Good production quantity must be a non-negative whole number.");
+  }
+  if (goodQuantity === 0) return baseCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  return baseCogs.add(otherCost.div(goodQuantity))
+    .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
+};
+
+export const validateProductionRequestInput = ({ lines, unitCogs, minimumOrderQuantity, otherCost, deliveryCost }) => {
   const cogs = new Prisma.Decimal(String(unitCogs));
   const moq = Number(minimumOrderQuantity);
-  const overhead = new Prisma.Decimal(String(deliveryCost ?? 0));
+  const batchOtherCost = new Prisma.Decimal(String(otherCost ?? deliveryCost ?? 0));
   if (!cogs.isFinite() || !cogs.greaterThan(0)) {
     throw new Error("Per-piece COGS must be a valid amount greater than zero.");
   }
   if (!Number.isInteger(moq) || moq < 1 || moq > 2147483647) {
     throw new Error("MOQ must be a positive whole number.");
   }
-  if (!overhead.isFinite() || overhead.isNegative()) {
-    throw new Error("Packaging and other delivery costs must be a valid non-negative per-piece amount.");
+  if (!batchOtherCost.isFinite() || batchOtherCost.isNegative()) {
+    throw new Error("Batch other cost must be a valid non-negative amount.");
   }
   if (!Array.isArray(lines) || lines.length === 0 || lines.length > 100) {
     throw new Error("Provide production quantities for at least one size and color.");
@@ -40,7 +54,7 @@ export const validateProductionRequestInput = ({ lines, unitCogs, minimumOrderQu
     lines: normalizedLines,
     unitCogs: cogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
     minimumOrderQuantity: moq,
-    deliveryCost: overhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    otherCost: batchOtherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
     totalQuantity,
   };
 };
@@ -92,7 +106,7 @@ export const allocateProductionLayersForOrderItem = async ({
       allocationId: allocation.id,
       costLayerId: layer.id,
       quantity: take,
-      unitCogs: layer.unitCogs.toFixed(2),
+      unitCogs: layer.unitCogs.toFixed(14),
       unitDeliveryCost: layer.unitDeliveryCost.toFixed(2),
     });
     remaining -= take;

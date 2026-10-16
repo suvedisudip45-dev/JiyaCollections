@@ -2588,10 +2588,11 @@ model ManufacturerProductionRequest {
   status                     String   @default("PENDING_REVIEW") // PENDING_REVIEW | PENDING_PRE_CHECK | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
   proposedUnitCogs            Decimal? @db.Decimal(20, 2)
   minimumOrderQuantity        Int
-  proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Packaging/other overhead per delivered unit; excluded from production COGS
+  proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Batch-total production other cost for costTermsVersion 2
   approvedUnitCogs            Decimal? @db.Decimal(20, 2)
   approvedMinimumOrderQuantity Int?
   approvedDeliveryCost       Decimal? @db.Decimal(20, 2)
+  costTermsVersion           Int      @default(1)
   fabricType                 String?  @db.VarChar(120)
   gsm                        Decimal? @db.Decimal(8, 2)
   targetCompletionDate       DateTime?
@@ -2666,7 +2667,7 @@ model ManufacturerInventoryCostLayer {
   availableQuantity Int
   reservedQuantity  Int      @default(0)
   consumedQuantity  Int      @default(0)
-  unitCogs          Decimal  @db.Decimal(20, 2)
+  unitCogs          Decimal  @db.Decimal(30, 14)
   unitDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2)
   createdAt         DateTime @default(now())
   productionRequest ManufacturerProductionRequest @relation(fields: [productionRequestId], references: [id], onDelete: Restrict)

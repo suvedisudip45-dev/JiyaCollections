@@ -29,7 +29,7 @@ const Production = () => {
   const [lines, setLines] = useState([]);
   const [unitCogs, setUnitCogs] = useState("");
   const [minimumOrderQuantity, setMinimumOrderQuantity] = useState("");
-  const [deliveryCost, setDeliveryCost] = useState("0");
+  const [otherCost, setOtherCost] = useState("0");
   const [manufacturerNote, setManufacturerNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -101,7 +101,7 @@ const Production = () => {
             .map((line) => ({ ...line, quantity: Number(line.quantity) })),
           unitCogs,
           minimumOrderQuantity,
-          deliveryCost,
+          otherCost,
           manufacturerNote,
         },
         { headers: { token } }
@@ -109,7 +109,7 @@ const Production = () => {
       toast.success(response.data.message || "Production request submitted.");
       setUnitCogs("");
       setMinimumOrderQuantity("");
-      setDeliveryCost("0");
+      setOtherCost("0");
       setManufacturerNote("");
       setProductId("");
       await loadData();
@@ -179,7 +179,7 @@ const Production = () => {
           {[
             ["Per-piece product COGS (Rs)", unitCogs, setUnitCogs, "Standard cost across variants"],
             ["MOQ (Minimum Order Quantity)", minimumOrderQuantity, setMinimumOrderQuantity, "Batch production minimum"],
-            ["Other charges (Rs)", deliveryCost, setDeliveryCost, "Per delivered unit; included in production cost"],
+            ["Batch other cost (Rs)", otherCost, setOtherCost, "Total production cost for this batch; allocated across good units"],
           ].map(([label, value, setValue, hint]) => (
             <label key={label} className="text-xs font-semibold text-[#171717]">
               {label}
@@ -272,7 +272,9 @@ const Production = () => {
                       <h3 className="font-bold text-xs text-[#171717]">{request.product?.name || request.productName}</h3>
                       <p className="mt-0.5 text-[11px] text-[#575757]">
                         {quantity} units • {currency}
-                        {request.approvedUnitCogs ?? request.proposedUnitCogs}/unit • Target MOQ:{" "}
+                        {request.approvedUnitCogs ?? request.proposedUnitCogs}/unit base COGS • Other cost: {currency}
+                        {request.approvedDeliveryCost ?? request.proposedDeliveryCost}
+                        {request.costTermsVersion >= 2 ? " per batch" : " per unit (legacy)"} • Target MOQ:{" "}
                         {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity}
                       </p>
                     </div>

@@ -12,10 +12,20 @@ test("manufacturer settlement summary combines payable journals and all settleme
       findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }),
     },
     manufacturerProductionRequest: {
-      findMany: async () => [{
-        approvedUnitCogs: new Prisma.Decimal("10"),
-        lines: [{ actualQuantity: 10, damagedQuantity: 2, quantity: 10 }],
-      }],
+      findMany: async () => [
+        {
+          approvedUnitCogs: new Prisma.Decimal("10"),
+          approvedDeliveryCost: new Prisma.Decimal("2"),
+          costTermsVersion: 2,
+          lines: [{ actualQuantity: 10, damagedQuantity: 2, quantity: 10 }],
+        },
+        {
+          approvedUnitCogs: new Prisma.Decimal("4"),
+          approvedDeliveryCost: new Prisma.Decimal("50"),
+          costTermsVersion: 1,
+          lines: [{ actualQuantity: 5, damagedQuantity: 0, quantity: 5 }],
+        },
+      ],
     },
     manufacturerSettlementRequest: {
       findMany: async () => [
@@ -64,7 +74,7 @@ test("manufacturer settlement summary combines payable journals and all settleme
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 80);
+  assert.equal(summary.totalManufacturedGoodsValue, 102);
   assert.equal(summary.pendingSettlementAmount, 25);
   assert.equal(summary.completedPayments, 12);
   assert.equal(summary.productionOutstanding, 90);

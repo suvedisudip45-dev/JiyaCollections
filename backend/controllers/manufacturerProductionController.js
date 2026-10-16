@@ -7,7 +7,10 @@ import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
 import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
-import { validateProductionRequestInput } from "../services/manufacturerProductionService.js";
+import {
+  calculateFullyLoadedUnitCogs,
+  validateProductionRequestInput,
+} from "../services/manufacturerProductionService.js";
 import {
   validateAdminProductionPlan,
   validatePostProductionChecklist,
@@ -195,7 +198,7 @@ export const createAdminProductionRequest = async (req, res) => {
       lines: req.body.lines,
       unitCogs: 1,
       minimumOrderQuantity: 1,
-      deliveryCost: 0,
+      otherCost: 0,
     });
     validRequestLines(product, normalized.lines);
     const plan = validateAdminProductionPlan(req.body);
@@ -216,6 +219,7 @@ export const createAdminProductionRequest = async (req, res) => {
           minimumOrderQuantity: normalized.totalQuantity,
           proposedDeliveryCost: 0,
           approvedDeliveryCost: 0,
+          costTermsVersion: 2,
           fabricType: plan.fabricType,
           gsm: plan.gsm,
           targetCompletionDate: plan.targetCompletionDate,
@@ -347,9 +351,15 @@ export const createProductionRequest = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId;
     if (!manufacturerId) return res.status(403).json({ success: false, message: "Manufacturer context is required." });
-    const { productId, lines, unitCogs, minimumOrderQuantity, deliveryCost, manufacturerNote } = req.body;
+    const { productId, lines, unitCogs, minimumOrderQuantity, otherCost, deliveryCost, manufacturerNote } = req.body;
     if (!productId) return res.status(400).json({ success: false, message: "Select a product for production." });
-    const normalized = validateProductionRequestInput({ lines, unitCogs, minimumOrderQuantity, deliveryCost });
+    const usesBatchOtherCost = otherCost !== undefined;
+    const normalized = validateProductionRequestInput({
+      lines,
+      unitCogs,
+      minimumOrderQuantity,
+      otherCost: usesBatchOtherCost ? otherCost : deliveryCost,
+    });
     const note = String(manufacturerNote || "").trim();
     if (note.length > 2000) return res.status(400).json({ success: false, message: "Production note cannot exceed 2000 characters." });
     const product = await prisma.product.findFirst({
@@ -367,7 +377,8 @@ export const createProductionRequest = async (req, res) => {
           productName: product.name,
           proposedUnitCogs: normalized.unitCogs,
           minimumOrderQuantity: normalized.minimumOrderQuantity,
-          proposedDeliveryCost: normalized.deliveryCost,
+          proposedDeliveryCost: normalized.otherCost,
+          costTermsVersion: usesBatchOtherCost ? 2 : 1,
           manufacturerNote: note || null,
           requestedBy: req.auth?.accountId || null,
           lines: { create: normalized.lines },
@@ -383,7 +394,7 @@ export const createProductionRequest = async (req, res) => {
           totalQuantity: normalized.totalQuantity,
           proposedUnitCogs: normalized.unitCogs.toFixed(2),
           minimumOrderQuantity: normalized.minimumOrderQuantity,
-          proposedDeliveryCost: normalized.deliveryCost.toFixed(2),
+          proposedOtherCost: normalized.otherCost.toFixed(2),
         },
       }, { client: tx });
       return created;
@@ -413,11 +424,21 @@ export const reviewProductionRequest = async (req, res) => {
       if (request.status !== "PENDING_REVIEW") throw Object.assign(new Error("Only pending production requests can be reviewed."), { statusCode: 409 });
 
       const unitCogs = new Prisma.Decimal(String(req.body.approvedUnitCogs ?? request.proposedUnitCogs));
-      const deliveryCost = new Prisma.Decimal(String(req.body.approvedDeliveryCost ?? request.proposedDeliveryCost));
+      const otherCost = new Prisma.Decimal(String(
+        req.body.approvedOtherCost ?? req.body.approvedDeliveryCost ?? request.proposedDeliveryCost
+      ));
       const moq = Number(req.body.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity);
-      if (decision === "APPROVE" && (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !deliveryCost.isFinite() || deliveryCost.isNegative() || !Number.isInteger(moq) || moq < 1 || moq > 2147483647)) {
-        throw Object.assign(new Error("Approved per-piece COGS, delivery cost, and MOQ are invalid."), { statusCode: 400 });
+      if (decision === "APPROVE" && (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !otherCost.isFinite() || otherCost.isNegative() || !Number.isInteger(moq) || moq < 1 || moq > 2147483647)) {
+        throw Object.assign(new Error("Approved unit COGS, batch other cost, and MOQ are invalid."), { statusCode: 400 });
       }
+      const plannedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
+      const inventoryUnitCogs = request.costTermsVersion >= 2 && plannedQuantity > 0
+        ? calculateFullyLoadedUnitCogs({
+          unitCogs,
+          batchOtherCost: otherCost,
+          goodQuantity: plannedQuantity,
+        })
+        : unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       const claimed = await tx.manufacturerProductionRequest.updateMany({
         where: { id, status: "PENDING_REVIEW" },
         data: {
@@ -428,7 +449,7 @@ export const reviewProductionRequest = async (req, res) => {
           ...(decision === "APPROVE" ? {
             approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
             approvedMinimumOrderQuantity: moq,
-            approvedDeliveryCost: deliveryCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+            approvedDeliveryCost: otherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
           } : {}),
         },
       });
@@ -444,14 +465,14 @@ export const reviewProductionRequest = async (req, res) => {
             quantity: 0,
             reservedQty: 0,
             variantsStock: request.lines.map((line) => ({ size: line.size, color: line.color, quantity: 0, reservedQty: 0 })),
-            proposedCostPrice: Number(unitCogs),
-            agreedCostPrice: Number(unitCogs),
+            proposedCostPrice: Number(inventoryUnitCogs),
+            agreedCostPrice: Number(inventoryUnitCogs),
             priceStatus: "APPROVED",
             priceNote: `Approved from production request ${request.id}`,
             adminFeedback: adminNote || "Production terms approved.",
           },
           update: {
-            agreedCostPrice: Number(unitCogs),
+            agreedCostPrice: Number(inventoryUnitCogs),
             priceStatus: "APPROVED",
             priceNote: `Approved from production request ${request.id}`,
             adminFeedback: adminNote || "Production terms approved.",
@@ -469,7 +490,7 @@ export const reviewProductionRequest = async (req, res) => {
           ...(decision === "APPROVE" ? {
             approvedUnitCogs: unitCogs.toFixed(2),
             approvedMinimumOrderQuantity: moq,
-            approvedDeliveryCost: deliveryCost.toFixed(2),
+            approvedOtherCost: otherCost.toFixed(2),
           } : {}),
         },
       }, { client: tx });
@@ -591,9 +612,21 @@ export const completeProduction = async (req, res) => {
       let damagedQuantity = 0;
       for (const line of request.lines) {
         const actual = actualByKey.get(JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]));
-        const goodQuantity = actual.quantity - actual.damagedQuantity;
-        productionQuantity += goodQuantity;
+        productionQuantity += actual.quantity - actual.damagedQuantity;
         damagedQuantity += actual.damagedQuantity;
+      }
+      const batchOtherCost = new Prisma.Decimal(String(request.approvedDeliveryCost || 0));
+      const unitCogs = new Prisma.Decimal(String(request.approvedUnitCogs));
+      const fullyLoadedUnitCogs = request.costTermsVersion >= 2
+        ? calculateFullyLoadedUnitCogs({
+          unitCogs,
+          batchOtherCost,
+          goodQuantity: productionQuantity,
+        })
+        : unitCogs;
+      for (const line of request.lines) {
+        const actual = actualByKey.get(JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]));
+        const goodQuantity = actual.quantity - actual.damagedQuantity;
         const key = JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]);
         const current = variantsByKey.get(key) || { size: line.size, color: line.color, quantity: 0, reservedQty: 0 };
         const reservedQty = Number(current.reservedQty || 0);
@@ -612,8 +645,8 @@ export const completeProduction = async (req, res) => {
           size: line.size,
           color: line.color,
           quantity: goodQuantity,
-          unitCogs: request.approvedUnitCogs,
-          unitDeliveryCost: request.approvedDeliveryCost,
+          unitCogs: fullyLoadedUnitCogs,
+          unitDeliveryCost: request.costTermsVersion >= 2 ? 0 : request.approvedDeliveryCost,
           actorId: req.auth?.accountId || req.auth?.profileId,
           actorRole: req.auth?.role || "MANUFACTURER",
         });
@@ -644,7 +677,7 @@ export const completeProduction = async (req, res) => {
           reservedQty: totalReservedQty,
           variantsStock: nextVariants,
           proposedCostPrice: Number(request.approvedUnitCogs),
-          agreedCostPrice: Number(request.approvedUnitCogs),
+          agreedCostPrice: Number(fullyLoadedUnitCogs),
           priceStatus: "APPROVED",
         },
         update: {
@@ -652,13 +685,13 @@ export const completeProduction = async (req, res) => {
           quantity: totalQuantity,
           reservedQty: totalReservedQty,
           variantsStock: nextVariants,
-          agreedCostPrice: Number(request.approvedUnitCogs),
+          agreedCostPrice: Number(fullyLoadedUnitCogs),
           priceStatus: "APPROVED",
         },
       });
       if (movements.length) await tx.manufacturerInventoryMovement.createMany({ data: movements });
 
-      const productionCogs = new Prisma.Decimal(request.approvedUnitCogs.toString())
+      const productionCogs = fullyLoadedUnitCogs
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       const party = await ensureAccountingParty({
@@ -717,8 +750,11 @@ export const completeProduction = async (req, res) => {
           factoryLocationId: factoryLocation.id,
           producedQuantity: productionQuantity,
           damagedQuantity,
+          approvedUnitCogs: unitCogs.toFixed(2),
+          productionOtherCost: request.costTermsVersion >= 2 ? batchOtherCost.toFixed(2) : "0.00",
+          fullyLoadedUnitCogs: fullyLoadedUnitCogs.toFixed(2),
           productionCogs: productionCogs.toFixed(2),
-          deliveryOverheadAccrued: "0.00",
+          deliveryOverheadAccrued: request.costTermsVersion >= 2 ? "0.00" : batchOtherCost.toFixed(2),
         },
       }, { client: tx });
       return {

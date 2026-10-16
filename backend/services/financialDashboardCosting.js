@@ -36,6 +36,75 @@ const weightedRates = (map) => new Map([...map].map(([key, value]) => [
   },
 ]));
 
+const getOrderItemProductId = (item) => item.productId || item._id || item.id;
+
+export const calculateProductFixedOverheadPerSoldUnit = ({ orders = [] } = {}) => {
+  const overheadTotals = new Map();
+  const soldQuantities = new Map();
+
+  for (const order of orders) {
+    for (const item of parseItems(order.items)) {
+      const productId = getOrderItemProductId(item);
+      const quantity = asAmount(item.quantity || 1);
+      if (!productId || !quantity) continue;
+      soldQuantities.set(productId, (soldQuantities.get(productId) || 0) + quantity);
+
+      const allocations = Array.isArray(item.productionCostAllocations)
+        ? item.productionCostAllocations
+        : null;
+      if (allocations) {
+        let allocatedQuantity = 0;
+        for (const allocation of allocations) {
+          const allocated = asAmount(allocation.quantity);
+          allocatedQuantity += allocated;
+          overheadTotals.set(
+            productId,
+            (overheadTotals.get(productId) || 0) + asAmount(allocation.unitDeliveryCost) * allocated,
+          );
+        }
+        const legacyQuantity = Math.max(0, Number(item.legacyCostQuantity ?? (quantity - allocatedQuantity)) || 0);
+        const legacyOverhead = asAmount(item.unitDeliveryCost ?? item.approvedDeliveryCost);
+        overheadTotals.set(
+          productId,
+          (overheadTotals.get(productId) || 0) + legacyOverhead * legacyQuantity,
+        );
+      } else {
+        const unitOverhead = asAmount(item.unitDeliveryCost ?? item.approvedDeliveryCost);
+        overheadTotals.set(productId, (overheadTotals.get(productId) || 0) + unitOverhead * quantity);
+      }
+    }
+  }
+
+  return new Map([...soldQuantities].map(([productId, soldQuantity]) => {
+    const totalOverhead = overheadTotals.get(productId) || 0;
+    return [
+      productId,
+      {
+        totalOverhead: roundMoney(totalOverhead),
+        soldQuantity,
+        unitOverhead: soldQuantity ? totalOverhead / soldQuantity : 0,
+      },
+    ];
+  }));
+};
+
+export const calculateAllocatedProductionOverhead = ({ orders = [], overheadPerProduct = new Map() } = {}) => {
+  let total = 0;
+  for (const order of orders) {
+    for (const item of parseItems(order.items)) {
+      const productId = getOrderItemProductId(item);
+      const quantity = asAmount(item.quantity || 1);
+      if (!productId || !quantity) continue;
+      total += (overheadPerProduct.get(productId)?.unitOverhead || 0) * quantity;
+    }
+  }
+  return roundMoney(total);
+};
+
+export const countPurchaseTransactions = (orders = []) => new Set(
+  orders.map((order, index) => order.checkoutGroupId || order.id || `unkeyed-${index}`),
+).size;
+
 export const calculateFinancialDashboardProductCosts = ({
   orders = [],
   costLayers = [],

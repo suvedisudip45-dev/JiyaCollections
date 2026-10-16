@@ -5,6 +5,7 @@ import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
   buildDeliveryInput,
+  buildNcmOrderPayload,
   deliveryTypeForNcm,
   generateVendorReference,
   getCarrierBookingAssignmentStatus,
@@ -280,6 +281,28 @@ test("carrier booking failures do not advance assignment to ready_for_pickup", (
   assert.equal(getCarrierBookingAssignmentStatus({ success: true, currentStatus: "package_details_complete" }), "ready_for_pickup");
   assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "package_details_complete" }), "package_details_complete");
   assert.equal(getCarrierBookingAssignmentStatus({ success: false, currentStatus: "ready_for_pickup" }), "ready_for_pickup");
+});
+
+test("NCM booking keeps the system COD final and excludes the admin-paid delivery fee", () => {
+  const payload = buildNcmOrderPayload({
+    input: {
+      name: "Customer",
+      phone: "9800000000",
+      address: {},
+      codAmount: 1469,
+      customerAddress: "Janakpur",
+      vendorReference: "NCM123",
+      deliveryType: "Door2Door",
+    },
+    delivery: { packageWeight: 0.87 },
+    origin: "SANKHU",
+    destination: "JANAKPUR",
+    packageName: "Box",
+  });
+
+  assert.equal(payload.cod_charge, "1469");
+  assert.equal(payload.fbranch, "SANKHU");
+  assert.equal(payload.branch, "JANAKPUR");
 });
 
 test("shipping-rate client normalizes legacy delivery type values", async () => {

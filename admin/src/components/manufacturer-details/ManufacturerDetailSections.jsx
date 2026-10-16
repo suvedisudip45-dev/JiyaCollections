@@ -130,10 +130,18 @@ export const ManufacturerProductionSection = ({ manufacturerId, token }) => {
           <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
             <Fact label="Fabric / GSM" value={`${request.fabricType || "—"} / ${request.gsm ?? "—"}`} />
             <Fact label="MOQ" value={request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity ?? "—"} />
-            <Fact label="Unit COGS" value={amount(request.approvedUnitCogs ?? request.proposedUnitCogs)} />
-            <Fact label="Other cost / unit" value={amount(request.approvedDeliveryCost ?? request.proposedDeliveryCost)} />
+            <Fact label="Base unit COGS" value={amount(request.approvedUnitCogs ?? request.proposedUnitCogs)} />
+            {request.costTermsVersion >= 2 && <Fact label="Fully loaded good-unit cost" value={amount(
+              good > 0
+                ? Number(request.approvedUnitCogs || 0) + Number(request.approvedDeliveryCost || 0) / good
+                : 0
+            )} />}
+            <Fact label={request.costTermsVersion >= 2 ? "Batch other cost" : "Other cost / unit (legacy)"} value={amount(request.approvedDeliveryCost ?? request.proposedDeliveryCost)} />
             <Fact label="Requested / actual / good" value={`${requested} / ${produced} / ${good}`} />
-            <Fact label="Estimated good-unit production cost" value={amount(good * Number(request.approvedUnitCogs || 0))} />
+            <Fact label="Estimated good-unit production cost" value={amount(
+              good * Number(request.approvedUnitCogs || 0)
+              + (request.costTermsVersion >= 2 && good > 0 ? Number(request.approvedDeliveryCost || 0) : 0)
+            )} />
             <Fact label="Pre-production QA" value={request.preProductionChecklist?.passed === true ? "Passed" : request.preProductionChecklist?.passed === false ? "Failed" : "Not recorded"} />
             <Fact label="Post-production QA" value={request.postProductionChecklist?.passed === true ? "Passed" : request.postProductionChecklist?.passed === false ? "Failed" : "Not recorded"} />
           </div>

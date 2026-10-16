@@ -2,6 +2,7 @@ import express from "express";
 import {
   listAllCustomers,
   searchAdminCustomers,
+  getCustomerAdminAnalytics,
   getCustomerAdminProfile,
   getCustomerAdminOrders,
   getCustomerAdminLetters,
@@ -27,6 +28,7 @@ const requireAdminRole = (req, res, next) => {
 };
 
 customerRouter.get("/list", authenticate, requireAdminRole, authorize("customer:admin_list"), listAllCustomers);
+customerRouter.get("/admin/analytics", authenticate, requireAdminRole, authorize("customer:admin_list"), getCustomerAdminAnalytics);
 customerRouter.get("/admin/search", authenticate, requireAdminRole, authorize("customer:admin_list"), searchAdminCustomers);
 customerRouter.get("/details/:userId/profile", authenticate, requireAdminRole, authorize("customer:admin_detail"), getCustomerAdminProfile);
 customerRouter.get("/details/:userId/orders", authenticate, requireAdminRole, authorize("customer:admin_orders_read"), getCustomerAdminOrders);

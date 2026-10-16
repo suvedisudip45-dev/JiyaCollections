@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculateFinancialDashboardProductCosts } from "../services/financialDashboardCosting.js";
+import {
+  calculateAllocatedProductionOverhead,
+  calculateFinancialDashboardProductCosts,
+  calculateProductFixedOverheadPerSoldUnit,
+  countPurchaseTransactions,
+} from "../services/financialDashboardCosting.js";
 
 test("dashboard counts accepted batch production cost as COGS and per-unit other charges as overhead", () => {
   const result = calculateFinancialDashboardProductCosts({
@@ -68,4 +73,55 @@ test("dashboard prefers accepted per-order COGS snapshots and retains legacy pro
     deliveryAndOtherOverheads: 0,
     unitsSold: 3,
   });
+});
+
+test("sales analytics allocates sold-item overhead over each product's all-time sold units", () => {
+  const orders = [
+    {
+      items: [
+        {
+          productId: "product-1",
+          quantity: 2,
+          productionCostAllocations: [{ quantity: 2, unitDeliveryCost: "10" }],
+        },
+        { productId: "product-2", quantity: 1, unitDeliveryCost: "20" },
+      ],
+    },
+    { items: [{ productId: "product-1", quantity: 4, unitDeliveryCost: "10" }] },
+  ];
+  const overheadPerProduct = calculateProductFixedOverheadPerSoldUnit({
+    orders,
+    costLayers: [
+      { productId: "product-1", producedQuantity: 1000, unitDeliveryCost: "999" },
+      { productId: "product-2", producedQuantity: 500, unitDeliveryCost: "777" },
+    ],
+  });
+
+  assert.deepEqual(overheadPerProduct.get("product-1"), {
+    totalOverhead: 60,
+    soldQuantity: 6,
+    unitOverhead: 10,
+  });
+  assert.deepEqual(overheadPerProduct.get("product-2"), {
+    totalOverhead: 20,
+    soldQuantity: 1,
+    unitOverhead: 20,
+  });
+  assert.equal(calculateAllocatedProductionOverhead({
+    orders: [orders[0]],
+    overheadPerProduct,
+  }), 40);
+  assert.equal(calculateAllocatedProductionOverhead({
+    orders: [orders[1]],
+    overheadPerProduct,
+  }), 40);
+  assert.equal(calculateAllocatedProductionOverhead({ orders, overheadPerProduct }), 80);
+});
+
+test("sales analytics counts split shipment rows as one purchase transaction", () => {
+  assert.equal(countPurchaseTransactions([
+    { id: "shipment-order-1", checkoutGroupId: "checkout-1" },
+    { id: "shipment-order-2", checkoutGroupId: "checkout-1" },
+    { id: "single-order-1", checkoutGroupId: null },
+  ]), 2);
 });

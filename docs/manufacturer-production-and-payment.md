@@ -17,11 +17,13 @@ The legacy payable trigger was the delivered sale, not the inventory quantity up
 ## Confirmed business rules
 
 - A manufacturer submits a production request for a published product and provides requested quantities by size/color.
-- The manufacturer proposes the per-piece COGS, MOQ, and a separate per-piece packaging/other-overhead amount.
+- The manufacturer proposes base per-piece COGS, MOQ, and a separate batch-total production other cost.
 - An admin approves or rejects the request and proposed terms before production begins.
 - MOQ is a disclosed order-size term, not a price tier or payout trigger. For MOQ 50 and unit COGS Rs 200, a completed quantity of 20 creates Rs 4,000 of COGS payable; quantities above MOQ retain the same approved unit price.
 - An approved request may be started by the manufacturer. Marking it complete atomically adds its approved size/color quantities to hub inventory and recognizes the COGS payable.
-- Packaging/other overhead is excluded from the production COGS payable. It becomes payable per unit only after successful customer delivery.
+- New production requests allocate batch-total production other cost across actual good units; that allocation is included in each unit's inventory COGS and in production payable. Local freight to a distributor is separate from production cost.
+- Manufacturer-paid local freight is recognized as delivery expense and accrued to manufacturer payable when dispatch hands the goods to the carrier. Paying a LOGISTICS settlement clears the payable against cash and does not recognize the expense a second time.
+- Existing production requests with cost-terms version 1 retain their prior per-unit overhead treatment.
 - Existing full/partial settlements and discounts/fines remain available through the existing manufacturer settlement route.
 - Cost layers use FIFO. Legacy inventory without a production cost layer retains the current delivery-based COGS recognition until sold.
 
@@ -31,7 +33,7 @@ The legacy payable trigger was the delivered sale, not the inventory quantity up
 | --- | --- |
 | `ManufacturerProductionRequest` | Manufacturer/product, proposed and approved terms, lifecycle state, review metadata, timestamps, and idempotent completion marker |
 | `ManufacturerProductionRequestLine` | Requested size/color and whole-unit quantity |
-| `ManufacturerInventoryCostLayer` | Immutable completed-production batch/variant cost, remaining/reserved/consumed/returned quantities, and per-unit delivery overhead |
+| `ManufacturerInventoryCostLayer` | Immutable completed-production batch/variant COGS at 14-decimal unit precision, remaining/reserved/consumed/returned quantities, and legacy per-unit delivery overhead |
 | `ManufacturerInventoryCostAllocation` | FIFO layer units reserved/consumed by an order; `returnedQuantity` prevents a partial customer return from restoring the same units twice |
 | `ManufacturerInventoryMovement` | Existing auditable aggregate/variant stock delta, now sourced from a completed approved production request rather than direct manufacturer edits |
 | `JournalEntry` / `JournalLine` | Production completion: debit inventory, credit manufacturer payable. Delivery: debit COGS/credit inventory for production-layer units; retain the existing COGS/payable posting for legacy units. Delivery overhead is expensed and credited to manufacturer payable on successful delivery. |
@@ -48,12 +50,13 @@ PENDING_REVIEW -> APPROVED -> IN_PRODUCTION -> COMPLETED
 
 - Only the authenticated manufacturer can create and progress its request.
 - Only authorized admins can approve/reject pending requests.
-- Approval freezes proposed unit COGS, MOQ, overhead, and variant quantities.
+- Approval freezes proposed unit COGS, MOQ, batch other cost, and variant quantities.
 - A request can complete once. Its stock changes, movements, FIFO layers, payable journal, audit entry, and completed status commit atomically.
 - Direct quantity edits cannot generate a payable. Count corrections, damages, returns, or other adjustments do not create production COGS.
 - FIFO layer reservation is persisted with the order's accepted cost snapshot. Cancellation releases reservations; delivery consumes them; restockable returns restore the original layer.
 - A production-layer unit's COGS is not credited to manufacturer payable again at delivery. Only legacy units retain the old delivery payable trigger.
-- New packaging/overhead is not added to bulk COGS and is recognized only on a successful delivery event.
+- For version-2 production terms, batch other cost is allocated across actual good units and capitalized into unit COGS; the new cost layer has no separate delivery-overhead amount. Legacy version-1 layers retain their existing delivery overhead behavior.
+- Local/manual StockTransfer freight is a distinct logistics payable. Dispatch debits delivery expense 6430 and credits manufacturer payable 2160; payment later debits that payable and credits cash/bank without re-expensing freight.
 - Retries cannot complete a request or post COGS/overhead twice.
 
 ## Iteration plan

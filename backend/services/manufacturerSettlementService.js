@@ -19,6 +19,8 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
       where: { manufacturerId, status: "COMPLETED" },
       select: {
         approvedUnitCogs: true,
+        approvedDeliveryCost: true,
+        costTermsVersion: true,
         lines: { select: { actualQuantity: true, damagedQuantity: true, quantity: true } },
       },
     }),
@@ -39,7 +41,8 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   for (const request of completedRequests) {
     const goodUnits = request.lines.reduce((total, line) =>
       total + Math.max(0, Number(line.actualQuantity ?? line.quantity) - Number(line.damagedQuantity || 0)), 0);
-    recognizedProductionValue += Number(request.approvedUnitCogs || 0) * goodUnits;
+    recognizedProductionValue += Number(request.approvedUnitCogs || 0) * goodUnits
+      + (request.costTermsVersion >= 2 && goodUnits > 0 ? Number(request.approvedDeliveryCost || 0) : 0);
   }
 
   const accountingLines = payableAccount
