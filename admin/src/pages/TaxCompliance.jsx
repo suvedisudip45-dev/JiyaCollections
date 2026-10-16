@@ -96,8 +96,8 @@ const TaxCompliance = ({ token }) => {
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div className="flex items-center justify-between pb-4 border-b border-slate-100">
           <div>
-            <h2 className="text-base font-bold text-slate-900">Nepal 13% VAT Monthly Reconciler</h2>
-            <p className="text-xs text-slate-400">Output VAT collected on sales vs Input VAT credit claimed on purchases</p>
+            <h2 className="text-base font-bold text-slate-900">Posted VAT Monthly Reconciliation</h2>
+            <p className="text-xs text-slate-400">Output VAT and verified input VAT from posted journal entries only</p>
           </div>
           <span
             className={`px-3 py-1 rounded-xl text-xs font-bold ${
@@ -113,23 +113,23 @@ const TaxCompliance = ({ token }) => {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
           {/* OUTPUT VAT */}
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">13% Output VAT (Sales)</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Output VAT (posted sales)</p>
             <p className="text-2xl font-black text-slate-900 mt-1">
               {currency}{(vat.outputVat || 0).toLocaleString()}
             </p>
             <p className="text-[10px] text-slate-400 mt-1">
-              On Taxable Sales of {currency}{(vat.taxableSales || 0).toLocaleString()}
+              Net posted revenue: {currency}{(vat.taxableSales || 0).toLocaleString()}
             </p>
           </div>
 
           {/* INPUT VAT */}
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">13% Input VAT Credit</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Input VAT receivable</p>
             <p className="text-2xl font-black text-indigo-600 mt-1">
               {currency}{(vat.inputVat || 0).toLocaleString()}
             </p>
             <p className="text-[10px] text-slate-400 mt-1">
-              Claimed on Manufacturer COGS (13% Inc), Freight &amp; Overhead VAT Bills
+              Includes only input VAT recognized in posted journals after supporting evidence is verified.
             </p>
           </div>
 
@@ -144,6 +144,7 @@ const TaxCompliance = ({ token }) => {
             </p>
           </div>
         </div>
+        <p className="mt-4 text-[10px] text-slate-400">Basis: {vat.basis === "POSTED_JOURNALS" ? "posted double-entry ledger" : "unavailable"}. Pending or unposted VAT is excluded.</p>
       </div>
 
       {/* CORPORATE INCOME TAX PROJECTION */}

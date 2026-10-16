@@ -79,7 +79,7 @@ The password reset timestamp enforces a rolling seven-day interval, while the mo
 | `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items; admin self-delivery monitoring explicitly filters `deliveryType=SELF_DELIVERY` and excludes orders with a `DeliveryOrder` |
 | `ShippingConfig` | `sameDistrictFee`, `sameProvinceFee`, `differentProvinceFee`, `routeOverrides`, `splitShipmentFee`, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tiers plus optional route exceptions and company-paid return/exchange logistics rates; approved requests snapshot the settlement rate and create an accounts payable after logistics completion |
-| `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; `createdAt,state` index supports the NCM admin monitor |
+| `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `ncmReconciliationRequired`, `ncmReconciliationReason`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; indexes support the NCM admin monitor and pending reconciliation queue |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
 | `NcmRequestAttempt` | `deliveryOrderId`, `operation`, `requestUrl`, `result`, `httpStatus` | idempotent request tracking |
@@ -97,6 +97,10 @@ manufacturer or distributor payables.
 Admin monitoring lists are paginated and return compact row fields; detail
 routes load bounded event, return, exchange, rating, and settlement sections
 only after a record is opened. NCM date filters use `DeliveryOrder.createdAt`;
+the pending NCM reconciliation filter is not date-limited, so unresolved records
+remain visible regardless of age. Unknown or conflicting carrier updates retain
+the last trusted `state` and store the reason and Admin decision history on the
+delivery record and its `DeliveryEvent` timeline.
 self-delivery date filters use the customer order's epoch-millisecond `Order.date`.
 Both interpret today/week/month/year/custom boundaries in `Asia/Kathmandu`.
 The `OrderAssignment(deliveryType, distributorId, status, assignedAt)` index
@@ -127,9 +131,14 @@ limited to known local NCM order IDs.
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `ManufacturerInventory` | `manufacturerId`, `productId`, `quantity`, `reservedQty`, `variantsStock`, `agreedCostPrice` | warehouse stock by manufacturer |
+| `ManufacturerProductionRequest` | proposed/approved unit COGS, batch other cost, VAT treatment/rate, supplier VAT invoice reference and Admin verification, planned/actual quantities | Admin-approved production terms retain supplier tax evidence; `EXEMPT`, `VAT_INCLUSIVE`, or `VAT_EXCLUSIVE` are supported |
+| `ManufacturerInventoryCostLayer` | produced/available/reserved/consumed quantities, capitalized unit COGS, unit VAT, VAT treatment/rate, invoice-verification state | Verified input VAT is posted at production receipt; unverified VAT remains in capitalized inventory cost |
 | `ManufacturerInventoryMovement` | `manufacturerId`, `productId`, `variantLabel`, `previousQty`, `newQty`, signed `changeQty`, `movementType`, `reason`, `note`, `actorId`, `createdAt` | immutable, per-variant manufacturer stock adjustment history |
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
+
+Apply `backend/prisma/migrations/20261017120000_manufacturer_production_vat/migration.sql` before deploying the production VAT changes. Existing production records migrate as exempt, and existing cost layers receive zero VAT by default.
+Apply `backend/prisma/migrations/20261017130000_reconcile_manufacturer_freight_settlements/migration.sql` to persist the portion of each local shipment's freight charge settled through approved manufacturer logistics payments.
 
 Factory receipts from production remain in manufacturer-owned factory locations and are not available to customer checkout. Stock becomes storefront-eligible only when a distributor confirms receipt into an active distributor location. Product-level and variant-level stock fields mirror the sum of unreserved active distributor ledger balances; `InventoryBalance` and its ledger entries remain authoritative.
 
@@ -139,7 +148,7 @@ Bulk distributor replenishment uses a separate `StockTransfer` lifecycle:
 | --- | --- | --- |
 | `StockTransfer` | manufacturer/distributor profile IDs, source/destination locations, status, request/review actor and timestamps, five manufacturer preparation-check booleans, preparation actor/time | Distributor demand is admin-approved before becoming actionable in the manufacturer portal. |
 | `StockTransferLine` | transfer/SKU IDs, requested/approved/dispatched/reserved quantities | Admin approval is bounded by the request and current available factory balance. |
-| `StockTransferShipment` | booking mode, carrier/tracking, dedicated `ncmOrderId`, NCM package type/product/weight/dimensions/instructions/fragility/packaging notes, freight and settlement fields, NCM status/history/payment/sync/event and return-request fields, status/timestamps | Supports NCM, local freight, and direct `SELF_STORE` delivery. NCM package details are persisted for the audit trail; type and dimensions are serialized into NCM's documented `package` string rather than sent as unsupported request fields. Own-store shipments carry zero freight and are immediately received into the distributor ledger location. NCM booking is `BOOKED`; factory stock remains reserved until a pickup/custody webhook or admin reconciliation moves it to transit. Carrier delivery remains separate from receipt/inventory state. NCM freight is held for platform/admin settlement, not manufacturer/distributor payables. |
+| `StockTransferShipment` | booking mode, carrier/tracking, dedicated `ncmOrderId`, NCM package type/product/weight/dimensions/instructions/fragility/packaging notes, freight charge/paid amount/settlement status, NCM status/history/payment/sync/event and return-request fields, status/timestamps | Supports NCM, local freight, and direct `SELF_STORE` delivery. NCM package details are persisted for the audit trail; type and dimensions are serialized into NCM's documented `package` string rather than sent as unsupported request fields. Own-store shipments carry zero freight and are immediately received into the distributor ledger location. NCM booking is `BOOKED`; factory stock remains reserved until a pickup/custody webhook or admin reconciliation moves it to transit. Carrier delivery remains separate from receipt/inventory state. NCM freight is held for platform/admin settlement, not manufacturer/distributor payables. Paid LOGISTICS settlements are allocated FIFO to dispatched local shipments; shipment-level paid and outstanding amounts appear in finance details. |
 | `StockTransferShipmentEvent` | shipment ID, unique provider-event key, source, event type/status, sanitized payload, provider occurrence and receive timestamps | Durable, idempotent NCM booking/status timeline; event insertion and first custody inventory movement commit in the same transaction. |
 | `StockTransferReceipt` / `StockTransferReceiptLine` | shipment, receiver/time, good/damaged/missing quantities | Self-store delivery records an idempotent all-good receipt in the same transaction as its ledger movements. |
 
@@ -191,6 +200,7 @@ The schema includes a full accounting engine with:
 - `Account`
 - `FinancialAccount`
 - `AccountPayable`
+- `DistributorSettlementRequest`
 - `AccountReceivable`
 - `JournalEntry`
 - `JournalLine`
@@ -210,6 +220,8 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 For posted accounting, accepted production layers are traced to distributor stock through `StockTransferShipmentLineCostLayer` and good-receipt `InventoryLedgerEntry.productionCostLayerId` values. Distributor order fulfillment records the consumed layer ID on its `FULFILLMENT` ledger movement and persists its accepted cost allocation in `Order.items`; delivery accounting uses those quantities and layer rates to post COGS (5100), inventory relief (1140), and any legacy per-unit overhead. This applies to new production-layer stock delivered through either distributor self-delivery or NCM. Existing received stock without ledger layer provenance is not assigned a guessed layer cost. Manufacturer-paid local transfer freight is recognized as delivery expense (6430) and manufacturer payable (2160) on dispatch, when the carrier service is performed; settlement later clears the payable against cash.
 
 `AccountingEvent` also serves as the durable delivered-sale outbox for NCM and distributor self-delivery. The delivery transaction stores a versioned source snapshot and payload hash; `nextAttemptAt` and `claimedAt` support scheduled retries and stale-claim recovery. The worker links the journal to the source event and commits journal creation plus the `POSTED` event state atomically. The additive migration `20261017000000_delivery_accounting_outbox_schedule` must be applied and Prisma Client regenerated before deploying this worker; it has not yet been applied.
+
+Migration `20261017150000_distributor_settlement_payables` adds `DistributorSettlementRequest.paidAmount`. Distributor finance recognizes delivery earnings only from completed self-delivery assignments, excluding assignments marked NCM and any order with a corresponding NCM `DeliveryOrder`. Pending request balances are reserved from the amount available for a subsequent settlement request. Each distributor settlement request creates a linked `AccountPayable` and posts the requested gross delivery-service expense to account 6430 against accounts payable 2110. Admin payout is performed from `/payables`; each payment debits 2110, credits the selected treasury account's linked GL account (or cash/bank control account), and updates the request, payable, cash transaction, and journal in one transaction. `DistributorSettlementRequest.paidAmount` tracks partial payments. Settlement VAT is not claimed as recoverable input VAT without verified supplier-invoice evidence.
 
 ### 3.9 Gift promotions and distributor gift stock
 

@@ -61,7 +61,7 @@ const transferInclude = {
           shipment: { select: {
             id: true, status: true, bookingMode: true, deliveryPartner: true,
             trackingNumber: true, externalReference: true, ncmOrderId: true,
-            freightCharge: true, freightSettlementStatus: true, packageWeight: true,
+            freightCharge: true, freightPaidAmount: true, freightSettlementStatus: true, packageWeight: true,
             packageType: true, productType: true, productDescription: true,
             packageDimensions: true, isFragile: true, deliveryInstruction: true,
             packagingNotes: true, ncmStatus: true, ncmStatusHistory: true,

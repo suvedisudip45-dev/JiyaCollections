@@ -21,6 +21,27 @@ const statusStyle = {
   REJECTED: "bg-rose-50 text-rose-800 border-rose-200",
 };
 
+const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) => {
+  const enteredAmount = Number(amount) || 0;
+  const rate = Number(vatRate) || 0;
+  let net = enteredAmount;
+  let vat = 0;
+  let gross = enteredAmount;
+  if (treatment === "VAT_INCLUSIVE") {
+    net = enteredAmount / (1 + rate / 100);
+    vat = enteredAmount - net;
+  } else if (treatment === "VAT_EXCLUSIVE") {
+    vat = enteredAmount * rate / 100;
+    gross = enteredAmount + vat;
+  }
+  return {
+    net: net.toFixed(2),
+    vat: vat.toFixed(2),
+    gross: gross.toFixed(2),
+    inventoryCost: (vatVerified ? net : gross).toFixed(2),
+  };
+};
+
 const Production = () => {
   const { token, backendUrl, currency } = useManufacturer();
   const [products, setProducts] = useState([]);
@@ -30,6 +51,9 @@ const Production = () => {
   const [unitCogs, setUnitCogs] = useState("");
   const [minimumOrderQuantity, setMinimumOrderQuantity] = useState("");
   const [otherCost, setOtherCost] = useState("0");
+  const [vatTreatment, setVatTreatment] = useState("EXEMPT");
+  const [vatRate, setVatRate] = useState("13");
+  const [vatInvoiceReference, setVatInvoiceReference] = useState("");
   const [manufacturerNote, setManufacturerNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -42,6 +66,7 @@ const Production = () => {
     () => products.find((product) => product.id === productId),
     [products, productId]
   );
+  const draftUnitCost = getUnitCostBreakdown(unitCogs, vatTreatment, vatRate);
 
   const loadData = useCallback(async () => {
     if (!token) return;
@@ -102,6 +127,9 @@ const Production = () => {
           unitCogs,
           minimumOrderQuantity,
           otherCost,
+          vatTreatment,
+          vatRate,
+          vatInvoiceReference,
           manufacturerNote,
         },
         { headers: { token } }
@@ -110,6 +138,9 @@ const Production = () => {
       setUnitCogs("");
       setMinimumOrderQuantity("");
       setOtherCost("0");
+      setVatTreatment("EXEMPT");
+      setVatRate("13");
+      setVatInvoiceReference("");
       setManufacturerNote("");
       setProductId("");
       await loadData();
@@ -197,6 +228,64 @@ const Production = () => {
           ))}
         </div>
 
+        <div className="grid gap-4 rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-4 md:grid-cols-3">
+          <label className="text-xs font-semibold text-[#171717]">
+            Product COGS VAT treatment
+            <select
+              value={vatTreatment}
+              onChange={(event) => setVatTreatment(event.target.value)}
+              className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
+            >
+              <option value="EXEMPT">No VAT / exempt</option>
+              <option value="VAT_INCLUSIVE">VAT inclusive</option>
+              <option value="VAT_EXCLUSIVE">VAT exclusive</option>
+            </select>
+            <span className="mt-1 block text-[10px] font-normal text-[#575757]">
+              Recoverable input VAT is recorded only after Admin verifies the supplier invoice.
+            </span>
+          </label>
+          {vatTreatment !== "EXEMPT" && (
+            <>
+              <label className="text-xs font-semibold text-[#171717]">
+                VAT rate (%)
+                <input
+                  type="number"
+                  min="0.01"
+                  max="100"
+                  step="0.01"
+                  required
+                  value={vatRate}
+                  onChange={(event) => setVatRate(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
+                />
+              </label>
+              <label className="text-xs font-semibold text-[#171717]">
+                Supplier VAT invoice reference
+                <input
+                  type="text"
+                  maxLength={120}
+                  required
+                  value={vatInvoiceReference}
+                  onChange={(event) => setVatInvoiceReference(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
+                />
+              </label>
+            </>
+          )}
+        </div>
+        <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-xs text-sky-950">
+          <h3 className="font-bold">Estimated batch cost breakdown</h3>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <p>Goods cost before VAT <strong className="block">{currency}{draftUnitCost.net} / unit</strong></p>
+            <p>Supplier VAT <strong className="block">{currency}{draftUnitCost.vat} / unit</strong></p>
+            <p>Goods total incl. VAT <strong className="block">{currency}{draftUnitCost.gross} / unit</strong></p>
+            <p>Batch other production charges <strong className="block">{currency}{Number(otherCost || 0).toFixed(2)} / batch</strong></p>
+          </div>
+          <p className="mt-2 text-[10px]">
+            Supplier VAT is not yet verified; it will remain in inventory cost until Admin verifies the VAT invoice. Delivery to the distributor is a separate shipment cost, entered when the transfer is dispatched.
+          </p>
+        </div>
+
         {lines.length > 0 && (
           <div className="space-y-2 pt-2">
             <p className="text-xs font-bold uppercase tracking-wider text-[#575757]">
@@ -271,11 +360,7 @@ const Production = () => {
                     <div>
                       <h3 className="font-bold text-xs text-[#171717]">{request.product?.name || request.productName}</h3>
                       <p className="mt-0.5 text-[11px] text-[#575757]">
-                        {quantity} units • {currency}
-                        {request.approvedUnitCogs ?? request.proposedUnitCogs}/unit base COGS • Other cost: {currency}
-                        {request.approvedDeliveryCost ?? request.proposedDeliveryCost}
-                        {request.costTermsVersion >= 2 ? " per batch" : " per unit (legacy)"} • Target MOQ:{" "}
-                        {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity}
+                        {quantity} units · MOQ {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity}
                       </p>
                     </div>
                     <span
@@ -286,6 +371,27 @@ const Production = () => {
                       {request.status.replaceAll("_", " ")}
                     </span>
                   </div>
+
+                  {(() => {
+                    const unitAmount = request.approvedUnitCogs ?? request.proposedUnitCogs;
+                    const vatTreatmentForRequest = request.approvedVatTreatment || request.vatTreatment || "EXEMPT";
+                    const breakdown = getUnitCostBreakdown(
+                      unitAmount,
+                      vatTreatmentForRequest,
+                      request.approvedVatRate ?? request.vatRate,
+                      request.approvedVatInvoiceVerified === true,
+                    );
+                    return (
+                      <div className="grid gap-2 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] p-3 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+                        <p>Goods cost before VAT <strong className="block">{currency}{breakdown.net} / unit</strong></p>
+                        <p>Supplier VAT ({vatTreatmentForRequest === "EXEMPT" ? "exempt" : `${request.approvedVatRate ?? request.vatRate}%`}) <strong className="block">{currency}{breakdown.vat} / unit</strong></p>
+                        <p>Goods total incl. VAT <strong className="block">{currency}{breakdown.gross} / unit</strong></p>
+                        <p>Other production charges <strong className="block">{currency}{Number(request.approvedDeliveryCost ?? request.proposedDeliveryCost ?? 0).toFixed(2)} {request.costTermsVersion >= 2 ? "/ batch" : "/ unit (legacy)"}</strong></p>
+                        <p className="sm:col-span-2">Inventory unit cost <strong>{currency}{breakdown.inventoryCost}</strong> · {request.approvedVatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."}</p>
+                        <p className="sm:col-span-2">Delivery to distributor <strong>separate shipment cost</strong> · recorded at transfer dispatch, not included above.</p>
+                      </div>
+                    );
+                  })()}
 
                   <p className="text-[11px] text-[#575757]">
                     {(request.lines || [])

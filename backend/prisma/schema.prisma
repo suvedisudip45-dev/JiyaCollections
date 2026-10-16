@@ -1782,13 +1782,14 @@ model DistributorSettlementRequest {
   id                  String   @id @default(uuid())
   distributorId       String
   amount              Decimal  @db.Decimal(20, 2)
+  paidAmount          Decimal  @default(0) @db.Decimal(20, 2)
   grossEarnings       Decimal  @default(0) @db.Decimal(20, 2)
   incentives          Decimal  @default(0) @db.Decimal(20, 2)
   discountsApplied    Decimal  @default(0) @db.Decimal(20, 2)
   chargesApplied      Decimal  @default(0) @db.Decimal(20, 2)
   vatAmount           Decimal  @default(0) @db.Decimal(20, 2)
   netPayable          Decimal  @default(0) @db.Decimal(20, 2)
-  status              String   @default("PENDING") // PENDING | SETTLED | REJECTED
+  status              String   @default("PENDING") // PENDING | PARTIALLY_PAID | SETTLED | REJECTED
   notes               String?  @db.Text
   adminNotes          String?  @db.Text
   requestedBy         String?
@@ -1963,6 +1964,7 @@ model StockTransferShipment {
   ncmOrderId           String?      @unique @db.VarChar(64)
   freightCharge        Decimal?     @db.Decimal(20, 2)
   freightSettlementStatus String    @default("PENDING_ADMIN_SETTLEMENT") @db.VarChar(64)
+  freightPaidAmount    Decimal      @default(0) @db.Decimal(20, 2)
   packageWeight        Decimal?     @db.Decimal(8, 3)
   packageType          String?      @db.VarChar(64)
   productType          String?      @db.VarChar(120)
@@ -2589,9 +2591,16 @@ model ManufacturerProductionRequest {
   proposedUnitCogs            Decimal? @db.Decimal(20, 2)
   minimumOrderQuantity        Int
   proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Batch-total production other cost for costTermsVersion 2
+  vatTreatment                String   @default("EXEMPT") @db.VarChar(24) // EXEMPT | VAT_INCLUSIVE | VAT_EXCLUSIVE
+  vatRate                     Decimal  @default(13) @db.Decimal(5, 2)
+  vatInvoiceReference         String?  @db.VarChar(120)
   approvedUnitCogs            Decimal? @db.Decimal(20, 2)
   approvedMinimumOrderQuantity Int?
   approvedDeliveryCost       Decimal? @db.Decimal(20, 2)
+  approvedVatTreatment        String   @default("EXEMPT") @db.VarChar(24)
+  approvedVatRate             Decimal  @default(13) @db.Decimal(5, 2)
+  approvedVatInvoiceReference String?  @db.VarChar(120)
+  approvedVatInvoiceVerified  Boolean  @default(false)
   costTermsVersion           Int      @default(1)
   fabricType                 String?  @db.VarChar(120)
   gsm                        Decimal? @db.Decimal(8, 2)
@@ -2668,6 +2677,10 @@ model ManufacturerInventoryCostLayer {
   reservedQuantity  Int      @default(0)
   consumedQuantity  Int      @default(0)
   unitCogs          Decimal  @db.Decimal(30, 14)
+  unitVatAmount     Decimal  @default(0) @db.Decimal(30, 14)
+  vatTreatment      String   @default("EXEMPT") @db.VarChar(24)
+  vatRate           Decimal  @default(13) @db.Decimal(5, 2)
+  vatInvoiceVerified Boolean @default(false)
   unitDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2)
   createdAt         DateTime @default(now())
   productionRequest ManufacturerProductionRequest @relation(fields: [productionRequestId], references: [id], onDelete: Restrict)
@@ -2776,6 +2789,8 @@ model DeliveryOrder {
   vendorReference        String          @unique
   ncmStatus              String?
   ncmPaymentStatus       String?
+  ncmReconciliationRequired Boolean @default(false)
+  ncmReconciliationReason   String? @db.Text
   lastSyncedAt           DateTime?
   nextSyncAt             DateTime?
   syncFailureCount       Int             @default(0)
@@ -2791,6 +2806,7 @@ model DeliveryOrder {
   events                 DeliveryEvent[]
 
   @@index([state])
+  @@index([ncmReconciliationRequired, createdAt])
   @@index([createdAt, state])
   @@index([manufacturerId, state])
   @@index([distributorId, state])

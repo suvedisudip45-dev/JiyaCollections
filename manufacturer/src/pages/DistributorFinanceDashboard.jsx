@@ -53,8 +53,13 @@ const DistributorFinanceDashboard = () => {
   const handleAskSettlement = async (e) => {
     e.preventDefault();
     const num = Number(askAmount);
-    if (!num || num <= 0) {
-      toast.error("Please enter a valid positive payout amount.");
+    const availableBalance = Number(summary.netPayableBalance || 0);
+    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(askAmount.trim()) || !Number.isFinite(num) || num <= 0) {
+      toast.error("Enter a positive amount with no more than two decimal places.");
+      return;
+    }
+    if (num > availableBalance) {
+      toast.error("The requested amount cannot exceed the available net settlement payable.");
       return;
     }
     setSubmittingAsk(true);
@@ -116,7 +121,8 @@ const DistributorFinanceDashboard = () => {
 
           <button
             onClick={() => setShowAskModal(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors shadow-xs"
+            disabled={Number(summary.netPayableBalance || 0) <= 0}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Send className="w-3.5 h-3.5" />
             Ask for Settlement
@@ -307,7 +313,7 @@ const DistributorFinanceDashboard = () => {
                 <input
                   type="number"
                   step="0.01"
-                  min="1"
+                  min="0.01"
                   max={summary.netPayableBalance || 0}
                   value={askAmount}
                   onChange={(e) => setAskAmount(e.target.value)}
@@ -315,6 +321,7 @@ const DistributorFinanceDashboard = () => {
                   className="w-full p-2.5 border border-[#dedbd3] rounded-xl text-sm font-bold focus:outline-none focus:border-[#171717]"
                   required
                 />
+                <p className="mt-1 text-[10px] text-[#575757]">Your request is limited to the available balance; pending settlement requests reduce this amount.</p>
               </div>
 
               <div>
@@ -322,6 +329,7 @@ const DistributorFinanceDashboard = () => {
                 <textarea
                   value={askNotes}
                   onChange={(e) => setAskNotes(e.target.value)}
+                  maxLength={1000}
                   placeholder="e.g., Nabil Bank A/C #0234017500000, Branch: Kathmandu"
                   className="w-full p-2.5 border border-[#dedbd3] rounded-xl text-xs focus:outline-none focus:border-[#171717] resize-none h-16"
                 />
@@ -337,7 +345,7 @@ const DistributorFinanceDashboard = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingAsk}
+                  disabled={submittingAsk || Number(summary.netPayableBalance || 0) <= 0}
                   className="px-5 py-2 bg-[#171717] text-white font-bold rounded-xl hover:bg-[#262626] transition-colors disabled:opacity-50"
                 >
                   {submittingAsk ? "Submitting..." : "Submit Payout Request"}

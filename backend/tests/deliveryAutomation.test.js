@@ -120,6 +120,13 @@ test("NCM webhook variations normalize and resolve all supported identifiers", (
   assert.equal(normalizeDeliveryStatus("order_arrived").assignmentStatus, "arrived_at_destination");
   assert.equal(normalizeDeliveryStatus("pickup_completed").assignmentStatus, "picked_up");
   assert.equal(normalizeDeliveryStatus("delivery_completed").assignmentStatus, "delivered");
+  assert.equal(normalizeDeliveryStatus("Delivered").deliveryState, "DELIVERED");
+  assert.equal(normalizeDeliveryStatus("", "delivery_completed").deliveryState, "DELIVERED");
+  assert.equal(normalizeDeliveryStatus("not delivered").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("undelivered").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("delivery incomplete").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("Not delivered", "delivery_completed").deliveryState, "NEEDS_RECONCILIATION");
+  assert.equal(normalizeDeliveryStatus("Delivered", "order_return").deliveryState, "NEEDS_RECONCILIATION");
   assert.deepEqual(
     webhookIdentifiers({ order_id: 4935, vref_id: "NCM9E9A907A74CF", orderId: "internal-order" }),
     ["4935", "internal-order", "NCM9E9A907A74CF"]

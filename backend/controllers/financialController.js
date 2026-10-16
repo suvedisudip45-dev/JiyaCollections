@@ -17,6 +17,9 @@ import {
   calculateInventoryValuationAtCost,
   calculateManufacturerLogisticsExpenseDetails,
 } from "../services/financialDashboardCosting.js";
+import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
+import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
+import { executeAdminDistributorSettlement } from "../services/distributorFinanceService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
@@ -52,7 +55,7 @@ const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) =>
     const credit = Number(line.credit || 0);
     const sourceType = line.journalEntry?.sourceType;
 
-    if (["MANUFACTURER_PRODUCTION", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
+    if (["MANUFACTURER_PRODUCTION", "MANUFACTURER_LOGISTICS", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType) && isManufacturerLine(line)) {
       recognized += credit - debit;
     }
 
@@ -503,7 +506,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       const posted = postedPayableMap[manufacturer.id] || { recognized: 0, paid: 0 };
       const debit = Number(line.debit || 0);
       const credit = Number(line.credit || 0);
-      if (["MANUFACTURER_PRODUCTION", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType)) {
+      if (["MANUFACTURER_PRODUCTION", "MANUFACTURER_LOGISTICS", "DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType)) {
         posted.recognized += credit - debit;
       } else if (sourceType === "SUPPLIER_PAYMENT") {
         posted.paid += debit - credit;
@@ -770,6 +773,10 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     const endDate = new Date(year, month, 0, 23, 59, 59, 999);
     const startTimestamp = BigInt(startDate.getTime());
     const endTimestamp = BigInt(endDate.getTime());
+    const [postedAccounting, accountingPostingStatus] = await Promise.all([
+      getPostedFinanceSnapshot({ startDate, endDate }),
+      getDeliveryAccountingOutboxStatus(),
+    ]);
 
     // Fetch all financial data in parallel
     const [
@@ -835,6 +842,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
           externalReference: true,
           freightCharge: true,
           freightSettlementStatus: true,
+          freightPaidAmount: true,
           dispatchedAt: true,
           stockTransfer: {
             select: {
@@ -1043,6 +1051,8 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       success: true,
       data: {
         activeMonth: requestedMonth,
+        postedAccounting,
+        accountingPostingStatus,
         revenue: {
           grossRevenueIncVat: grossPeriodRevenueIncVat,
           customerRefunds: totalCustomerRefunds,
@@ -3576,6 +3586,9 @@ export const payManufacturer = async (req, res) => {
 
 export const settlePayable = async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON payable settlement body is required." });
+    }
     const { payableId, amount, fromAccountId, notes } = req.body;
     const settleAmount = Number(amount || 0);
     const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
@@ -3607,6 +3620,24 @@ export const settlePayable = async (req, res) => {
     if (payable.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {
       req.body.manufacturerId = payable.referenceId;
       return payManufacturer(req, res);
+    }
+
+    if (payable.referenceType === "DISTRIBUTOR_SETTLEMENT") {
+      if (adjustmentType !== "NONE" || adjustmentAmount !== 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Distributor settlement requests cannot be paid with an unapproved discount or fine.",
+        });
+      }
+      const result = await executeAdminDistributorSettlement({
+        settlementId: payable.referenceId,
+        amount,
+        financialAccountId: fromAccountId,
+        idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
+        adminNotes: notes,
+        adminAccountId: req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null,
+      });
+      return res.json(result);
     }
 
     if (payable.status === "SETTLED") {
@@ -3766,7 +3797,11 @@ export const settlePayable = async (req, res) => {
     });
   } catch (error) {
     console.error("Settle Payable Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Payable settlement failed.",
+      code: error.code || "PAYABLE_SETTLEMENT_ERROR",
+    });
   }
 };
 
@@ -4376,112 +4411,21 @@ export const getVATAndTaxReport = async (req, res) => {
     const [year, month] = requestedMonth.split("-").map(Number);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59, 999);
-    const startTimestamp = BigInt(startDate.getTime());
-    const endTimestamp = BigInt(endDate.getTime());
-
-    const [
-      orders,
-      shipments,
-      customerReturns,
-      supplierReturns,
-      operatingExpenses,
-      fixedAssets,
-      taxPayables,
-      products,
-    ] = await Promise.all([
-      prisma.order.findMany({
-        where: {
-          date: { gte: startTimestamp, lte: endTimestamp },
-          status: { notIn: ["Cancelled"] },
-        },
-      }),
-      prisma.inboundShipment.findMany({
-        where: {
-          shipmentDate: { gte: startDate, lte: endDate },
-        },
-      }),
-      prisma.customerReturn.findMany({
-        where: {
-          returnDate: { gte: startDate, lte: endDate },
-          refundStatus: "COMPLETED",
-        },
-      }),
-      prisma.supplierReturn.findMany({
-        where: {
-          returnDate: { gte: startDate, lte: endDate },
-          status: "COMPLETED",
-        },
-      }),
-      prisma.operatingExpense.findMany({
-        where: {
-          date: { gte: startDate, lte: endDate },
-        },
-      }),
+    const [postedAccounting, operatingExpenses, fixedAssets, taxPayables] = await Promise.all([
+      getPostedFinanceSnapshot({ startDate, endDate }),
+      prisma.operatingExpense.findMany({ where: { date: { gte: startDate, lte: endDate } } }),
       prisma.fixedAsset.findMany({ where: { status: "ACTIVE" } }),
       prisma.accountPayable.findMany({
         where: { category: "TAX_DUE", status: { in: ["UNPAID", "PARTIALLY_PAID"] } },
       }),
-      prisma.product.findMany(),
     ]);
 
-    const vatRate = 0.13; // 13% Nepal VAT
-
-    // Output VAT on Gross Sales
-    const grossSalesIncVat = orders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
-    const customerRefunds = customerReturns.reduce((acc, r) => acc + Number(r.totalRefundAmount || 0), 0);
-    const netSalesIncVat = Math.max(0, grossSalesIncVat - customerRefunds);
-    const taxableSales = Number((netSalesIncVat / (1 + vatRate)).toFixed(2));
-    const outputVat = Number((netSalesIncVat - taxableSales).toFixed(2));
-
-    // Input VAT Breakdown:
-    // 1. Manufacturer COGS (13% VAT Inclusive)
-    const productCostMap = {};
-    products.forEach((p) => {
-      productCostMap[p.id] = Number(p.costPrice || 0);
-    });
-
-    let totalCogsIncVat = 0;
-    orders.forEach((ord) => {
-      let items = [];
-      try {
-        items = typeof ord.items === "string" ? JSON.parse(ord.items) : (ord.items || []);
-      } catch {
-        items = [];
-      }
-      items.forEach((item) => {
-        const qty = Number(item.quantity || 1);
-        const pId = item.productId || item._id || item.id;
-        const unitCost = productCostMap[pId] || 0;
-        totalCogsIncVat += unitCost * qty;
-      });
-    });
-
-    const cogsTaxable = Number((totalCogsIncVat / (1 + vatRate)).toFixed(2));
-    const cogsInputVat = Number((totalCogsIncVat - cogsTaxable).toFixed(2));
-
-    // 2. Input VAT on Inbound Shipments & Freight
-    let totalPurchasesWithVat = 0;
-    shipments.forEach((s) => {
-      totalPurchasesWithVat += Number(s.totalFreightCost || 0) + Number(s.customsOrTaxes || 0);
-      let items = [];
-      try {
-        items = typeof s.items === "string" ? JSON.parse(s.items) : (s.items || []);
-      } catch {
-        items = [];
-      }
-      items.forEach((item) => {
-        totalPurchasesWithVat += Number(item.unitFreightCost || 0) * Number(item.quantity || 1);
-      });
-    });
-
-    const supplierReturnDebits = supplierReturns.reduce((acc, r) => acc + Number(r.totalDebitAmount || 0), 0);
-    const netPurchasesWithVat = Math.max(0, totalPurchasesWithVat - supplierReturnDebits);
-    const taxablePurchases = Number((netPurchasesWithVat / (1 + vatRate)).toFixed(2));
-    const freightInputVat = Number((netPurchasesWithVat - taxablePurchases).toFixed(2));
-
-    // 3. Input VAT on VAT-Inclusive Operating Expenses & Deductible Marketing
+    const taxableSales = postedAccounting.incomeStatement.netRevenue;
+    const cogsTaxable = postedAccounting.incomeStatement.totalCogs;
+    const outputVat = postedAccounting.vat.outputVat;
+    const inputVat = postedAccounting.vat.inputVat;
+    const netVatPayable = postedAccounting.vat.netVatPayable;
     let deductibleMarketing = 0;
-    let expenseInputVat = 0;
     let totalOperatingExpenses = 0;
     operatingExpenses.forEach((exp) => {
       const amt = Number(exp.amount || 0);
@@ -4489,17 +4433,7 @@ export const getVATAndTaxReport = async (req, res) => {
       if ((exp.category || "").toUpperCase() === "MARKETING") {
         deductibleMarketing += amt;
       }
-      if (exp.isVatBill) {
-        expenseInputVat += Number(exp.vatAmount || 0);
-      }
     });
-    expenseInputVat = Number(expenseInputVat.toFixed(2));
-
-    // Total Input VAT Credit Claimable
-    const inputVat = Number((cogsInputVat + freightInputVat + expenseInputVat).toFixed(2));
-
-    // Net VAT Payable to IRD
-    const netVatPayable = Number((outputVat - inputVat).toFixed(2));
 
     // Corporate Income Tax & Legal Deductions Analysis
     let monthlyTaxDepreciation = 0;
@@ -4548,9 +4482,9 @@ export const getVATAndTaxReport = async (req, res) => {
       data: {
         vat: {
           period: requestedMonth,
+          basis: postedAccounting.basis,
           taxableSales,
           outputVat,
-          taxablePurchases,
           inputVat,
           netVatPayable,
           vatStatus: netVatPayable >= 0 ? "PAYABLE_TO_IRD" : "INPUT_CREDIT_CARRYFORWARD",

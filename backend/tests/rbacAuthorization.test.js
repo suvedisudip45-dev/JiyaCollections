@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ADMIN_ROUTE_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
+import { ADMIN_ROUTE_PERMISSIONS, ADMIN_SECTION_PERMISSIONS } from "../../admin/src/auth/adminRoutePermissions.js";
 import { createAuthorize } from "../middleware/authorize.js";
 import { requireRole } from "../middleware/unifiedAuth.js";
 import { deactivateAccountRole, hasPermission, resolveAccountPermissions } from "../services/rbacService.js";
@@ -196,4 +196,9 @@ test("required password rotation permits only the Admin password-change permissi
 
 test("combo bundle management permissions are exposed to the admin route map", () => {
   assert.deepEqual(ADMIN_ROUTE_PERMISSIONS["/combo-bundles"], ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"]);
+});
+
+test("Admin expenses route and finance section include direct-income read permission", () => {
+  assert.equal(ADMIN_ROUTE_PERMISSIONS["/expenses"].includes("finance:income_read"), true);
+  assert.equal(ADMIN_SECTION_PERMISSIONS.finance.includes("finance:income_read"), true);
 });

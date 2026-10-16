@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import { recordSystemAudit } from "./auditService.js";
+import {
+  postDistributorSettlementRequestAccounting,
+  postSupplierPaymentAccounting,
+} from "./accountingPostingEngine.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -23,6 +27,28 @@ const fail = (message, statusCode = 400, code = "DISTRIBUTOR_FINANCE_ERROR") => 
   return error;
 };
 
+const parseMoney = (value, label) => {
+  if ((typeof value !== "number" && typeof value !== "string") || !/^\d{1,18}(?:\.\d{1,2})?$/.test(String(value).trim())) {
+    throw fail(`${label} must be a positive amount with no more than two decimal places.`, 400, "INVALID_AMOUNT");
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw fail(`${label} must be a positive amount with no more than two decimal places.`, 400, "INVALID_AMOUNT");
+  }
+  return Number(amount.toFixed(2));
+};
+
+const validateOptionalText = (value, label, maxLength) => {
+  if (value !== null && value !== undefined && typeof value !== "string") {
+    throw fail(`${label} must be text.`, 400, "INVALID_INPUT");
+  }
+  const text = value == null ? "" : value.trim();
+  if (text.length > maxLength) {
+    throw fail(`${label} must be ${maxLength} characters or fewer.`, 400, "INVALID_INPUT");
+  }
+  return text || null;
+};
+
 /**
  * Detailed Financial Statement for Distributor Dashboard
  */
@@ -34,6 +60,7 @@ export const getDistributorFinancialStatement = async ({
   client = prisma,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
+  if (typeof withVat !== "boolean") throw fail("VAT display mode must be a boolean.", 400, "INVALID_VAT_MODE");
 
   const distributor = await client.distributor.findUnique({
     where: { id: distributorId },
@@ -43,13 +70,29 @@ export const getDistributorFinancialStatement = async ({
 
   // Date filters
   const dateFilter = {};
-  if (startDate) dateFilter.gte = new Date(startDate);
-  if (endDate) dateFilter.lte = new Date(endDate);
+  if (startDate !== null && startDate !== undefined) {
+    const parsedStart = new Date(startDate);
+    if (typeof startDate !== "string" || !Number.isFinite(parsedStart.getTime())) {
+      throw fail("Start date must be a valid date.", 400, "INVALID_DATE_RANGE");
+    }
+    dateFilter.gte = parsedStart;
+  }
+  if (endDate !== null && endDate !== undefined) {
+    const parsedEnd = new Date(endDate);
+    if (typeof endDate !== "string" || !Number.isFinite(parsedEnd.getTime())) {
+      throw fail("End date must be a valid date.", 400, "INVALID_DATE_RANGE");
+    }
+    dateFilter.lte = parsedEnd;
+  }
+  if (dateFilter.gte && dateFilter.lte && dateFilter.gte > dateFilter.lte) {
+    throw fail("Start date cannot be after end date.", 400, "INVALID_DATE_RANGE");
+  }
 
   // 1. Fetch delivered assignments
   const deliveredAssignments = await client.orderAssignment.findMany({
     where: {
       distributorId,
+      deliveryType: { in: ["SELF_DELIVERY", "self_delivery"] },
       status: { in: ["delivered", "Delivered"] },
       ...(Object.keys(dateFilter).length ? { deliveredAt: dateFilter } : {}),
     },
@@ -60,20 +103,41 @@ export const getDistributorFinancialStatement = async ({
   });
 
   const deliveredOrderIds = deliveredAssignments.map((a) => a.orderId);
+  const ncmDeliveries = deliveredOrderIds.length
+    ? await client.deliveryOrder.findMany({
+        where: { orderId: { in: deliveredOrderIds } },
+        select: { orderId: true },
+      })
+    : [];
+  const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
+  const selfDeliveredAssignments = deliveredAssignments.filter((assignment) => !ncmOrderIds.has(assignment.orderId));
+  const selfDeliveredOrderIds = selfDeliveredAssignments.map((assignment) => assignment.orderId);
   const deliveredOrders = await client.order.findMany({
-    where: { id: { in: deliveredOrderIds } },
+    where: { id: { in: selfDeliveredOrderIds } },
   });
   const orderMap = new Map(deliveredOrders.map((o) => [o.id, o]));
 
   // 2. Fetch returned assignments
-  const returnedAssignments = await client.orderAssignment.findMany({
+  const returnedAssignmentsFromQuery = await client.orderAssignment.findMany({
     where: {
       distributorId,
+      deliveryType: { in: ["SELF_DELIVERY", "self_delivery"] },
       status: { in: ["returned", "Returned"] },
       ...(Object.keys(dateFilter).length ? { returnedAt: dateFilter } : {}),
     },
     orderBy: { returnedAt: "desc" },
   });
+  const returnedOrderIds = returnedAssignmentsFromQuery.map((assignment) => assignment.orderId);
+  const ncmReturnedDeliveries = returnedOrderIds.length
+    ? await client.deliveryOrder.findMany({
+        where: { orderId: { in: returnedOrderIds } },
+        select: { orderId: true },
+      })
+    : [];
+  const ncmReturnedOrderIds = new Set(ncmReturnedDeliveries.map((delivery) => delivery.orderId));
+  const returnedAssignments = returnedAssignmentsFromQuery.filter(
+    (assignment) => !ncmReturnedOrderIds.has(assignment.orderId),
+  );
 
   // 3. Fetch all settlements
   const settlementRequests = await client.distributorSettlementRequest.findMany({
@@ -86,7 +150,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Calculate earnings and transactions
   const rateCard = await resolveActiveRateCard({ distributorId, client });
-  const vatRate = rateCard.vatRate ?? 13;
+  const vatRate = Number(rateCard.vatRate ?? 13);
 
   let grossDeliveryEarnings = 0;
   let earnedIncentives = 0;
@@ -95,13 +159,13 @@ export const getDistributorFinancialStatement = async ({
   const itemizedTransactions = [];
 
   // Itemize deliveries
-  for (const assignment of deliveredAssignments) {
+  for (const assignment of selfDeliveredAssignments) {
     const order = orderMap.get(assignment.orderId);
-    const deliveryCharge = rateCard.deliveryCharge;
-    const bonus = rateCard.bonusRate || rateCard.incentiveRate;
+    const deliveryCharge = Number(rateCard.deliveryCharge || 0);
+    const bonus = Number(rateCard.bonusRate ?? rateCard.incentiveRate ?? 0);
     const commission = (rateCard.commissionRate > 0 && rateCard.commissionRate <= 100)
       ? (deliveryCharge * (rateCard.commissionRate / 100))
-      : rateCard.commissionRate;
+      : Number(rateCard.commissionRate || 0);
     const netEarning = deliveryCharge + bonus - commission;
 
     grossDeliveryEarnings += deliveryCharge;
@@ -125,7 +189,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Itemize returns
   for (const assignment of returnedAssignments) {
-    const returnFee = rateCard.returnCharge;
+    const returnFee = Number(rateCard.returnCharge || 0);
     returnFeesEarned += returnFee;
 
     itemizedTransactions.push({
@@ -149,23 +213,33 @@ export const getDistributorFinancialStatement = async ({
 
   for (const s of settlementRequests) {
     const amt = Number(s.amount);
-    if (s.status === "SETTLED") {
-      totalSettledPaid += amt;
-    } else if (s.status === "PENDING") {
-      pendingSettlementAmount += amt;
-    }
+    const paidAmount = s.status === "SETTLED" && Number(s.paidAmount || 0) === 0
+      ? amt
+      : Number(s.paidAmount || 0);
+    const remainingAmount = Math.max(0, amt - paidAmount);
+    totalSettledPaid += paidAmount;
+    if (s.status !== "REJECTED") pendingSettlementAmount += remainingAmount;
 
     itemizedTransactions.push({
       id: `tx-set-${s.id}`,
       type: "SETTLEMENT",
       referenceId: s.id,
       date: s.settledAt || s.requestedAt,
-      description: s.status === "SETTLED" ? "Settlement Payout Executed" : "Settlement Payout Requested (Pending)",
-      grossAmount: -amt,
+      description: s.status === "SETTLED"
+        ? "Settlement Payout Executed"
+        : paidAmount > 0
+          ? "Settlement Partially Paid"
+          : s.status === "REJECTED"
+            ? "Settlement Request Rejected"
+            : "Settlement Payout Requested (Pending)",
+      grossAmount: -paidAmount,
       incentiveAmount: 0,
       discountChargeAmount: 0,
-      netAmount: -amt,
+      netAmount: -paidAmount,
       status: s.status,
+      requestedAmount: amt,
+      paidAmount,
+      outstandingAmount: remainingAmount,
       notes: s.notes || s.adminNotes || null,
       financialAccountId: s.financialAccountId || null,
     });
@@ -183,7 +257,8 @@ export const getDistributorFinancialStatement = async ({
   const totalWithoutVat = subtotalBeforeVat;
 
   const currentEarnings = Boolean(withVat) ? totalWithVat : totalWithoutVat;
-  const netPayableBalance = Number(Math.max(0, currentEarnings - totalSettledPaid).toFixed(2));
+  const grossOutstandingPayableBalance = Number(Math.max(0, currentEarnings - totalSettledPaid).toFixed(2));
+  const netPayableBalance = Number(Math.max(0, grossOutstandingPayableBalance - pendingSettlementAmount).toFixed(2));
 
   return {
     success: true,
@@ -203,8 +278,9 @@ export const getDistributorFinancialStatement = async ({
       totalSettledPaid: Number(totalSettledPaid.toFixed(2)),
       pendingSettlementAmount: Number(pendingSettlementAmount.toFixed(2)),
       netPayableBalance, // Outstanding amount platform owes to distributor
-      receivables: 0, // In standard operations, distributor receivables from platform
-      payables: netPayableBalance, // Platform accounts payable to distributor
+      grossOutstandingPayableBalance,
+      receivables: grossOutstandingPayableBalance,
+      payables: grossOutstandingPayableBalance,
     },
     transactions: itemizedTransactions,
     settlementRequests,
@@ -220,63 +296,122 @@ export const submitDistributorSettlementRequest = async ({
   notes = null,
   idempotencyKey = null,
   requestedByAccountId = null,
+  postRequestAccounting = postDistributorSettlementRequestAccounting,
   client = prisma,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
 
-  const numAmount = Number(amount);
-  if (!Number.isFinite(numAmount) || numAmount <= 0) {
-    throw fail("Settlement amount must be a positive number.", 400);
-  }
+  const numAmount = parseMoney(amount, "Settlement amount");
+  const normalizedNotes = validateOptionalText(notes, "Settlement notes", 1000);
+  const suppliedKey = idempotencyKey == null ? null : validateOptionalText(idempotencyKey, "Idempotency key", 191);
+  const key = suppliedKey || `dist-settle-req-${distributorId}-${Date.now()}`;
 
-  const statement = await getDistributorFinancialStatement({ distributorId, withVat: true, client });
-  const availableBalance = statement.summary.netPayableBalance;
+  let settlementRequest;
+  try {
+    settlementRequest = await client.$transaction(async (tx) => {
+      if (tx.$queryRaw) {
+        await tx.$queryRaw`SELECT id FROM Distributor WHERE id = ${distributorId} FOR UPDATE`;
+      }
+      const existing = await tx.distributorSettlementRequest.findFirst({
+        where: { idempotencyKey: key },
+      });
+      if (existing) {
+        if (existing.distributorId !== distributorId || Number(existing.amount) !== numAmount) {
+          throw fail("This idempotency key was already used for a different settlement request.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        return { ...existing, isReplay: true };
+      }
 
-  if (numAmount > availableBalance + 0.01) {
-    throw fail(
-      `Requested amount (Rs. ${numAmount.toFixed(2)}) exceeds available net balance (Rs. ${availableBalance.toFixed(2)}).`,
-      409,
-      "INSUFFICIENT_SETTLEMENT_BALANCE"
-    );
-  }
+      const statement = await getDistributorFinancialStatement({ distributorId, withVat: true, client: tx });
+      const availableBalance = statement.summary.netPayableBalance;
+      if (numAmount > availableBalance) {
+        throw fail(
+          `Requested amount (Rs. ${numAmount.toFixed(2)}) exceeds available net settlement payable (Rs. ${availableBalance.toFixed(2)}).`,
+          409,
+          "INSUFFICIENT_SETTLEMENT_BALANCE",
+        );
+      }
 
-  const key = idempotencyKey || `dist-settle-req-${distributorId}-${Date.now()}`;
-
-  const existing = await client.distributorSettlementRequest.findFirst({
-    where: { idempotencyKey: key },
-  });
-  if (existing) {
+      const created = await tx.distributorSettlementRequest.create({
+        data: {
+          distributorId,
+          amount: numAmount,
+          grossEarnings: statement.summary.subtotalBeforeVat,
+          incentives: statement.summary.earnedIncentives,
+          discountsApplied: statement.summary.adminDiscountsApplied,
+          vatAmount: statement.summary.vatAmount,
+          netPayable: numAmount,
+          status: "PENDING",
+          notes: normalizedNotes,
+          requestedBy: requestedByAccountId,
+          idempotencyKey: key,
+        },
+        include: {
+          distributor: { select: { id: true, name: true, city: true, phone: true } },
+        },
+      });
+      const payable = await tx.accountPayable.create({
+        data: {
+          title: `Distributor settlement request ${created.id.slice(-8)}`,
+          payeeName: created.distributor.name,
+          category: "DISTRIBUTOR_SETTLEMENT",
+          referenceType: "DISTRIBUTOR_SETTLEMENT",
+          referenceId: created.id,
+          totalAmount: numAmount,
+          paidAmount: 0,
+          remainingBalance: numAmount,
+          status: "UNPAID",
+          priority: "MEDIUM",
+          notes: normalizedNotes || "Distributor requested settlement.",
+        },
+      });
+      await tx.distributorSettlementRequest.update({
+        where: { id: created.id },
+        data: {
+          metadata: {
+            accountPayableId: payable.id,
+            settlementBasis: "DISTRIBUTOR_SELF_DELIVERY",
+          },
+        },
+      });
+      await postRequestAccounting({
+        settlement: created,
+        distributorName: created.distributor.name,
+        client: tx,
+      });
+      return {
+        ...created,
+        metadata: {
+          ...(created.metadata || {}),
+          accountPayableId: payable.id,
+          settlementBasis: "DISTRIBUTOR_SELF_DELIVERY",
+        },
+      };
+    });
+  } catch (error) {
+    if (error.code !== "P2002") throw error;
+    const racedRequest = await client.distributorSettlementRequest.findFirst({
+      where: { idempotencyKey: key },
+    });
+    if (!racedRequest) throw error;
+    if (racedRequest.distributorId !== distributorId || Number(racedRequest.amount) !== numAmount) {
+      throw fail("This idempotency key was already used for a different settlement request.", 409, "IDEMPOTENCY_KEY_REUSED");
+    }
     return {
       success: true,
       message: "Settlement request already submitted.",
-      settlementRequest: existing,
+      settlementRequest: racedRequest,
       isReplay: true,
     };
   }
 
-  const settlementRequest = await client.distributorSettlementRequest.create({
-    data: {
-      distributorId,
-      amount: numAmount,
-      grossEarnings: statement.summary.subtotalBeforeVat,
-      incentives: statement.summary.earnedIncentives,
-      discountsApplied: statement.summary.adminDiscountsApplied,
-      vatAmount: statement.summary.vatAmount,
-      netPayable: numAmount,
-      status: "PENDING",
-      notes: notes ? String(notes).trim() : null,
-      requestedBy: requestedByAccountId,
-      idempotencyKey: key,
-    },
-    include: {
-      distributor: { select: { id: true, name: true, city: true, phone: true } },
-    },
-  });
-
   return {
     success: true,
-    message: "Settlement request submitted successfully to Admin.",
+    message: settlementRequest.isReplay
+      ? "Settlement request already submitted."
+      : "Settlement request submitted successfully to Admin.",
     settlementRequest,
+    ...(settlementRequest.isReplay ? { isReplay: true } : {}),
   };
 };
 
@@ -285,147 +420,192 @@ export const submitDistributorSettlementRequest = async ({
  */
 export const executeAdminDistributorSettlement = async ({
   settlementId = null,
-  distributorId = null,
   amount = null,
   financialAccountId = null,
-  bonusAmount = 0,
-  discountsApplied = 0,
-  chargesApplied = 0,
+  idempotencyKey = null,
   adminNotes = null,
   adminAccountId = null,
+  postPaymentAccounting = postSupplierPaymentAccounting,
   client = prisma,
 } = {}) => {
-  let targetSettlement = null;
+  if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
+    throw fail("A valid settlement request ID is required.", 400, "INVALID_SETTLEMENT_ID");
+  }
+  if (typeof financialAccountId !== "string" || !financialAccountId.trim() || financialAccountId.length > 191) {
+    throw fail("Select a valid current cash, bank, or wallet account to pay this settlement.", 400, "INVALID_FINANCIAL_ACCOUNT");
+  }
+  const settleAmount = parseMoney(amount, "Settlement payment amount");
+  const normalizedNotes = validateOptionalText(adminNotes, "Admin notes", 1000);
+  const normalizedKey = idempotencyKey == null ? null : validateOptionalText(idempotencyKey, "Idempotency key", 191);
+  const now = new Date();
 
-  if (settlementId) {
-    targetSettlement = await client.distributorSettlementRequest.findUnique({
+  return client.$transaction(async (tx) => {
+    const targetSettlement = await tx.distributorSettlementRequest.findUnique({
       where: { id: settlementId },
       include: { distributor: true },
     });
     if (!targetSettlement) throw fail("Distributor settlement request not found.", 404);
-  } else if (distributorId) {
-    targetSettlement = await client.distributorSettlementRequest.findFirst({
-      where: { distributorId, status: "PENDING" },
-      orderBy: { requestedAt: "desc" },
-      include: { distributor: true },
-    });
-  }
-
-  const targetDistributorId = targetSettlement ? targetSettlement.distributorId : distributorId;
-  if (!targetDistributorId) throw fail("Distributor ID or settlement ID is required.", 400);
-
-  const settleAmount = Number(amount !== null && amount !== undefined ? amount : (targetSettlement ? targetSettlement.amount : 0));
-  if (!Number.isFinite(settleAmount) || settleAmount <= 0) {
-    throw fail("Settlement execution amount must be a positive number.", 400);
-  }
-
-  const now = new Date();
-
-  return client.$transaction(async (tx) => {
-    // 1. If financialAccountId provided, deduct balance and record CashTransaction
-    let financialAccount = null;
-    if (financialAccountId) {
-      financialAccount = await tx.financialAccount.findUnique({
-        where: { id: financialAccountId },
+    const payableId = targetSettlement.metadata?.accountPayableId;
+    let payable = payableId
+      ? await tx.accountPayable.findUnique({ where: { id: payableId } })
+      : await tx.accountPayable.findFirst({
+          where: { referenceType: "DISTRIBUTOR_SETTLEMENT", referenceId: targetSettlement.id },
+        });
+    if (!payable) throw fail("The linked Accounts Payable record is missing.", 409, "DISTRIBUTOR_PAYABLE_NOT_FOUND");
+    if (
+      payable.referenceType !== "DISTRIBUTOR_SETTLEMENT" ||
+      payable.referenceId !== targetSettlement.id ||
+      Number(payable.totalAmount) !== Number(targetSettlement.amount)
+    ) {
+      throw fail("The linked Accounts Payable does not match this settlement request.", 409, "DISTRIBUTOR_PAYABLE_MISMATCH");
+    }
+    if (normalizedKey) {
+      const existingPayment = await tx.cashTransaction.findUnique({
+        where: { idempotencyKey: normalizedKey },
       });
-      if (!financialAccount) throw fail("Selected financial account not found.", 404);
-      if (financialAccount.currentBalance < settleAmount) {
-        throw fail(
-          `Insufficient balance in ${financialAccount.accountName} (Balance: Rs. ${financialAccount.currentBalance.toLocaleString()}) to pay settlement of Rs. ${settleAmount.toLocaleString()}.`,
-          409,
-          "INSUFFICIENT_FUNDS"
-        );
+      if (existingPayment) {
+        if (existingPayment.referenceId !== payable.id) {
+          throw fail("This idempotency key is already associated with a different payment.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        if (
+          Number(existingPayment.amount) !== settleAmount ||
+          existingPayment.fromAccountId !== financialAccountId
+        ) {
+          throw fail("This idempotency key was already used with different payment details.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        return {
+          success: true,
+          message: "This distributor settlement payment was already recorded.",
+          settlement: targetSettlement,
+          payable,
+          isReplay: true,
+        };
       }
-
-      await tx.financialAccount.update({
-        where: { id: financialAccountId },
-        data: { currentBalance: { decrement: settleAmount } },
-      });
-
-      await tx.cashTransaction.create({
-        data: {
-          accountId: financialAccountId,
-          type: "OUTFLOW",
-          category: "DISTRIBUTOR_PAYOUT",
-          amount: settleAmount,
-          description: `Distributor settlement payout for ${targetSettlement?.distributor?.name || targetDistributorId}`,
-          referenceType: "DISTRIBUTOR_SETTLEMENT",
-          referenceId: targetSettlement?.id || targetDistributorId,
-          date: now,
-          performedBy: adminAccountId || "ADMIN",
-        },
-      });
+    }
+    if (targetSettlement.status === "SETTLED" || targetSettlement.status === "REJECTED") {
+      throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
+    }
+    if (settleAmount > Number(payable.remainingBalance) + 0.001) {
+      throw fail("Payment amount exceeds the distributor settlement payable balance.", 409, "SETTLEMENT_AMOUNT_EXCEEDS_PAYABLE");
     }
 
-    // 2. Update or create DistributorSettlementRequest
-    let finalizedSettlement;
-    if (targetSettlement) {
-      finalizedSettlement = await tx.distributorSettlementRequest.update({
-        where: { id: targetSettlement.id },
-        data: {
-          status: "SETTLED",
-          amount: settleAmount,
-          incentives: Number(bonusAmount || 0),
-          discountsApplied: Number(discountsApplied || 0),
-          chargesApplied: Number(chargesApplied || 0),
-          adminNotes: adminNotes ? String(adminNotes).trim() : null,
-          reviewedBy: adminAccountId,
-          financialAccountId: financialAccountId || null,
-          settledAt: now,
-        },
-        include: {
-          distributor: { select: { id: true, name: true, city: true, phone: true } },
-        },
-      });
-    } else {
-      finalizedSettlement = await tx.distributorSettlementRequest.create({
-        data: {
-          distributorId: targetDistributorId,
-          amount: settleAmount,
-          grossEarnings: settleAmount,
-          incentives: Number(bonusAmount || 0),
-          discountsApplied: Number(discountsApplied || 0),
-          chargesApplied: Number(chargesApplied || 0),
-          status: "SETTLED",
-          notes: "Direct Admin Settlement Execution",
-          adminNotes: adminNotes ? String(adminNotes).trim() : null,
-          reviewedBy: adminAccountId,
-          financialAccountId: financialAccountId || null,
-          settledAt: now,
-          idempotencyKey: `admin-settle-${targetDistributorId}-${Date.now()}`,
-        },
-        include: {
-          distributor: { select: { id: true, name: true, city: true, phone: true } },
-        },
-      });
+    const financialAccount = await tx.financialAccount.findUnique({
+      where: { id: financialAccountId },
+      include: { accountingAccount: { select: { accountType: true, normalBalance: true } } },
+    });
+    if (
+      !financialAccount ||
+      financialAccount.status !== "ACTIVE" ||
+      !["CASH", "BANK", "WALLET"].includes(String(financialAccount.accountType).toUpperCase())
+    ) {
+      throw fail("Selected active treasury account was not found.", 404);
+    }
+    if (
+      financialAccount.accountingAccountId &&
+      (financialAccount.accountingAccount?.accountType !== "ASSET" ||
+        financialAccount.accountingAccount?.normalBalance !== "DEBIT")
+    ) {
+      throw fail("The selected treasury account must map to a debit-balance asset account.", 409, "INVALID_TREASURY_GL_MAPPING");
+    }
+    if (Number(financialAccount.currentBalance) < settleAmount) {
+      throw fail(
+        `Insufficient balance in ${financialAccount.accountName} (Balance: Rs. ${Number(financialAccount.currentBalance).toFixed(2)}) to pay Rs. ${settleAmount.toFixed(2)}.`,
+        409,
+        "INSUFFICIENT_FUNDS",
+      );
     }
 
-    // 3. System Audit Log
-    await recordSystemAudit(
-      {
-        actorId: adminAccountId,
-        actorRole: "ADMIN",
-        portalSource: "ADMIN",
+    const newPaidAmount = Number((Number(payable.paidAmount) + settleAmount).toFixed(2));
+    const newRemainingBalance = Number(Math.max(0, Number(payable.remainingBalance) - settleAmount).toFixed(2));
+    const isFullyPaid = newRemainingBalance <= 0.001;
+    let history = parseJSON(payable.settlementHistory);
+    const historyEntry = {
+      id: crypto.randomUUID(),
+      idempotencyKey: normalizedKey || `DISTRIBUTOR_SETTLEMENT_PAYMENT:${settlementId}:${newPaidAmount.toFixed(2)}`,
+      date: now.toISOString(),
+      amount: settleAmount,
+      settlementAmount: settleAmount,
+      fromAccountId: financialAccount.id,
+      accountName: financialAccount.accountName,
+      notes: normalizedNotes || "Distributor settlement payout.",
+    };
+    history = [...history, historyEntry];
+
+    await tx.financialAccount.update({
+      where: { id: financialAccountId },
+      data: { currentBalance: { decrement: settleAmount } },
+    });
+    await tx.cashTransaction.create({
+      data: {
+        idempotencyKey: historyEntry.idempotencyKey,
+        amount: settleAmount,
+        type: "OUTFLOW",
+        fromAccountId: financialAccountId,
+        category: "SUPPLIER_PAYMENT",
+        partyName: targetSettlement.distributor.name,
+        referenceId: payable.id,
+        description: `Distributor settlement payout for ${targetSettlement.distributor.name}`,
       },
+    });
+    await tx.accountPayable.update({
+      where: { id: payable.id },
+      data: {
+        paidAmount: newPaidAmount,
+        remainingBalance: newRemainingBalance,
+        status: isFullyPaid ? "SETTLED" : "PARTIALLY_PAID",
+        settlementHistory: history,
+      },
+    });
+    const paidToDate = Number((Number(targetSettlement.paidAmount || 0) + settleAmount).toFixed(2));
+    const settlementIsFullyPaid = paidToDate + 0.001 >= Number(targetSettlement.amount);
+    const finalizedSettlement = await tx.distributorSettlementRequest.update({
+      where: { id: settlementId },
+      data: {
+        paidAmount: paidToDate,
+        status: settlementIsFullyPaid ? "SETTLED" : "PARTIALLY_PAID",
+        adminNotes: normalizedNotes || targetSettlement.adminNotes,
+        reviewedBy: adminAccountId,
+        financialAccountId,
+        settledAt: settlementIsFullyPaid ? now : targetSettlement.settledAt,
+      },
+      include: {
+        distributor: { select: { id: true, name: true, city: true, phone: true } },
+      },
+    });
+    await postPaymentAccounting({
+      payableId: payable.id,
+      payeeName: targetSettlement.distributor.name,
+      amount: settleAmount,
+      settlementAmount: settleAmount,
+      cashAccountId: financialAccount.accountingAccountId || null,
+      fromAccountType: financialAccount.accountType === "CASH" ? "CASH" : "BANK",
+      payableAccountCode: "2110",
+      idempotencyKey: historyEntry.idempotencyKey,
+      referenceNumber: `DIST-PAY-${settlementId.slice(-8)}`,
+      client: tx,
+    });
+    await recordSystemAudit(
+      { actorId: adminAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
       {
         action: "DISTRIBUTOR_SETTLEMENT_EXECUTED",
         entityType: "DistributorSettlementRequest",
-        entityId: finalizedSettlement.id,
-        beforeState: { status: targetSettlement?.status || "NONE" },
+        entityId: settlementId,
+        beforeState: { status: targetSettlement.status, paidAmount: Number(targetSettlement.paidAmount || 0) },
         afterState: {
-          status: "SETTLED",
+          status: finalizedSettlement.status,
           amount: settleAmount,
-          distributorId: targetDistributorId,
+          paidAmount: paidToDate,
+          distributorId: targetSettlement.distributorId,
           financialAccountId,
         },
       },
-      { client: tx }
+      { client: tx },
     );
-
     return {
       success: true,
-      message: `Distributor settlement of Rs. ${settleAmount.toLocaleString()} executed successfully.`,
+      message: `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
       settlement: finalizedSettlement,
+      payable: { ...payable, paidAmount: newPaidAmount, remainingBalance: newRemainingBalance },
     };
   });
 };

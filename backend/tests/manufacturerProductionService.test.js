@@ -2,9 +2,72 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   allocateProductionLayersForOrderItem,
+  calculateProductionUnitCost,
   calculateFullyLoadedUnitCogs,
   validateProductionRequestInput,
 } from "../services/manufacturerProductionService.js";
+
+test("VAT-exclusive manufacturer unit cost separates net cost and verified input VAT", () => {
+  const cost = calculateProductionUnitCost({
+    unitAmount: "1000",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatRate: "13",
+    vatInvoiceReference: "INV-001",
+    vatInvoiceVerified: true,
+  });
+
+  assert.equal(cost.netAmount.toFixed(2), "1000.00");
+  assert.equal(cost.vatAmount.toFixed(2), "130.00");
+  assert.equal(cost.grossAmount.toFixed(2), "1130.00");
+  assert.equal(cost.recoverableVat.toFixed(2), "130.00");
+  assert.equal(cost.capitalizedAmount.toFixed(2), "1000.00");
+});
+
+test("VAT-inclusive manufacturer unit cost extracts VAT from the entered gross amount", () => {
+  const cost = calculateProductionUnitCost({
+    unitAmount: "1130",
+    vatTreatment: "VAT_INCLUSIVE",
+    vatRate: "13",
+    vatInvoiceReference: "INV-002",
+    vatInvoiceVerified: true,
+  });
+
+  assert.equal(cost.netAmount.toFixed(2), "1000.00");
+  assert.equal(cost.vatAmount.toFixed(2), "130.00");
+  assert.equal(cost.grossAmount.toFixed(2), "1130.00");
+  assert.equal(cost.recoverableVat.toFixed(2), "130.00");
+  assert.equal(cost.capitalizedAmount.toFixed(2), "1000.00");
+});
+
+test("exempt manufacturer production has no VAT component", () => {
+  const cost = calculateProductionUnitCost({ unitAmount: "1000" });
+
+  assert.equal(cost.vatAmount.toFixed(2), "0.00");
+  assert.equal(cost.recoverableVat.toFixed(2), "0.00");
+  assert.equal(cost.capitalizedAmount.toFixed(2), "1000.00");
+});
+
+test("unverified manufacturer VAT invoice remains in inventory cost and is not recoverable", () => {
+  const cost = calculateProductionUnitCost({
+    unitAmount: "1000",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatRate: "13",
+    vatInvoiceReference: "INV-003",
+    vatInvoiceVerified: false,
+  });
+
+  assert.equal(cost.vatAmount.toFixed(2), "130.00");
+  assert.equal(cost.recoverableVat.toFixed(2), "0.00");
+  assert.equal(cost.capitalizedAmount.toFixed(2), "1130.00");
+});
+
+test("VAT-applicable manufacturer production requires a supplier invoice reference", () => {
+  assert.throws(() => calculateProductionUnitCost({
+    unitAmount: "1000",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatRate: "13",
+  }), /invoice reference/);
+});
 
 test("batch other cost is allocated across actual good production units", () => {
   const unitCogs = calculateFullyLoadedUnitCogs({

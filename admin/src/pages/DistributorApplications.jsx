@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { MapPinned, Save } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { getBranchesForLocation, getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { usePermissions } from "../auth/PermissionsContext";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL;
 
 const DistributorApplications = ({ token }) => {
+  const navigate = useNavigate();
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { can } = usePermissions();
   const canEditCoverage = can("distributor:admin_review");
@@ -49,7 +51,6 @@ const DistributorApplications = ({ token }) => {
   // Settlements state
   const [settlements, setSettlements] = useState([]);
   const [settlementsLoading, setSettlementsLoading] = useState(false);
-  const [settlementExecutingId, setSettlementExecutingId] = useState("");
   const editDistributorProvince = distributorForm?.province;
   const editDistributorDistrict = distributorForm?.district;
   const editDistributorCity = distributorForm?.city;
@@ -353,24 +354,6 @@ const DistributorApplications = ({ token }) => {
     }
   };
 
-  const executeSettlementPayout = async (settlementId) => {
-    if (!window.confirm("Confirm payout settlement release for this distributor?")) return;
-    setSettlementExecutingId(settlementId);
-    try {
-      await axios.post(
-        `${backendUrl}/api/admin/distributor-finance/settlements/${settlementId}/execute`,
-        { notes: "Settlement payout executed via admin portal" },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast.success("Settlement payout executed successfully.");
-      loadSettlements();
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Settlement execution failed.");
-    } finally {
-      setSettlementExecutingId("");
-    }
-  };
-
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
@@ -411,7 +394,7 @@ const DistributorApplications = ({ token }) => {
             onClick={() => setActiveTab("settlements")}
             className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "settlements" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
           >
-            Settlement Requests ({settlements.filter((s) => s.status === "REQUESTED").length})
+            Settlement Requests ({settlements.filter((s) => ["PENDING", "PARTIALLY_PAID"].includes(s.status)).length})
           </button>
         </div>
       </div>
@@ -906,9 +889,9 @@ const DistributorApplications = ({ token }) => {
                       <td className="px-4 py-3 text-emerald-700 font-bold">Rs {req.netPayable?.toLocaleString()}</td>
                       <td className="px-4 py-3">
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                          req.status === "PAID"
+                          req.status === "SETTLED" || req.status === "PAID"
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                            : req.status === "APPROVED"
+                            : req.status === "PARTIALLY_PAID"
                             ? "bg-blue-50 text-blue-700 border border-blue-200"
                             : "bg-amber-50 text-amber-700 border border-amber-200"
                         }`}>
@@ -916,16 +899,15 @@ const DistributorApplications = ({ token }) => {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {req.status !== "PAID" && (
+                        {req.status !== "SETTLED" && req.status !== "PAID" && req.status !== "REJECTED" && (
                           <button
-                            disabled={settlementExecutingId === req.id}
-                            onClick={() => executeSettlementPayout(req.id)}
+                            onClick={() => navigate("/payables")}
                             className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
                           >
-                            Execute Payout
+                            Pay in Payables
                           </button>
                         )}
-                        {req.status === "PAID" && (
+                        {(req.status === "SETTLED" || req.status === "PAID") && (
                           <span className="text-xs text-slate-400">Settled on {req.settledAt ? new Date(req.settledAt).toLocaleDateString() : "—"}</span>
                         )}
                       </td>

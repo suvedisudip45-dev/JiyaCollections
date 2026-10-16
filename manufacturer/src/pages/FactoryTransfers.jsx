@@ -791,7 +791,7 @@ const FactoryTransfers = () => {
                       aria-label="Tracking number"
                     />
                     <label className="text-xs font-medium text-slate-700">
-                      Local delivery cost (NPR) *
+                      Delivery to distributor (manufacturer-paid freight, NPR) *
                       <input
                         type="number"
                         min="0.01"
@@ -799,7 +799,7 @@ const FactoryTransfers = () => {
                         required
                         value={carrierDetails[transfer.id]?.freightCharge || ""}
                         onChange={(event) => updateCarrier(transfer.id, "freightCharge", event.target.value)}
-                        placeholder="Enter amount paid"
+                        placeholder="Enter freight for this shipment"
                         className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                         aria-label="Local delivery cost paid by manufacturer"
                       />
@@ -841,7 +841,8 @@ const FactoryTransfers = () => {
                     {shipment.deliveryPartner || shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}
                     {shipment.externalReference && ` · Reference ${shipment.externalReference}`}
                     {shipment.trackingNumber && ` · Tracking ${shipment.trackingNumber}`}
-                    {shipment.freightCharge !== null && shipment.freightCharge !== undefined && ` · Local delivery cost NPR ${shipment.freightCharge} · company payable to manufacturer`}
+                    {shipment.freightCharge !== null && shipment.freightCharge !== undefined && ` · Delivery to distributor NPR ${Number(shipment.freightCharge).toFixed(2)} · payable to manufacturer`}
+                    {shipment.freightPaidAmount !== null && shipment.freightPaidAmount !== undefined && ` · Paid NPR ${Number(shipment.freightPaidAmount).toFixed(2)} · outstanding NPR ${Math.max(0, Number(shipment.freightCharge || 0) - Number(shipment.freightPaidAmount || 0)).toFixed(2)}`}
                     {shipment.freightSettlementStatus && ` · Reimbursement ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
                     {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
                   </div>

@@ -229,6 +229,8 @@ export const calculateManufacturerLogisticsExpenseDetails = ({ shipments = [] } 
       title: "Transportation and logistics - manufacturer to distributor",
       category: "LOCAL_MANUFACTURER_TO_DISTRIBUTOR",
       amount: roundMoney(amount),
+      paidAmount: roundMoney(Math.min(amount, asAmount(shipment.freightPaidAmount))),
+      outstandingAmount: roundMoney(Math.max(0, amount - Math.min(amount, asAmount(shipment.freightPaidAmount)))),
       vendorName: shipment.deliveryPartner || "Local delivery company not recorded",
       trackingNumber: shipment.trackingNumber || shipment.externalReference || null,
       manufacturerName: shipment.stockTransfer?.manufacturer?.name || null,

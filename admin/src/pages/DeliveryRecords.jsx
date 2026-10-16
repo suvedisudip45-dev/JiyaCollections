@@ -206,6 +206,7 @@ const DeliveryRecords = ({ token, mode }) => {
           Status
           <select value={filters.status} onChange={(event) => updateFilter("status", event.target.value)} className={`${inputClass} mt-1`}>
             <option value="all">All statuses</option>
+            {isNcm && <option value="needs_reconciliation">Needs reconciliation</option>}
             <option value="incomplete">Incomplete</option>
             <option value="completed">Delivered</option>
             <option value="returned">Returned</option>
@@ -268,8 +269,8 @@ const DeliveryRecords = ({ token, mode }) => {
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-600">{formatDate(row.deliveredAt)}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${statusClass(isNcm ? row.state : row.status)}`}>
-                      {isNcm ? row.ncmStatus || row.state : row.status}
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${statusClass(isNcm && row.ncmReconciliationRequired ? "unknown" : isNcm ? row.state : row.status)}`}>
+                      {isNcm && row.ncmReconciliationRequired ? "Needs reconciliation" : isNcm ? row.ncmStatus || row.state : row.status}
                     </span>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.orderId}</td>
@@ -317,7 +318,10 @@ const DeliveryRecords = ({ token, mode }) => {
           mode={mode}
           recordId={selected.id}
           row={selected.row}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            if (isNcm) setRefreshKey((current) => current + 1);
+          }}
         />
       )}
 

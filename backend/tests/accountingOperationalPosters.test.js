@@ -10,6 +10,7 @@ import {
   postNcmSettlementAccounting,
   postJournalEntry,
   postSupplierPaymentAccounting,
+  postDistributorSettlementRequestAccounting,
   STANDARD_ACCOUNT_MAPPINGS,
   STANDARD_CHART_OF_ACCOUNTS,
 } from "../services/accountingPostingEngine.js";
@@ -460,6 +461,8 @@ test("manufacturer payment reduces the manufacturer payable control account", as
     payableId: "mfg-payable-001",
     payeeName: "Alpha Textiles",
     amount: 1200,
+    cashAccountId: "acc-1120",
+    supplierId: "mfg-001",
     fromAccountType: "CASH",
     payableAccountCode: "2160",
     idempotencyKey: "SUPPLIER_PAYMENT:mfg-payment-001",
@@ -471,7 +474,10 @@ test("manufacturer payment reduces the manufacturer payable control account", as
   assert.ok(journal);
   assert.equal(retry.id, journal.id);
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "1200.00");
-  assert.equal(journal.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "1200.00");
+  const payableLine = journal.lines.find((line) => line.account.accountCode === "2160");
+  const treasuryLine = journal.lines.find((line) => line.account.id === "acc-1120");
+  assert.equal(payableLine.supplierId, "mfg-001");
+  assert.equal(treasuryLine.credit.toFixed(2), "1200.00");
 });
 
 test("manufacturer local freight is expensed and accrued to payable when dispatched", async () => {
@@ -506,6 +512,32 @@ test("manufacturer local freight is expensed and accrued to payable when dispatc
   assert.equal(state.entries.flatMap((entry) => entry.lines)
     .filter((line) => line.account.accountCode === "6430")
     .reduce((total, line) => total + Number(line.debit), 0), 100);
+});
+
+test("distributor settlement request accrues delivery expense and accounts payable once", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+  const request = {
+    id: "dist-settlement-001",
+    amount: 250,
+    requestedAt: new Date("2026-10-17T12:00:00.000Z"),
+  };
+  const journal = await postDistributorSettlementRequestAccounting({
+    settlement: request,
+    distributorName: "Kathmandu Hub",
+    client,
+  });
+  const retry = await postDistributorSettlementRequestAccounting({
+    settlement: request,
+    distributorName: "Kathmandu Hub",
+    client,
+  });
+
+  assert.equal(retry.id, journal.id);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "6430").debit.toFixed(2), "250.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "250.00");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(state.entries.filter((entry) => entry.sourceId === request.id).length, 1);
 });
 
 test("customer receipt uses its mapped clearing account and stable idempotency key", async () => {

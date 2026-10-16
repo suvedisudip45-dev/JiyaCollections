@@ -80,6 +80,13 @@ For COD, this posting currently uses NCM COD receivable 1170 as the tender accou
 
 The NCM delivery completion path in `backend/services/deliveryService.js` passes the `DeliveryOrder` to the poster, including its `customerDeliveryCharge`. The distributor self-delivery path calls the same poster without a `DeliveryOrder`.
 
+For NCM deliveries, only an exact recognized delivered milestone or an explicit
+Admin “confirm delivered” decision can start the delivered-sale transaction.
+Unknown, negative, conflicting, or stale carrier updates enter the Admin
+reconciliation queue and do not change COD/order state, consume inventory, or
+enqueue delivered-sale accounting. An Admin decision is recorded with its
+investigation note in the delivery event history.
+
 ### Material delivery-charge and COD gaps
 
 These are important before relying on the books for delivery profitability:
@@ -94,13 +101,16 @@ These are implementation observations, not assumptions about how a particular de
 
 ### Current production costing
 
-Manufacturer approval records `approvedUnitCogs`, MOQ and `approvedDeliveryCost`. A production request must pass its pre-production requirements, and completion validates actual good/damaged size-color quantities. Good quantities are received into manufacturer inventory through `backend/services/inventoryLedgerService.js` as production cost layers containing `unitCogs` and `unitDeliveryCost`.
+Manufacturer approval records `approvedUnitCogs`, MOQ, `approvedDeliveryCost`, and VAT treatment. A production request must pass its pre-production requirements, and completion validates actual good/damaged size-color quantities. Good quantities are received into manufacturer inventory through `backend/services/inventoryLedgerService.js` as production cost layers containing `unitCogs`, unit VAT, VAT treatment/rate, supplier invoice reference/verification state, and `unitDeliveryCost`.
 
-The production completion flow posts the production value for good units to inventory and manufacturer payable: in concept, `DR inventory 1140 / CR manufacturer payable 2160` for approved unit COGS multiplied by good units. The implementation uses the approved per-piece COGS; it does **not** automatically calculate a final COGS by dividing a separately entered total batch overhead by the actual good units.
+For a verified VAT invoice, production completion capitalizes the net unit cost, debits verified VAT to input VAT receivable, and credits manufacturer payable for the gross payable (plus any batch cost). If the invoice has not been verified, VAT remains part of inventory cost and no input-VAT credit is posted. The VAT report reads output VAT and input VAT from posted journal entries; it does not estimate input VAT by reapplying 13% to product or freight costs.
 
-Production cost layers retain both:
+The production completion flow posts the production value for good units to inventory and manufacturer payable: in concept, `DR inventory 1140 / DR input VAT receivable 1150 (verified invoice only) / CR manufacturer payable 2160`. Batch other cost remains allocated across actual good units under the current cost-terms version.
 
-- `unitCogs`: cost used as product inventory value and later COGS.
+Production cost layers retain:
+
+- `unitCogs`: capitalized cost used as product inventory value and later COGS, excluding verified recoverable input VAT.
+- `unitVatAmount`, `vatTreatment`, `vatRate`, and `vatInvoiceVerified`: VAT evidence snapshot; VAT is recognized once at production receipt.
 - `unitDeliveryCost`: packaging/other delivery overhead tracked separately from product cost.
 
 At delivery, production-layer allocations are used to recognize `DR COGS 5100 / CR inventory 1140`. Legacy order cost snapshots can instead recognize COGS and manufacturer payable directly. For a valid manufacturer tax invoice in supported legacy-cost cases, the poster can split the gross approved amount into net COGS, input VAT receivable 1150, and manufacturer payable 2160.
@@ -125,7 +135,7 @@ Other report and legacy paths calculate COGS differently. For example, `postSale
 
 ## 5. Manufacturer payables, logistics and settlements
 
-Manufacturer production settlement summaries in `backend/services/manufacturerSettlementService.js` derive production payables from manufacturer production journals, logistics payables from `MANUFACTURER_LOGISTICS` journals, and subtract payments/settled settlement requests. The manufacturer settlement payment flow validates outstanding payable and treasury funds, updates cash, posts supplier-payment accounting, updates the request and audit record in one transaction. A LOGISTICS settlement clears the freight payable recognized at dispatch; it does not recognize freight expense again.
+Manufacturer production settlement summaries in `backend/services/manufacturerSettlementService.js` derive production payables from manufacturer production journals, logistics payables from `MANUFACTURER_LOGISTICS` journals, and subtract payments/settled settlement requests. The manufacturer settlement payment flow validates outstanding payable and treasury funds, updates cash, posts supplier-payment accounting, updates the request and audit record in one transaction. A LOGISTICS settlement clears the freight payable recognized at dispatch; it does not recognize freight expense again. The 6430 expense remains in the income statement after payment because the shipment cost was already incurred; the amount that clears is the 2160 liability, while the selected cash/bank asset decreases.
 
 Manufacturer payable categories represented in the reviewed flows include:
 
@@ -133,6 +143,8 @@ Manufacturer payable categories represented in the reviewed flows include:
 - Certain legacy/direct order COGS and manufacturer commissions.
 - Per-unit packaging/delivery overhead when its production-layer allocation is expensed at order delivery.
 - Manufacturer-paid manual/local StockTransfer freight. Dispatch debits delivery expense (6430) and credits manufacturer payable (2160) when the carrier service is performed; settlement later clears the payable against cash. This is separate from product COGS.
+
+Paid manufacturer `LOGISTICS` settlements are allocated oldest-dispatch-first across local shipments. The shipment keeps the cumulative paid amount, so partial settlement is visible as both paid and outstanding freight in Admin finance details. If a paid logistics amount cannot be matched to dispatched local freight, the payment response explicitly flags reconciliation rather than reporting a clean match.
 
 NCM bookings are a separate carrier flow. Do not treat the existence of an NCM booking or a manufacturer logistics payable as proof that it is in the same payable subledger.
 
@@ -230,12 +242,12 @@ Relevant models include `PartnerEquity`, `CompanyValuation`, `ShareTransaction`,
 
 There are multiple reporting paths:
 
-1. **Finance analytics dashboard** (`financialController.js`): aggregates orders, returns, operating expenses, cost layers/legacy costs, treasury, receivables, payables, loans, partner capital and assets. It computes several metrics itself, including revenue excluding embedded VAT, profitability, inventory valuation and estimated depreciation.
+1. **Finance analytics dashboard** (`financialController.js`): now includes a `postedAccounting` summary sourced from posted journal lines for period P&L, VAT and closing GL balances. Its operational metrics and itemized cost detail still aggregate orders, returns, operating expenses, cost layers/legacy costs, treasury, receivables, payables, loans, partner capital and assets; they are analytical/subledger estimates, not posted GL totals.
 2. **Legacy financial statement calculation**: another controller path derives COGS from product `costPrice`, estimates retained earnings as assets less liabilities and partner capital, and estimates cash flow from operational records. It can differ from cost-layer and GL results.
 3. **Accounting reports** (`accountingController.js`): the General Ledger, trial balance, journals and GL-derived statements use posted journal data. These are the appropriate reports for verifying what actually reached the double-entry ledger, subject to posting gaps noted here.
 4. **Party/portal statements**: manufacturer and distributor services derive payable/settlement summaries from their own journals, cost events, rates and requests; these do not constitute every entity's full GL subledger.
 
-Do not compare a dashboard value and a GL account balance without first checking period boundaries, VAT basis, order status, return timing, cost source and asynchronous posting status.
+Use the dashboard's `postedAccounting` section when comparing to posted GL statements. Treat its operational analysis separately and check period boundaries, VAT basis, order status, return timing, cost source and asynchronous posting status before interpreting differences.
 
 ## 14. Key implementation gaps and cautions for future work
 
@@ -250,7 +262,7 @@ The following items are directly relevant to improving the accounting design:
 7. **COGS source differences:** cost-layer allocations, legacy manufacturer cost snapshots, product `costPrice`, and percentage-estimated COGS all coexist.
 8. **Profit distributions are estimates:** fixed 55% estimated COGS is not actual batch COGS or GL net income; retained earnings are recorded in the distribution model but not proven to post to 3300.
 9. **Payable/receivable systems coexist:** operational `AccountPayable`/`AccountReceivable`, accounting-party journals, supplier settlements and distributor settlements require explicit reconciliation.
-10. **VAT treatment varies by pathway:** sale and delivery charge handling assumes embedded 13% VAT; input VAT requires specified evidence in some supplier-cost paths. Verify invoice evidence and VAT inclusion before changing rates or formulas.
+10. **VAT treatment varies by pathway:** production supplier VAT now captures inclusive/exclusive/exempt terms and only posts input VAT after Admin invoice verification. Other legacy supplier-cost and sale/delivery paths retain their existing assumptions; do not treat VAT as income or apply the production rule to unrelated flows.
 
 ## 15. Recommended guardrails for an accounting enhancement
 

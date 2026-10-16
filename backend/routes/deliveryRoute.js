@@ -8,6 +8,7 @@ import {
   adminRequestSettlement,
   adminReconcileActive,
   adminReconcileDelivery,
+  adminResolveNcmDeliveryReconciliation,
   adminResolveNcmHandoff,
   getCustomerDelivery,
   getDelivery,
@@ -114,6 +115,7 @@ deliveryRouter.post("/admin/settlements/confirm", authenticate, authorize("deliv
 deliveryRouter.get("/admin/logs", authenticate, authorize("delivery:logs_read"), getRecentSystemLogs);
 deliveryRouter.get("/admin/:id", authenticate, authorize("delivery:admin_detail"), getDelivery);
 deliveryRouter.post("/admin/:id/reconcile", authenticate, authorize("delivery:reconcile"), adminReconcileDelivery);
+deliveryRouter.post("/admin/:id/resolve-ncm-status", authenticate, authorize("delivery:reconcile"), adminResolveNcmDeliveryReconciliation);
 deliveryRouter.post("/admin/:id/resolve-ncm-handoff", authenticate, authorize("delivery:ncm_handoff_recover"), adminResolveNcmHandoff);
 deliveryRouter.post("/admin/reconcile-active", authenticate, authorize("delivery:reconcile"), adminReconcileActive);
 

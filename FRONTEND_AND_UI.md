@@ -135,6 +135,13 @@ is stored in the backend; NCM webhook updates are applied before acknowledging
 the webhook, and admin/distributor/manufacturer views read the persisted status
 instead of repeatedly querying NCM. NCM delivery charges are settled by the
 platform/admin and are not partner payables.
+The Admin NCM deliveries table has an all-ages “Needs reconciliation” filter.
+Ambiguous or out-of-order provider updates retain the last trusted delivery
+status and appear with the carrier status/reason in the details view. Admins can
+fetch the current carrier status or explicitly confirm delivered/not delivered;
+both decisions require an investigation note. Confirming delivery uses the
+normal delivery, inventory, and accounting transaction, while confirming not
+delivered preserves the current state and records the decision.
 
 For bulk distributor stock transfers, the manufacturer view shows the end-to-end
 transfer stages (demand, admin approval, factory preparation, carrier custody,
@@ -177,6 +184,7 @@ The application exposes modules such as:
 - `/finance`, `/treasury`, `/assets`, `/partners`, `/expenses`, `/tax`
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
+- `/payables` displays distributor settlement requests with the payable balance and lets an authorized Admin make full or partial payment from a selected treasury account.
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
@@ -191,7 +199,7 @@ manufacturer accepts it; admin edits do not directly change the agreed rate.
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
 
-The `/finance` dashboard adds a period cost breakdown for Product COGS, manufacturer-to-distributor logistics, fixed overhead, marketing, and total operating expenses. Its live-assets snapshot values on-hand stock in platform-owned inventory locations at production-layer cost where available, with product cost as the fallback for uncosted or legacy stock; stock recorded as lost is excluded. The logistics total uses dispatched local MANUAL stock-transfer shipments in the selected month and counts each recorded batch freight charge once, independent of how many units or orders are later sold. Admins can open the logistics details to see dispatch date, transfer, local delivery company, tracking reference, manufacturer/distributor, and freight amount. NCM carrier charges and item-level delivery/other snapshots are not included in this category. The financial statement's Account 6430 excludes legacy per-order overhead postings from delivery-sale journals while retaining actual NCM carrier settlements and one-time local stock-transfer freight. Fixed and marketing overhead details show the recorded expense, date, vendor, invoice, payment status, and notes. Product COGS details retain order/product-level quantity, rate, calculation source, and linked cost-layer reference where available. The dashboard API includes itemized `costsAndExpenses.details` alongside the category totals.
+The `/finance` dashboard adds a period cost breakdown for Product COGS, manufacturer-to-distributor logistics, fixed overhead, marketing, and total operating expenses. Its live-assets snapshot values on-hand stock in platform-owned inventory locations at production-layer cost where available, with product cost as the fallback for uncosted or legacy stock; stock recorded as lost is excluded. The logistics total uses dispatched local MANUAL stock-transfer shipments in the selected month and counts each recorded batch freight charge once, independent of how many units or orders are later sold. Admins can open the logistics details to see dispatch date, transfer, local delivery company, tracking reference, manufacturer/distributor, freight amount, and paid/outstanding amounts. Paid manufacturer LOGISTICS settlements are allocated FIFO by dispatch date, with partial shipment settlements visible. NCM carrier charges and item-level delivery/other snapshots are not included in this category. The financial statement's Account 6430 excludes legacy per-order overhead postings from delivery-sale journals while retaining actual NCM carrier settlements and one-time local stock-transfer freight. Fixed and marketing overhead details show the recorded expense, date, vendor, invoice, payment status, and notes. Product COGS details retain order/product-level quantity, rate, calculation source, and linked cost-layer reference where available. The dashboard API includes itemized `costsAndExpenses.details` alongside the category totals.
 
 Journal entries, general ledger, trial balance, financial statements, and accounting health display a shared delivered-sale posting warning when the backend reports unresolved outbox events. The warning shows pending/processing/failed/blocked counts and a bounded list of order amounts, and explicitly states that those amounts are excluded from posted ledger balances until posting succeeds.
 
@@ -311,6 +319,7 @@ This portal is clearly structured around the backend `marketing-cards` router an
 4. The orders page shows a manufacturer-scoped queue of incoming customer returns with pickup state and NCM charge payer.
 5. The production pre-check sends `fabricPassed`, `qualitySamplePassed`, and `colorShadeMatched` boolean fields; the API also accepts the prior UI field aliases for compatibility.
 6. An approved production request exposes the pre-check; a passed pre-check exposes Start Production; and an in-production request exposes post-production QA and stock intake. The post-check submits one actual count per requested size/color variant using the backend checklist contract.
+   The manufacturer production form also records exempt/inclusive/exclusive VAT, rate, and supplier invoice reference. Manufacturer and Admin production screens show unit goods cost before VAT, VAT per unit, total goods cost including VAT, batch other production charges, and whether invoice verification makes VAT recoverable or leaves it in inventory cost. Distributor delivery freight is shown separately on the stock-transfer dispatch and shipment screens; it is not included in production batch charges. Admin review can verify the supplier invoice; only verified VAT becomes input VAT receivable, otherwise it remains in inventory cost. The Admin VAT reconciliation displays posted journal totals rather than recalculating credits from estimated COGS.
 7. The manufacturer dashboard shows factory products/SKUs and available factory units separately from inspected production and damaged counts. Factory stock does not show as available to customers; that happens only after the distributor receives the transfer.
 8. The **Distributor Demands** page only shows admin-approved distributor requests; its sidebar badge refreshes periodically and announces newly approved demands. Manufacturers must save passing checks for availability, quality, color, size, and packaging before delivery controls unlock. They can choose NCM or local freight, while a transfer between the same account's manufacturer/distributor profiles automatically uses direct own-store delivery with NPR 0 freight.
 

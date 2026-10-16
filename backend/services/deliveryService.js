@@ -8,6 +8,7 @@ import {
   getNcmBranchRows,
   createCodTransferTicket,
   getShippingRate,
+  getOrderStatus,
   requestOrderReturn,
   shippingRateTypeForNcm,
   validateNcmPackageName,
@@ -64,162 +65,83 @@ export const STATUS_MAP = {
   Returned: "RETURN_REQUESTED",
 };
 
+const normalizeNcmStatusText = (value) =>
+  String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+
+const NCM_STATUS_ALIASES = new Map([
+  ...["delivered", "delivery completed", "order delivered"].map((value) => [
+    value,
+    { deliveryState: "DELIVERED", canonicalStatus: "Delivered" },
+  ]),
+  ...["sent for delivery", "out for delivery"].map((value) => [
+    value,
+    { deliveryState: "OUT_FOR_DELIVERY", canonicalStatus: "Sent for Delivery" },
+  ]),
+  ...["arrived", "order arrived", "arrived at destination"].map((value) => [
+    value,
+    { deliveryState: "ARRIVED_AT_DESTINATION", canonicalStatus: "Arrived" },
+  ]),
+  ...["dispatched", "order dispatched", "order dispached", "in transit"].map((value) => [
+    value,
+    { deliveryState: "IN_TRANSIT", canonicalStatus: "Dispatched" },
+  ]),
+  ...["pickup complete", "pickup completed", "picked up", "order pickup"].map((value) => [
+    value,
+    { deliveryState: "PICKUP_CONFIRMED", canonicalStatus: "Pickup Complete" },
+  ]),
+  ...["pickup order created", "drop off order created", "sent for pickup", "ready for pickup"].map((value) => [
+    value,
+    { deliveryState: "NCM_CREATED", canonicalStatus: "Pickup Order Created" },
+  ]),
+  ...["returned", "return requested", "vendor return", "order return"].map((value) => [
+    value,
+    { deliveryState: "RETURN_REQUESTED", canonicalStatus: "Returned" },
+  ]),
+]);
+
+const DELIVERY_STATE_RANK = {
+  READY_TO_DELIVER: 0,
+  BOOKED: 0,
+  NCM_CREATED: 1,
+  PICKUP_CONFIRMED: 2,
+  IN_TRANSIT: 3,
+  ARRIVED_AT_DESTINATION: 4,
+  OUT_FOR_DELIVERY: 5,
+  DELIVERED: 6,
+  RETURN_REQUESTED: 7,
+  RETURNED: 8,
+  CANCELLED: 8,
+};
+
 /**
  * Normalizes any NCM event, status, or raw string variation into
  * canonical delivery state, assignment status, fulfillment status, and display status.
  */
 export const normalizeDeliveryStatus = (rawStatus = "", rawEvent = "") => {
-  const combined = `${String(rawEvent || "")} ${String(rawStatus || "")}`.toLowerCase().trim();
-  const s = String(rawStatus || "").toLowerCase().trim();
-  const e = String(rawEvent || "").toLowerCase().trim();
+  const statusText = normalizeNcmStatusText(rawStatus);
+  const eventText = normalizeNcmStatusText(rawEvent);
+  const statusMatch = NCM_STATUS_ALIASES.get(statusText);
+  const eventMatch = NCM_STATUS_ALIASES.get(eventText);
+  const isGenericStatus = ["", "update received", "status changed", "order status changed"].includes(statusText);
+  const mapped = statusMatch || (isGenericStatus ? eventMatch : null);
+  const conflictingStatuses = statusMatch && eventMatch &&
+    statusMatch.deliveryState !== eventMatch.deliveryState;
 
-  // 1. Delivered / Completed
-  if (
-    s === "delivered" ||
-    e === "delivery_completed" ||
-    combined.includes("delivery_completed") ||
-    s.includes("delivered")
-  ) {
+  if (mapped && !conflictingStatuses) {
+    const summary = syncSummary(mapped.deliveryState);
     return {
-      deliveryState: "DELIVERED",
-      assignmentStatus: "delivered",
-      fulfillmentStatus: "delivered",
-      canonicalStatus: "Delivered",
-    };
-  }
-
-  // 2. Sent for delivery / Out for delivery
-  if (
-    s === "sent for delivery" ||
-    s === "out for delivery" ||
-    s === "out_for_delivery" ||
-    e === "sent_for_delivery" ||
-    combined.includes("sent_for_delivery") ||
-    combined.includes("out for delivery")
-  ) {
-    return {
-      deliveryState: "OUT_FOR_DELIVERY",
-      assignmentStatus: "out_for_delivery",
-      fulfillmentStatus: "out_for_delivery",
-      canonicalStatus: "Sent for Delivery",
-    };
-  }
-
-  // 3. Arrived at destination branch
-  if (
-    s === "arrived" ||
-    s === "order_arrived" ||
-    s === "arrived_at_destination" ||
-    e === "order_arrived" ||
-    combined.includes("order_arrived") ||
-    s.includes("arrived")
-  ) {
-    return {
-      deliveryState: "ARRIVED_AT_DESTINATION",
-      assignmentStatus: "arrived_at_destination",
-      fulfillmentStatus: "arrived_at_destination",
-      canonicalStatus: "Arrived",
-    };
-  }
-
-  // 4. Dispatched / In Transit
-  if (
-    s === "dispatched" ||
-    s === "order_dispatched" ||
-    s === "order_dispached" || // handle common typo in user request & webhook
-    s === "in transit" ||
-    s === "in_transit" ||
-    e === "order_dispatched" ||
-    e === "order_dispached" ||
-    combined.includes("dispatched") ||
-    combined.includes("dispached") ||
-    combined.includes("in transit") ||
-    combined.includes("in_transit")
-  ) {
-    return {
-      deliveryState: "IN_TRANSIT",
-      assignmentStatus: "in_transit",
-      fulfillmentStatus: "in_transit",
-      canonicalStatus: "Dispatched",
-    };
-  }
-
-  // 5. Pickup completed / Picked up
-  if (
-    s === "pickup complete" ||
-    s === "pickup_completed" ||
-    s === "picked up" ||
-    s === "picked_up" ||
-    s === "order pickup" ||
-    s === "order_pickup" ||
-    e === "pickup_completed" ||
-    combined.includes("pickup_completed") ||
-    combined.includes("pickup complete") ||
-    combined.includes("picked up")
-  ) {
-    return {
-      deliveryState: "PICKUP_CONFIRMED",
-      assignmentStatus: "picked_up",
-      fulfillmentStatus: "picked_up",
-      canonicalStatus: "Pickup Complete",
-    };
-  }
-
-  // 6. Pickup order created / Sent for pickup
-  if (
-    s === "pickup order created" ||
-    s === "pickup_order_created" ||
-    s === "drop off order created" ||
-    s === "sent for pickup" ||
-    s === "ready_for_pickup" ||
-    e === "pickup_order_created" ||
-    combined.includes("pickup order created") ||
-    combined.includes("pickup_order_created") ||
-    combined.includes("sent for pickup")
-  ) {
-    return {
-      deliveryState: "NCM_CREATED",
-      assignmentStatus: "ready_for_pickup",
-      fulfillmentStatus: "ncm_created",
-      canonicalStatus: "Pickup Order Created",
-    };
-  }
-
-  // 7. Returned
-  if (
-    s === "returned" ||
-    s === "return requested" ||
-    s === "return_requested" ||
-    s === "vendor_return" ||
-    e === "order_return" ||
-    combined.includes("returned") ||
-    combined.includes("return")
-  ) {
-    return {
-      deliveryState: "RETURN_REQUESTED",
-      assignmentStatus: "return_requested",
-      fulfillmentStatus: "return_requested",
-      canonicalStatus: "Returned",
-    };
-  }
-
-  // Fallback: check STATUS_MAP or return unmapped
-  const mapped = STATUS_MAP[rawStatus];
-  if (mapped) {
-    const summary = syncSummary(mapped) || "in_transit";
-    return {
-      deliveryState: mapped,
-      assignmentStatus: summary,
+      deliveryState: mapped.deliveryState,
+      assignmentStatus: mapped.deliveryState === "NCM_CREATED" ? "ready_for_pickup" : summary,
       fulfillmentStatus: summary,
-      canonicalStatus: rawStatus || "In Transit",
+      canonicalStatus: mapped.canonicalStatus,
     };
   }
 
   return {
-    deliveryState: "EXTERNAL_STATUS_UNMAPPED",
+    deliveryState: "NEEDS_RECONCILIATION",
     assignmentStatus: null,
     fulfillmentStatus: null,
-    canonicalStatus: rawStatus || "Update Received",
+    canonicalStatus: String(rawStatus || rawEvent || "Status unavailable").trim().slice(0, 191),
   };
 };
 
@@ -408,7 +330,15 @@ const findDeliveryOrdersForNcmId = async (ncmId) => {
   );
   return prisma.deliveryOrder.findMany({
     where: { OR: candidates },
-    include: { order: { select: { paymentMethod: true, payment: true } } },
+    include: {
+      order: { select: { paymentMethod: true, payment: true } },
+      events: {
+        where: { source: { in: ["NCM_WEBHOOK", "ADMIN_RECONCILIATION", "ADMIN_RECONCILIATION_DECISION"] } },
+        orderBy: { occurredAt: "desc" },
+        take: 1,
+        select: { occurredAt: true },
+      },
+    },
     take: 2,
   });
 };
@@ -1057,7 +987,12 @@ const findOtherCustomerNcmRecords = async (ncmId) => {
   ];
 };
 
-export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockTransferStatus = null }) => {
+export const applyNcmStatus = async ({
+  payload,
+  source = "NCM_WEBHOOK",
+  onStockTransferStatus = null,
+  actorId = null,
+}) => {
   const ids = webhookIdentifiers(payload);
   const results = [];
   for (const ncmId of ids) {
@@ -1166,6 +1101,27 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       payload.status,
       payload.event
     );
+    const receivedAt = payload.timestamp ? new Date(payload.timestamp) : new Date();
+    const occurredAt = Number.isNaN(receivedAt.getTime()) ? new Date() : receivedAt;
+    const currentRank = DELIVERY_STATE_RANK[delivery.state] ?? -1;
+    const nextRank = DELIVERY_STATE_RANK[deliveryState] ?? -1;
+    const latestStatusEventAt = delivery.events?.[0]?.occurredAt
+      ? new Date(delivery.events[0].occurredAt).getTime()
+      : null;
+    const isOlderEvent = source !== "ADMIN_RECONCILIATION_DECISION" &&
+      latestStatusEventAt !== null &&
+      occurredAt.getTime() < latestStatusEventAt;
+    const isStaleStatus = source !== "ADMIN_RECONCILIATION_DECISION" &&
+      (isOlderEvent || (currentRank >= 0 && nextRank >= 0 && nextRank < currentRank));
+    const shouldApplyStatus = deliveryState !== "NEEDS_RECONCILIATION" && !isStaleStatus;
+    const shouldReconcile = deliveryState === "NEEDS_RECONCILIATION" || isStaleStatus;
+    const reconciliationReason = deliveryState === "NEEDS_RECONCILIATION"
+      ? `Unrecognized or conflicting NCM status: ${canonicalStatus}`
+      : isStaleStatus
+        ? `NCM reported out-of-order status "${canonicalStatus}" after local state "${delivery.state}".`
+        : null;
+    const isNewDeliveryConfirmation = deliveryState === "DELIVERED" &&
+      delivery.state !== "DELIVERED" && !delivery.deliveredAt;
 
     const eventKey = statusEventKey({
       orderId: trimmedId,
@@ -1175,16 +1131,26 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
     });
 
     const updated = await prisma.$transaction(async (tx) => {
+      if (source === "ADMIN_RECONCILIATION_DECISION") {
+        const current = await tx.deliveryOrder.findUnique({
+          where: { id: delivery.id },
+          select: { ncmReconciliationRequired: true },
+        });
+        if (!current?.ncmReconciliationRequired) {
+          throw Object.assign(new Error("This delivery is no longer awaiting NCM reconciliation."), { statusCode: 409 });
+        }
+      }
       await createEvent(tx, {
         deliveryOrderId: delivery.id,
         orderId: delivery.orderId,
         source,
         eventType: payload.event || "NCM_STATUS_CHANGED",
         fromState: delivery.state,
-        toState: deliveryState,
+        toState: shouldApplyStatus ? deliveryState : delivery.state,
         ncmStatus: canonicalStatus,
         payloadJson: sanitizeNcmWebhookPayload(payload),
-        occurredAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        actorId,
+        occurredAt,
         idempotencyKey: `NCM_STATUS:${eventKey}`,
       });
 
@@ -1192,17 +1158,34 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
         ncmStatus: canonicalStatus,
         lastSyncedAt: new Date(),
         nextSyncAt: null,
-        ...(deliveryState !== "EXTERNAL_STATUS_UNMAPPED" ? { state: deliveryState } : {}),
-        ...(deliveryState === "PICKUP_CONFIRMED" ? { pickedUpAt: new Date() } : {}),
-        ...(deliveryState === "DELIVERED" ? { deliveredAt: new Date() } : {}),
-        ...(deliveryState === "RETURN_REQUESTED" ? { returnedAt: new Date() } : {}),
+        ...(shouldApplyStatus ? { state: deliveryState } : {}),
+        ...(deliveryState === "PICKUP_CONFIRMED" && shouldApplyStatus
+          ? { pickedUpAt: delivery.pickedUpAt || new Date() }
+          : {}),
+        ...(deliveryState === "DELIVERED" && shouldApplyStatus
+          ? { deliveredAt: delivery.deliveredAt || new Date() }
+          : {}),
+        ...(deliveryState === "RETURN_REQUESTED" && shouldApplyStatus
+          ? { returnedAt: delivery.returnedAt || new Date() }
+          : {}),
+        ncmReconciliationRequired: shouldReconcile || (!shouldApplyStatus && Boolean(delivery.ncmReconciliationRequired)),
+        ncmReconciliationReason: shouldReconcile
+          ? reconciliationReason
+          : shouldApplyStatus
+            ? null
+            : delivery.ncmReconciliationReason,
+        lastSyncError: shouldReconcile
+          ? reconciliationReason
+          : shouldApplyStatus
+            ? null
+            : delivery.lastSyncError,
       };
 
       const record = await tx.deliveryOrder.update({ where: { id: delivery.id }, data: deliveryUpdateData });
       let accountingStatus = null;
 
       // Synchronize Order model
-      if (fulfillmentStatus) {
+      if (fulfillmentStatus && shouldApplyStatus) {
         const orderUpdateData = {
           fulfillmentStatus,
         };
@@ -1225,14 +1208,14 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
           where: { id: delivery.orderId },
           data: orderUpdateData,
         });
-        if (deliveryState === "DELIVERED") {
+        if (deliveryState === "DELIVERED" && isNewDeliveryConfirmation) {
           await applyGiftDeliveryTransition(tx, delivery.orderId);
           await accrueCollaborationSalesForOrder({ orderId: delivery.orderId, deliveredAt: new Date(), client: tx });
         }
       }
 
       // Synchronize OrderAssignment model
-      if (assignmentStatus) {
+      if (assignmentStatus && shouldApplyStatus) {
         const assignmentUpdate = {
           status: assignmentStatus,
         };
@@ -1245,7 +1228,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
         });
       }
 
-      if (deliveryState === "RETURN_REQUESTED") {
+      if (deliveryState === "RETURN_REQUESTED" && shouldApplyStatus) {
         await tx.deliveryReturn.upsert({
           where: { deliveryOrderId: delivery.id },
           create: {
@@ -1283,7 +1266,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       }
 
       // Create or update Financial Settlement upon delivery
-      if (deliveryState === "DELIVERED" && delivery.codAmount > 0) {
+      if (deliveryState === "DELIVERED" && shouldApplyStatus && delivery.codAmount > 0) {
         await tx.deliveryFinancialSettlement.upsert({
           where: { deliveryOrderId: delivery.id },
           create: {
@@ -1304,7 +1287,7 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       }
 
       // Post Delivered Order Double-Entry Accounting
-      if (deliveryState === "DELIVERED") {
+      if (isNewDeliveryConfirmation && shouldApplyStatus) {
         const fullOrder = await tx.order.findUnique({ where: { id: delivery.orderId } });
         if (!fullOrder) throw new Error(`Order ${delivery.orderId} was not found for delivered-sale accounting.`);
 
@@ -1347,6 +1330,8 @@ export const applyNcmStatus = async ({ payload, source = "NCM_WEBHOOK", onStockT
       ncmId: trimmedId,
       deliveryOrder: true,
       deliveryState,
+      ...(isStaleStatus ? { stale: true } : {}),
+      reconciliationRequired: Boolean(updated.record.ncmReconciliationRequired),
       ncmStatus: canonicalStatus,
       ...(updated.accountingStatus ? { accountingStatus: updated.accountingStatus } : {}),
     });
@@ -1473,13 +1458,122 @@ export const storeOrderCommentWebhook = async (payload) => {
   }
 };
 
-export const reconcileDelivery = async (deliveryId) => {
+const markNcmReconciliationRequired = async ({ delivery, reason, ncmStatus = null }) => {
+  const now = new Date();
+  const eventKey = statusEventKey({
+    orderId: delivery.id,
+    status: ncmStatus || reason,
+    timestamp: now.toISOString(),
+    event: "NCM_RECONCILIATION_REQUIRED",
+  });
+  return prisma.$transaction(async (tx) => {
+    await createEvent(tx, {
+      deliveryOrderId: delivery.id,
+      orderId: delivery.orderId,
+      source: "ADMIN_RECONCILIATION",
+      eventType: "NCM_RECONCILIATION_REQUIRED",
+      fromState: delivery.state,
+      toState: delivery.state,
+      ncmStatus: ncmStatus || delivery.ncmStatus,
+      payloadJson: { reason },
+      occurredAt: now,
+      idempotencyKey: `NCM_RECONCILIATION:${eventKey}`,
+    });
+    return tx.deliveryOrder.update({
+      where: { id: delivery.id },
+      data: {
+        ...(ncmStatus ? { ncmStatus: ncmStatus.slice(0, 191) } : {}),
+        ncmReconciliationRequired: true,
+        ncmReconciliationReason: reason,
+        lastSyncError: reason,
+        lastSyncedAt: now,
+        nextSyncAt: null,
+      },
+    });
+  });
+};
+
+const getLatestNcmStatusRecord = (response) => {
+  let data = response?.data ?? response;
+  if (data && typeof data === "object" && !Array.isArray(data) && data.data !== undefined) {
+    data = data.data;
+  }
+  const records = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.results)
+      ? data.results
+      : Array.isArray(data?.statuses)
+        ? data.statuses
+        : null;
+  if (!records) return data && typeof data === "object" ? data : null;
+  return [...records].sort((left, right) => {
+    const leftTime = new Date(left?.timestamp || left?.added_time || 0).getTime();
+    const rightTime = new Date(right?.timestamp || right?.added_time || 0).getTime();
+    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+  })[0] || null;
+};
+
+export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => {
   const delivery = await prisma.deliveryOrder.findUnique({
     where: { id: deliveryId },
+    select: {
+      id: true,
+      orderId: true,
+      ncmOrderId: true,
+      state: true,
+      ncmStatus: true,
+      ncmReconciliationRequired: true,
+    },
+  });
+  if (!delivery) {
+    throw Object.assign(new Error("Delivery not found"), { code: "DELIVERY_NOT_FOUND" });
+  }
+  if (!delivery.ncmOrderId) {
+    const reason = "No NCM order ID is linked to this delivery; Admin review is required.";
+    await markNcmReconciliationRequired({ delivery, reason });
+    return prisma.deliveryOrder.findUnique({ where: { id: delivery.id }, include: { events: { orderBy: { occurredAt: "desc" } } } });
+  }
+
+  let response;
+  try {
+    response = await getOrderStatus(delivery.ncmOrderId);
+  } catch (error) {
+    logger.error("NCM status lookup failed during Admin reconciliation", {
+      deliveryId: delivery.id,
+      errorName: error.name,
+      errorCode: error.code,
+    });
+    const reason = "NCM status lookup failed; verify the carrier status and resolve this delivery manually.";
+    await markNcmReconciliationRequired({ delivery, reason });
+    throw Object.assign(new Error("NCM status lookup failed; this delivery was added to the reconciliation queue."), {
+      code: "NCM_RECONCILIATION_FETCH_FAILED",
+    });
+  }
+
+  const latestStatus = getLatestNcmStatusRecord(response);
+  const status = typeof latestStatus?.status === "string" ? latestStatus.status.trim() : "";
+  const event = typeof latestStatus?.event === "string" ? latestStatus.event.trim() : "";
+  const timestamp = latestStatus?.timestamp || latestStatus?.added_time || new Date().toISOString();
+  if (!status && !event) {
+    const reason = "NCM returned no recognizable status record; verify the carrier order and resolve it manually.";
+    await markNcmReconciliationRequired({ delivery, reason });
+    return prisma.deliveryOrder.findUnique({ where: { id: delivery.id }, include: { events: { orderBy: { occurredAt: "desc" } } } });
+  }
+
+  await applyNcmStatus({
+    payload: {
+      order_id: String(delivery.ncmOrderId),
+      ...(status ? { status } : {}),
+      ...(event ? { event } : {}),
+      timestamp,
+    },
+    source: "ADMIN_RECONCILIATION",
+    actorId,
+  });
+  return prisma.deliveryOrder.findUnique({
+    where: { id: delivery.id },
     include: { events: { orderBy: { occurredAt: "desc" } } },
   });
-  if (!delivery) throw new Error("Delivery not found");
-  return delivery;
 };
 
 export const requestCodSettlement = async ({ bankName, bankAccountName, bankAccountNumber }) => {

@@ -109,6 +109,24 @@ test("NCM list returns compact customer and location fields with bounded paginat
   assert.equal(result.pagination.total, 1);
 });
 
+test("NCM reconciliation queue includes all flagged records regardless of date range", async () => {
+  let findManyArgs;
+  const client = {
+    deliveryOrder: {
+      findMany: async (args) => {
+        findManyArgs = args;
+        return [];
+      },
+      count: async () => 0,
+    },
+    user: { findMany: async () => [] },
+  };
+
+  await listAdminNcmDeliveries({ status: "needs_reconciliation", range: "month" }, client);
+
+  assert.deepEqual(findManyArgs.where, { ncmReconciliationRequired: true });
+});
+
 test("self-delivery distributor lookup only includes hubs with explicit self-delivery assignments", async () => {
   let query;
   const client = {

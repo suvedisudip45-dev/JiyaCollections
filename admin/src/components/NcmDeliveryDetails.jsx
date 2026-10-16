@@ -26,6 +26,7 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
   const [remoteStatus, setRemoteStatus] = useState(null);
   const [comments, setComments] = useState(null);
   const [commentText, setCommentText] = useState("");
+  const [reconciliationNote, setReconciliationNote] = useState("");
   const [branches, setBranches] = useState([]);
   const [redirectForm, setRedirectForm] = useState({ name: "", phone: "", address: "", destination: "", cod_charge: "" });
 
@@ -88,10 +89,36 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
     try {
       const response = await axios.post(`${backendUrl}/api/delivery/admin/${recordId}/reconcile`, {}, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "Reconciliation failed.");
-      toast.success("Local delivery status refreshed from NCM.");
+      if (response.data.delivery?.ncmReconciliationRequired) {
+        toast.warning("NCM returned an ambiguous status. This delivery needs an Admin decision.");
+      } else {
+        toast.success("Delivery status refreshed from NCM.");
+      }
       await loadDetails();
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "Reconciliation failed.");
+      if (error.response?.data?.code === "NCM_RECONCILIATION_FETCH_FAILED") await loadDetails();
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const resolveReconciliation = async (decision) => {
+    setBusy("resolve");
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/delivery/admin/${recordId}/resolve-ncm-status`,
+        { decision, note: reconciliationNote },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Reconciliation decision failed.");
+      toast.success(decision === "CONFIRM_DELIVERED"
+        ? "Delivery confirmed; any required sale accounting was handled through the normal transaction."
+        : "Not-delivered decision recorded; the last confirmed delivery state was preserved.");
+      setReconciliationNote("");
+      await loadDetails();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Reconciliation decision failed.");
     } finally {
       setBusy("");
     }
@@ -193,6 +220,48 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
             {delivery.lastSyncError && <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800">{delivery.lastSyncError}</p>}
           </section>
 
+          {delivery.ncmReconciliationRequired && (
+            <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
+              <div>
+                <h3 className="text-sm font-semibold text-amber-900">Needs reconciliation</h3>
+                <p className="mt-1 text-xs text-amber-800">
+                  The last NCM response was not safe to apply automatically. Current order status, COD, inventory and accounting have not been advanced from that response.
+                </p>
+                {delivery.ncmReconciliationReason && <p className="mt-2 text-xs text-amber-900">{delivery.ncmReconciliationReason}</p>}
+              </div>
+              <label className="block text-xs font-medium text-amber-900">
+                Investigation note (10–2000 characters)
+                <textarea
+                  value={reconciliationNote}
+                  onChange={(event) => setReconciliationNote(event.target.value)}
+                  minLength={10}
+                  maxLength={2000}
+                  rows={3}
+                  className={`${inputClass} mt-1`}
+                  placeholder="Record the NCM evidence checked and why this decision is appropriate."
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => resolveReconciliation("CONFIRM_DELIVERED")}
+                  disabled={busy !== "" || reconciliationNote.trim().length < 10}
+                  className="rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  {busy === "resolve" ? "Recording…" : "Confirm delivered"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resolveReconciliation("CONFIRM_NOT_DELIVERED")}
+                  disabled={busy !== "" || reconciliationNote.trim().length < 10 || delivery.state === "DELIVERED" || Boolean(delivery.deliveredAt)}
+                  className="rounded-md border border-amber-400 bg-white px-3 py-2 text-xs font-semibold text-amber-900 disabled:opacity-50"
+                >
+                  Confirm not delivered
+                </button>
+              </div>
+            </section>
+          )}
+
           <section className="rounded-lg border border-slate-200 p-4">
             <h3 className="text-sm font-semibold text-slate-800">Customer and order</h3>
             <div className={`${detailFields} mt-4`}>
@@ -218,6 +287,7 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
                       {event.fromState ? `${event.fromState} → ` : ""}{event.toState || event.ncmStatus || "Recorded"}
                       {event.source ? ` · ${event.source}` : ""}
                     </p>
+                    {event.payloadJson?.note && <p className="mt-1 text-slate-600">Admin note: {event.payloadJson.note}</p>}
                   </div>
                   <time className="shrink-0 text-slate-400">{formatDate(event.occurredAt)}</time>
                 </div>

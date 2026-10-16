@@ -24,6 +24,7 @@ const PAYABLE_CATS = [
   { value: "SALARIES", label: "Salaries (Staff)" },
   { value: "ASSET_PURCHASE", label: "Asset Purchase" },
   { value: "PARTNER_DISTRIBUTION", label: "Partner Distribution / Payout" },
+  { value: "DISTRIBUTOR_SETTLEMENT", label: "Distributor Settlement" },
   { value: "TAX_DUE", label: "Tax / VAT Due" },
   { value: "LOAN_NOTE", label: "Loan Repayment Note" },
   { value: "RENT", label: "Rent / Lease Payable" },
@@ -44,6 +45,7 @@ const LABEL_MAP = {
   SUPPLIER_INVOICE:"Supplier / Manufacturer COGS",MANUFACTURER_COGS:"Manufacturer COGS",
   OPERATING_EXPENSE:"Operating Expense",SALARY_PAYABLE:"Salary Payable",
   SALARIES:"Salaries",ASSET_PURCHASE:"Asset Purchase",PARTNER_DISTRIBUTION:"Partner Payout",
+  DISTRIBUTOR_SETTLEMENT:"Distributor Settlement",
   TAX_DUE:"Tax Due",LOAN_NOTE:"Loan Note",RENT:"Rent Payable",UTILITIES:"Utilities",OTHER:"Other",
   CUSTOMER_RECEIVABLE:"Customer Due",CARRIER_COD_RECEIVABLE:"NCM Courier COD",
   DIRECT_SALES_COMMISSION:"Direct Sale Margin",SUPPLIER_DEBIT_REFUND:"Supplier Credit",
@@ -52,6 +54,7 @@ const LABEL_MAP = {
 const ICON_MAP = {
   SALARY_PAYABLE:"👷",SALARIES:"👷",SUPPLIER_INVOICE:"🏭",MANUFACTURER_COGS:"🏭",
   OPERATING_EXPENSE:"⚙️",ASSET_PURCHASE:"🏢",PARTNER_DISTRIBUTION:"🤝",
+  DISTRIBUTOR_SETTLEMENT:"🚚",
   TAX_DUE:"🏛️",LOAN_NOTE:"🏦",RENT:"🏠",UTILITIES:"⚡",OTHER:"📋",
   CUSTOMER_RECEIVABLE:"🛍️",CARRIER_COD_RECEIVABLE:"🚚",DIRECT_SALES_COMMISSION:"🏭",
   SUPPLIER_DEBIT_REFUND:"↩️",TAX_REFUND_CREDIT:"💰",LOAN_RECEIVABLE:"💳",ADVANCE_PAYMENT:"👤",
@@ -396,7 +399,7 @@ const PayablesReceivables = ({ token }) => {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Accounts Payable &amp; Receivable</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Track salary, manufacturer obligations (COGS/Direct Sales), supplier bills, and liquid cash.</p>
+          <p className="text-xs text-slate-500 mt-0.5">Track supplier bills, distributor settlement requests, manufacturer obligations, and liquid cash.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={()=>{
@@ -810,7 +813,7 @@ const PayablesReceivables = ({ token }) => {
             <div className="text-center py-16 bg-white border border-dashed border-slate-300 rounded-xl">
               <p className="text-2xl mb-2">📋</p>
               <p className="text-slate-500 text-sm font-medium">No payables found</p>
-              <p className="text-[11px] text-slate-400 mt-1">Record salary, supplier invoices, rent, or any liability you owe</p>
+              <p className="text-[11px] text-slate-400 mt-1">Distributor settlement requests and other liabilities appear here for payment.</p>
               <button onClick={()=>setShowAddP(true)} className="mt-3 px-4 py-2 bg-red-600 text-white text-xs font-semibold rounded-lg hover:bg-red-700">+ Record Payable</button>
             </div>
           ):(
@@ -1195,10 +1198,14 @@ const PayablesReceivables = ({ token }) => {
                 <input type="number" min="0.01" step="0.01" value={sForm.amount} onChange={e=>setSForm({...sForm,amount:e.target.value})} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none font-semibold"/>
                 <p className="text-[10px] text-slate-500 mt-1">Net settled: {fmt(Number(sForm.amount||0)+(sForm.adjustmentType==="DISCOUNT"?Number(sForm.adjustmentAmount||0):0)-(sForm.adjustmentType==="FINE"?Number(sForm.adjustmentAmount||0):0))} of {fmt(showSettle.remainingBalance)}</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment</label><select value={sForm.adjustmentType} onChange={e=>{const adjustmentType=e.target.value;setSForm({...sForm,adjustmentType,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,adjustmentType,sForm.adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"><option value="NONE">No adjustment</option><option value="DISCOUNT">Discount received</option><option value="FINE">Fine paid</option></select></div>
-                {sForm.adjustmentType!=="NONE"&&<div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment Amount (Rs)</label><input type="number" min="0.01" step="0.01" value={sForm.adjustmentAmount} onChange={e=>{const adjustmentAmount=e.target.value;setSForm({...sForm,adjustmentAmount,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,sForm.adjustmentType,adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"/></div>}
-              </div>
+              {showSettle.referenceType==="DISTRIBUTOR_SETTLEMENT" ? (
+                <p className="text-[10px] text-slate-500">Distributor settlement payouts are recorded at the approved amount; discounts and fines are not available in this payment flow.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment</label><select value={sForm.adjustmentType} onChange={e=>{const adjustmentType=e.target.value;setSForm({...sForm,adjustmentType,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,adjustmentType,sForm.adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"><option value="NONE">No adjustment</option><option value="DISCOUNT">Discount received</option><option value="FINE">Fine paid</option></select></div>
+                  {sForm.adjustmentType!=="NONE"&&<div><label className="block text-xs font-semibold text-slate-700 mb-1">Adjustment Amount (Rs)</label><input type="number" min="0.01" step="0.01" value={sForm.adjustmentAmount} onChange={e=>{const adjustmentAmount=e.target.value;setSForm({...sForm,adjustmentAmount,amount:sForm.partial?sForm.amount:String(adjustedCashDue(showSettle.remainingBalance,sForm.adjustmentType,adjustmentAmount))});}} className="w-full px-3 py-2.5 text-sm border border-slate-300 rounded-xl"/></div>}
+                </div>
+              )}
               <AccountSelector accounts={accounts} value={sForm.fromAccountId} onChange={id=>setSForm({...sForm,fromAccountId:id})} label="Pay From Account *" helpText="Select the cash drawer or bank account to pay from" forPayment={true}/>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Notes</label><input value={sForm.notes} onChange={e=>setSForm({...sForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Bank transfer, Cheque #1234"/></div>
               {insuff&&<div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">⚠️ Insufficient balance in <b>{selAcc?.accountName}</b>. Available: {fmt(selAcc?.currentBalance)}, required: {fmt(sForm.amount)}.</div>}

@@ -25,7 +25,14 @@ export const getDistributorStatement = async (req, res) => {
     }
 
     const withVatParam = req.query.withVat;
-    const withVat = withVatParam !== undefined ? withVatParam === "true" || withVatParam === true : true;
+    if (withVatParam !== undefined && !["true", "false", true, false].includes(withVatParam)) {
+      return res.status(400).json({
+        success: false,
+        message: "withVat must be true or false.",
+        code: "INVALID_VAT_MODE",
+      });
+    }
+    const withVat = withVatParam === undefined ? true : withVatParam === true || withVatParam === "true";
     const { startDate, endDate } = req.query;
 
     const statement = await getDistributorFinancialStatement({
@@ -52,6 +59,13 @@ export const getDistributorStatement = async (req, res) => {
  */
 export const askDistributorSettlement = async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "A JSON settlement request body is required.",
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
     const distributorId = req.distributorId || req.auth?.distributorId;
     if (!distributorId) {
       return res.status(403).json({
@@ -60,7 +74,8 @@ export const askDistributorSettlement = async (req, res) => {
       });
     }
 
-    const { amount, notes, idempotencyKey } = req.body;
+    const { amount, notes } = req.body;
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || null;
     if (amount === undefined || amount === null) {
       return res.status(400).json({
         success: false,
@@ -94,29 +109,24 @@ export const askDistributorSettlement = async (req, res) => {
  */
 export const adminExecuteSettlement = async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "A JSON settlement payment body is required.",
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
     const settlementId = req.params.id || req.body.settlementId || req.body.id || null;
-    const {
-      distributorId,
-      amount,
-      financialAccountId,
-      bonusAmount,
-      discountsApplied,
-      chargesApplied,
-      adminNotes,
-      notes,
-    } = req.body;
+    const { amount, financialAccountId, adminNotes, notes } = req.body;
 
     const adminAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
 
     const result = await executeAdminDistributorSettlement({
       settlementId,
-      distributorId,
       amount,
       financialAccountId,
-      bonusAmount,
-      discountsApplied,
-      chargesApplied,
       adminNotes: adminNotes || notes,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
       adminAccountId,
     });
 
@@ -138,8 +148,34 @@ export const adminExecuteSettlement = async (req, res) => {
 export const listAdminDistributorSettlements = async (req, res) => {
   try {
     const { distributorId, status, page = 1, limit = 20 } = req.query;
-    const numPage = Math.max(1, Number(page || 1));
-    const numLimit = Math.min(100, Math.max(1, Number(limit || 20)));
+    if (
+      (distributorId !== undefined && (typeof distributorId !== "string" || !distributorId.trim() || distributorId.length > 191)) ||
+      !/^\d+$/.test(String(page)) ||
+      !/^\d+$/.test(String(limit))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Distributor, page, or limit filter is invalid.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
+    const numPage = Number(page);
+    const numLimit = Number(limit);
+    if (numPage < 1 || numLimit < 1 || numLimit > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Page must be positive and limit must be between 1 and 100.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
+    const allowedStatuses = ["PENDING", "PARTIALLY_PAID", "SETTLED", "REJECTED", "all"];
+    if (status !== undefined && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Settlement status filter is invalid.",
+        code: "INVALID_SETTLEMENT_FILTER",
+      });
+    }
     const skip = (numPage - 1) * numLimit;
 
     const where = {};

@@ -173,6 +173,7 @@ const getNcmStateFilter = (status) => {
   const value = String(status || "all").trim().toUpperCase();
   if (value === "ALL") return {};
   if (value === "COMPLETED") return { state: "DELIVERED" };
+  if (value === "NEEDS_RECONCILIATION") return { ncmReconciliationRequired: true };
   if (value === "INCOMPLETE") {
     return { state: { notIn: ["DELIVERED", "RETURNED", "CANCELLED"] } };
   }
@@ -222,9 +223,10 @@ export const listAdminNcmDeliveries = async (query = {}, client = prisma) => {
   const { page, limit } = getPagination(query);
   const range = getDeliveryRange(query);
   const search = normalizeSearchText(query.search);
+  const reconciliationQueue = String(query.status || "").trim().toUpperCase() === "NEEDS_RECONCILIATION";
   const where = {
     ...getNcmStateFilter(query.status),
-    ...(range
+    ...(!reconciliationQueue && range
       ? { createdAt: { gte: range.start, lt: range.endExclusive } }
       : {}),
     ...(search
@@ -249,6 +251,8 @@ export const listAdminNcmDeliveries = async (query = {}, client = prisma) => {
         ncmOrderId: true,
         state: true,
         ncmStatus: true,
+        ncmReconciliationRequired: true,
+        ncmReconciliationReason: true,
         originBranchName: true,
         destinationBranchName: true,
         createdAt: true,
@@ -313,6 +317,8 @@ export const getAdminNcmDeliveryDetails = async (deliveryId, client = prisma) =>
       ncmOrderId: true,
       vendorReference: true,
       ncmStatus: true,
+      ncmReconciliationRequired: true,
+      ncmReconciliationReason: true,
       ncmPaymentStatus: true,
       lastSyncedAt: true,
       lastSyncError: true,
@@ -347,6 +353,7 @@ export const getAdminNcmDeliveryDetails = async (deliveryId, client = prisma) =>
           toState: true,
           ncmStatus: true,
           actorId: true,
+          payloadJson: true,
           occurredAt: true,
         },
         orderBy: { occurredAt: "desc" },

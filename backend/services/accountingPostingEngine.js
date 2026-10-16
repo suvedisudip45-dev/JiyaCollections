@@ -1270,6 +1270,9 @@ export const postSupplierPaymentAccounting = async ({
   referenceNumber,
   payableAccountCode = "2110",
   cashAccountCode,
+  cashAccountId = null,
+  supplierId = null,
+  accountingPartyId = null,
   idempotencyKey,
   client = prisma,
 }) => {
@@ -1293,7 +1296,9 @@ export const postSupplierPaymentAccounting = async ({
           debit: settled,
           credit: 0,
           description: `Settle Accounts Payable for ${payeeName}`,
+          ...(supplierId ? { supplierId } : {}),
           supplierName: payeeName,
+          ...(accountingPartyId ? { accountingPartyId } : {}),
         },
         ...(Number(fineAmount) > 0 ? [{
           accountCode: "6700",
@@ -1302,7 +1307,7 @@ export const postSupplierPaymentAccounting = async ({
           description: `Fine expense on payable to ${payeeName}`,
         }] : []),
         {
-          accountCode: cashBankCode,
+          ...(cashAccountId ? { accountId: cashAccountId } : { accountCode: cashBankCode }),
           debit: 0,
           credit: amt,
           description: `Disbursed from liquid account to ${payeeName}`,
@@ -1320,6 +1325,42 @@ export const postSupplierPaymentAccounting = async ({
     console.error("Error in postSupplierPaymentAccounting:", error);
     throw error;
   }
+};
+
+export const postDistributorSettlementRequestAccounting = async ({
+  settlement,
+  distributorName,
+  client = prisma,
+}) => {
+  const amount = Number(settlement?.amount || 0);
+  if (!settlement?.id || !Number.isFinite(amount) || amount <= 0) {
+    throw new Error("A valid distributor settlement request and positive amount are required for accounting.");
+  }
+  return postJournalEntry({
+    transactionDate: settlement.requestedAt || new Date(),
+    sourceType: "DISTRIBUTOR_SETTLEMENT_REQUEST",
+    sourceId: settlement.id,
+    idempotencyKey: `DISTRIBUTOR_SETTLEMENT_REQUEST:${settlement.id}`,
+    referenceNumber: `DIST-SET-${settlement.id.slice(-8)}`,
+    description: `Distributor delivery services payable to ${distributorName}`,
+    lines: [
+      {
+        accountCode: "6430",
+        debit: amount,
+        credit: 0,
+        description: `Distributor settlement service expense for ${distributorName}`,
+        supplierName: distributorName,
+      },
+      {
+        accountCode: "2110",
+        debit: 0,
+        credit: amount,
+        description: `Distributor settlement payable to ${distributorName}`,
+        supplierName: distributorName,
+      },
+    ],
+    client,
+  });
 };
 
 /**

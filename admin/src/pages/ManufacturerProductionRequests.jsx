@@ -12,6 +12,27 @@ const statusClass = {
   REJECTED: "bg-rose-100 text-rose-800",
 };
 
+const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) => {
+  const enteredAmount = Number(amount) || 0;
+  const rate = Number(vatRate) || 0;
+  let net = enteredAmount;
+  let vat = 0;
+  let gross = enteredAmount;
+  if (treatment === "VAT_INCLUSIVE") {
+    net = enteredAmount / (1 + rate / 100);
+    vat = enteredAmount - net;
+  } else if (treatment === "VAT_EXCLUSIVE") {
+    vat = enteredAmount * rate / 100;
+    gross = enteredAmount + vat;
+  }
+  return {
+    net: net.toFixed(2),
+    vat: vat.toFixed(2),
+    gross: gross.toFixed(2),
+    inventoryCost: (vatVerified ? net : gross).toFixed(2),
+  };
+};
+
 const ManufacturerProductionRequests = ({ token }) => {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,6 +53,10 @@ const ManufacturerProductionRequests = ({ token }) => {
             unitCogs: request.proposedUnitCogs,
             minimumOrderQuantity: request.minimumOrderQuantity,
             otherCost: request.proposedDeliveryCost,
+            vatTreatment: request.vatTreatment || "EXEMPT",
+            vatRate: request.vatRate ?? 13,
+            vatInvoiceReference: request.vatInvoiceReference || "",
+            vatInvoiceVerified: false,
           };
         });
         return next;
@@ -56,6 +81,10 @@ const ManufacturerProductionRequests = ({ token }) => {
           approvedUnitCogs: approved.unitCogs,
           approvedMinimumOrderQuantity: approved.minimumOrderQuantity,
           approvedOtherCost: approved.otherCost,
+          approvedVatTreatment: approved.vatTreatment,
+          approvedVatRate: approved.vatRate,
+          approvedVatInvoiceReference: approved.vatInvoiceReference,
+          approvedVatInvoiceVerified: approved.vatTreatment !== "EXEMPT" && approved.vatInvoiceVerified === true,
         } : {}),
       }, { headers: { token } });
       toast.success(response.data.message || `Request ${decision.toLowerCase()}d.`);
@@ -84,12 +113,34 @@ const ManufacturerProductionRequests = ({ token }) => {
             const quantity = (request.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
             const pending = request.status === "PENDING_REVIEW";
             const approvedTerms = terms[request.id] || {};
+            const unitCostBreakdown = getUnitCostBreakdown(
+              pending ? approvedTerms.unitCogs : (request.approvedUnitCogs ?? request.proposedUnitCogs),
+              pending ? approvedTerms.vatTreatment : (request.approvedVatTreatment || request.vatTreatment || "EXEMPT"),
+              pending ? approvedTerms.vatRate : (request.approvedVatRate ?? request.vatRate),
+              pending ? approvedTerms.vatInvoiceVerified === true : request.approvedVatInvoiceVerified === true,
+            );
+            const batchOtherCost = Number(pending
+              ? approvedTerms.otherCost
+              : (request.approvedDeliveryCost ?? request.proposedDeliveryCost)) || 0;
             return <article key={request.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div><h2 className="font-bold text-slate-900">{request.productName}</h2><p className="mt-1 text-xs text-slate-500">{request.manufacturer?.name} · {quantity} units · Requested {new Date(request.requestedAt).toLocaleDateString()}</p></div>
                 <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass[request.status] || "bg-slate-100 text-slate-600"}`}>{request.status.replaceAll("_", " ")}</span>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">{(request.lines || []).map((line) => <span key={`${line.size}-${line.color}`} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700">{line.size}{line.color !== "Standard" ? ` / ${line.color}` : ""}: {line.quantity}</span>)}</div>
+              <section className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4">
+                <h3 className="text-xs font-bold text-sky-950">{pending ? "Review cost breakdown" : "Approved cost breakdown"}</h3>
+                <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                  <p className="text-slate-600">Goods cost before VAT <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.net} / unit</strong></p>
+                  <p className="text-slate-600">Supplier VAT ({(pending ? approvedTerms.vatTreatment : request.approvedVatTreatment) === "EXEMPT" ? "exempt" : `${pending ? approvedTerms.vatRate : request.approvedVatRate}%`}) <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.vat} / unit</strong></p>
+                  <p className="text-slate-600">Goods total incl. VAT <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.gross} / unit</strong></p>
+                  <p className="text-slate-600">Other production charges <strong className="mt-1 block text-slate-900">{currency}{batchOtherCost.toFixed(2)} {request.costTermsVersion >= 2 ? "/ batch" : "/ unit (legacy)"}</strong></p>
+                  <p className="text-slate-600 sm:col-span-2">Inventory unit cost <strong className="text-slate-900">{currency}{unitCostBreakdown.inventoryCost}</strong> · {pending
+                    ? approvedTerms.vatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."
+                    : request.approvedVatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."}</p>
+                  <p className="text-slate-600 sm:col-span-2">Delivery to distributor <strong className="text-slate-900">separate shipment cost</strong> · recorded at transfer dispatch, not included above.</p>
+                </div>
+              </section>
               {pending && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <label className="text-xs font-semibold text-slate-600">Approved unit COGS ({currency})
                   <input type="number" min="0.01" step="0.01" value={approvedTerms.unitCogs ?? ""} onChange={(event) => setTerm(request.id, "unitCogs", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
@@ -100,8 +151,27 @@ const ManufacturerProductionRequests = ({ token }) => {
                 <label className="text-xs font-semibold text-slate-600">Batch other cost ({currency})
                   <input type="number" min="0" step="0.01" value={approvedTerms.otherCost ?? ""} onChange={(event) => setTerm(request.id, "otherCost", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                 </label>
+                <label className="text-xs font-semibold text-slate-600">Manufacturer COGS VAT treatment
+                  <select value={approvedTerms.vatTreatment ?? "EXEMPT"} onChange={(event) => setTerm(request.id, "vatTreatment", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
+                    <option value="EXEMPT">No VAT / exempt</option>
+                    <option value="VAT_INCLUSIVE">VAT inclusive</option>
+                    <option value="VAT_EXCLUSIVE">VAT exclusive</option>
+                  </select>
+                </label>
+                {approvedTerms.vatTreatment !== "EXEMPT" && <>
+                  <label className="text-xs font-semibold text-slate-600">VAT rate (%)
+                    <input type="number" min="0.01" max="100" step="0.01" value={approvedTerms.vatRate ?? "13"} onChange={(event) => setTerm(request.id, "vatRate", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
+                  </label>
+                  <label className="text-xs font-semibold text-slate-600">Supplier VAT invoice reference
+                    <input type="text" maxLength={120} required value={approvedTerms.vatInvoiceReference ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceReference", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
+                  </label>
+                  <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900 sm:col-span-3">
+                    <input type="checkbox" checked={approvedTerms.vatInvoiceVerified === true} onChange={(event) => setTerm(request.id, "vatInvoiceVerified", event.target.checked)} className="mt-0.5" />
+                    I verified the supplier VAT invoice; recognize this amount as recoverable input VAT. If unchecked, VAT stays in product inventory cost.
+                  </label>
+                </>}
               </div>}
-              {!pending && <p className="mt-3 text-sm text-slate-600">Approved: {currency}{request.approvedUnitCogs ?? request.proposedUnitCogs}/unit base COGS · MOQ {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity} · {currency}{request.approvedDeliveryCost ?? request.proposedDeliveryCost} {request.costTermsVersion >= 2 ? "batch other cost" : "other cost per delivered unit (legacy)"}</p>}
+              {!pending && <p className="mt-3 text-xs text-slate-500">MOQ: {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity}</p>}
               {request.manufacturerNote && <p className="mt-3 text-xs text-slate-500">Manufacturer note: {request.manufacturerNote}</p>}
               {request.adminNote && <p className="mt-2 text-xs text-slate-500">Admin note: {request.adminNote}</p>}
               {pending && <>

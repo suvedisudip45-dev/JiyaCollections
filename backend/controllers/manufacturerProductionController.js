@@ -8,7 +8,9 @@ import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from 
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
 import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
 import {
+  calculateProductionUnitCost,
   calculateFullyLoadedUnitCogs,
+  normalizeProductionVatTerms,
   validateProductionRequestInput,
 } from "../services/manufacturerProductionService.js";
 import {
@@ -320,6 +322,11 @@ export const setProductionMoqPricing = async (req, res) => {
     if (moq > plannedQuantity) {
       return res.status(400).json({ success: false, message: "MOQ cannot exceed the quantity requested by the admin." });
     }
+    const vatTerms = normalizeProductionVatTerms({
+      vatTreatment: request.approvedVatTreatment,
+      vatRate: request.approvedVatRate,
+      vatInvoiceReference: request.approvedVatInvoiceReference,
+    });
     const updated = await prisma.$transaction(async (tx) => {
       const claimed = await tx.manufacturerProductionRequest.updateMany({
         where: { id, manufacturerId: req.manufacturerId, status: request.status },
@@ -329,6 +336,12 @@ export const setProductionMoqPricing = async (req, res) => {
           approvedMinimumOrderQuantity: moq,
           minimumOrderQuantity: moq,
           approvedDeliveryCost: request.approvedDeliveryCost ?? request.proposedDeliveryCost ?? new Prisma.Decimal(0),
+          vatTreatment: vatTerms.vatTreatment,
+          vatRate: vatTerms.vatRate,
+          vatInvoiceReference: vatTerms.vatInvoiceReference,
+          approvedVatTreatment: vatTerms.vatTreatment,
+          approvedVatRate: vatTerms.vatRate,
+          approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
         },
       });
       if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while pricing was being recorded."), { statusCode: 409 });
@@ -336,7 +349,13 @@ export const setProductionMoqPricing = async (req, res) => {
         action: "MANUFACTURER_PRODUCTION_TERMS_SET",
         entityType: "ManufacturerProductionRequest",
         entityId: id,
-        afterState: { averagePricePerUnit: unitCogs.toFixed(2), moq },
+        afterState: {
+          averagePricePerUnit: unitCogs.toFixed(2),
+          moq,
+          vatTreatment: vatTerms.vatTreatment,
+          vatRate: vatTerms.vatRate.toFixed(2),
+          vatInvoiceReference: vatTerms.vatInvoiceReference,
+        },
       }, { client: tx });
       return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
     }, { isolationLevel: "Serializable" });
@@ -351,7 +370,18 @@ export const createProductionRequest = async (req, res) => {
   try {
     const manufacturerId = req.manufacturerId;
     if (!manufacturerId) return res.status(403).json({ success: false, message: "Manufacturer context is required." });
-    const { productId, lines, unitCogs, minimumOrderQuantity, otherCost, deliveryCost, manufacturerNote } = req.body;
+    const {
+      productId,
+      lines,
+      unitCogs,
+      minimumOrderQuantity,
+      otherCost,
+      deliveryCost,
+      manufacturerNote,
+      vatTreatment,
+      vatRate,
+      vatInvoiceReference,
+    } = req.body;
     if (!productId) return res.status(400).json({ success: false, message: "Select a product for production." });
     const usesBatchOtherCost = otherCost !== undefined;
     const normalized = validateProductionRequestInput({
@@ -359,6 +389,9 @@ export const createProductionRequest = async (req, res) => {
       unitCogs,
       minimumOrderQuantity,
       otherCost: usesBatchOtherCost ? otherCost : deliveryCost,
+      vatTreatment,
+      vatRate,
+      vatInvoiceReference,
     });
     const note = String(manufacturerNote || "").trim();
     if (note.length > 2000) return res.status(400).json({ success: false, message: "Production note cannot exceed 2000 characters." });
@@ -378,6 +411,9 @@ export const createProductionRequest = async (req, res) => {
           proposedUnitCogs: normalized.unitCogs,
           minimumOrderQuantity: normalized.minimumOrderQuantity,
           proposedDeliveryCost: normalized.otherCost,
+          vatTreatment: normalized.vatTreatment,
+          vatRate: normalized.vatRate,
+          vatInvoiceReference: normalized.vatInvoiceReference,
           costTermsVersion: usesBatchOtherCost ? 2 : 1,
           manufacturerNote: note || null,
           requestedBy: req.auth?.accountId || null,
@@ -395,6 +431,9 @@ export const createProductionRequest = async (req, res) => {
           proposedUnitCogs: normalized.unitCogs.toFixed(2),
           minimumOrderQuantity: normalized.minimumOrderQuantity,
           proposedOtherCost: normalized.otherCost.toFixed(2),
+          vatTreatment: normalized.vatTreatment,
+          vatRate: normalized.vatRate.toFixed(2),
+          vatInvoiceReference: normalized.vatInvoiceReference,
         },
       }, { client: tx });
       return created;
@@ -428,17 +467,32 @@ export const reviewProductionRequest = async (req, res) => {
         req.body.approvedOtherCost ?? req.body.approvedDeliveryCost ?? request.proposedDeliveryCost
       ));
       const moq = Number(req.body.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity);
+      const vatTerms = normalizeProductionVatTerms({
+        vatTreatment: req.body.approvedVatTreatment ?? request.vatTreatment,
+        vatRate: req.body.approvedVatRate ?? request.vatRate,
+        vatInvoiceReference: req.body.approvedVatInvoiceReference ?? request.vatInvoiceReference,
+      });
+      const vatInvoiceVerified = vatTerms.vatTreatment !== "EXEMPT" &&
+        req.body.approvedVatInvoiceVerified === true;
       if (decision === "APPROVE" && (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !otherCost.isFinite() || otherCost.isNegative() || !Number.isInteger(moq) || moq < 1 || moq > 2147483647)) {
         throw Object.assign(new Error("Approved unit COGS, batch other cost, and MOQ are invalid."), { statusCode: 400 });
       }
       const plannedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
       const inventoryUnitCogs = request.costTermsVersion >= 2 && plannedQuantity > 0
         ? calculateFullyLoadedUnitCogs({
-          unitCogs,
+          unitCogs: calculateProductionUnitCost({
+            unitAmount: unitCogs,
+            ...vatTerms,
+            vatInvoiceVerified,
+          }).capitalizedAmount,
           batchOtherCost: otherCost,
           goodQuantity: plannedQuantity,
         })
-        : unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+        : calculateProductionUnitCost({
+          unitAmount: unitCogs,
+          ...vatTerms,
+          vatInvoiceVerified,
+        }).capitalizedAmount.toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
       const claimed = await tx.manufacturerProductionRequest.updateMany({
         where: { id, status: "PENDING_REVIEW" },
         data: {
@@ -450,6 +504,10 @@ export const reviewProductionRequest = async (req, res) => {
             approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
             approvedMinimumOrderQuantity: moq,
             approvedDeliveryCost: otherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+            approvedVatTreatment: vatTerms.vatTreatment,
+            approvedVatRate: vatTerms.vatRate,
+            approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
+            approvedVatInvoiceVerified: vatInvoiceVerified,
           } : {}),
         },
       });
@@ -491,6 +549,10 @@ export const reviewProductionRequest = async (req, res) => {
             approvedUnitCogs: unitCogs.toFixed(2),
             approvedMinimumOrderQuantity: moq,
             approvedOtherCost: otherCost.toFixed(2),
+            approvedVatTreatment: vatTerms.vatTreatment,
+            approvedVatRate: vatTerms.vatRate.toFixed(2),
+            approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
+            approvedVatInvoiceVerified: vatInvoiceVerified,
           } : {}),
         },
       }, { client: tx });
@@ -617,13 +679,20 @@ export const completeProduction = async (req, res) => {
       }
       const batchOtherCost = new Prisma.Decimal(String(request.approvedDeliveryCost || 0));
       const unitCogs = new Prisma.Decimal(String(request.approvedUnitCogs));
+      const productionCost = calculateProductionUnitCost({
+        unitAmount: unitCogs,
+        vatTreatment: request.approvedVatTreatment,
+        vatRate: request.approvedVatRate,
+        vatInvoiceReference: request.approvedVatInvoiceReference,
+        vatInvoiceVerified: request.approvedVatInvoiceVerified,
+      });
       const fullyLoadedUnitCogs = request.costTermsVersion >= 2
         ? calculateFullyLoadedUnitCogs({
-          unitCogs,
+          unitCogs: productionCost.capitalizedAmount,
           batchOtherCost,
           goodQuantity: productionQuantity,
         })
-        : unitCogs;
+        : productionCost.capitalizedAmount;
       for (const line of request.lines) {
         const actual = actualByKey.get(JSON.stringify([line.size.toLowerCase(), line.color.toLowerCase()]));
         const goodQuantity = actual.quantity - actual.damagedQuantity;
@@ -646,6 +715,10 @@ export const completeProduction = async (req, res) => {
           color: line.color,
           quantity: goodQuantity,
           unitCogs: fullyLoadedUnitCogs,
+          unitVatAmount: productionCost.vatAmount,
+          vatTreatment: productionCost.vatTreatment,
+          vatRate: productionCost.vatRate,
+          vatInvoiceVerified: request.approvedVatInvoiceVerified,
           unitDeliveryCost: request.costTermsVersion >= 2 ? 0 : request.approvedDeliveryCost,
           actorId: req.auth?.accountId || req.auth?.profileId,
           actorRole: req.auth?.role || "MANUFACTURER",
@@ -694,6 +767,11 @@ export const completeProduction = async (req, res) => {
       const productionCogs = fullyLoadedUnitCogs
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      const recoverableInputVat = productionCost.recoverableVat
+        .mul(productionQuantity)
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      const manufacturerPayable = productionCogs.plus(recoverableInputVat)
+        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       const party = await ensureAccountingParty({
         partyType: "MANUFACTURER",
         sourceEntityId: request.manufacturerId,
@@ -715,10 +793,18 @@ export const completeProduction = async (req, res) => {
               description: `Inventory received from production request ${request.id}`,
               productId: product.id,
             },
+            ...(recoverableInputVat.greaterThan(0) ? [{
+              mappingKey: "INPUT_VAT_RECEIVABLE",
+              debit: recoverableInputVat,
+              credit: 0,
+              description: `Verified manufacturer VAT invoice ${request.approvedVatInvoiceReference || ""}`,
+              supplierId: request.manufacturerId,
+              accountingPartyId: party.id,
+            }] : []),
             {
               mappingKey: "MANUFACTURER_PAYABLE",
               debit: 0,
-              credit: productionCogs,
+              credit: manufacturerPayable,
               description: `Production COGS payable to ${request.manufacturer.name}`,
               supplierId: request.manufacturerId,
               accountingPartyId: party.id,
@@ -751,6 +837,11 @@ export const completeProduction = async (req, res) => {
           producedQuantity: productionQuantity,
           damagedQuantity,
           approvedUnitCogs: unitCogs.toFixed(2),
+          approvedVatTreatment: productionCost.vatTreatment,
+          approvedVatRate: productionCost.vatRate.toFixed(2),
+          vatInvoiceReference: request.approvedVatInvoiceReference,
+          vatInvoiceVerified: request.approvedVatInvoiceVerified,
+          productionVatAmount: recoverableInputVat.toFixed(2),
           productionOtherCost: request.costTermsVersion >= 2 ? batchOtherCost.toFixed(2) : "0.00",
           fullyLoadedUnitCogs: fullyLoadedUnitCogs.toFixed(2),
           productionCogs: productionCogs.toFixed(2),

@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import { Link } from "react-router-dom";
+import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
 
 const FinanceDashboard = ({ token }) => {
   const [data, setData] = useState(null);
@@ -56,6 +57,10 @@ const FinanceDashboard = ({ token }) => {
   const breakEven = data?.breakEven || {};
   const bs = data?.balanceSheetSnapshot || {};
   const analytics = data?.analytics || {};
+  const postedAccounting = data?.postedAccounting || null;
+  const postedIncome = postedAccounting?.incomeStatement || {};
+  const postedVat = postedAccounting?.vat || {};
+  const postedBalanceSheet = postedAccounting?.balanceSheet || {};
   const costDetails = costs.details || {};
   const openCostDetails = (title, groups) => {
     const rows = groups.flatMap(({ category, entries }) =>
@@ -117,6 +122,43 @@ const FinanceDashboard = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <AccountingPostingStatusBanner status={data?.accountingPostingStatus} />
+
+      {postedAccounting && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-6 shadow-xs">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Posted Ledger Summary</h2>
+              <p className="mt-1 text-xs text-slate-600">
+                Authoritative financial totals from posted journal entries for {selectedMonth}. Operational estimates and pending settlements are shown separately below.
+              </p>
+            </div>
+            <span className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-800">
+              Posted journals only
+            </span>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ["Net revenue", postedIncome.netRevenue],
+              ["COGS", postedIncome.totalCogs],
+              ["Operating expenses", postedIncome.totalOperatingExpenses],
+              ["Net profit before tax", postedIncome.netProfitBeforeTax],
+              ["Output VAT payable", postedVat.outputVat],
+              ["Input VAT receivable", postedVat.inputVat],
+              ["Inventory (GL)", postedBalanceSheet.inventory],
+              ["COD receivable (GL)", postedBalanceSheet.codReceivable],
+              ["Manufacturer payable (GL)", postedBalanceSheet.manufacturerPayable],
+              ["Carrier payable (GL)", postedBalanceSheet.carrierPayable],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-xl border border-emerald-100 bg-white p-4">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                <p className="mt-2 text-lg font-black text-slate-900">{currency}{Number(value || 0).toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* TOP ROW: EXECUTIVE METRICS CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -316,9 +358,9 @@ const FinanceDashboard = ({ token }) => {
       <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold text-slate-900">Product Cost &amp; Overhead Breakdown</h2>
+            <h2 className="text-base font-bold text-slate-900">Operational Cost Detail</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Batch transportation and other approved batch costs are allocated across good units and shown separately from product COGS.
+              Operational costing and shipment-level batch charges; these subledger figures are not posted journal totals. Compare with the Posted Ledger Summary above.
             </p>
           </div>
           <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600">
@@ -438,6 +480,11 @@ const FinanceDashboard = ({ token }) => {
                             {entry.transferId && <p className="mt-1 font-mono text-[10px]">Transfer: {entry.transferId}</p>}
                             {entry.referenceId && <p className="mt-1 font-mono text-[10px]">Cost layer: {String(entry.referenceId).slice(0, 12)}</p>}
                             {entry.paymentStatus && <p className="mt-1 text-[10px]">Payment: {entry.paymentStatus}</p>}
+                            {entry.transferId && entry.paidAmount !== undefined && (
+                              <p className="mt-1 text-[10px]">
+                                Paid {currency}{formatDetailAmount(entry.paidAmount)} · Outstanding {currency}{formatDetailAmount(entry.outstandingAmount)}
+                              </p>
+                            )}
                             {entry.notes && <p className="mt-1 break-words text-[10px]">{entry.notes}</p>}
                           </td>
                           <td className="whitespace-nowrap px-4 py-3 text-right font-bold text-slate-900">

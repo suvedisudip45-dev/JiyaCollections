@@ -236,10 +236,116 @@ export const getCustomerDelivery = async (req, res) => {
 
 export const adminReconcileDelivery = async (req, res) => {
   try {
-    const delivery = await reconcileDelivery(req.params.id);
+    const delivery = await reconcileDelivery(req.params.id, { actorId: req.auth?.accountId || null });
     res.json({ success: true, delivery });
   } catch (error) {
-    res.status(502).json({ success: false, message: error.message });
+    res.status(error.code === "DELIVERY_NOT_FOUND" ? 404 : 502).json({
+      success: false,
+      code: error.code || "NCM_RECONCILIATION_FAILED",
+      message: error.message,
+    });
+  }
+};
+
+export const adminResolveNcmDeliveryReconciliation = async (req, res) => {
+  const decision = String(req.body?.decision || "").trim().toUpperCase();
+  const note = String(req.body?.note || "").trim();
+  if (!["CONFIRM_DELIVERED", "CONFIRM_NOT_DELIVERED"].includes(decision) || note.length < 10 || note.length > 2000) {
+    return res.status(400).json({
+      success: false,
+      code: "INVALID_NCM_RECONCILIATION_DECISION",
+      message: "Choose a resolution and provide an investigation note between 10 and 2000 characters.",
+    });
+  }
+
+  try {
+    const delivery = await prisma.deliveryOrder.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        orderId: true,
+        ncmOrderId: true,
+        state: true,
+        deliveredAt: true,
+        ncmReconciliationRequired: true,
+      },
+    });
+    if (!delivery) return res.status(404).json({ success: false, message: "Delivery not found." });
+    if (!delivery.ncmReconciliationRequired) {
+      return res.status(409).json({ success: false, message: "This delivery is no longer awaiting NCM reconciliation." });
+    }
+    if (decision === "CONFIRM_NOT_DELIVERED" && (delivery.state === "DELIVERED" || delivery.deliveredAt)) {
+      return res.status(409).json({
+        success: false,
+        message: "A delivery already recorded as delivered cannot be marked not delivered here; use the return workflow if appropriate.",
+      });
+    }
+
+    const actorId = req.auth?.accountId || null;
+    if (decision === "CONFIRM_DELIVERED") {
+      await applyNcmStatus({
+        payload: {
+          order_id: String(delivery.ncmOrderId || delivery.id),
+          status: "Delivered",
+          event: "ADMIN_CONFIRMED_DELIVERY",
+          timestamp: new Date().toISOString(),
+          resolution_note: note,
+        },
+        source: "ADMIN_RECONCILIATION_DECISION",
+        actorId,
+      });
+    } else {
+      const now = new Date();
+      await prisma.$transaction(async (tx) => {
+        const current = await tx.deliveryOrder.findUnique({ where: { id: delivery.id } });
+        if (!current?.ncmReconciliationRequired) {
+          throw Object.assign(new Error("This delivery is no longer awaiting NCM reconciliation."), { statusCode: 409 });
+        }
+        if (current.state === "DELIVERED" || current.deliveredAt) {
+          throw Object.assign(new Error("A delivery already recorded as delivered cannot be marked not delivered here."), { statusCode: 409 });
+        }
+        await tx.deliveryOrder.update({
+          where: { id: delivery.id },
+          data: {
+            ncmReconciliationRequired: false,
+            ncmReconciliationReason: null,
+            lastSyncError: null,
+            lastSyncedAt: now,
+          },
+        });
+        await tx.deliveryEvent.create({
+          data: {
+            deliveryOrderId: delivery.id,
+            orderId: delivery.orderId,
+            source: "ADMIN",
+            eventType: "NCM_RECONCILIATION_CONFIRMED_NOT_DELIVERED",
+            fromState: current.state,
+            toState: current.state,
+            ncmStatus: current.ncmStatus,
+            payloadJson: { decision, note },
+            actorId,
+            occurredAt: now,
+            idempotencyKey: `NCM_RECONCILIATION_DECISION:${delivery.id}:${crypto.randomUUID()}`,
+          },
+        });
+      });
+    }
+
+    return res.json({
+      success: true,
+      decision,
+      delivery: await prisma.deliveryOrder.findUnique({
+        where: { id: delivery.id },
+        include: { events: { orderBy: { occurredAt: "desc" }, take: 100 } },
+      }),
+    });
+  } catch (error) {
+    const status = error.statusCode || (error.code === "DELIVERY_NOT_FOUND" ? 404 : 500);
+    return res.status(status).json({
+      success: false,
+      code: error.code || "NCM_RECONCILIATION_DECISION_FAILED",
+      message: error.message || "Unable to record the reconciliation decision.",
+    });
   }
 };
 

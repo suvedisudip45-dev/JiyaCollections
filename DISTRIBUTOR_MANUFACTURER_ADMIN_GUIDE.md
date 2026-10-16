@@ -580,8 +580,8 @@ Relevant endpoints:
 | `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
-| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit settlement payout request to Admin. |
-| `PATCH /api/admin/distributor-finance/settle` | Admin | `finance:payable_settle` | Admin executes settlement payout from financial account. |
+| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; pending requests reserve their unpaid amount. NCM deliveries are excluded. |
+| `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /manufacturer-production/products` | Manufacturer | `manufacturer:production_manage` | Get products allowed for production requests. |
 | `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
@@ -630,9 +630,15 @@ Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
   alerts using `GET /api/stock-transfers/admin/discrepancies`. A full
   investigation or financial-resolution workflow is separate from creating
   and listing this alert.
+- Manufacturer and Admin transfer screens show production terms separately from
+  delivery-to-distributor freight. Production terms identify unit goods cost
+  before VAT, VAT per unit, goods total including VAT, and batch other production
+  charges. Local freight is shown per shipment with paid and outstanding
+  reimbursement amounts; NCM charges remain separately identified as payable
+  to NCM, not the manufacturer or distributor.
 - Freight has a `freightSettlementStatus` on the shipment, initially
-  `PENDING_ADMIN_SETTLEMENT`; the routes inspected here do not provide a general
-  freight settlement action.
+  `PENDING_ADMIN_SETTLEMENT`; manufacturer settlement payments update this
+  state and the cumulative paid freight amount.
 - NCM freight quotes/charges are platform/admin settlement amounts only. NCM
   return status, return reason, carrier status, carrier payment status, and
   event timeline are visible in the admin, distributor, and manufacturer stock
@@ -799,9 +805,9 @@ story/template delivery records.
   - Stepwise status progression workflow: `Dispatched` $\rightarrow$ `On The Way` $\rightarrow$ `Delivered`.
   - Self-delivery return QA modal with restock vs. damage write-off sorting.
 - **Distributor Financial Dashboard (`manufacturer/src/pages/DistributorFinanceDashboard.jsx`)**:
-  - Minimalist KPI cards: Net Payable, Gross Earnings, Bonuses/Incentives, and Deductions.
+  - Minimalist KPI cards: Net Payable, Gross Earnings, Bonuses/Incentives, and Deductions; gross delivery earnings include distributor self-delivery only, never NCM carrier deliveries.
   - Instant toggle for **"With VAT (13%)"** vs. **"Without VAT"**.
-  - Interactive **"Ask for Settlement"** modal for payout disbursement requests.
+  - Interactive **"Ask for Settlement"** modal caps the request at available net settlement balance; the backend independently validates the amount and reserves it transactionally.
 - **Admin Distributor Management (`admin/src/pages/DistributorApplications.jsx`)**:
   - Separate review queues for new distributor applications and manufacturer requests to add distributor access, plus custom negotiated delivery rate cards & incentives and distributor settlement payout review & execution.
 

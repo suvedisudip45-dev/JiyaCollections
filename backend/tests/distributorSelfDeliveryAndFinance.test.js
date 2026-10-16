@@ -548,14 +548,18 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
 test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and balances", async (t) => {
   const mockDistributor = { id: "dist-1", name: "Kathmandu Hub", city: "Kathmandu", status: "ACTIVE", isActive: true };
   const delivered = [
-    { id: "a-1", orderId: "o-1", status: "delivered", deliveredAt: new Date() },
-    { id: "a-2", orderId: "o-2", status: "delivered", deliveredAt: new Date() },
+    { id: "a-1", orderId: "o-1", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
+    { id: "a-2", orderId: "o-2", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
+    { id: "a-4", orderId: "o-4", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
+    { id: "a-ncm", orderId: "o-ncm", deliveryType: "NCM", status: "delivered", deliveredAt: new Date() },
   ];
   const returned = [
-    { id: "a-3", orderId: "o-3", status: "returned", returnedAt: new Date() },
+    { id: "a-3", orderId: "o-3", deliveryType: "SELF_DELIVERY", status: "returned", returnedAt: new Date() },
+    { id: "a-5", orderId: "o-5", deliveryType: "SELF_DELIVERY", status: "returned", returnedAt: new Date() },
   ];
   const settlements = [
     { id: "s-1", distributorId: "dist-1", amount: 100, status: "SETTLED", settledAt: new Date() },
+    { id: "s-2", distributorId: "dist-1", amount: 20, paidAmount: 0, status: "PENDING", requestedAt: new Date() },
   ];
   const mockRateCard = {
     id: "rc-1",
@@ -569,12 +573,20 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   };
 
   stubMethod(t, prisma.distributor, "findUnique", async () => mockDistributor);
-  stubMethod(t, prisma.orderAssignment, "findMany", async ({ where }) =>
-    where.status.in ? (where.status.in.includes("delivered") ? delivered : returned) : []
+  stubMethod(t, prisma.orderAssignment, "findMany", async ({ where }) => {
+    const assignments = where.status.in?.includes("delivered") ? delivered : returned;
+    return assignments.filter((assignment) =>
+      where.deliveryType.in.includes(assignment.deliveryType) &&
+      where.status.in.includes(assignment.status)
+    );
+  });
+  stubMethod(t, prisma.deliveryOrder, "findMany", async ({ where }) =>
+    ["o-4", "o-5"].filter((orderId) => where.orderId.in.includes(orderId)).map((orderId) => ({ orderId }))
   );
   stubMethod(t, prisma.order, "findMany", async () => [
     { id: "o-1", amount: 1000, paymentMethod: "COD" },
     { id: "o-2", amount: 2000, paymentMethod: "COD" },
+    { id: "o-4", amount: 3000, paymentMethod: "COD" },
   ]);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => settlements);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
@@ -594,7 +606,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   // 13% VAT = 270 * 0.13 = 35.10
   // Total With VAT = 305.10
   // Settled Paid = 100
-  // Net Payable = 305.10 - 100 = 205.10
+  // Net Payable = 305.10 - 100 paid - 20 pending = 185.10
   assert.equal(statementWithVat.summary.grossDeliveryEarnings, 200);
   assert.equal(statementWithVat.summary.earnedIncentives, 40);
   assert.equal(statementWithVat.summary.returnFeesEarned, 50);
@@ -604,9 +616,11 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   assert.equal(statementWithVat.summary.totalWithVat, 305.10);
   assert.equal(statementWithVat.summary.totalWithoutVat, 270);
   assert.equal(statementWithVat.summary.totalSettledPaid, 100);
-  assert.equal(statementWithVat.summary.netPayableBalance, 205.10);
+  assert.equal(statementWithVat.summary.netPayableBalance, 185.10);
+  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 205.10);
+  assert.equal(statementWithVat.summary.pendingSettlementAmount, 20);
   assert.equal(statementWithVat.vatMode, "WITH_VAT");
-  assert.equal(statementWithVat.transactions.length, 4); // 2 deliveries + 1 return + 1 settlement
+  assert.equal(statementWithVat.transactions.length, 5); // 2 self-deliveries + 1 return + 2 settlements
 
   // 2. Without VAT View
   const statementWithoutVat = await getDistributorFinancialStatement({
@@ -614,13 +628,13 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     withVat: false,
   });
   assert.equal(statementWithoutVat.vatMode, "WITHOUT_VAT");
-  assert.equal(statementWithoutVat.summary.netPayableBalance, 170); // 270 - 100 = 170
+  assert.equal(statementWithoutVat.summary.netPayableBalance, 150); // 270 - 100 paid - 20 pending
 });
 
 test("7. submitDistributorSettlementRequest creates pending request and guards against exceeding balance", async (t) => {
   const mockDistributor = { id: "dist-1", name: "Kathmandu Hub", city: "Kathmandu", status: "ACTIVE", isActive: true };
   const delivered = [
-    { id: "a-1", orderId: "o-1", status: "delivered", deliveredAt: new Date() },
+    { id: "a-1", orderId: "o-1", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
   ];
   const mockRateCard = {
     deliveryCharge: 100,
@@ -633,11 +647,45 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
 
   stubMethod(t, prisma.distributor, "findUnique", async () => mockDistributor);
   stubMethod(t, prisma.orderAssignment, "findMany", async () => delivered);
+  stubMethod(t, prisma.deliveryOrder, "findMany", async () => []);
   stubMethod(t, prisma.order, "findMany", async () => [{ id: "o-1", amount: 1000 }]);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => []);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
-  stubMethod(t, prisma.distributorSettlementRequest, "findFirst", async () => null);
-  stubMethod(t, prisma.distributorSettlementRequest, "create", async ({ data }) => ({ id: "set-req-1", ...data }));
+  let createdRequest = null;
+  stubMethod(t, prisma.distributorSettlementRequest, "findFirst", async ({ where }) =>
+    createdRequest?.idempotencyKey === where.idempotencyKey ? createdRequest : null);
+  let payableCreated = false;
+  let requestAccountingPosted = false;
+  stubMethod(t, prisma, "$transaction", async (callback) => callback({
+    $queryRaw: async () => [],
+    distributor: { findUnique: async () => mockDistributor },
+    orderAssignment: {
+      findMany: async ({ where }) => where.status.in.includes("delivered") ? delivered : [],
+    },
+    deliveryOrder: { findMany: async () => [] },
+    order: { findMany: async () => [{ id: "o-1", amount: 1000 }] },
+    distributorDeliveryChargeNegotiation: { findFirst: async () => mockRateCard },
+    distributorSettlementRequest: {
+      findFirst: async ({ where }) =>
+        createdRequest?.idempotencyKey === where.idempotencyKey ? createdRequest : null,
+      findMany: async () => createdRequest ? [createdRequest] : [],
+      create: async ({ data }) => {
+        createdRequest = {
+          id: "set-req-1",
+          ...data,
+          distributor: mockDistributor,
+        };
+        return createdRequest;
+      },
+      update: async ({ data }) => ({ id: "set-req-1", ...data }),
+    },
+    accountPayable: {
+      create: async ({ data }) => {
+        payableCreated = true;
+        return { id: "ap-1", ...data };
+      },
+    },
+  }));
 
   // Available balance: 100 + 13% VAT = 113.00
 
@@ -646,10 +694,49 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
     distributorId: "dist-1",
     amount: 100,
     notes: "Weekly payout request",
+    idempotencyKey: "settlement-request-1",
+    postRequestAccounting: async () => {
+      requestAccountingPosted = true;
+    },
   });
   assert.equal(res.success, true);
   assert.equal(res.settlementRequest.amount, 100);
   assert.equal(res.settlementRequest.status, "PENDING");
+  assert.equal(payableCreated, true);
+  assert.equal(requestAccountingPosted, true);
+
+  const replay = await submitDistributorSettlementRequest({
+    distributorId: "dist-1",
+    amount: 100,
+    idempotencyKey: "settlement-request-1",
+  });
+  assert.equal(replay.isReplay, true);
+  assert.equal(replay.settlementRequest.id, "set-req-1");
+  await assert.rejects(
+    submitDistributorSettlementRequest({
+      distributorId: "dist-1",
+      amount: 99,
+      idempotencyKey: "settlement-request-1",
+    }),
+    { code: "IDEMPOTENCY_KEY_REUSED" }
+  );
+  await assert.rejects(
+    submitDistributorSettlementRequest({
+      distributorId: "dist-1",
+      amount: "100.001",
+    }),
+    { code: "INVALID_AMOUNT" }
+  );
+
+  // A second request cannot consume the balance already reserved by the pending request.
+  await assert.rejects(
+    submitDistributorSettlementRequest({
+      distributorId: "dist-1",
+      amount: 13.01,
+      idempotencyKey: "settlement-request-2",
+    }),
+    { code: "INSUFFICIENT_SETTLEMENT_BALANCE" }
+  );
 
   // 2. Excessive request throws error
   await assert.rejects(
@@ -661,41 +748,75 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   );
 });
 
-test("8. executeAdminDistributorSettlement settles payout, records cash transaction and updates balances", async (t) => {
-  const pendingSettlement = {
+test("8. executeAdminDistributorSettlement records partial and final payout against payable and treasury", async (t) => {
+  let settlementState = {
     id: "set-req-1",
     distributorId: "dist-1",
     amount: 100,
+    paidAmount: 0,
     status: "PENDING",
+    metadata: { accountPayableId: "ap-1" },
     distributor: { id: "dist-1", name: "Kathmandu Hub" },
   };
   const mockFinancialAccount = {
     id: "fa-1",
     accountName: "Nabil Bank Operating",
     currentBalance: 50000,
+    status: "ACTIVE",
+    accountType: "BANK",
+  };
+  const mockPayable = {
+    id: "ap-1",
+    referenceType: "DISTRIBUTOR_SETTLEMENT",
+    referenceId: "set-req-1",
+    totalAmount: 100,
+    paidAmount: 0,
+    remainingBalance: 100,
+    settlementHistory: [],
   };
 
-  let cashTxCreated = false;
-  let accountDeducted = false;
+  let cashTxCount = 0;
+  let accountDeducted = 0;
+  let payableUpdated = false;
+  const paymentAccountingKeys = [];
+  let payableState = { ...mockPayable };
+  let currentBalance = mockFinancialAccount.currentBalance;
+  const cashTransactions = new Map();
 
-  stubMethod(t, prisma.distributorSettlementRequest, "findUnique", async () => pendingSettlement);
   stubMethod(t, prisma, "$transaction", async (cb) =>
     cb({
+      distributorSettlementRequest: {
+        findUnique: async () => settlementState,
+        update: async ({ data }) => {
+          settlementState = { ...settlementState, ...data };
+          return settlementState;
+        },
+      },
       financialAccount: {
-        findUnique: async () => mockFinancialAccount,
-        update: async () => {
-          accountDeducted = true;
-          return { ...mockFinancialAccount, currentBalance: 49900 };
+        findUnique: async () => ({ ...mockFinancialAccount, currentBalance }),
+        update: async ({ data }) => {
+          const decrement = Number(data.currentBalance.decrement);
+          accountDeducted += decrement;
+          currentBalance -= decrement;
+          return { ...mockFinancialAccount, currentBalance };
         },
       },
       cashTransaction: {
-        create: async () => {
-          cashTxCreated = true;
-          return { id: "ctx-1" };
+        findUnique: async ({ where }) => cashTransactions.get(where.idempotencyKey) || null,
+        create: async ({ data }) => {
+          cashTxCount += 1;
+          const transaction = { id: `ctx-${cashTxCount}`, ...data };
+          cashTransactions.set(data.idempotencyKey, transaction);
+          return transaction;
         },
       },
-      distributorSettlementRequest: {
-        update: async ({ data }) => ({ ...pendingSettlement, ...data, status: "SETTLED" }),
+      accountPayable: {
+        findUnique: async () => payableState,
+        update: async ({ data }) => {
+          payableUpdated = true;
+          payableState = { ...payableState, ...data };
+          return payableState;
+        },
       },
       systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
     })
@@ -703,14 +824,64 @@ test("8. executeAdminDistributorSettlement settles payout, records cash transact
 
   const res = await executeAdminDistributorSettlement({
     settlementId: "set-req-1",
-    amount: 100,
+    amount: 40,
     financialAccountId: "fa-1",
-    adminNotes: "Bank transfer processed successfully.",
+    idempotencyKey: "settlement-payment-1",
+    adminNotes: "First partial bank transfer.",
     adminAccountId: "admin-1",
+    postPaymentAccounting: async ({ idempotencyKey }) => {
+      paymentAccountingKeys.push(idempotencyKey);
+    },
   });
 
   assert.equal(res.success, true);
-  assert.equal(res.settlement.status, "SETTLED");
-  assert.equal(accountDeducted, true);
-  assert.equal(cashTxCreated, true);
+  assert.equal(res.settlement.status, "PARTIALLY_PAID");
+  assert.equal(res.settlement.paidAmount, 40);
+  assert.equal(res.payable.remainingBalance, 60);
+
+  const replay = await executeAdminDistributorSettlement({
+    settlementId: "set-req-1",
+    amount: 40,
+    financialAccountId: "fa-1",
+    idempotencyKey: "settlement-payment-1",
+    postPaymentAccounting: async ({ idempotencyKey }) => {
+      paymentAccountingKeys.push(idempotencyKey);
+    },
+  });
+  assert.equal(replay.isReplay, true);
+  assert.equal(replay.settlement.paidAmount, 40);
+  assert.equal(cashTxCount, 1);
+  await assert.rejects(
+    executeAdminDistributorSettlement({
+      settlementId: "set-req-1",
+      amount: 39,
+      financialAccountId: "fa-1",
+      idempotencyKey: "settlement-payment-1",
+      postPaymentAccounting: async () => {},
+    }),
+    { code: "IDEMPOTENCY_KEY_REUSED" }
+  );
+
+  const finalRes = await executeAdminDistributorSettlement({
+    settlementId: "set-req-1",
+    amount: 60,
+    financialAccountId: "fa-1",
+    idempotencyKey: "settlement-payment-2",
+    adminNotes: "Final bank transfer.",
+    adminAccountId: "admin-1",
+    postPaymentAccounting: async ({ idempotencyKey }) => {
+      paymentAccountingKeys.push(idempotencyKey);
+    },
+  });
+
+  assert.equal(finalRes.success, true);
+  assert.equal(finalRes.settlement.status, "SETTLED");
+  assert.equal(finalRes.settlement.paidAmount, 100);
+  assert.equal(finalRes.payable.remainingBalance, 0);
+  assert.equal(accountDeducted, 100);
+  assert.equal(currentBalance, 49900);
+  assert.equal(cashTxCount, 2);
+  assert.equal(payableUpdated, true);
+  assert.equal(paymentAccountingKeys.length, 2);
+  assert.notEqual(paymentAccountingKeys[0], paymentAccountingKeys[1]);
 });

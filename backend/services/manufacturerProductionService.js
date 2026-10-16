@@ -2,6 +2,74 @@ import { Prisma } from "@prisma/client";
 
 const normalizeVariantValue = (value) => String(value || "Standard").trim().toLowerCase();
 
+const VALID_VAT_TREATMENTS = new Set(["EXEMPT", "VAT_INCLUSIVE", "VAT_EXCLUSIVE"]);
+
+export const normalizeProductionVatTerms = ({
+  vatTreatment = "EXEMPT",
+  vatRate = 13,
+  vatInvoiceReference = "",
+} = {}) => {
+  const treatment = String(vatTreatment || "EXEMPT").trim().toUpperCase();
+  const rate = new Prisma.Decimal(String(vatRate));
+  const invoiceReference = String(vatInvoiceReference || "").trim();
+  if (!VALID_VAT_TREATMENTS.has(treatment)) {
+    throw new Error("Choose VAT inclusive, VAT exclusive, or no VAT.");
+  }
+  if (!rate.isFinite() || rate.isNegative() || rate.greaterThan(100) ||
+      (treatment !== "EXEMPT" && !rate.greaterThan(0))) {
+    throw new Error("VAT rate must be greater than zero and no more than 100% when VAT applies.");
+  }
+  if (invoiceReference.length > 120) {
+    throw new Error("VAT invoice reference cannot exceed 120 characters.");
+  }
+  if (treatment !== "EXEMPT" && !invoiceReference) {
+    throw new Error("Provide the VAT invoice reference when VAT applies.");
+  }
+  return {
+    vatTreatment: treatment,
+    vatRate: rate.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    vatInvoiceReference: invoiceReference || null,
+  };
+};
+
+export const calculateProductionUnitCost = ({
+  unitAmount,
+  vatTreatment = "EXEMPT",
+  vatRate = 13,
+  vatInvoiceVerified = false,
+  vatInvoiceReference = "",
+}) => {
+  const enteredAmount = new Prisma.Decimal(String(unitAmount));
+  if (!enteredAmount.isFinite() || !enteredAmount.greaterThan(0)) {
+    throw new Error("Per-piece COGS must be a valid amount greater than zero.");
+  }
+  const terms = normalizeProductionVatTerms({ vatTreatment, vatRate, vatInvoiceReference });
+  const rate = new Prisma.Decimal(String(terms.vatRate));
+  let netAmount = enteredAmount;
+  let vatAmount = new Prisma.Decimal(0);
+  let grossAmount = enteredAmount;
+  if (terms.vatTreatment === "VAT_INCLUSIVE") {
+    netAmount = enteredAmount.div(new Prisma.Decimal(1).plus(rate.div(100)))
+      .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
+    vatAmount = enteredAmount.minus(netAmount);
+  } else if (terms.vatTreatment === "VAT_EXCLUSIVE") {
+    vatAmount = enteredAmount.mul(rate).div(100)
+      .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
+    grossAmount = enteredAmount.plus(vatAmount);
+  }
+  const recoverableVat = vatInvoiceVerified ? vatAmount : new Prisma.Decimal(0);
+  const capitalizedAmount = vatInvoiceVerified ? netAmount : grossAmount;
+  return {
+    vatTreatment: terms.vatTreatment,
+    vatRate: terms.vatRate,
+    netAmount,
+    vatAmount,
+    grossAmount,
+    recoverableVat,
+    capitalizedAmount,
+  };
+};
+
 export const calculateFullyLoadedUnitCogs = ({ unitCogs, batchOtherCost, goodQuantity }) => {
   const baseCogs = new Prisma.Decimal(String(unitCogs));
   const otherCost = new Prisma.Decimal(String(batchOtherCost ?? 0));
@@ -16,10 +84,20 @@ export const calculateFullyLoadedUnitCogs = ({ unitCogs, batchOtherCost, goodQua
     .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
 };
 
-export const validateProductionRequestInput = ({ lines, unitCogs, minimumOrderQuantity, otherCost, deliveryCost }) => {
+export const validateProductionRequestInput = ({
+  lines,
+  unitCogs,
+  minimumOrderQuantity,
+  otherCost,
+  deliveryCost,
+  vatTreatment,
+  vatRate,
+  vatInvoiceReference,
+}) => {
   const cogs = new Prisma.Decimal(String(unitCogs));
   const moq = Number(minimumOrderQuantity);
   const batchOtherCost = new Prisma.Decimal(String(otherCost ?? deliveryCost ?? 0));
+  const vatTerms = normalizeProductionVatTerms({ vatTreatment, vatRate, vatInvoiceReference });
   if (!cogs.isFinite() || !cogs.greaterThan(0)) {
     throw new Error("Per-piece COGS must be a valid amount greater than zero.");
   }
@@ -55,6 +133,7 @@ export const validateProductionRequestInput = ({ lines, unitCogs, minimumOrderQu
     unitCogs: cogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
     minimumOrderQuantity: moq,
     otherCost: batchOtherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    ...vatTerms,
     totalQuantity,
   };
 };

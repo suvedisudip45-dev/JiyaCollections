@@ -7,6 +7,31 @@ import Pagination from "../Pagination";
 const limit = 10;
 const amount = (value) => `${currency}${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const date = (value) => (value ? new Date(value).toLocaleString() : "—");
+const getProductionUnitCostBreakdown = (request) => {
+  const entered = Number(request.approvedUnitCogs ?? request.proposedUnitCogs) || 0;
+  const rate = Number(request.approvedVatRate ?? request.vatRate) || 0;
+  const treatment = request.approvedVatTreatment || request.vatTreatment || "EXEMPT";
+  let goodsBeforeVat = entered;
+  let vatPerUnit = 0;
+  let goodsWithVat = entered;
+  if (treatment === "VAT_INCLUSIVE") {
+    goodsBeforeVat = entered / (1 + rate / 100);
+    vatPerUnit = entered - goodsBeforeVat;
+  } else if (treatment === "VAT_EXCLUSIVE") {
+    vatPerUnit = entered * rate / 100;
+    goodsWithVat = entered + vatPerUnit;
+  }
+  const invoiceVerified = request.approvedVatInvoiceVerified === true;
+  return {
+    treatment,
+    rate,
+    goodsBeforeVat,
+    vatPerUnit,
+    goodsWithVat,
+    inventoryGoodsCost: invoiceVerified ? goodsBeforeVat : goodsWithVat,
+    invoiceVerified,
+  };
+};
 
 const usePagedRecords = ({ endpoint, token, params = {} }) => {
   const [records, setRecords] = useState([]);
@@ -125,23 +150,25 @@ export const ManufacturerProductionSection = ({ manufacturerId, token }) => {
         const requested = (request.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
         const produced = (request.lines || []).reduce((sum, line) => sum + Number(line.actualQuantity ?? 0), 0);
         const good = (request.lines || []).reduce((sum, line) => sum + Math.max(0, Number(line.actualQuantity ?? 0) - Number(line.damagedQuantity || 0)), 0);
+        const cost = getProductionUnitCostBreakdown(request);
+        const otherCost = Number(request.approvedDeliveryCost ?? request.proposedDeliveryCost) || 0;
+        const otherCostPerGoodUnit = request.costTermsVersion >= 2 && good > 0 ? otherCost / good : 0;
         return <article key={request.id} className="space-y-3 px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold text-slate-900">{request.productName || request.product?.name}</h3><p className="mt-1 text-xs text-slate-500">Requested {date(request.requestedAt)} · Target {date(request.targetCompletionDate)}</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700">{String(request.status || "").replaceAll("_", " ")}</span></div>
           <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
             <Fact label="Fabric / GSM" value={`${request.fabricType || "—"} / ${request.gsm ?? "—"}`} />
             <Fact label="MOQ" value={request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity ?? "—"} />
-            <Fact label="Base unit COGS" value={amount(request.approvedUnitCogs ?? request.proposedUnitCogs)} />
+            <Fact label="Goods cost before VAT / unit" value={amount(cost.goodsBeforeVat)} />
+            <Fact label={`Supplier VAT / unit (${cost.treatment === "EXEMPT" ? "exempt" : `${cost.rate}%`})`} value={amount(cost.vatPerUnit)} />
+            <Fact label="Goods total including VAT / unit" value={amount(cost.goodsWithVat)} />
             {request.costTermsVersion >= 2 && <Fact label="Fully loaded good-unit cost" value={amount(
               good > 0
-                ? Number(request.approvedUnitCogs || 0) + Number(request.approvedDeliveryCost || 0) / good
+                ? cost.inventoryGoodsCost + otherCostPerGoodUnit
                 : 0
             )} />}
             <Fact label={request.costTermsVersion >= 2 ? "Batch other cost" : "Other cost / unit (legacy)"} value={amount(request.approvedDeliveryCost ?? request.proposedDeliveryCost)} />
             <Fact label="Requested / actual / good" value={`${requested} / ${produced} / ${good}`} />
-            <Fact label="Estimated good-unit production cost" value={amount(
-              good * Number(request.approvedUnitCogs || 0)
-              + (request.costTermsVersion >= 2 && good > 0 ? Number(request.approvedDeliveryCost || 0) : 0)
-            )} />
+            <Fact label="VAT invoice status" value={cost.treatment === "EXEMPT" ? "Exempt / no VAT" : cost.invoiceVerified ? "Verified · input VAT recoverable" : "Not verified · VAT included in inventory cost"} />
             <Fact label="Pre-production QA" value={request.preProductionChecklist?.passed === true ? "Passed" : request.preProductionChecklist?.passed === false ? "Failed" : "Not recorded"} />
             <Fact label="Post-production QA" value={request.postProductionChecklist?.passed === true ? "Passed" : request.postProductionChecklist?.passed === false ? "Failed" : "Not recorded"} />
           </div>
@@ -165,7 +192,7 @@ export const ManufacturerTransfersSection = ({ manufacturerId, token }) => {
       {records.length > 0 && <div className="divide-y divide-slate-100">{records.map((transfer) => <article key={transfer.id} className="space-y-3 px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-bold text-slate-900">{transfer.distributor?.name || "Distributor"} · {transfer.status.replaceAll("_", " ")}</h3><p className="mt-1 text-xs text-slate-500">Requested {date(transfer.requestedAt)} · Dispatched {date(transfer.dispatchedAt)} · Received {date(transfer.completedAt)}</p></div><span className="text-xs font-semibold text-slate-600">{transfer.id}</span></div>
         <div className="flex flex-wrap gap-2">{(transfer.lines || []).map((line) => <span key={line.id} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700">{line.inventorySku?.product?.name || "Product"} · {line.inventorySku?.size} / {line.inventorySku?.color} · requested {line.requestedQuantity}, dispatched {line.dispatchedQuantity}, approved {line.approvedQuantity ?? "—"}</span>)}</div>
-        {(transfer.shipments || []).length > 0 && <div className="space-y-1">{transfer.shipments.map((shipment) => <p key={shipment.id} className="text-[11px] text-slate-500">{shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}{shipment.trackingNumber ? ` · ${shipment.trackingNumber}` : ""}{shipment.deliveredAt ? ` · delivered ${date(shipment.deliveredAt)}` : ""}</p>)}</div>}
+        {(transfer.shipments || []).length > 0 && <div className="space-y-2">{transfer.shipments.map((shipment) => <p key={shipment.id} className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-600">{shipment.bookingMode} · {shipment.status.replaceAll("_", " ")}{shipment.trackingNumber ? ` · ${shipment.trackingNumber}` : ""}{shipment.deliveredAt ? ` · delivered ${date(shipment.deliveredAt)}` : ""}{shipment.bookingMode === "NCM" ? ` · NCM carrier charge ${shipment.freightCharge == null ? "not recorded" : amount(shipment.freightCharge)} · platform payable to NCM` : ` · delivery to distributor ${shipment.freightCharge == null ? "not recorded" : amount(shipment.freightCharge)} · payable to manufacturer · paid ${amount(shipment.freightPaidAmount)} · outstanding ${amount(Math.max(0, Number(shipment.freightCharge || 0) - Number(shipment.freightPaidAmount || 0)))}`}</p>)}</div>}
       </article>)}</div>}
     </RecordFrame>
   );

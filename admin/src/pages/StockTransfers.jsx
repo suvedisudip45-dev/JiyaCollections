@@ -252,11 +252,11 @@ const StockTransfers = ({ token }) => {
                     {(shipment.ncmOrderId || shipment.externalReference) && `Reference ${shipment.ncmOrderId || shipment.externalReference} · `}
                     {shipment.trackingNumber && `Tracking ${shipment.trackingNumber} · `}
                     {shipment.bookingMode === "NCM" ? `NCM status ${shipment.ncmStatus || "awaiting carrier update"} · ` : ""}
-                    {shipment.bookingMode === "NCM" ? "NCM delivery charge" : "Local delivery cost"}
+                    {shipment.bookingMode === "NCM" ? "NCM carrier delivery charge" : "Delivery to distributor"}
                     {shipment.freightCharge === null ? " not entered" : ` NPR ${shipment.freightCharge}`}
                     {shipment.bookingMode === "NCM"
                       ? " · company payable to NCM; not payable to manufacturer/distributor"
-                      : " · manufacturer-paid; company payable to manufacturer"}
+                      : ` · manufacturer-paid; company payable to manufacturer · paid NPR ${Number(shipment.freightPaidAmount || 0).toFixed(2)} · outstanding NPR ${Math.max(0, Number(shipment.freightCharge || 0) - Number(shipment.freightPaidAmount || 0)).toFixed(2)}`}
                     {` · ${shipment.freightSettlementStatus.replaceAll("_", " ")}`}
                     {shipment.ncmPaymentStatus && ` · NCM payment ${shipment.ncmPaymentStatus}`}
                     {shipment.ncmLastSyncedAt && ` · Updated ${new Date(shipment.ncmLastSyncedAt).toLocaleString()}`}

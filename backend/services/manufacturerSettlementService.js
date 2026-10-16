@@ -96,6 +96,52 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   };
 };
 
+export const reconcileManufacturerLogisticsShipmentPayments = async ({ manufacturerId, client = prisma }) => {
+  const [paidSettlements, shipments] = await Promise.all([
+    client.manufacturerSettlementRequest.aggregate({
+      where: { manufacturerId, requestType: "LOGISTICS", status: "PAID" },
+      _sum: { amount: true },
+    }),
+    client.stockTransferShipment.findMany({
+      where: {
+        bookingMode: "MANUAL",
+        dispatchedAt: { not: null },
+        freightCharge: { gt: 0 },
+        stockTransfer: { manufacturerId },
+      },
+      orderBy: [{ dispatchedAt: "asc" }, { id: "asc" }],
+      select: { id: true, freightCharge: true, freightPaidAmount: true },
+    }),
+  ]);
+  let remainingPaid = new Prisma.Decimal(String(paidSettlements._sum.amount || 0));
+  let allocatedPaid = new Prisma.Decimal(0);
+
+  for (const shipment of shipments) {
+    const charge = new Prisma.Decimal(String(shipment.freightCharge || 0));
+    const targetPaid = Prisma.Decimal.min(charge, remainingPaid).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    const currentPaid = new Prisma.Decimal(String(shipment.freightPaidAmount || 0));
+    const settlementStatus = targetPaid.greaterThanOrEqualTo(charge)
+      ? "SETTLED"
+      : targetPaid.greaterThan(0)
+        ? "PARTIALLY_SETTLED"
+        : "PENDING_ADMIN_SETTLEMENT";
+
+    if (!targetPaid.equals(currentPaid) || shipment.freightSettlementStatus !== settlementStatus) {
+      await client.stockTransferShipment.update({
+        where: { id: shipment.id },
+        data: { freightPaidAmount: targetPaid, freightSettlementStatus: settlementStatus },
+      });
+    }
+    allocatedPaid = allocatedPaid.plus(targetPaid);
+    remainingPaid = remainingPaid.minus(targetPaid);
+  }
+
+  return {
+    allocatedPaidAmount: allocatedPaid.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    unreconciledPaidAmount: Prisma.Decimal.max(remainingPaid, 0).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+  };
+};
+
 export const normalizeSettlementRequest = ({ requestType, amount, notes }) => {
   const type = String(requestType || "PRODUCTION").trim().toUpperCase();
   const normalizedAmount = new Prisma.Decimal(String(amount ?? ""));
