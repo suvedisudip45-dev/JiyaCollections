@@ -187,8 +187,7 @@ test("only public portal signup routes use the registration limiter", () => {
   assert.ok(partnerRegistrationLimiterIndex >= 0);
   assert.ok(partnerRegistrationLimiterIndex < partnerSignupHandlers.length - 1);
 
-  const [adminPartnerCreate] = getPostRoutes(marketingCardRouter, "/admin/partners");
-  assert.notEqual(adminPartnerCreate.route.stack[0].handle, publicRegistrationRateLimit);
+  assert.equal(getPostRoutes(marketingCardRouter, "/admin/partners").length, 0);
 });
 
 test("IP buckets are isolated by portal", () => {

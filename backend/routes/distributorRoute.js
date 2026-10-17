@@ -38,10 +38,46 @@ import {
 } from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
 import { publicRegistrationRateLimit } from "../middleware/authRateLimit.js";
+import {
+  getProductAnalyticsLocations,
+  getProductAnalyticsProducts,
+  getProductAnalyticsSummary,
+  getProductAnalyticsTimeline,
+} from "../controllers/productSalesAnalyticsController.js";
 
 const distributorRouter = express.Router();
 
 distributorRouter.post("/register", publicRegistrationRateLimit, registerDistributor);
+
+// Read-only product sales analytics are scoped by the authenticated distributor profile.
+distributorRouter.get(
+  "/product-analytics/summary",
+  authenticate,
+  authorize("distributor:product_sales_read"),
+  setDistributorContext,
+  getProductAnalyticsSummary,
+);
+distributorRouter.get(
+  "/product-analytics/products",
+  authenticate,
+  authorize("distributor:product_sales_read"),
+  setDistributorContext,
+  getProductAnalyticsProducts,
+);
+distributorRouter.get(
+  "/product-analytics/locations",
+  authenticate,
+  authorize("distributor:product_sales_read"),
+  setDistributorContext,
+  getProductAnalyticsLocations,
+);
+distributorRouter.get(
+  "/product-analytics/timeline",
+  authenticate,
+  authorize("distributor:product_sales_read"),
+  setDistributorContext,
+  getProductAnalyticsTimeline,
+);
 
 // Stock & Inventory
 distributorRouter.post(

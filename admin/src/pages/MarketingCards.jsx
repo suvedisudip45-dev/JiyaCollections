@@ -3,6 +3,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import PrintSheetModal from "../components/PrintSheetModal";
+import MarketingPartnerOverview from "../components/marketing/MarketingPartnerOverview";
 import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -63,8 +64,6 @@ const createDefaultOffer = (overrides = {}) => ({
   expiresAt: "",
   ...overrides,
 });
-
-const emptyPartner = { code: "", name: "", description: "", email: "", password: "" };
 
 const createInitialCampaign = () => ({
   isOwnStore: false,
@@ -164,7 +163,6 @@ const MarketingCards = ({ token }) => {
   const [showInvalidate, setShowInvalidate] = useState(false);
 
   // Setup forms
-  const [partner, setPartner] = useState(emptyPartner);
   const [campaign, setCampaign] = useState(createInitialCampaign);
   const [batch, setBatch] = useState({ campaignId: "", quantity: 500 });
   const [assignment, setAssignment] = useState({ campaignId: "", distributorId: "", quantity: 1 });
@@ -400,90 +398,17 @@ const MarketingCards = ({ token }) => {
       {/* ══ OVERVIEW TAB ══════════════════════════════════════════════════════ */}
       {!loading && tab === "overview" && (
         <div className="space-y-6">
-
-          {/* Partner breakdown */}
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-            <div className="border-b border-slate-100 px-5 py-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-sm font-black text-slate-900">Marketing Partner Breakdown</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Cards printed & distributed per partner.</p>
-              </div>
-              <span className="text-xs text-slate-400">{(stats?.partnerBreakdown || []).length} partners</span>
-            </div>
-            {(stats?.partnerBreakdown || []).length === 0 ? (
-              <p className="p-6 text-sm text-slate-500">No partner data yet.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
-                    <tr>
-                      <th className="px-5 py-3">Partner</th>
-                      <th className="px-5 py-3">Status</th>
-                      <th className="px-5 py-3 text-right">Total Cards</th>
-                      <th className="px-5 py-3 text-right">Generated</th>
-                      <th className="px-5 py-3 text-right">Assigned</th>
-                      <th className="px-5 py-3 text-right">Available</th>
-                      <th className="px-5 py-3 text-right">Attached</th>
-                      <th className="px-5 py-3 text-right">Cancelled</th>
-                      <th className="px-5 py-3">Distribution</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {(stats?.partnerBreakdown || []).map(({ partner, total, GENERATED, ASSIGNED, AVAILABLE, ATTACHED, CANCELLED }) => (
-                      <tr key={partner.id} className="hover:bg-slate-50/60">
-                        <td className="px-5 py-3">
-                          <p className="font-bold text-slate-800">{partner.name}</p>
-                          <p className="text-slate-400 font-mono">{partner.code}</p>
-                        </td>
-                        <td className="px-5 py-3">
-                          <Badge status={partner.status === "ACTIVE" ? "AVAILABLE" : "CANCELLED"} label={partner.status} />
-                        </td>
-                        <td className="px-5 py-3 text-right font-black text-slate-900">{fmt(total)}</td>
-                        <td className="px-5 py-3 text-right text-slate-600">{fmt(GENERATED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-amber-700 font-bold">{fmt(ASSIGNED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-sky-700 font-bold">{fmt(AVAILABLE || 0)}</td>
-                        <td className="px-5 py-3 text-right text-indigo-700 font-bold">{fmt(ATTACHED || 0)}</td>
-                        <td className="px-5 py-3 text-right text-red-600 font-bold">{fmt(CANCELLED || 0)}</td>
-                        <td className="px-5 py-3 min-w-[120px]">
-                          <MiniBar value={ATTACHED || 0} total={total} color="bg-indigo-500" />
-                          <MiniBar value={CANCELLED || 0} total={total} color="bg-red-400" />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          {/* Pending partner approvals */}
-          {(partners.filter((p) => p.status === "PENDING").length > 0) && (
-            <section className="rounded-2xl border border-amber-200 bg-amber-50/50 shadow-sm overflow-hidden">
-              <div className="border-b border-amber-200 px-5 py-4">
-                <h2 className="text-sm font-black text-amber-950">Pending Partner Approvals</h2>
-                <p className="text-xs text-amber-800 mt-0.5">Verify the business, assign a permanent code, and activate portal access.</p>
-              </div>
-              <div className="divide-y divide-amber-100">
-                {partners.filter((p) => p.status === "PENDING").map((pendingPartner) => (
-                  <div key={pendingPartner.id} className="flex flex-col md:flex-row md:items-center gap-3 px-5 py-4">
-                    <div className="flex-1">
-                      <p className="text-sm font-bold text-slate-900">{pendingPartner.name}</p>
-                      <p className="text-xs text-slate-600">{pendingPartner.email || "No email"}</p>
-                    </div>
-                    <div className="flex gap-2 w-full md:w-auto">
-                      <input
-                        value={approvalCodes[pendingPartner.id] || ""}
-                        onChange={(e) => setApprovalCodes((prev) => ({ ...prev, [pendingPartner.id]: e.target.value.toUpperCase() }))}
-                        placeholder="Permanent code"
-                        className="flex-1 md:w-44 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-mono uppercase"
-                      />
-                      <button type="button" disabled={working} onClick={() => handleApprovePartner(pendingPartner.id)} className="rounded-lg bg-amber-700 px-3 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">Approve</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          <MarketingPartnerOverview
+            partners={partners}
+            partnerBreakdown={stats?.partnerBreakdown || []}
+            approvalCodes={approvalCodes}
+            onApprovalCodeChange={(partnerId, code) => setApprovalCodes((previous) => ({
+              ...previous,
+              [partnerId]: code.toUpperCase(),
+            }))}
+            onApprove={handleApprovePartner}
+            working={working}
+          />
 
           {/* Campaign breakdown */}
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -802,34 +727,9 @@ const MarketingCards = ({ token }) => {
       {!loading && tab === "setup" && (
         <div className="space-y-6">
           <div className="grid gap-6 lg:grid-cols-12">
-            {/* Left column: Partner + Generate */}
+            {/* Left column: Generate + Assign */}
             <div className="lg:col-span-4 space-y-6">
-              {/* 1. Create Partner */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">1. Create Partner</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Create an active partner with initial login credentials.</p>
-                <div className="mt-4 space-y-3">
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Partner Code (3–6 chars)</label>
-                    <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm uppercase" placeholder="e.g. NIKE, AAMA, REDB" value={partner.code} onChange={(e) => setPartner({ ...partner, code: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Partner Name</label>
-                    <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="e.g. Nike Nepal, RedBull" value={partner.name} onChange={(e) => setPartner({ ...partner, name: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Login Email</label>
-                    <input type="email" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="partner@company.com" value={partner.email} onChange={(e) => setPartner({ ...partner, email: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-bold uppercase text-slate-500">Initial Password</label>
-                    <input type="password" minLength="8" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="At least 8 characters" value={partner.password} onChange={(e) => setPartner({ ...partner, password: e.target.value })} />
-                  </div>
-                  <button disabled={working} onClick={async () => { const r = await submit("/api/marketing-cards/admin/partners", partner, "Partner created."); if (r) setPartner(emptyPartner); }} className="w-full rounded-lg bg-slate-900 px-3 py-2.5 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-50">Create partner</button>
-                </div>
-              </section>
-
-              {/* 3. Generate Inventory */}
+              {/* Generate Inventory */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <h2 className="text-sm font-black text-slate-900">3. Generate Inventory &amp; Print QR</h2>
                 <p className="mt-0.5 text-xs text-slate-500">Generates batch with randomly shuffled prize cards.</p>

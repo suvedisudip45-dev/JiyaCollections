@@ -38,6 +38,7 @@ The repository separates factory production and replenishment from customer-faci
 - Distributor self-registration collects the same business identity, Nepal province/district, NCM branch/covered area, pickup contacts, return instructions, and contract dates as manufacturer registration. Its base district becomes initial exact order coverage; admins can edit the profile and separately manage additional service districts.
 - Location-aware assignment prefers an in-stock active distributor covering the exact district, then an in-stock distributor in the same province, then ranks other in-stock hubs by verified customer ratings. All tiers require every ordered variant and quantity to be available in distributor-ledger stock, reserved transactionally. Customers can review a distributor after delivery; admins can retry older unassigned orders in the allocation monitor.
 - Marketing partner portal with login, campaigns, campaign detail, card management, redemption validation, and reporting routes.
+- Admin marketing partner detail pages show current/expired campaign card, scan, and reward metrics, distributor assignment/attachment/claim totals, and province/district-level scan and distribution summaries. Partner accounts enter through public signup and admin approval rather than direct admin creation.
 - Delivery and NCM integration for ready-for-pickup, webhook handling, manual handoff recovery, delivery settlements, and return workflows.
 - NCM create-booking flows now preserve explicit failure states such as `submission_failed` / `failed_to_book_courier`, and the frontend must not surface those cases as a successful courier booking.
 - Admin Order Assignments can enter customer-order package details and request NCM delivery for distributor-assigned orders. Customer-order NCM status is persisted from webhooks and served from the database to admin and fulfillment views; NCM status is not polled for each read. Customer-order NCM charges are platform/admin settlement amounts, not manufacturer/distributor payables.
@@ -65,7 +66,7 @@ The repository separates factory production and replenishment from customer-faci
 | Portal | Purpose | Primary routes / flows |
 | --- | --- | --- |
 | `frontend/` | Customer storefront | catalog, cart, checkout, profile, orders, marketing cards |
-| `admin/` | Business operations | products, orders, inventory, suppliers, finance/accounting, access control |
+| `admin/` | Business operations | products, orders, product sales analytics, inventory, suppliers, finance/accounting, access control |
 | `manufacturer/` | Production fulfillment | order acceptance, inventory, pickup settings, performance, finance |
 | `marketing/` | Partner campaigns | campaign management, card validation, redemption, reports |
 | `backend/` | API + domain logic | Prisma service layer, routers, controllers, auth/RBAC, order orchestration |
@@ -99,4 +100,5 @@ The active documentation files are:
 
 - The project is intentionally multi-portal and distributed rather than a single app.
 - Backend routes are mounted under `/api/...` and are the stable contract for the frontends.
+- Admin product performance reports load summary, product/return, location, and selected-product timeline data through separate permission-protected APIs. Distributor reporting reuses those aggregates with authenticated workspace scoping and never returns revenue.
 - Product, order, inventory, finance, and card logic are implemented directly in the backend; the frontends are mostly consumers and UI overlays around those server-side rules.

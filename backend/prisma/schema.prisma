@@ -1197,6 +1197,8 @@ model CustomerReturn {
   @@index([lifecycleStatus, createdAt])
   @@index([orderId, lifecycleStatus])
   @@index([distributorId, lifecycleStatus])
+  @@index([refundStatus, returnDate])
+  @@index([distributorId, refundStatus, returnDate])
 }
 
 model OrderExchangeRequest {
@@ -2235,6 +2237,7 @@ model MarketingCard {
   benefitRedemptions     MarketingBenefitRedemption[]
 
   @@index([campaignId, physicalStatus])
+  @@index([partnerId, campaignId, physicalStatus])
   @@index([assignedManufacturerId, physicalStatus])
   @@index([assignedDistributorId, physicalStatus])
   @@index([batchId, physicalStatus])
@@ -2303,6 +2306,8 @@ model MarketingCardCustomer {
   inStoreOtp           String?       @db.VarChar(6)
   otpExpiresAt         DateTime?
   lastRedeemedLocation String?       @db.VarChar(255)
+  scannedProvince      String?       @db.VarChar(120)
+  scannedDistrict      String?       @db.VarChar(120)
   card                 MarketingCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
   customer             User          @relation("MarketingCardCustomerUser", fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -2310,6 +2315,7 @@ model MarketingCardCustomer {
   @@index([customerId, status])
   @@index([customerId, scanWeekIndex])
   @@index([customerId, scanWeekIndex, assignedOrganization], map: "MCC_customer_week_org_idx")
+  @@index([scannedProvince, scannedDistrict])
 }
 
 model MarketingBenefit {

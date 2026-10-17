@@ -29,6 +29,8 @@ The backend is the real source of truth for:
 - distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
 - distributor allocation requires active distributors with enough distributor-ledger stock and ranks candidates by configured (or default registered) service area, same district, NCM branch, same province, then nationwide; quality rating resolves ties within each tier
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
+- marketing partner analytics are protected by `marketing_card:analytics_read`; partner IDs and report scope are validated server-side, and customer scan reports use province/district snapshots only (never street-level addresses)
+- product sales analytics must use separate bounded aggregate endpoints, derive distributor ownership from authenticated workspace context, and omit revenue fields entirely from distributor responses; validate date ranges, product IDs, pagination, and sort fields in the backend
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
 

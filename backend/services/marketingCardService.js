@@ -166,31 +166,6 @@ const assertQuantity = (quantity) => {
   return parsed;
 };
 
-export const createPartner = async ({ code, name, description, email, password, contactPhone, website, address, status = "ACTIVE" }) => {
-  let passwordHash = null;
-  if (password) {
-    const bcrypt = await import("bcryptjs");
-    passwordHash = await bcrypt.default.hash(String(password), 10);
-  }
-  return prisma.marketingPartner.create({
-    data: {
-      code: normalizeCode(code),
-      name: String(name || "").trim(),
-      description: description || null,
-      email: email ? String(email).trim().toLowerCase() : null,
-      passwordHash,
-      contactPhone: contactPhone || null,
-      website: website || null,
-      address: address || null,
-      status: String(status || "ACTIVE").toUpperCase(),
-    },
-    select: {
-      id: true, code: true, name: true, description: true, status: true, email: true,
-      contactPhone: true, website: true, address: true, createdAt: true,
-    },
-  });
-};
-
 export const listPartners = () => prisma.marketingPartner.findMany({
   orderBy: { createdAt: "desc" },
   select: {

@@ -58,6 +58,8 @@ import InventoryLedgerAudit from "./pages/InventoryLedgerAudit";
 import StockTransfers from "./pages/StockTransfers";
 import StoryLetterLibrary from "./pages/StoryLetterLibrary";
 import MarketingCards from "./pages/MarketingCards";
+import MarketingPartnerDetail from "./pages/MarketingPartnerDetail";
+import ProductAnalytics from "./pages/ProductAnalytics";
 import AccessUsers from "./pages/AccessUsers";
 import AccessRoles from "./pages/AccessRoles";
 import AccessPermissions from "./pages/AccessPermissions";
@@ -220,6 +222,7 @@ const App = () => {
                   <Route path="/add-order" element={withPermission("/add-order", <CreateOrder token={token} />)} />
                   <Route path="/orders" element={withPermission("/orders", <Orders token={token} />)} />
                   <Route path="/orders/:orderId" element={withPermission("/orders", <AdminOrderDetail token={token} />)} />
+                  <Route path="/product-analytics" element={withPermission("/product-analytics", <ProductAnalytics token={token} />)} />
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
                   <Route path="/ncm-deliveries" element={withPermission("/ncm-deliveries", <NcmDeliveries token={token} />)} />
@@ -237,6 +240,7 @@ const App = () => {
                   <Route path="/stock-transfers" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/stock-transfers/:transferId" element={withPermission("/stock-transfers", <StockTransfers token={token} />)} />
                   <Route path="/marketing-cards" element={withPermission("/marketing-cards", <MarketingCards token={token} />)} />
+                  <Route path="/marketing-partners/:partnerId" element={withPermission("/marketing-partners/:partnerId", <MarketingPartnerDetail token={token} />)} />
                   <Route path="/customers" element={withPermission("/customers", <Customers token={token} />)} />
                   <Route path="/customers/:customerId" element={withPermission("/customers/:customerId", <CustomerDetail token={token} />)} />
                   <Route path="/loyalty-levels" element={withPermission("/loyalty-levels", <LoyaltyLevels token={token} />)} />

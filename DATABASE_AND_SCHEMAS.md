@@ -36,6 +36,8 @@ The schema currently contains a large multi-domain model set, including auth, pr
 
 The auth layer is built around `AuthAccount` and related session tables.
 
+Product sales analytics are guarded by the seeded `product:sales_analytics_read` (admin) and `distributor:product_sales_read` (distributor) permissions. The latter is granted only to the distributor role and exposes quantity/location aggregates without revenue.
+
 Customer disable state is stored on `User`, not by deleting or replacing the identity. The profile's `isDisabled` state prevents CUSTOMER workspace authentication, already-issued requests, and refresh-token rotation; disable also revokes active `AuthSession` rows for the linked account. Email and phone identity records remain retained so registration and social-profile activation cannot reuse a disabled identity.
 
 | Model | Core fields | Notes |
@@ -76,7 +78,7 @@ The password reset timestamp enforces a rolling seven-day interval, while the mo
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety |
+| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety; product analytics reads item-level quantity and price snapshots and delivery province/district from this order |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items; admin self-delivery monitoring explicitly filters `deliveryType=SELF_DELIVERY` and excludes orders with a `DeliveryOrder` |
 | `ShippingConfig` | `sameDistrictFee`, `sameProvinceFee`, `differentProvinceFee`, `routeOverrides`, `splitShipmentFee`, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tiers plus optional route exceptions and company-paid return/exchange logistics rates; approved requests snapshot the settlement rate and create an accounts payable after logistics completion |
 | `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `ncmReconciliationRequired`, `ncmReconciliationReason`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; indexes support the NCM admin monitor and pending reconciliation queue |
@@ -112,7 +114,7 @@ limited to known local NCM order IDs.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, `logisticsSettlementAmount`, refund and inspection fields | approved RMA lifecycle; snapshots the configured logistics settlement at approval; legacy rows default to `LEGACY_PROCESSED` |
+| `CustomerReturn` | `orderId`, `requestKey`, `requestHash`, `items`, `reason`, `lifecycleStatus`, admin/NCM fields, `ncmDeliveryCharge`, `ncmChargeSource`, `logisticsSettlementAmount`, refund and inspection fields | approved RMA lifecycle; snapshots the configured logistics settlement at approval; legacy rows default to `LEGACY_PROCESSED`; completed return analytics use the product/quantity/refund snapshots and `returnDate`, with compound refund/date indexes |
 | `CustomerReturnEvent` | `customerReturnId`, event/status transition, actor, reason, metadata, idempotency key | return audit trail |
 | `OrderExchangeRequest` | `orderId`, `customerId`, `manufacturerId`, returned `items`, `replacementItems`, `priceDifference`, NCM leg IDs/charges, `logisticsSettlementAmount`, stock reservation timestamps | exchange lifecycle and replacement-stock control; snapshots the configured logistics settlement at approval |
 | `OrderExchangeEvent` | `exchangeRequestId`, `eventType`, `fromStatus`, `toStatus`, `metadata` | audit trail for exchange state transitions |
@@ -187,11 +189,13 @@ These fields lock the order to the backend-resolved local discount and assigned 
 | `MarketingCard` | `cardCode`, `qrTokenHash`, `partnerId`, `assignedPartnerId`, `assignedOrganization`, `isPublic`, `campaignId`, `batchId`, `exchangeLockRequestId`, `physicalStatus` | individual card instance and optional public/Own Store destination |
 | `MarketingCardOrder` | `cardId`, `orderId`, nullable `manufacturerId`, nullable `distributorId` | card-to-order association |
 | `MarketingCardAssignment` | `cardId`, nullable `manufacturerId`, nullable `distributorId`, status/receipt fields | stock assignment to a hub; new assignments target distributors |
-| `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `scannedAt`, `assignedOrganization`, `scanWeekIndex`, `activatedAt`, `otpExpiresAt` | customer card ownership and indexed scan-limit data |
+| `MarketingCardCustomer` | `cardId`, `customerId`, `status`, `scannedAt`, `scannedProvince`, `scannedDistrict`, `assignedOrganization`, `scanWeekIndex`, `activatedAt`, `otpExpiresAt` | customer card ownership, indexed scan-limit data, and non-street-level province/district snapshot for aggregate scan reports |
 | `MarketingBenefit` | `campaignId`, `benefitType`, `value`, `percentage`, `quantity` | campaign benefit definitions |
 | `MarketingBenefitRedemption` | `cardId`, `benefitId`, `customerId`, `status`, `claimedAt`, `redeemedAt` | claim and redemption lifecycle |
 
 Own Store campaigns may have no marketing partner. Their cards can be tracked as public-to-everyone, assigned to an existing partner, or assigned to a custom organization name. Physical campaign card stock is assigned to active distributors and received/attached through distributor-scoped APIs; old manufacturer assignment references remain available for historical records. All Own Store cards are free for any logged-in customer to scan without an attached/delivered order; card-code entry and QR scan attempts are recorded in `MarketingCardEvent`. A card is consumed by its first successful QR scan and cannot be scanned again by that account or any other account. The campaign's configurable `maxScansPerCustomer` cap (default one per account for the campaign lifetime) applies across its Own Store cards, in addition to the five-per-campaign weekly cap. Organization-assigned cards also retain a two-per-campaign, per-organization lifetime cap. Customer scans snapshot the assigned organization and a Nepal-time Monday-based calendar-week index. Claimed Own Store discount rewards are stored as `CLAIMED` until checkout atomically changes the redemption to `REDEEMED`.
+
+Admin partner analytics are scoped to one partner and return campaign card/scan/reward counts, distributor card totals, and separate province/district scan and distributor-assignment aggregates. Scan location fields are copied from the customer's first saved address when the scan is recorded; historical scans without snapshots are reported as `Unknown`. The report does not expose customer identities or street-level addresses.
 
 ### 3.8 Finance, accounting, and tax
 

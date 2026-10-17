@@ -13,6 +13,7 @@ import {
   assertOwnStoreScanQuota,
   getOwnStoreScanLimits,
   getScanWeekIndex,
+  getScanLocationSnapshot,
 } from "../services/marketingCardCustomerService.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 
@@ -173,6 +174,27 @@ test("Own Store weekly scan window changes at midnight Monday Nepal time", () =>
   const beforeMondayInNepal = new Date("2024-01-07T18:14:59.000Z");
   const mondayInNepal = new Date("2024-01-07T18:15:00.000Z");
   assert.equal(getScanWeekIndex(mondayInNepal), getScanWeekIndex(beforeMondayInNepal) + 1);
+});
+
+test("marketing card scan locations snapshot only bounded province and district values", () => {
+  assert.deepEqual(getScanLocationSnapshot([
+    { province: " Bagmati Province ", district: "Kathmandu", street: "Private street" },
+  ]), {
+    scannedProvince: "Bagmati Province",
+    scannedDistrict: "Kathmandu",
+  });
+  assert.deepEqual(getScanLocationSnapshot(JSON.stringify([{ province: "Gandaki Province", district: "Kaski" }])), {
+    scannedProvince: "Gandaki Province",
+    scannedDistrict: "Kaski",
+  });
+  assert.deepEqual(getScanLocationSnapshot([{ province: "x".repeat(121), district: 17 }]), {
+    scannedProvince: null,
+    scannedDistrict: null,
+  });
+  assert.deepEqual(getScanLocationSnapshot("not-json"), {
+    scannedProvince: null,
+    scannedDistrict: null,
+  });
 });
 
 test("customer card rate limit returns 429 after the operation quota", () => {

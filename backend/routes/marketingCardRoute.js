@@ -11,8 +11,8 @@ import {
   adminCreateOwnStoreCampaign,
   adminUploadCampaignMedia,
   adminDeactivateCampaign,
-  adminCreatePartner,
   adminApprovePartner,
+  adminGetMarketingPartnerDetail,
   adminGenerateBatch,
   adminListCards,
   adminCardMetrics,
@@ -80,7 +80,7 @@ marketingCardRouter.get("/locations", adminGetLocations);
 // ── Admin routes ─────────────────────────────────────────────
 marketingCardRouter.get("/admin/locations", authenticate, authorize("marketing_card:admin_manage"), adminGetLocations);
 marketingCardRouter.get("/admin/partners", authenticate, authorize("marketing_card:admin_manage"), adminListPartners);
-marketingCardRouter.post("/admin/partners", authenticate, authorize("marketing_card:admin_manage"), adminCreatePartner);
+marketingCardRouter.get("/admin/partners/:partnerId/analytics", authenticate, authorize("marketing_card:analytics_read"), adminGetMarketingPartnerDetail);
 marketingCardRouter.patch("/admin/partners/:partnerId/approve", authenticate, authorize("marketing_card:admin_manage"), adminApprovePartner);
 marketingCardRouter.get("/admin/campaigns", authenticate, authorize("marketing_card:admin_manage"), adminListCampaigns);
 marketingCardRouter.post("/admin/campaign-media", authenticate, authorize("marketing_card:admin_manage"), handleCampaignMediaUpload, adminUploadCampaignMedia);

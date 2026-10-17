@@ -7,7 +7,6 @@ import {
   attachRandomCardToOrder,
   adminInvalidateCards,
   createCampaign,
-  createPartner,
   deactivateCampaign,
   generateBatch,
   getAdminCardStats,
@@ -20,6 +19,7 @@ import {
   receiveCardAsDistributor,
   bulkUpdateDistributorCards,
 } from "../services/marketingCardService.js";
+import { getAdminMarketingPartnerDetail } from "../services/marketingPartnerService.js";
 import {
   claimCustomerReward,
   linkCustomerCard,
@@ -50,14 +50,24 @@ export const adminListPartners = async (_req, res) => {
   try { return res.json({ success: true, partners: await listPartners() }); } catch (error) { return sendError(res, error); }
 };
 
-export const adminCreatePartner = async (req, res) => {
+export const adminGetMarketingPartnerDetail = async (req, res) => {
+  const partnerId = String(req.params.partnerId || "");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(partnerId)) {
+    return res.status(400).json({ success: false, message: "A valid marketing partner ID is required.", code: "INVALID_INPUT" });
+  }
   try {
-    if (!req.body.name?.trim() || !req.body.code?.trim() || !req.body.email?.trim() || !req.body.password) {
-      return res.status(400).json({ success: false, message: "Partner name, code, email, and initial password are required." });
+    return res.json({ success: true, ...await getAdminMarketingPartnerDetail(partnerId) });
+  } catch (error) {
+    if (error.code === "PARTNER_NOT_FOUND") {
+      return res.status(404).json({ success: false, message: error.message, code: error.code });
     }
-    if (String(req.body.password).length < 8) return res.status(400).json({ success: false, message: "Initial password must be at least 8 characters." });
-    return res.status(201).json({ success: true, partner: await createPartner(req.body) });
-  } catch (error) { return sendError(res, error); }
+    console.error("Failed to load marketing partner analytics:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load marketing partner analytics.",
+      code: "MARKETING_PARTNER_ANALYTICS_FAILED",
+    });
+  }
 };
 
 export const adminApprovePartner = async (req, res) => {

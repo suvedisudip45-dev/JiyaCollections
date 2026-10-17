@@ -83,6 +83,29 @@ export const getScanWeekIndex = (date = new Date()) => (
   Math.floor((date.getTime() + NEPAL_OFFSET_MS - MONDAY_EPOCH_MS) / WEEK_MS)
 );
 
+export const getScanLocationSnapshot = (addresses) => {
+  let parsedAddresses = addresses;
+  if (typeof parsedAddresses === "string") {
+    try {
+      parsedAddresses = JSON.parse(parsedAddresses);
+    } catch {
+      return { scannedProvince: null, scannedDistrict: null };
+    }
+  }
+
+  const address = Array.isArray(parsedAddresses) ? parsedAddresses[0] : null;
+  const normalize = (value) => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim();
+    return normalized.length > 0 && normalized.length <= 120 ? normalized : null;
+  };
+
+  return {
+    scannedProvince: normalize(address?.province),
+    scannedDistrict: normalize(address?.district),
+  };
+};
+
 const quota = (used, limit) => ({ used, limit, remaining: Math.max(0, limit - used) });
 
 export const getOwnStoreScanLimits = (
@@ -552,6 +575,12 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
       });
       if (scanClaim.count !== 1) assertCardCanBeScanned({ exchangeLockRequestId: "locked" });
 
+      const customer = await tx.user.findUnique({
+        where: { id: customerId },
+        select: { addresses: true },
+      });
+      const scanLocation = getScanLocationSnapshot(customer?.addresses);
+
       const link = await tx.marketingCardCustomer.create({
         data: {
           cardId: card.id,
@@ -560,6 +589,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
           scannedAt: new Date(),
           assignedOrganization: currentOrganization,
           scanWeekIndex,
+          ...scanLocation,
         },
       });
       await tx.marketingCardEvent.create({

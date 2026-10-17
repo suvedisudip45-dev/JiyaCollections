@@ -29,6 +29,14 @@
 5. Delivery booking and state reconciliation flow through the delivery service and NCM integration/webhooks. Returns and exchanges use approval, inspection, refund/replacement, and carrier workflows; relevant decisions and state changes are audited.
 6. Admin NCM tools call the server-side client only after delivery permissions are checked. Mutating operations enqueue redacted audit metadata; customer/contact and bank payloads are not logged. The client retries read-only GET requests on bounded 5xx responses, but does not automatically retry POST operations because their carrier outcome can be ambiguous. Ticket summaries and latest activity are persisted in `NcmSupportTicket` after successful create/detail/reply/close operations; the permission-protected active/closed list reads only this table and does not call NCM.
 
+### Marketing partner reporting
+
+Partner analytics use a dedicated admin permission and partner-scoped parameterized aggregate queries. Customer scan geography is copied at scan time as province and district from the first saved address; street-level address values and customer identity are excluded from analytics responses. Existing scans without a location snapshot are grouped as unknown rather than backfilled from a later, mutable customer address.
+
+### Product sales analytics
+
+Admin product reports require the ADMIN role and `product:sales_analytics_read`. Admin-only comparison charts return bounded product, location, and distributor aggregates, including item revenue and estimated gross product profit. Profit is item revenue minus recorded item COGS and completed refunds; it excludes delivery and general operating expenses. Historical production allocations and accepted item COGS snapshots are preferred, with existing item/product cost fallbacks; the API reports uncosted quantities so estimates with incomplete cost coverage are not presented as fully costed. Distributor reports require `distributor:product_sales_read`; the server derives the distributor ID from authenticated workspace context and the shared aggregate service omits revenue fields (including rejecting revenue sorting). Date ranges, product IDs, sort keys, and pagination are validated on the server. The API returns bounded aggregates only, not raw orders or customer identities; location grouping exposes only province and district. Sales use order-item price/quantity snapshots and order date, while return activity uses completed refund item snapshots and refund completion date.
+
 ### Admin changes and audit review
 
 1. The admin UI calls protected `/api/admin/...` routes with the access token.
@@ -83,6 +91,7 @@ These observations are based on source code, not a penetration test or productio
 - The admin customer search requires an explicit query; customer records are not loaded into the page before search. Customer notification history is matched to stored contact addresses, excludes authentication/verification messages, and returns only selected message text rather than raw payloads.
 - Apply the audit/outbox Prisma migration and regenerate Prisma Client.
 - Run the RBAC seed so `access:audit_read` is assigned as intended; verify the actual production role mappings rather than assuming seed state.
+- Apply the product sales analytics migration before deployment and run the RBAC seed to grant `product:sales_analytics_read` to Admins and `distributor:product_sales_read` to distributors; verify no distributor permission grants revenue access.
 - Configure and test `OTP_SERVER_SECRET`, outbound notification credentials, HTTPS, trusted proxy behavior, and allowed frontend origins outside source control.
 - Verify the outbox worker starts, completes a test event, retries a forced transient error, and exposes pending/failed counts to monitoring.
 - Check production schema compatibility and take a backup before migration. Use an isolated staging database first.

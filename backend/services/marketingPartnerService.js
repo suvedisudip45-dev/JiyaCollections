@@ -14,6 +14,137 @@ export const getPartnerById = (partnerId) =>
     select: { id: true, code: true, name: true, description: true, status: true, createdAt: true },
   });
 
+const asCount = (value) => Number(value || 0);
+
+export const getAdminMarketingPartnerDetail = async (partnerId) => {
+  const partner = await prisma.marketingPartner.findUnique({
+    where: { id: partnerId },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      description: true,
+      status: true,
+      email: true,
+      contactPhone: true,
+      website: true,
+      address: true,
+      createdAt: true,
+    },
+  });
+  if (!partner) {
+    const error = new Error("Marketing partner not found.");
+    error.code = "PARTNER_NOT_FOUND";
+    throw error;
+  }
+
+  const [campaigns, campaignCardCounts, campaignScanCounts, campaignRewardCounts, distributorStats, scanLocations, distributionLocations] = await Promise.all([
+    prisma.marketingCampaign.findMany({
+      where: { marketingPartnerId: partnerId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        startsAt: true,
+        endsAt: true,
+        cardExpiresAt: true,
+        targetScopeType: true,
+        targetProvince: true,
+        targetDistrict: true,
+      },
+    }),
+    prisma.$queryRaw`
+      SELECT \`campaignId\`, COUNT(*) AS \`totalCards\`,
+        SUM(CASE WHEN \`physicalStatus\` = 'ATTACHED' THEN 1 ELSE 0 END) AS \`attachedCards\`
+      FROM \`MarketingCard\`
+      WHERE \`partnerId\` = ${partnerId}
+      GROUP BY \`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT c.\`campaignId\`, COUNT(*) AS \`scannedCards\`
+      FROM \`MarketingCardCustomer\` scan
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = scan.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY c.\`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT c.\`campaignId\`, COUNT(*) AS \`rewardsClaimed\`
+      FROM \`MarketingBenefitRedemption\` redemption
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = redemption.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId} AND redemption.\`status\` IN ('CLAIMED', 'REDEEMED')
+      GROUP BY c.\`campaignId\`
+    `,
+    prisma.$queryRaw`
+      SELECT d.\`id\`, d.\`name\`, d.\`province\`, d.\`district\`,
+        COUNT(DISTINCT c.\`id\`) AS \`totalCards\`,
+        COUNT(DISTINCT CASE WHEN c.\`physicalStatus\` = 'ATTACHED' THEN c.\`id\` END) AS \`attachedCards\`,
+        COUNT(DISTINCT redemption.\`id\`) AS \`rewardsClaimed\`
+      FROM \`MarketingCard\` c
+      INNER JOIN \`Distributor\` d ON d.\`id\` = c.\`assignedDistributorId\`
+      LEFT JOIN \`MarketingBenefitRedemption\` redemption
+        ON redemption.\`cardId\` = c.\`id\` AND redemption.\`status\` IN ('CLAIMED', 'REDEEMED')
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY d.\`id\`, d.\`name\`, d.\`province\`, d.\`district\`
+      ORDER BY \`totalCards\` DESC, d.\`name\` ASC
+    `,
+    prisma.$queryRaw`
+      SELECT COALESCE(scan.\`scannedProvince\`, 'Unknown') AS \`province\`,
+        COALESCE(scan.\`scannedDistrict\`, 'Unknown') AS \`district\`,
+        COUNT(*) AS \`scannedCards\`
+      FROM \`MarketingCardCustomer\` scan
+      INNER JOIN \`MarketingCard\` c ON c.\`id\` = scan.\`cardId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY COALESCE(scan.\`scannedProvince\`, 'Unknown'), COALESCE(scan.\`scannedDistrict\`, 'Unknown')
+      ORDER BY \`scannedCards\` DESC, \`province\` ASC, \`district\` ASC
+    `,
+    prisma.$queryRaw`
+      SELECT COALESCE(d.\`province\`, 'Unknown') AS \`province\`,
+        COALESCE(d.\`district\`, 'Unknown') AS \`district\`,
+        COUNT(*) AS \`distributedCards\`
+      FROM \`MarketingCard\` c
+      INNER JOIN \`Distributor\` d ON d.\`id\` = c.\`assignedDistributorId\`
+      WHERE c.\`partnerId\` = ${partnerId}
+      GROUP BY COALESCE(d.\`province\`, 'Unknown'), COALESCE(d.\`district\`, 'Unknown')
+      ORDER BY \`distributedCards\` DESC, \`province\` ASC, \`district\` ASC
+    `,
+  ]);
+
+  const cardCounts = new Map(campaignCardCounts.map((row) => [row.campaignId, row]));
+  const scanCounts = new Map(campaignScanCounts.map((row) => [row.campaignId, row]));
+  const rewardCounts = new Map(campaignRewardCounts.map((row) => [row.campaignId, row]));
+
+  return {
+    partner,
+    campaigns: campaigns.map((campaign) => ({
+      ...campaign,
+      totalCards: asCount(cardCounts.get(campaign.id)?.totalCards),
+      attachedCards: asCount(cardCounts.get(campaign.id)?.attachedCards),
+      scannedCards: asCount(scanCounts.get(campaign.id)?.scannedCards),
+      rewardsClaimed: asCount(rewardCounts.get(campaign.id)?.rewardsClaimed),
+    })),
+    distributors: distributorStats.map((row) => ({
+      id: row.id,
+      name: row.name,
+      province: row.province,
+      district: row.district,
+      totalCards: asCount(row.totalCards),
+      attachedCards: asCount(row.attachedCards),
+      rewardsClaimed: asCount(row.rewardsClaimed),
+    })),
+    scanLocations: scanLocations.map((row) => ({
+      province: row.province,
+      district: row.district,
+      scannedCards: asCount(row.scannedCards),
+    })),
+    distributionLocations: distributionLocations.map((row) => ({
+      province: row.province,
+      district: row.district,
+      distributedCards: asCount(row.distributedCards),
+    })),
+  };
+};
+
 export const getPartnerCampaigns = async ({ partnerId, status, page, limit, search } = {}) => {
   await expireCampaignCards();
   const where = {

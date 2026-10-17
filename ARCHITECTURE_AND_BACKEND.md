@@ -47,6 +47,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 | --- | --- |
 | `/api/auth` | Login, refresh, MFA, OTP, password recovery, logout |
 | `/api/admin/access` | Access management and RBAC control |
+| `/api/admin/product-analytics` | Admin product sales, revenue, return, location, and timeline analytics |
 | `/api/admin/manufacturer-locations` | Province/district coverage for manufacturers used in local pricing |
 | `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
 | `/api/lookups` | Public Nepal province, district, active NCM branch, and covered-area lookups |
@@ -77,6 +78,9 @@ Newly initialized databases seed loyalty, marketing cards, and customer letters 
 
 - `POST /api/auth/login`
 - `POST /api/auth/refresh`
+- `GET /api/admin/product-analytics/summary`, `/products`, `/locations`, and `/timeline` require the `ADMIN` role and `product:sales_analytics_read`. Each endpoint returns a focused aggregate; timeline requests validate the selected product ID and all date/page/sort filters are checked server-side.
+- `GET /api/admin/product-analytics/charts` requires the same Admin role and permission. It returns bounded product, province/district, and distributor comparison series for quantity, item revenue, recorded COGS, completed refunds, and estimated gross product profit; `productId` narrows the distributor comparison to one validated product.
+- `GET /api/distributor/product-analytics/summary`, `/products`, `/locations`, and `/timeline` require `distributor:product_sales_read` and authenticated distributor workspace context. Scope is derived from the session, never a client-provided distributor ID; the service omits revenue fields and rejects revenue sorting.
 - `GET /api/features` and `PATCH /api/features` (the update requires `platform:features_manage`)
 - Customer administration endpoints additionally require the authenticated `ADMIN` role. `GET /api/customer/admin/analytics` returns aggregate active/disabled totals, province/district counts, weekly/monthly/yearly and selected-period account-creation counts, repeat-purchase rate, and all-time order sales by delivery-address province/district. Split-shipment order rows sharing a `checkoutGroupId` count as one transaction for transaction and repeat-purchase counts; revenue, item costs, and per-package carrier charges still sum across shipment rows. Production overhead in the sales estimate uses only overhead recorded on sold order-item cost snapshots, divided by that product's all-time non-cancelled units sold and allocated by location units sold; unsold inventory and produced quantities in cost layers are not overhead inputs. Approximate profit subtracts available product COGS, this allocated overhead, and recorded NCM charges; local distributor delivery expenses, unrecorded carrier charges, returns/refunds, and other operating expenses are not included. It requires `customer:admin_list` and does not return customer identities. `GET /api/customer/admin/search` requires a search of at least two characters or an explicit status, location, or account-creation date filter, supports server-side pagination, and sorts customers by latest non-cancelled order; it requires `customer:admin_list`.
 - `GET /api/customer/details/:userId/profile` returns the compact customer profile and aggregate metrics (`customer:admin_detail`). `GET /api/customer/details/:userId/orders` and `/letters` return separately paginated history (`customer:admin_orders_read` and `customer:admin_detail`, respectively). The legacy details endpoint accepts `includeOrders=false` to load the other customer-activity sections without duplicating the paginated order history.
@@ -113,6 +117,7 @@ Newly initialized databases seed loyalty, marketing cards, and customer letters 
 - `/api/delivery/admin/ncm/*` exposes bounded, permission-protected documented NCM reads and explicit tools (status comparison is limited to selected known local IDs; ticket, comment, webhook, redirect, branch, rate, label, staff, and customer operations). `GET /api/delivery/admin/ncm/tickets` serves active/closed ticket summaries from `NcmSupportTicket` without contacting NCM. NCM ticket-creation responses return the ticket ID as a scalar `ticket` field; successful support-ticket and COD-settlement ticket create/detail/reply/close operations upsert that local index. Mutating calls are audited, and ambiguous provider outcomes are not retried automatically.
 - `POST /api/delivery/admin/:id/resolve-ncm-handoff`
 - `GET /api/marketing-cards/admin/cards`
+- `GET /api/marketing-cards/admin/partners/:partnerId/analytics` returns partner-scoped campaign, distributor, and province/district aggregate reporting; it requires `marketing_card:analytics_read`.
 - `POST /api/marketing-cards/customer/cards/scan`
 - `GET /api/admin/gifts/catalog`, `POST /api/admin/gifts/catalog`, `DELETE /api/admin/gifts/catalog/:id` (archive)
 - `GET /api/admin/gifts/tiers`, `POST /api/admin/gifts/tiers`, and `POST /api/admin/gifts/assign-distributor`
