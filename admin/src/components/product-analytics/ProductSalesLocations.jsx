@@ -82,12 +82,19 @@ const ProductSalesLocations = ({ token, filters, product }) => {
     }
     return [...groups.values()].sort((left, right) => right.soldQuantity - left.soldQuantity);
   }, [locations]);
+  const locationStats = useMemo(() => ({
+    districts: locations.length,
+    provinces: provinces.length,
+    soldQuantity: locations.reduce((total, location) => total + location.soldQuantity, 0),
+    grossRevenue: locations.reduce((total, location) => total + (location.grossRevenue || 0), 0),
+    orderCount: locations.reduce((total, location) => total + location.orderCount, 0),
+  }), [locations, provinces.length]);
   const selectedProductName = products.find(({ productId: id }) => id === selectedProductId)?.name
     || (product?.productId === selectedProductId ? product.name : "");
 
   return (
     <section className="space-y-4">
-      <header className="rounded-2xl border border-slate-200 bg-white px-5 py-4">
+      <header className="rounded-xl border border-slate-200 bg-white px-4 py-4 shadow-sm sm:px-5">
         <div className="flex items-center gap-2">
           <MapPin size={17} className="text-indigo-600" />
           <h2 className="text-sm font-black text-slate-900">Where customers are buying</h2>
@@ -112,6 +119,22 @@ const ProductSalesLocations = ({ token, filters, product }) => {
           </label>
         </div>
       </header>
+      {!loading && !error && locations.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">Summary of locations shown</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {[
+              [`${number(locationStats.provinces)} Provinces`, "text-indigo-700"],
+              [`${number(locationStats.districts)} Districts`, "text-slate-700"],
+              [`${number(locationStats.soldQuantity)} Sold units`, "text-blue-700"],
+              [money(locationStats.grossRevenue), "text-emerald-700"],
+              [`${number(locationStats.orderCount)} Orders`, "text-slate-700"],
+            ].map(([label, tone]) => (
+              <span key={label} className={`rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[10px] font-bold ${tone}`}>{label}</span>
+            ))}
+          </div>
+        </div>
+      )}
       {productsError && <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">Product filters are unavailable: {productsError}</p>}
       {loading ? <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">Loading locations…</div> : error ? (
         <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-800">
@@ -124,8 +147,8 @@ const ProductSalesLocations = ({ token, filters, product }) => {
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {provinces.map((group) => (
-            <article key={group.province} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <header className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <article key={group.province} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <header className="flex items-center justify-between border-b border-slate-100 bg-slate-50/70 px-5 py-4">
                 <div>
                   <h3 className="text-sm font-black text-slate-900">{group.province}</h3>
                   <p className="mt-0.5 text-[11px] text-slate-500">{group.districts.length} districts with sales</p>

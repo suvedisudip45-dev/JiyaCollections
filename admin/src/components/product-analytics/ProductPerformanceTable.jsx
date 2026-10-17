@@ -35,10 +35,11 @@ const ProductPerformanceTable = ({ token, filters, onViewTimeline }) => {
   }, [loadProducts]);
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
         <div>
-          <h2 className="text-sm font-black text-slate-900">Product performance</h2>
+          <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-indigo-600">Catalog performance</p>
+          <h2 className="mt-1 text-sm font-black text-slate-900">Products &amp; returns</h2>
           <p className="mt-0.5 text-xs text-slate-500">Sales, completed returns, and revenue for this period.</p>
         </div>
         <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
@@ -63,7 +64,7 @@ const ProductPerformanceTable = ({ token, filters, onViewTimeline }) => {
         <>
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-xs">
-              <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-400">
+              <thead className="bg-slate-50 text-[9px] font-bold uppercase tracking-[0.1em] text-slate-500">
                 <tr>
                   <th className="px-5 py-3">Product</th>
                   <th className="px-5 py-3 text-right">Pieces sold</th>
@@ -76,7 +77,7 @@ const ProductPerformanceTable = ({ token, filters, onViewTimeline }) => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {rows.map((product) => (
-                  <tr key={product.productId} className="hover:bg-slate-50/70">
+                  <tr key={product.productId} className="transition-colors hover:bg-indigo-50/30">
                     <td className="px-5 py-3">
                       <p className="font-bold text-slate-800">{product.name}</p>
                       <p className="mt-0.5 text-[10px] text-slate-400">{product.category || "Uncategorized"}</p>

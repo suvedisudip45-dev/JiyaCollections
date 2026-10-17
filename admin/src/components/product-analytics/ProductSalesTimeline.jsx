@@ -86,8 +86,8 @@ const ProductSalesTimeline = ({ token, filters, product }) => {
 
   const maxQuantity = Math.max(1, ...points.map((point) => Number(point.soldQuantity || 0)));
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <header className="flex flex-col gap-3 border-b border-slate-100 px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
+    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <header className="flex flex-col gap-3 border-b border-slate-100 bg-white px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
             <TrendingUp size={17} className="text-indigo-600" />

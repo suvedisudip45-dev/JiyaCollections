@@ -9,8 +9,8 @@ import ProductSalesLocations from "../components/product-analytics/ProductSalesL
 import ProductSalesTimeline from "../components/product-analytics/ProductSalesTimeline";
 
 const tabs = [
-  { id: "charts", label: "Charts & comparisons", icon: BarChart3 },
   { id: "overview", label: "Overview", icon: BarChart3 },
+  { id: "charts", label: "Charts & comparisons", icon: BarChart3 },
   { id: "products", label: "Products & returns", icon: PackageSearch },
   { id: "locations", label: "Sales by location", icon: MapPinned },
   { id: "timeline", label: "Product timeline", icon: TrendingUp },
@@ -33,7 +33,7 @@ const ProductAnalytics = ({ token }) => {
   const [period, setPeriod] = useState("month");
   const [startDate, setStartDate] = useState(initialStartDate);
   const [endDate, setEndDate] = useState(() => localDate(new Date()));
-  const [activeTab, setActiveTab] = useState("charts");
+  const [activeTab, setActiveTab] = useState("overview");
   const [selectedProduct, setSelectedProduct] = useState(null);
 
   const filters = useMemo(() => (
@@ -48,59 +48,64 @@ const ProductAnalytics = ({ token }) => {
   const customRangeIncomplete = period === "custom" && (!startDate || !endDate);
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6">
-      <header className="flex flex-col justify-between gap-5 rounded-3xl bg-slate-950 px-6 py-6 text-white sm:flex-row sm:items-end sm:px-8">
-        <div className="max-w-2xl">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-indigo-300">
-            <BarChart3 size={15} /> Sales intelligence
+    <div className="mx-auto max-w-[1600px] space-y-4 p-3 sm:p-5">
+      <header className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-600">Retail analytics</p>
+            <h1 className="mt-1 text-xl font-black tracking-tight text-slate-900 sm:text-2xl">Product Performance &amp; Sales Analytics</h1>
+            <p className="mt-1 text-xs text-slate-500">Sales mix, returns, and product performance across your business.</p>
           </div>
-          <h1 className="mt-3 text-2xl font-black tracking-tight sm:text-3xl">Product performance</h1>
-          <p className="mt-2 text-sm leading-relaxed text-slate-300">See what customers are buying, what comes back, and where your products are selling.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor="product-analytics-period" className="sr-only">Date range</label>
-          <select
-            id="product-analytics-period"
-            value={period}
-            onChange={(event) => setPeriod(event.target.value)}
-            className="rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:ring-2 focus:ring-indigo-400 [&>option]:text-slate-900"
-          >
-            <option value="week">This week</option>
-            <option value="month">This month</option>
-            <option value="year">This year</option>
-            <option value="custom">Custom dates</option>
-          </select>
-          {period === "custom" && (
-            <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2">
-              <CalendarDays size={15} className="text-indigo-200" />
-              <input aria-label="Start date" type="date" value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} className="w-32 bg-transparent text-xs text-white outline-none [color-scheme:dark]" />
-              <span className="text-xs text-slate-400">to</span>
-              <input aria-label="End date" type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} className="w-32 bg-transparent text-xs text-white outline-none [color-scheme:dark]" />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div role="group" aria-label="Select reporting period" className="inline-flex w-fit rounded-xl border border-slate-200 bg-slate-50 p-1">
+              {[
+                { value: "week", label: "Week" },
+                { value: "month", label: "Month" },
+                { value: "year", label: "Year" },
+                { value: "custom", label: "Custom" },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={period === option.value}
+                  onClick={() => setPeriod(option.value)}
+                  className={`rounded-lg px-3 py-2 text-xs font-bold transition-colors ${period === option.value ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-          )}
+            {period === "custom" && (
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                <CalendarDays size={15} className="shrink-0 text-slate-400" />
+                <input aria-label="Start date" type="date" value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} className="w-32 text-xs text-slate-700 outline-none" />
+                <span className="text-xs text-slate-400">to</span>
+                <input aria-label="End date" type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} className="w-32 text-xs text-slate-700 outline-none" />
+              </div>
+            )}
+          </div>
         </div>
+        <nav aria-label="Product analytics views" className="flex gap-5 overflow-x-auto border-t border-slate-100 px-5">
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              aria-current={activeTab === id ? "page" : undefined}
+              className={`inline-flex shrink-0 items-center gap-2 border-b-2 px-1 py-3 text-xs font-bold transition-colors ${activeTab === id ? "border-indigo-600 text-slate-900" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+            >
+              <Icon size={14} /> {label}
+            </button>
+          ))}
+        </nav>
       </header>
-
-      <nav aria-label="Product analytics views" className="flex gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveTab(id)}
-            aria-current={activeTab === id ? "page" : undefined}
-            className={`inline-flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition-colors ${activeTab === id ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}
-          >
-            <Icon size={15} /> {label}
-          </button>
-        ))}
-      </nav>
 
       {customRangeIncomplete ? (
         <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">Choose both dates to view a custom period.</p>
       ) : (
         <>
           {activeTab === "charts" && <ProductPerformanceCharts token={token} filters={filters} />}
-          {activeTab === "overview" && <ProductAnalyticsSummary token={token} filters={filters} />}
+          {activeTab === "overview" && <ProductAnalyticsSummary token={token} filters={filters} onShowProducts={() => setActiveTab("products")} />}
           {activeTab === "products" && <ProductPerformanceTable token={token} filters={filters} onViewTimeline={viewTimeline} />}
           {activeTab === "locations" && <ProductSalesLocations token={token} filters={filters} product={selectedProduct} />}
           {activeTab === "timeline" && <ProductSalesTimeline token={token} filters={filters} product={selectedProduct} />}

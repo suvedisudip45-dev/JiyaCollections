@@ -5,13 +5,14 @@ import { AlertCircle, BarChart3, PieChart, RotateCw } from "lucide-react";
 import { productAnalyticsApi } from "../../api/productAnalytics";
 
 const SERIES_COLORS = ["#3157D5", "#168C78", "#E39B32", "#8A5BD1", "#D85B65", "#398DB5", "#7D9B3B", "#C16D35", "#57718F", "#BD579E", "#529D96", "#A67F3C"];
+const number = (value) => Number(value || 0).toLocaleString();
 const METRICS = [
   { id: "soldQuantity", label: "Pieces sold", format: (value) => `${Number(value || 0).toLocaleString()} pcs`, color: "#3157D5" },
   { id: "grossRevenue", label: "Gross revenue", format: (value) => `Rs ${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "#168C78" },
   { id: "grossProfit", label: "Est. gross profit", format: (value) => `Rs ${Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`, color: "#8A5BD1" },
 ];
 
-const HorizontalBars = ({ title, subtitle, rows, metric, emptyLabel = "No sales recorded for this period." }) => {
+const VerticalBars = ({ title, subtitle, rows, metric, emptyLabel = "No sales recorded for this period." }) => {
   const sortedRows = useMemo(
     () => [...rows].sort((left, right) => Number(right[metric.id] || 0) - Number(left[metric.id] || 0)).slice(0, 10),
     [metric.id, rows],
@@ -32,23 +33,31 @@ const HorizontalBars = ({ title, subtitle, rows, metric, emptyLabel = "No sales 
       {sortedRows.length === 0 ? (
         <p className="py-9 text-center text-xs text-slate-400">{emptyLabel}</p>
       ) : (
-        <div className="mt-5 space-y-3.5">
+        <div className="mt-4 overflow-x-auto pb-2">
+          <div className="flex h-60 min-w-max items-stretch gap-3">
           {sortedRows.map((row, index) => {
             const value = Number(row[metric.id] || 0);
-            const width = value !== 0 ? Math.max(2, (Math.abs(value) / maxValue) * 100) : 0;
+            const height = value !== 0 ? Math.max(3, (Math.abs(value) / maxValue) * 100) : 0;
+            const label = row.district ? `${row.district}, ${row.name}` : row.name;
+            const color = value < 0 ? "#D85B65" : SERIES_COLORS[index % SERIES_COLORS.length];
             return (
-              <div key={row.id} className="grid grid-cols-[minmax(75px,0.8fr)_minmax(70px,1.8fr)_auto] items-center gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-[11px] font-bold text-slate-700" title={row.name}>{row.name}</p>
-                  {row.district && <p className="truncate text-[9px] text-slate-400">{row.district}</p>}
+              <div key={row.id} role="img" aria-label={`${label}: ${metric.format(value)}`} className="flex w-[4.75rem] flex-col items-center">
+                <span className="mb-2 flex h-7 max-w-full items-end justify-center truncate text-center text-[9px] font-bold tabular-nums text-slate-600" title={metric.format(value)}>
+                  {metric.format(value)}
+                </span>
+                <div
+                  className="relative flex w-full flex-1 items-end justify-center border-b border-slate-200"
+                  style={{
+                    backgroundImage: "linear-gradient(to bottom, transparent calc(25% - 1px), #e2e8f0 25%, transparent calc(25% + 1px), transparent calc(50% - 1px), #e2e8f0 50%, transparent calc(50% + 1px), transparent calc(75% - 1px), #e2e8f0 75%, transparent calc(75% + 1px))",
+                  }}
+                >
+                  <div className="w-7 rounded-t-md transition-[height] duration-300" style={{ height: `${height}%`, backgroundColor: color }} />
                 </div>
-                <div className="flex h-2.5 overflow-hidden rounded-full bg-slate-100">
-                  <div className={`h-full rounded-full transition-[width] duration-300 ${value < 0 ? "ml-auto" : ""}`} style={{ width: `${width}%`, backgroundColor: value < 0 ? "#D85B65" : SERIES_COLORS[index % SERIES_COLORS.length] }} />
-                </div>
-                <span className="min-w-[68px] text-right text-[10px] font-black tabular-nums text-slate-700">{metric.format(value)}</span>
+                <span className="mt-2 line-clamp-2 h-8 w-full text-center text-[9px] leading-4 text-slate-500" title={label}>{label}</span>
               </div>
             );
           })}
+          </div>
         </div>
       )}
     </article>
@@ -182,7 +191,7 @@ const ProductPerformanceCharts = ({ token, filters }) => {
 
   return (
     <section className="space-y-4">
-      <header className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <header className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex items-center gap-2">
@@ -204,88 +213,77 @@ const ProductPerformanceCharts = ({ token, filters }) => {
             </select>
           </label>
         </div>
-        <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-bold text-slate-700">Visualization</p>
-            <p className="mt-0.5 text-[10px] text-slate-500">Choose one view for the same sales records.</p>
+        <div className="flex flex-col gap-3 border-t border-slate-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">Visualization</p>
+              <div role="group" aria-label="Choose chart type" className="mt-1 inline-flex rounded-lg bg-slate-100 p-1">
+                <button
+                  type="button"
+                  aria-pressed={displayMode === "bars"}
+                  onClick={() => setDisplayMode("bars")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-bold transition-colors ${displayMode === "bars" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  <BarChart3 size={13} /> Bar diagram
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={displayMode === "pie"}
+                  onClick={() => setDisplayMode("pie")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[10px] font-bold transition-colors ${displayMode === "pie" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                >
+                  <PieChart size={13} /> Pie chart
+                </button>
+              </div>
+            </div>
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-slate-400">Measure</p>
+              <div role="group" aria-label="Select measure for charts" className="mt-1 inline-flex flex-wrap rounded-lg border border-slate-200 bg-white p-1">
+                {METRICS.map((metric) => (
+                  <button
+                    key={metric.id}
+                    type="button"
+                    aria-pressed={selectedMetricId === metric.id}
+                    onClick={() => setSelectedMetricId(metric.id)}
+                    className={`rounded-md px-2.5 py-1.5 text-[10px] font-bold transition-colors ${selectedMetricId === metric.id ? "bg-indigo-600 text-white" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"}`}
+                  >
+                    {metric.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div role="group" aria-label="Choose chart type" className="inline-flex w-fit rounded-xl bg-slate-100 p-1">
-            <button
-              type="button"
-              aria-pressed={displayMode === "bars"}
-              onClick={() => setDisplayMode("bars")}
-              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors ${displayMode === "bars" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              <BarChart3 size={14} /> Bar diagram
-            </button>
-            <button
-              type="button"
-              aria-pressed={displayMode === "pie"}
-              onClick={() => setDisplayMode("pie")}
-              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors ${displayMode === "pie" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-            >
-              <PieChart size={14} /> Pie chart
-            </button>
-          </div>
-          {displayMode === "pie" && (
-            <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
-              Measure
-              <select
-                aria-label="Select measure for pie charts"
-                value={selectedMetricId}
-                onChange={(event) => setSelectedMetricId(event.target.value)}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-semibold normal-case tracking-normal text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
-              >
-                {METRICS.map((metric) => <option key={metric.id} value={metric.id}>{metric.label}</option>)}
-              </select>
-            </label>
-          )}
+          <p className="text-[10px] leading-relaxed text-slate-500">Up to 10 leading results in each comparison.</p>
         </div>
       </header>
 
       {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{error}</p>}
-      {uncostedQuantity > 0 && (
-        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
-          Estimated gross profit is incomplete: some sold units have no historical or fallback cost recorded. Missing-cost quantities are shown in the detailed product records.
-        </p>
-      )}
+      <div className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-2.5 text-[10px] ${uncostedQuantity > 0 ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-100 bg-emerald-50/70 text-emerald-800"}`}>
+        <span className="font-bold">Profit basis: gross product profit</span>
+        <span>{uncostedQuantity > 0 ? `${number(uncostedQuantity)} sold units have no recorded cost; profit is incomplete.` : "No missing item costs reported for this selection."}</span>
+      </div>
 
       {displayMode === "bars" ? (
         <>
-          <div className="grid gap-3 xl:grid-cols-3">
-            {METRICS.map((metric) => (
-              <HorizontalBars
-                key={`product-${metric.id}`}
-                title="Top products"
-                subtitle="Across the selected date range."
-                rows={charts.products}
-                metric={metric}
-              />
-            ))}
-          </div>
-          <div className="grid gap-3 xl:grid-cols-3">
-            {METRICS.map((metric) => (
-              <HorizontalBars
-                key={`location-${metric.id}`}
-                title="Top provinces & districts"
-                subtitle="Customer delivery address captured on the order."
-                rows={charts.locations}
-                metric={metric}
-              />
-            ))}
-          </div>
-          <div className="grid gap-3 xl:grid-cols-3">
-            {METRICS.map((metric) => (
-              <HorizontalBars
-                key={`distributor-${metric.id}`}
-                title="Distributor comparison"
-                subtitle={selectedProduct ? `Performance for ${selectedProduct.name}.` : "All products combined; choose one product to compare its distributors."}
-                rows={charts.distributors}
-                metric={metric}
-                emptyLabel={selectedProduct ? "No attributed distributor sales for this product in this range." : "No distributor-attributed sales in this period."}
-              />
-            ))}
-          </div>
+          <VerticalBars
+            title="Top products"
+            subtitle="Across the selected date range."
+            rows={charts.products}
+            metric={selectedMetric}
+          />
+          <VerticalBars
+            title="Top provinces & districts"
+            subtitle="Customer delivery address captured on the order."
+            rows={charts.locations}
+            metric={selectedMetric}
+          />
+          <VerticalBars
+            title="Distributor comparison"
+            subtitle={selectedProduct ? `Performance for ${selectedProduct.name}.` : "All products combined; choose one product to compare its distributors."}
+            rows={charts.distributors}
+            metric={selectedMetric}
+            emptyLabel={selectedProduct ? "No attributed distributor sales for this product in this range." : "No distributor-attributed sales in this period."}
+          />
         </>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -312,8 +310,8 @@ const ProductPerformanceCharts = ({ token, filters }) => {
           />
         </div>
       )}
-      <p className="rounded-xl bg-slate-100 px-4 py-3 text-[11px] leading-relaxed text-slate-600">
-        Gross profit = item revenue minus recorded item COGS and completed refunds; delivery and operating expenses are excluded. Returns are grouped by refund completion date. Distributor comparisons include direct distributor orders and orders assigned to that distributor. Distributor revenue is shown here for Admin only.
+      <p className="rounded-lg bg-slate-50 px-4 py-3 text-[10px] leading-relaxed text-slate-500">
+        Gross profit = item revenue minus recorded item COGS and completed refunds. Delivery and operating expenses are excluded. Returns are grouped by refund completion date. Distributor comparisons include direct distributor orders and assigned orders; revenue is shown to Admin only.
       </p>
     </section>
   );
