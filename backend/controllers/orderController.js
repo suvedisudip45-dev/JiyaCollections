@@ -26,9 +26,23 @@ import { createCollaborationSalesForOrder } from "../services/collaborationSales
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { getAddressProvince } from "../services/deliveryLocationService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
+import { containsSqlInjection, sanitizeText } from "../middleware/sanitize.js";
 
 const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 const roundOrderAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+const validateDeliveryStreet = (value) => {
+  if (typeof value !== "string" || containsSqlInjection(value)) {
+    return { error: "Enter a valid street address without SQL syntax." };
+  }
+  const street = sanitizeText(value, { stripAllHtml: true });
+  if (!street || /[\u0001-\u001f\u007f]/.test(street)) {
+    return { error: "Street address is required and must contain plain text." };
+  }
+  if (street.length > 255) {
+    return { error: "Street address must be 255 characters or fewer." };
+  }
+  return { street };
+};
 
 export const splitItemsIntoDistributorShipments = (items, shipments) => {
   const remainingByShipment = shipments.map((shipment) => ({
@@ -493,11 +507,24 @@ const validateOrderStock = (items, dbProducts) => {
 const placeOrder = async (req, res) => {
   try {
     const userId = req.userId || req.auth?.userId;
-    const { address, comboBundle } = req.body;
+    const { comboBundle } = req.body;
+    const submittedAddress = req.body.address;
     const rewardChoice = String(req.body.rewardChoice || "").trim().toUpperCase();
     const selectedCardId = String(req.body.marketingCardId || "").trim();
     const platformFeatures = await getPlatformFeatures();
     if (!userId) return res.status(401).json({ success: false, message: "Authenticated customer is required." });
+    if (!submittedAddress || typeof submittedAddress !== "object" || Array.isArray(submittedAddress)) {
+      return res.status(400).json({ success: false, message: "A delivery address is required." });
+    }
+    const streetValidation = validateDeliveryStreet(submittedAddress.street);
+    if (streetValidation.error) {
+      return res.status(400).json({ success: false, message: streetValidation.error });
+    }
+    const address = {
+      ...submittedAddress,
+      street: streetValidation.street,
+      landmark: sanitizeText(submittedAddress.landmark, { stripAllHtml: true }) || "",
+    };
     if (rewardChoice && !["CARD", "LOYALTY", "NONE"].includes(rewardChoice)) {
       return res.status(400).json({ success: false, message: "Select either a card reward, a loyalty reward, or no reward." });
     }
@@ -1406,7 +1433,7 @@ const adminCreateOrder = async (req, res) => {
     }
 
     const customerData = customerDecision.customer;
-    const resolvedClient = customerData
+    let resolvedClient = customerData
       ? {
           ...client,
           firstName: client.firstName || customerData.firstName,
@@ -1426,17 +1453,30 @@ const adminCreateOrder = async (req, res) => {
         }
       : client;
 
-    if (!resolvedClient.firstName || !resolvedClient.lastName || !resolvedClient.street || !resolvedClient.landmark) {
+    const streetValidation = validateDeliveryStreet(resolvedClient.street);
+    if (streetValidation.error) {
+      return res.json({
+        success: false,
+        message: streetValidation.error,
+      });
+    }
+    resolvedClient = {
+      ...resolvedClient,
+      street: streetValidation.street,
+      landmark: sanitizeText(resolvedClient.landmark, { stripAllHtml: true }) || "",
+    };
+
+    if (!resolvedClient.firstName || !resolvedClient.lastName || !resolvedClient.landmark) {
       return res.json({
         success: false,
         message: "Complete the required customer and delivery details before creating the order",
       });
     }
 
-    if (!String(resolvedClient.ncmBranch || "").trim() || !String(resolvedClient.ncmCoveredArea || "").trim()) {
+    if (!String(resolvedClient.ncmBranch || "").trim()) {
       return res.json({
         success: false,
-        message: "Select the NCM branch and covered delivery location before creating the order",
+        message: "Select an NCM branch before creating the order",
       });
     }
 
@@ -1562,7 +1602,7 @@ const adminCreateOrder = async (req, res) => {
             ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
             state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
             country: resolvedClient.country || "Nepal",
-            street: resolvedClient.street || "",
+            street: resolvedClient.street,
             landmark: resolvedClient.landmark || "",
             zipcode: resolvedClient.zipcode || "44600",
           },
@@ -1592,7 +1632,6 @@ const adminCreateOrder = async (req, res) => {
       district: resolvedClient.district || resolvedClient.city || "Kathmandu",
       city: resolvedClient.city || resolvedClient.ncmBranch || resolvedClient.district || "Kathmandu",
       ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || resolvedClient.district || "Kathmandu",
-      ncmCoveredArea: resolvedClient.ncmCoveredArea || "",
       state: resolvedClient.state || resolvedClient.province || "Bagmati Province",
       zipcode: resolvedClient.zipcode || "44600",
       country: resolvedClient.country || "Nepal",

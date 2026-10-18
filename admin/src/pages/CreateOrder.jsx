@@ -7,6 +7,7 @@ import { toast } from "react-toastify";
 import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import { Link, useNavigate } from "react-router-dom";
+import { sanitizeInput } from "../utils/sanitize";
 
 const SOCIAL_CHANNELS = [
   { id: "Instagram", name: "Instagram", icon: "📷", color: "from-pink-500 to-purple-600", text: "text-pink-600", bg: "bg-pink-50 border-pink-200" },
@@ -43,7 +44,6 @@ const CreateOrder = ({ token }) => {
     district: "Kathmandu",
     city: "Kathmandu",
     ncmBranch: "Kathmandu",
-    ncmCoveredArea: "",
     landmark: "",
     street: "",
     state: "Bagmati Province",
@@ -53,9 +53,16 @@ const CreateOrder = ({ token }) => {
   });
 
   const [ncmBranches, setNcmBranches] = useState([]);
-  const [coveredAreas, setCoveredAreas] = useState([]);
   const [loadingNcmBranches, setLoadingNcmBranches] = useState(false);
-  const [loadingCoveredAreas, setLoadingCoveredAreas] = useState(false);
+  const googleMapsQuery = [
+    client.street,
+    client.landmark,
+    client.city || client.ncmBranch,
+    client.district,
+    client.province,
+    "Nepal",
+  ].filter(Boolean).join(", ");
+  const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(googleMapsQuery)}`;
 
   // Selected Order Items: list of { productId, name, image, size, color, quantity, originalUnitPrice, discountPercentage, purchasedUnitPrice, stockAvailable }
   const [selectedItems, setSelectedItems] = useState([]);
@@ -172,6 +179,8 @@ const CreateOrder = ({ token }) => {
     const { name } = e.target;
     const value = name === "phone"
       ? e.target.value.replace(/\D/g, "").slice(0, 10)
+      : name === "street"
+        ? sanitizeInput(e.target.value, { stripAllHtml: true }).slice(0, 255)
       : e.target.value;
     setClient((prev) => {
       const updated = { ...prev, [name]: value };
@@ -190,7 +199,6 @@ const CreateOrder = ({ token }) => {
         updated.district = nextDistrict;
         updated.city = nextDistrict;
         updated.ncmBranch = nextDistrict;
-        updated.ncmCoveredArea = "";
         updated.zipcode = "";
       }
 
@@ -198,7 +206,6 @@ const CreateOrder = ({ token }) => {
         updated.district = value;
         updated.city = value;
         updated.ncmBranch = value;
-        updated.ncmCoveredArea = "";
       }
 
       if (name === "city") {
@@ -216,12 +223,6 @@ const CreateOrder = ({ token }) => {
       if (name === "ncmBranch") {
         updated.ncmBranch = value;
         updated.city = value;
-        updated.ncmCoveredArea = "";
-      }
-
-      if (name === "ncmCoveredArea") {
-        updated.ncmCoveredArea = value;
-        updated.street = value;
       }
 
       return updated;
@@ -273,7 +274,6 @@ const CreateOrder = ({ token }) => {
       district: address.district || prev.district,
       city: address.city || prev.city,
       ncmBranch: address.ncmBranch || prev.ncmBranch,
-      ncmCoveredArea: address.ncmCoveredArea || prev.ncmCoveredArea,
       orderNotes: address.deliveryInstruction || address.orderNotes || prev.orderNotes,
       state: address.state || prev.state,
       zipcode: address.zipcode || prev.zipcode,
@@ -355,16 +355,13 @@ const CreateOrder = ({ token }) => {
               ...prev,
               ncmBranch: selectedBranch,
               city: selectedBranch || prev.city,
-              ncmCoveredArea: selectedBranch === prev.ncmBranch ? prev.ncmCoveredArea : "",
             };
           });
         } else {
           setNcmBranches([]);
-          setCoveredAreas([]);
         }
       } catch (error) {
         setNcmBranches([]);
-        setCoveredAreas([]);
         console.error("Failed to load NCM branches for admin order:", error);
       } finally {
         setLoadingNcmBranches(false);
@@ -373,42 +370,6 @@ const CreateOrder = ({ token }) => {
 
     fetchNcmBranches();
   }, [backendUrl, client.province, client.district]);
-
-  useEffect(() => {
-    const fetchCoveredAreas = async () => {
-      if (!client.ncmBranch) {
-        setCoveredAreas([]);
-        return;
-      }
-
-      setLoadingCoveredAreas(true);
-      try {
-        const response = await axios.get(`${backendUrl}/api/manufacturer/branches`, {
-          params: {
-            branch: client.ncmBranch,
-            province: client.province,
-            district: client.district,
-          },
-        });
-        const areas = response.data.success ? response.data.coveredAreas || [] : [];
-        setCoveredAreas(areas);
-        const normalizeArea = (value) => String(value || "").trim().toLowerCase();
-        const previousArea = normalizeArea(client.ncmCoveredArea || client.street);
-        const matchedArea = areas.find((area) => normalizeArea(area) === previousArea);
-        if (matchedArea || areas.length === 1) {
-          const selectedArea = matchedArea || areas[0];
-          setClient((prev) => ({ ...prev, ncmCoveredArea: selectedArea, street: selectedArea }));
-        }
-      } catch (error) {
-        setCoveredAreas([]);
-        console.error("Failed to load NCM covered locations:", error);
-      } finally {
-        setLoadingCoveredAreas(false);
-      }
-    };
-
-    fetchCoveredAreas();
-  }, [backendUrl, client.ncmBranch, client.province, client.district]);
 
   // Calculate items subtotal
   const itemsSubtotal = useMemo(() => {
@@ -744,6 +705,15 @@ const CreateOrder = ({ token }) => {
       toast.error("Please specify the delivery City.");
       return;
     }
+    const street = sanitizeInput(client.street, { stripAllHtml: true });
+    if (!street) {
+      toast.error("Please enter the customer's street address or neighborhood.");
+      return;
+    }
+    if (street.length > 255) {
+      toast.error("Street address must be 255 characters or fewer.");
+      return;
+    }
     if (!client.landmark.trim()) {
       toast.error("Please enter a Nearest Landmark / Nearby Location for accurate courier delivery.");
       return;
@@ -768,10 +738,9 @@ const CreateOrder = ({ token }) => {
           district: client.district || client.city || "Kathmandu",
           city: client.city || client.ncmBranch || client.district || "Kathmandu",
           ncmBranch: client.ncmBranch || client.city || client.district || "Kathmandu",
-          ncmCoveredArea: client.ncmCoveredArea || "",
           deliveryInstruction: client.orderNotes.trim(),
           landmark: client.landmark.trim(),
-          street: client.street.trim(),
+          street,
           state: client.state || client.province || "Bagmati Province",
         },
         items: selectedItems,
@@ -822,7 +791,6 @@ const CreateOrder = ({ token }) => {
       district: "Kathmandu",
       city: "Kathmandu",
       ncmBranch: "Kathmandu",
-      ncmCoveredArea: "",
       landmark: "",
       street: "",
       state: "Bagmati Province",
@@ -1140,33 +1108,30 @@ const CreateOrder = ({ token }) => {
             </div>
 
             <div>
-              <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider mb-1">
-                NCM Covered Location / Pickup Area <span className="text-rose-500">*</span>
-              </label>
-              <select
-                name="ncmCoveredArea"
-                value={client.ncmCoveredArea}
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="block text-[11px] font-bold text-gray-700 uppercase tracking-wider">
+                  Customer Street Address / Neighborhood <span className="text-rose-500">*</span>
+                </label>
+                <a
+                  href={googleMapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 underline"
+                >
+                  Open in Google Maps
+                </a>
+              </div>
+              <input
+                type="text"
+                name="street"
+                value={client.street}
                 onChange={handleClientChange}
                 required
-                disabled={loadingCoveredAreas || coveredAreas.length === 0}
-                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800 disabled:opacity-50"
-              >
-                {loadingCoveredAreas ? (
-                  <option value="">Loading covered locations...</option>
-                ) : coveredAreas.length === 0 ? (
-                  <option value="">No covered location available for this branch</option>
-                ) : (
-                  <>
-                    <option value="">Select covered location</option>
-                    {coveredAreas.map((area) => (
-                      <option key={area} value={area}>{area}</option>
-                    ))}
-                  </>
-                )}
-              </select>
-              <p className="mt-1 text-[10px] text-gray-500">
-                Select the NCM-covered area that matches the customer&apos;s delivery location.
-              </p>
+                maxLength={255}
+                autoComplete="street-address"
+                placeholder="Enter the customer's street, neighborhood, or tole"
+                className="w-full px-3 py-2 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500 focus:outline-none font-medium text-gray-800"
+              />
             </div>
 
             {/* Landmark (CRITICAL for courier delivery) */}

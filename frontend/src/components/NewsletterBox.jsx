@@ -7,31 +7,31 @@ const NewsletterBox = () => {
   };
 
   return (
-    <div className="text-center">
-      <p className="text-2xl font-medium text-gray-800">
+    <section className="storefront-section py-10 text-center sm:py-12 lg:py-16">
+      <p className="text-xl font-medium text-gray-800 sm:text-2xl">
         Subsribe now & get 20% off
       </p>
-      <p className="text-gray-400 mt-3">
+      <p className="mt-2 text-xs text-gray-400 sm:mt-3 sm:text-sm">
         OFFER VALID FOR THE NEXT 4 HOURS ONLY!
       </p>
       <form
         onSubmit={onSubmitHandler}
-        className="w-full sm:w-1/2 flex items-center gap-3 mx-auto my-6 border pl-3"
+        className="mx-auto my-5 flex w-full max-w-2xl flex-col gap-2 border border-[var(--line)] p-2 sm:my-6 sm:flex-row sm:items-center sm:gap-3 sm:p-2"
       >
         <input
-          className="w-full sm:flex-1 outline-none"
+          className="min-h-11 w-full min-w-0 flex-1 bg-white px-3 outline-none"
           type="email"
           placeholder="Enter your email"
           required
         />
         <button
           type="submit"
-          className="bg-black text-white text-xs px-10 py-4"
+          className="min-h-11 w-full shrink-0 bg-black px-6 py-3 text-xs text-white sm:w-auto sm:px-8"
         >
           SUBSCRIBE
         </button>
       </form>
-    </div>
+    </section>
   );
 };
 

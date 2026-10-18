@@ -47,6 +47,7 @@ test('buildOrderListItem preserves required order list fields while removing unn
 
   assert.equal(result.id, 'ord_1');
   assert.equal(result.amount, 1200);
+  assert.equal(result.deliveryFee, 50);
   assert.equal(result.items[0].name, 'Tshirt');
   assert.equal(result.deliveryOrder.ncmOrderId, 'N123');
   assert.equal(result.distributorAssignment.initial.distributorName, 'Initial Hub');

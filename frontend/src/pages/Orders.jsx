@@ -1398,6 +1398,13 @@ const Orders = () => {
                     </span>
                   </div>
 
+                  <div className="flex justify-between text-slate-600">
+                    <span>Delivery Charge:</span>
+                    <span className="font-mono">
+                      {currency}{Number(invoiceOrder.deliveryFee || 0).toLocaleString()}
+                    </span>
+                  </div>
+
                   {invoiceOrder.loyaltyDiscount > 0 && (
                     <div className="flex justify-between text-emerald-600 font-semibold">
                       <span>Loyalty / Reward:</span>

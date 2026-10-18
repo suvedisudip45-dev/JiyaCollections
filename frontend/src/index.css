@@ -26,6 +26,8 @@ a.active hr {
   --muted: #6f6d68;
   --accent: #d85b3f;
   --accent-hover: #c24e34;
+  --storefront-page-gutter: clamp(0.75rem, 2.35vw, 2rem);
+  --storefront-section-gutter: clamp(1rem, 3.5vw, 3rem);
 }
 
 body {
@@ -67,6 +69,23 @@ textarea:focus-visible {
 
 .fashion-shell {
   background: var(--paper);
+}
+
+.storefront-main {
+  padding-inline: var(--storefront-page-gutter);
+}
+
+.storefront-section {
+  box-sizing: border-box;
+  margin-inline: auto;
+  max-width: 1440px;
+  padding-inline: var(--storefront-section-gutter);
+  width: 100%;
+}
+
+.storefront-footer-content {
+  max-width: calc(1440px + var(--storefront-page-gutter) + var(--storefront-page-gutter));
+  padding-inline: calc(var(--storefront-page-gutter) + var(--storefront-section-gutter));
 }
 
 .announcement-bar {

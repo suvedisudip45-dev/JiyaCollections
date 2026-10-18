@@ -1,12 +1,12 @@
 /* eslint-disable no-unused-vars */
-import React, { useContext, useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
-import { assets } from "../assets/assets";
 import { ShopContext } from "../context/ShopContext";
 import { getSharedComboBundleVariants } from "../utils/comboBundleVariants";
 import { clearAuthTokens } from "../auth/tokenStorage";
+import { sanitizeInput } from "../utils/sanitize";
 import axios from "axios";
 import { toast } from "react-toastify";
 import NepalMapModal from "../components/NepalMapModal";
@@ -17,6 +17,12 @@ const isValidNepalMobileNumber = (value = "") => {
   const normalized = digits.replace(/^0+/, "").replace(/^977/, "");
   return /^9[78]\d{8}$/.test(normalized);
 };
+
+const normalizeMapLocationName = (value = "") => String(value)
+  .toLocaleLowerCase()
+  .replace(/\s*\([^)]*\)/g, "")
+  .replace(/\s+district$/, "")
+  .trim();
 
 const PlaceOrder = () => {
   const location = useLocation();
@@ -198,11 +204,8 @@ const PlaceOrder = () => {
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const ncmBranches = getBranchesForLocation(locationLookups, formData.province, formData.district);
-  const selectedNcmBranch = ncmBranches.find((branch) => (
-    branch.name.toLocaleLowerCase() === String(formData.ncmBranch || formData.city).toLocaleLowerCase()
-  ));
-  const coveredAreas = selectedNcmBranch?.coveredAreas || [];
   const loadingNcmBranches = !locationLookups && !lookupError;
 
   // Dynamic delivery fee - recalculated when address or cart contents change
@@ -550,12 +553,12 @@ const PlaceOrder = () => {
 
     if (name === "province") {
       const nextDistrict = getDistrictsForProvince(locationLookups, value)[0] || "";
-      setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "", street: "" }));
+      setFormData((data) => ({ ...data, province: value, state: value, district: nextDistrict, city: "", ncmBranch: "" }));
       return;
     }
 
     if (name === "district") {
-      setFormData((data) => ({ ...data, district: value, city: "", ncmBranch: "", street: "" }));
+      setFormData((data) => ({ ...data, district: value, city: "", ncmBranch: "" }));
       return;
     }
 
@@ -571,8 +574,15 @@ const PlaceOrder = () => {
         ...data,
         city: value,
         ncmBranch: value,
-        street: "",
         state: branchInfo?.province || data.state,
+      }));
+      return;
+    }
+
+    if (name === "street") {
+      setFormData((data) => ({
+        ...data,
+        street: sanitizeInput(value, { stripAllHtml: true }).slice(0, 255),
       }));
       return;
     }
@@ -583,20 +593,43 @@ const PlaceOrder = () => {
     }));
   };
 
-  // Handle map location selected
-  const handleMapLocationSelect = (loc) => {
+  const handleMapLocationSelect = (location) => {
+    const province = locationLookups?.provinces?.find(
+      (value) => normalizeMapLocationName(value) === normalizeMapLocationName(location.state)
+    ) || formData.province;
+    const districts = getDistrictsForProvince(locationLookups, province);
+    const selectedDistrict = districts.find(
+      (value) => normalizeMapLocationName(value) === normalizeMapLocationName(location.district)
+    ) || (province === formData.province && districts.includes(formData.district)
+      ? formData.district
+      : "");
+    const branches = getBranchesForLocation(locationLookups, province, selectedDistrict);
+    const selectedBranch = branches.find(
+      (branch) => normalizeMapLocationName(branch.name) === normalizeMapLocationName(location.city)
+    )?.name || branches.find(
+      (branch) => branch.name === formData.city
+    )?.name || "";
+    const street = sanitizeInput(
+      location.addressSnippet || location.area || location.city || "",
+      { stripAllHtml: true }
+    ).slice(0, 255);
+    const landmark = sanitizeInput(
+      location.area || location.city || location.addressSnippet || "",
+      { stripAllHtml: true }
+    ).slice(0, 255);
+
     setSelectedSavedId(null);
     setFormData((prev) => ({
       ...prev,
-      province: loc.state || prev.province,
-      state: loc.state || prev.state,
-      district: loc.city || prev.district,
-      city: loc.city || prev.city,
-      ncmBranch: "",
-      street: loc.addressSnippet || loc.city || prev.street,
-      landmark: loc.addressSnippet || `${loc.city || "Selected map location"} (${loc.lat}, ${loc.lng})`,
+      province,
+      state: province,
+      district: selectedDistrict,
+      city: selectedBranch,
+      ncmBranch: selectedBranch,
+      street,
+      landmark,
     }));
-    toast.success(`Location set: ${loc.city}, ${loc.state}`);
+    toast.success("Map location added to your delivery address.");
   };
 
   // Select a saved address
@@ -643,6 +676,7 @@ const PlaceOrder = () => {
 
   const onSubmitHandler = async (event) => {
     event.preventDefault();
+    if (submittingRef.current) return;
     if (!token) {
       toast.error("Please login to place your order");
       navigate("/login");
@@ -676,8 +710,13 @@ const PlaceOrder = () => {
       toast.error("Please provide a valid mobile number starting with 98 or 97");
       return;
     }
-    if (!formData.street.trim()) {
-      toast.error("Please select an NCM covered area");
+    const street = sanitizeInput(formData.street, { stripAllHtml: true });
+    if (!street) {
+      toast.error("Please enter your street address or neighborhood.");
+      return;
+    }
+    if (street.length > 255) {
+      toast.error("Street address must be 255 characters or fewer.");
       return;
     }
     if (!formData.landmark.trim()) {
@@ -692,16 +731,13 @@ const PlaceOrder = () => {
       toast.error("Please select a valid NCM branch for this district");
       return;
     }
-    if (!coveredAreas.includes(formData.street)) {
-      toast.error("Please select a covered area provided by NCM");
-      return;
-    }
     if (rewardChoice === "CARD" && !selectedCardReward) {
       toast.error("Select an available card reward or choose another reward option.");
       return;
     }
 
     try {
+      submittingRef.current = true;
       setSubmitting(true);
       let orderItems = [];
       if (comboBundleData) {
@@ -752,7 +788,7 @@ const PlaceOrder = () => {
       let orderData = {
         address: {
           ...formData,
-          street: formData.street,
+          street,
           province: formData.province,
           district: formData.district,
           ncmBranch: formData.ncmBranch || formData.city,
@@ -806,6 +842,7 @@ const PlaceOrder = () => {
       console.log(error);
       toast.error(error.response?.data?.message || error.message);
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -822,7 +859,6 @@ const PlaceOrder = () => {
             <div className="text-xl sm:text-2xl">
               <Title text1={"DELIVERY"} text2={"INFORMATION"} />
             </div>
-            {/* Map / GPS Picker Button */}
             <button
               type="button"
               onClick={() => setIsMapOpen(true)}
@@ -832,7 +868,7 @@ const PlaceOrder = () => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              <span>Choose on Map / GPS</span>
+              <span>Choose on Map</span>
             </button>
           </div>
 
@@ -979,6 +1015,7 @@ const PlaceOrder = () => {
                 onChange={onChangeHandler}
                 className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer"
               >
+                <option value="">Select district</option>
                 {getDistrictsForProvince(locationLookups, formData.province).map((district) => (
                   <option key={district} value={district}>{district}</option>
                 ))}
@@ -1004,25 +1041,20 @@ const PlaceOrder = () => {
             </div>
           </div>
 
-          {/* Covered area selection */}
+          {/* Customer delivery address */}
           <div>
-            <label className="block text-xs font-semibold text-gray-600 mb-1">Street / Covered Area *</label>
-            <select
+            <label className="block text-xs font-semibold text-gray-600 mb-1">Street Address / Neighborhood *</label>
+            <input
+              type="text"
               required
+              maxLength={255}
               name="street"
               value={formData.street}
               onChange={onChangeHandler}
-              disabled={!formData.city || coveredAreas.length === 0}
-              className="border border-gray-300 rounded-lg py-2 px-3 w-full text-sm bg-white focus:outline-none focus:border-black cursor-pointer disabled:bg-gray-100"
-            >
-              <option value="">{formData.city && coveredAreas.length === 0 ? "No covered areas returned by NCM" : "Select a covered area"}</option>
-              {coveredAreas.map((area) => (
-                <option key={area} value={area}>{area}</option>
-              ))}
-            </select>
-            {formData.city && coveredAreas.length === 0 && (
-              <p className="text-[11px] text-rose-600 mt-1">This branch has no covered areas in NCM. Choose another branch.</p>
-            )}
+              className="border border-gray-300 rounded-lg py-2 px-3.5 w-full text-sm focus:outline-none focus:border-black"
+              placeholder="Enter your street, neighborhood, or tole"
+              autoComplete="street-address"
+            />
           </div>
 
           {/* Precise nearest location */}
@@ -1419,12 +1451,11 @@ const PlaceOrder = () => {
         </div>
       </form>
 
-      {/* Nepal Location Map Modal */}
       <NepalMapModal
         isOpen={isMapOpen}
         onClose={() => setIsMapOpen(false)}
         onLocationSelect={handleMapLocationSelect}
-        initialCity={formData.city}
+        initialCity={formData.city || formData.ncmBranch || formData.district}
       />
     </>
   );

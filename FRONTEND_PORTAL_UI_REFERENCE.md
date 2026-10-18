@@ -77,14 +77,15 @@ Values are from `frontend/src/index.css`; page components can contain extra Tail
 - **Controls:** rounded search/button/inputs in many commerce forms; editorial header dropdowns lean on square corners and fine borders. Product tiles use rounded imagery/cards in newer home content.
 - **Motion:** announcement marquee (~22s), image hover zoom and transitions, cart and product-action feedback, reduced-motion stylesheet fallback.
 - **Scrollbars:** WebKit scrollbar hidden globally. Design should retain clear scroll affordance in mobile drawers, horizontal tables/rails and long modal content.
-- **Shell width:** navbar centered at max-width 1440px. Content padding uses responsive `px-3`, `sm:px-5`, `lg:px-8`; home editorial sections add wider local spacing. Footer begins with a generous top margin.
+- **Shell width and gutters:** navbar and major editorial sections share a 1440px maximum width. `.storefront-main` uses responsive page gutters and `.storefront-section` uses a shared responsive inner gutter; category showcase, product rails, newsletter, policies, and footer align to these margins.
 
 ### Responsive content
 
 - Product listing uses responsive grid/cards and an intersection sentinel to load next 12 items.
 - Product cards use a consistent 3:4 image ratio, warm stone surfaces, terracotta emphasis and 44px wishlist targets.
 - On narrow screens, the compact header prioritizes search, bag and menu; account/wishlist are discoverable from navigation.
-- Home category tiles stack on narrow screens, then use 3 columns from `md`; tile heights step from 280px mobile to 400px desktop.
+- Home category tiles stack on narrow screens, then use 3 columns from `md`; tile heights and spacing scale from compact mobile values to desktop.
+- Category product grids and horizontal product rails adapt to viewport width. Footer content stacks on mobile, uses two columns at small/tablet widths, and three columns on wide screens.
 - Product detail carousel supports mobile horizontal swipe; desktop supports hover zoom and image controls. A sticky bottom purchase bar appears after the main purchase controls leave view.
 - Checkout stacks address and summary areas on mobile and uses side-by-side columns at large breakpoint.
 - Menus, modal and selector layouts have bespoke responsive behavior. Stitch should not assume one generic modal pattern covers all features.
@@ -136,7 +137,7 @@ Values are from `frontend/src/index.css`; page components can contain extra Tail
 ### Product detail
 
 - Main gallery, thumbnails/previous-next, responsive swipe rail, zoom/lightbox, featured variant image.
-- Product name, category, rating/review count, price/discount, location discount information and quote-loading/error state.
+- Product name, category, rating/review count, price/discount, location discount information and quote-loading/error state. Prices are shown without VAT-inclusive or VAT-exclusive labels.
 - Required size/color selection, quantity, stock availability, Add to Cart and Wishlist.
 - Optional product size guide opens modal; tabs switch description/details/reviews.
 - When selected district/province is known (from saved profile address), UI requests per-item quote. Display quote source/discount percentage and strike-through original price as applicable.
@@ -147,8 +148,8 @@ Values are from `frontend/src/index.css`; page components can contain extra Tail
 - Cart line identity is product + selected size/color. Quantity is checked against variant stock; removal occurs by setting quantity to zero.
 - Guest cart uses `localStorage.cartItems`; wishlists use `localStorage.wishlist`.
 - Location pricing recalculates for basket items after a profile/delivery location is known.
-- Checkout address fields: first/last name, email, Nepal phone, street/covered area, landmark, district, town/branch, province, delivery instruction, country.
-- Saved address selection pre-fills contact/location fields; current UI uses a Nepal map/location picker and branch/coverage checks.
+- Checkout address fields: first/last name, email, Nepal phone, required free-text street/neighborhood, landmark, district, NCM town/branch, province, delivery instruction, country. An interactive Nepal map modal lets customers search, choose a point, or use GPS; confirming reverse-geocoded results fills the address and available province/district/branch fields for review.
+- Saved address selection pre-fills contact/location fields; checkout validates the selected NCM branch, but does not constrain the customer's street to carrier coverage areas. Map-selected address fields remain editable before submission.
 - Checkout displays loading/error/ready states for shipping quote and pricing quote. It blocks order submission when authoritative shipping/pricing quote is not ready or when stock is insufficient.
 - Rewards are shown conditionally according to active feature flags and customer eligibility: none, loyalty reward, marketing-card reward. Card discount selection links a claimed card reward.
 - Order summary includes item subtotal, applicable reward discount and server-calculated dynamic shipping. Final order uses COD from the current visible flow.
@@ -157,7 +158,7 @@ Values are from `frontend/src/index.css`; page components can contain extra Tail
 ### Orders, tracking, returns and exchanges
 
 - Customer orders request is paginated. Each order remains a separate record (including split shipments) rather than flattened into one row.
-- List/detail displays order ID, placed date, item names/variants/quantities, total, payment status, order status, fulfillment method, delivery/tracking and COD where returned.
+- List/detail displays order ID, placed date, item names/variants/quantities, item subtotal, delivery charge (including zero/free delivery), grand total, payment status, order status, fulfillment method, delivery/tracking and COD where returned.
 - Delivery can be NCM or distributor self-delivery; do not show self-delivery as undelivered or imply COD was not received when assignment status indicates delivery/receipt.
 - Detail interaction opens a modal with track order, request exchange, request return, rate hub, and eligible cancellation actions.
 - Return/exchange dialogs select quantities per line, request reason, and replacement size/color for exchange. Status feedback says submitted for admin review; fulfillment handling is downstream.
@@ -364,7 +365,7 @@ Representative order place payload generated by checkout:
     "firstName": "A",
     "lastName": "Customer",
     "phone": "98XXXXXXXX",
-    "street": "Covered area",
+    "street": "New Road, Ward 4",
     "landmark": "Near landmark",
     "district": "Kaski",
     "province": "Gandaki Province",
@@ -432,10 +433,10 @@ Returns/exchange list and write endpoints are authenticated/permission-gated on 
 | Collaboration directory | `GET /api/collaborations/public/products` | UI renders public active products/partner context from the returned public listing. |
 | NCM branch list | `GET /api/manufacturer/branches?province=...&district=...` | UI reads `branches[]`. |
 | NCM coverage for selected branch | `GET /api/manufacturer/branches?branch=...&district=...&province=...` | UI reads `coveredAreas[]`. |
-| Map place search | OpenStreetMap Nominatim `GET https://nominatim.openstreetmap.org/search?...&countrycodes=np&limit=6&addressdetails=1` | Array of places; UI maps display name, lat/lon. Local `NEPAL_CITIES` matches are merged first. |
-| Map reverse geocode | OpenStreetMap Nominatim `/reverse?format=json&lat=...&lon=...&zoom=18&addressdetails=1` | Uses `address.road`, `suburb`, or `neighbourhood` as address snippet when available. |
+| Map place search | OpenStreetMap Nominatim `GET https://nominatim.openstreetmap.org/search?...&countrycodes=np&limit=6&addressdetails=1` | Search results are bounded to Nepal and displayed in the checkout map modal. Local Nepal city matches are included. |
+| Map reverse geocode | OpenStreetMap Nominatim `/reverse?format=json&lat=...&lon=...&zoom=18&addressdetails=1` | Returns a road/area, district, and province when available to prefill checkout fields; the selected map point remains usable if reverse geocoding cannot identify a street. |
 
-External map responses are not backend API responses; they may fail or be incomplete. Local Nepal location/district data is also present in `frontend/src/data/`.
+External map tiles/geocoding are not backend API responses and may fail or be incomplete; customers can review and edit the populated form fields. Local Nepal location/district data is also present in `frontend/src/data/`.
 
 ## 6. State and pricing behavior to preserve
 
@@ -472,14 +473,14 @@ Design a responsive fashion storefront for Aama Clothings, Nepal, not the intern
 - Collection page with filters, sorting, card grid, loading/infinite-scroll/empty state.
 - Product detail desktop and mobile with variants, location-aware pricing, sticky CTA, reviews, size guide and image lightbox.
 - Cart with variant-aware line items, stock warnings, price summary and empty state.
-- Checkout with address/location map, covered-area/branch selection, saved-address cards, pricing and delivery quote states, rewards and final summary.
+- Checkout with address fields, interactive map modal and autofill, NCM branch selection, saved-address cards, pricing and delivery quote states, rewards and final summary.
 - Order history table/card list, full detail drawer/modal, delivery tracking timelines for both NCM and distributor self-delivery, return and exchange dialogs.
 - Login/signup/social profile activation and customer profile/address management.
 - Marketing card scan/verify/reveal/activate/reward flow (feature-gated).
 
 ### Suggested reusable components
 
-Announcement ticker; responsive site header; category menu/drawer; search strip; breadcrumbs; price/discount display; product card; product rail; rating summary/review card; variant selector; size guide dialog; gallery/lightbox; cart line; stock warning; location selector/map dialog; shipping quote card; checkout reward selector; address card/form; order table/card; delivery timeline; return/exchange dialog; profile forms; marketing card scanner; toast; skeleton; empty/error state; footer.
+Announcement ticker; responsive site header; category menu/drawer; search strip; breadcrumbs; price/discount display; product card; product rail; rating summary/review card; variant selector; size guide dialog; gallery/lightbox; cart line; stock warning; Location selector/map dialog; shipping quote card; checkout reward selector; address card/form; order table/card; delivery timeline; return/exchange dialog; profile forms; marketing card scanner; toast; skeleton; empty/error state; footer.
 
 ### Copy-ready Stitch prompt
 
@@ -495,5 +496,5 @@ Announcement ticker; responsive site header; category menu/drawer; search strip;
 - Shared UI: `frontend/src/components/`.
 - Backend route/controller response sources checked for core API contracts: `backend/routes/`, `backend/controllers/`, `backend/utils/pagination.js`.
 - Response examples are illustrative and omit private customer data. They use synthetic IDs and placeholder images.
-- Some page APIs (for example payment callback, campaign partner listings, and external Nominatim data) have only been described to the degree actually consumed by this frontend. Verify the live controller/contract before treating omitted fields as guaranteed.
+- Some page APIs (for example payment callback and campaign partner listings) have only been described to the degree actually consumed by this frontend. Verify the live controller/contract before treating omitted fields as guaranteed.
 - This file is the **customer storefront** reference. The separate [`ADMIN_PORTAL_UI_REFERENCE.md`](./ADMIN_PORTAL_UI_REFERENCE.md) covers the admin portal.

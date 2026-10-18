@@ -13,11 +13,11 @@ const ProductRail = ({ eyebrow, title, description, products = [], actionLabel =
   if (!products.length) return null;
 
   return (
-    <section className="mx-auto max-w-[1440px] px-4 py-14 sm:px-8 lg:px-12 lg:py-20">
-      <div className="mb-7 flex items-end justify-between gap-6">
+    <section className="storefront-section py-10 sm:py-12 lg:py-16">
+      <div className="mb-6 flex items-end justify-between gap-4 sm:mb-7 sm:gap-6">
         <div>
           <p className="eyebrow mb-3">{eyebrow}</p>
-          <h2 className="text-3xl font-bold tracking-[-0.04em] sm:text-5xl">{title}</h2>
+          <h2 className="text-2xl font-bold tracking-[-0.04em] sm:text-4xl lg:text-5xl">{title}</h2>
           {description && <p className="mt-3 max-w-lg text-sm text-[var(--muted)]">{description}</p>}
         </div>
         <div className="hidden items-center gap-3 sm:flex">
@@ -28,7 +28,7 @@ const ProductRail = ({ eyebrow, title, description, products = [], actionLabel =
       </div>
       <div ref={railRef} className="flex snap-x gap-4 overflow-x-auto pb-2 sm:gap-5">
         {products.slice(0, 10).map((item) => (
-          <div key={item._id} className="w-[68vw] min-w-[68vw] snap-start sm:w-[31vw] sm:min-w-[31vw] md:w-[23vw] md:min-w-[23vw] lg:w-[18.5vw] lg:min-w-[18.5vw]">
+          <div key={item._id} className="w-[72vw] min-w-[72vw] snap-start sm:w-[31vw] sm:min-w-[31vw] md:w-[23vw] md:min-w-[23vw] lg:w-[18.5vw] lg:min-w-[18.5vw]">
             <ProductItem {...item} id={item._id} image={item.image} stockQuantity={item.stockQuantity ?? 0} />
           </div>
         ))}

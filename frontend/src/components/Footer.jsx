@@ -4,11 +4,11 @@ import { assets } from "../assets/assets";
 
 const Footer = () => {
   return (
-    <footer className="mt-32 border-t border-[#d9d6cc] pt-12 text-sm">
-      <div className="my-10 grid gap-12 sm:grid-cols-[2fr_1fr_1fr]">
+    <footer className="mt-20 border-t border-[#d9d6cc] pt-8 text-sm sm:mt-24 sm:pt-10 lg:mt-28 lg:pt-12">
+      <div className="storefront-section storefront-footer-content grid gap-8 pb-8 sm:grid-cols-2 sm:gap-10 sm:pb-10 lg:grid-cols-[2fr_1fr_1fr] lg:gap-12 lg:pb-12">
         <div>
-          <img className="mb-5 w-32" src={assets.logo} alt="Aama Collections" />
-          <p className="w-full max-w-md leading-7 text-[#77776e]">
+          <img className="mb-4 w-32 sm:mb-5" src={assets.logo} alt="Aama Collections" />
+          <p className="w-full max-w-md text-xs leading-6 text-[#77776e] sm:text-sm sm:leading-7">
           At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.
           </p>
         </div>
@@ -29,7 +29,7 @@ const Footer = () => {
           </ul>
         </div>
       </div>
-      <div className="border-t border-[#d9d6cc]">
+      <div className="border-t border-[#d9d6cc] px-4 sm:px-6">
         <p className="py-5 text-center text-xs text-[#96958c]">
           Copyright 2026 @ Aasha Technologies - All Rights Reserved.
         </p>

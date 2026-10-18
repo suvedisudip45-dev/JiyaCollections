@@ -45,7 +45,7 @@ const App = () => {
       <ToastContainer />
       <Navbar />
       <SearchBar />
-      <main className="storefront-main px-3 sm:px-5 lg:px-8">
+      <main className="storefront-main">
         <Breadcrumbs />
         <Routes>
         <Route path="/" element={<Home />} />

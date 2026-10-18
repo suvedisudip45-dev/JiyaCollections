@@ -58,6 +58,8 @@ test("Injection Protection - SQL Injection Detection", () => {
   assert.equal(containsSqlInjection("admin' UNION SELECT * FROM users --"), true);
   assert.equal(containsSqlInjection("; DROP TABLE orders; --"), true);
   assert.equal(containsSqlInjection("Regular product search query"), false);
+  assert.equal(containsSqlInjection("Drop Road, Ward 4"), false);
+  assert.equal(containsSqlInjection("Select Street, House 12"), false);
 });
 
 test("Injection Protection - Prototype Pollution Prevention in Objects", () => {
@@ -162,4 +164,3 @@ test("Validation & Sanitization - Price & Discount Numeric Boundaries", () => {
   assert.equal(isValidDiscount(101), false);
   assert.equal(isValidDiscount("50%"), false);
 });
-

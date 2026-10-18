@@ -869,10 +869,6 @@ const Product = () => {
                 </>
               )}
             </div>
-            <p className="text-[11px] text-gray-500 mt-2 flex items-center gap-1.5">
-              <Check size={13} className="text-emerald-600" />
-              <span>Inclusive of all taxes. Fast cash on delivery available.</span>
-            </p>
             {priceLocation && variantPriceStatus === "error" && <p className="mt-2 text-[11px] text-amber-700">Location price preview is unavailable; checkout will verify the final price.</p>}
           </div>
 

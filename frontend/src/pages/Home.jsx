@@ -75,13 +75,13 @@ const Home = () => {
       <Hero />
 
       {/* --- ATTRACTIVE CATEGORY SHOWCASE TILES (STREETWEAR EDITORIAL) --- */}
-      <section className="mx-auto max-w-[1440px] px-4 py-8 sm:px-6 sm:py-12">
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+      <section className="storefront-section py-6 sm:py-8 lg:py-12">
+        <div className="grid grid-cols-1 gap-4 sm:gap-5 md:grid-cols-3">
           {categoryTiles.map((tile) => (
             <Link
               key={tile.label}
               to={tile.query ? `/shop?category=${tile.query}` : "/shop"}
-              className="group relative flex h-[280px] sm:h-[340px] md:h-[400px] flex-col justify-between overflow-hidden rounded-2xl p-6 shadow-md transition-all duration-300 hover:shadow-2xl"
+              className="group relative flex h-[260px] flex-col justify-between overflow-hidden rounded-2xl p-5 shadow-md transition-all duration-300 hover:shadow-2xl sm:h-[340px] sm:p-6 md:h-[360px] lg:h-[400px]"
             >
               {/* Background Image with Zoom */}
               <img

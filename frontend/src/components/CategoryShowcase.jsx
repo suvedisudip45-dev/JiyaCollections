@@ -138,7 +138,7 @@ const CategoryShowcase = () => {
   });
 
   return (
-    <div className="my-14 space-y-16">
+    <div className="storefront-section my-10 space-y-12 sm:my-12 sm:space-y-14 lg:my-14 lg:space-y-16">
       {/* Quick Category Navigation Bar */}
       {activeCategories.length > 1 && (
         <div className="flex flex-col items-center gap-3 pt-2">
@@ -182,7 +182,7 @@ const CategoryShowcase = () => {
             className="pt-6 scroll-mt-20 border-t border-gray-100"
           >
             {/* Category Header */}
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-6">
+            <div className="mb-5 flex flex-col justify-between gap-4 sm:mb-6 md:flex-row md:items-end">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="w-5 h-[2px] bg-black"></span>
@@ -216,7 +216,7 @@ const CategoryShowcase = () => {
 
             {/* Products Grid */}
             {displayProducts.length > 0 ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-6">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-3 sm:gap-5 md:grid-cols-4 lg:grid-cols-5 lg:gap-6">
                 {displayProducts.map((item) => (
                   <ProductItem
                     key={item._id}

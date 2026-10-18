@@ -71,6 +71,7 @@ const installAllocationMocks = (t, {
 } = {}) => {
   let assignmentData;
   const stockQueryDistributorIds = [];
+  const transactionEvents = [];
   stubMethod(t, prisma.order, "findUnique", async () => order);
   stubMethod(t, prisma.product, "findMany", async ({ where }) =>
     where.id.in.filter((productId) => !missingProductIds.includes(productId)).map((id) => ({ id }))
@@ -99,7 +100,10 @@ const installAllocationMocks = (t, {
       },
     },
     order: {
-      updateMany: async () => ({ count: 1 }),
+      updateMany: async () => {
+        transactionEvents.push("order-claimed");
+        return { count: 1 };
+      },
       update: async () => order,
     },
     product: {
@@ -112,10 +116,15 @@ const installAllocationMocks = (t, {
         const selected = distributors.find((distributor) => distributor.id === where.location.distributorId);
         return (selected?.stockLocations || []).flatMap((location) => location.balances || []);
       },
-      updateMany: async () => ({ count: 1 }),
+      updateMany: async ({ data }) => {
+        transactionEvents.push("stock-reserved");
+        assert.equal(data.reservedQuantity.increment, 2);
+        return { count: 1 };
+      },
     },
     orderAssignment: {
       create: async ({ data }) => {
+        transactionEvents.push("assignment-created");
         assignmentData = data;
         return { id: "assignment-1", ...data };
       },
@@ -125,10 +134,11 @@ const installAllocationMocks = (t, {
   return {
     getAssignment: () => assignmentData,
     getStockQueryDistributorIds: () => stockQueryDistributorIds,
+    getTransactionEvents: () => transactionEvents,
   };
 };
 
-test("allocator prefers exact district service coverage among stocked hubs", async (t) => {
+test("allocator reserves distributor stock transactionally before distributor acceptance", async (t) => {
   const exactDistrictHub = createDistributor({
     id: "exact-hub",
     qualityRating: 2.5,
@@ -140,7 +150,7 @@ test("allocator prefers exact district service coverage among stocked hubs", asy
     qualityRating: 5,
     ratingCount: 20,
   });
-  const { getAssignment } = installAllocationMocks(t, {
+  const { getAssignment, getTransactionEvents } = installAllocationMocks(t, {
     distributors: [sameProvinceHub, exactDistrictHub],
   });
 
@@ -149,6 +159,8 @@ test("allocator prefers exact district service coverage among stocked hubs", asy
   assert.equal(result.success, true);
   assert.equal(result.distributor.id, exactDistrictHub.id);
   assert.equal(getAssignment().distributorId, exactDistrictHub.id);
+  assert.equal(getAssignment().status, "assigned");
+  assert.deepEqual(getTransactionEvents(), ["order-claimed", "stock-reserved", "assignment-created"]);
 });
 
 test("split order allocation stays with the hub selected for its product", async (t) => {

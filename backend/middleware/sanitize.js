@@ -10,10 +10,16 @@
 
 // Characters/patterns commonly used in SQL injection exploits
 const DANGEROUS_SQL_PATTERNS = [
-  /(\b(UNION(\s+ALL)?|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|EXEC|EXECUTE)\b\s+)/gi,
-  /(--|#|\/\*|\*\/)/g,
-  /(\bOR\b\s+['"\d\w]+\s*=\s*['"\d\w]+)/gi,
-  /(\bAND\b\s+['"\d\w]+\s*=\s*['"\d\w]+)/gi,
+  /\bUNION(?:\s+ALL)?\s+SELECT\b/i,
+  /\bSELECT\b[\s\S]{0,200}\bFROM\b/i,
+  /\bINSERT\s+INTO\b/i,
+  /\bUPDATE\s+[\w`]+\s+SET\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\b(?:DROP|ALTER|CREATE)\s+(?:TABLE|DATABASE|INDEX|USER|SCHEMA)\b/i,
+  /\bEXEC(?:UTE)?\s+[\w.[\]`]+\b/i,
+  /\b(?:OR|AND)\s+['"]?\w+['"]?\s*=\s*['"]?\w+['"]?/i,
+  /;\s*(?:SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|EXEC(?:UTE)?)\b/i,
+  /(?:--|\/\*|\*\/)/,
 ];
 
 // Dangerous HTML/XSS tags and handlers

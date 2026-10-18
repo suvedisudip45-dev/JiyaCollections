@@ -1,6 +1,6 @@
 /* eslint-disable react/prop-types */
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { assets } from "../assets/assets";
 import axios from "axios";
 import { backendUrl } from "../App";
@@ -72,6 +72,8 @@ const Add = ({ token }) => {
   const [categoriesList, setCategoriesList] = useState([]);
   const [subCategoriesList, setSubCategoriesList] = useState([]);
   const [colorsList, setColorsList] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   const fetchOptions = async () => {
     try {
@@ -228,6 +230,7 @@ const Add = ({ token }) => {
 
   const onSubmitHandler = async (e) => {
     e.preventDefault();
+    if (isSubmittingRef.current) return;
 
     if (!name.trim()) {
       toast.error("Please enter a product title.");
@@ -260,6 +263,8 @@ const Add = ({ token }) => {
       return;
     }
 
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     try {
       let finalSubCategory = subCategory;
       if (isCustomSubCategory && customSubCategory.trim()) {
@@ -375,6 +380,9 @@ const Add = ({ token }) => {
     } catch (error) {
       console.log(error);
       toast.error(error.message);
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -894,10 +902,15 @@ const Add = ({ token }) => {
       <div className="w-full flex justify-end gap-3 pt-2">
         <button
           type="submit"
-          className="px-8 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-md hover:shadow-lg cursor-pointer flex items-center gap-2"
+          disabled={isSubmitting}
+          className="px-8 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-2xl text-xs font-bold transition-all shadow-md hover:shadow-lg cursor-pointer flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          <CheckCircle2 className="w-4 h-4" />
-          <span>Publish Product with Verified Merchandising</span>
+          {isSubmitting ? (
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4" />
+          )}
+          <span>{isSubmitting ? "Adding Product..." : "Publish Product with Verified Merchandising"}</span>
         </button>
       </div>
     </form>
