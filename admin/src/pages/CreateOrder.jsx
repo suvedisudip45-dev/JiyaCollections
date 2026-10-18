@@ -74,6 +74,8 @@ const CreateOrder = ({ token }) => {
   const [initialStatus, setInitialStatus] = useState("Order Placed");
   const [customDeliveryFee, setCustomDeliveryFee] = useState("");
   const [useCustomShipping, setUseCustomShipping] = useState(false);
+  const [deliveryType, setDeliveryType] = useState("Door2Door");
+  const [shippingQuoteResult, setShippingQuoteResult] = useState({ key: null, status: "idle", quote: null, error: "" });
 
   // Available Products & Categories
   const [allProducts, setAllProducts] = useState([]);
@@ -245,7 +247,7 @@ const CreateOrder = ({ token }) => {
       } else if (response.data.found) {
         setExistingCustomer(response.data.customer);
         setCustomerVerificationState("CODE_REQUIRED");
-        setCustomerLookupMessage("Existing customer found. Enter the social code to verify this order.");
+        setCustomerLookupMessage("Existing customer found. Social code is optional; use it only to verify the account and apply eligible loyalty or gift benefits.");
       } else {
         setExistingCustomer(null);
         setCustomerVerificationState("NEW_CUSTOMER");
@@ -379,8 +381,59 @@ const CreateOrder = ({ token }) => {
     );
   }, [selectedItems]);
 
+  const shippingQuoteItems = useMemo(() => selectedItems.map((item) => ({
+    productId: item.productId || item._id || item.id,
+    size: item.size || "",
+    color: item.color || "",
+    quantity: Number(item.quantity || 1),
+  })), [selectedItems]);
+  const shippingQuoteKey = JSON.stringify({
+    district: client.district,
+    province: client.province,
+    ncmBranch: client.city || client.ncmBranch,
+    items: shippingQuoteItems,
+    deliveryType,
+  });
+  const hasCurrentShippingQuote = shippingQuoteResult.key === shippingQuoteKey && shippingQuoteResult.status === "ready";
+
+  useEffect(() => {
+    if (!client.district || !client.province || shippingQuoteItems.length === 0) {
+      setShippingQuoteResult({ key: shippingQuoteKey, status: "idle", quote: null, error: "" });
+      return undefined;
+    }
+    let cancelled = false;
+    setShippingQuoteResult({ key: shippingQuoteKey, status: "loading", quote: null, error: "" });
+    axios.post(`${backendUrl}/api/shipping/calculate`, {
+      district: client.district,
+      province: client.province,
+      ncmBranch: client.city || client.ncmBranch,
+      subtotal: itemsSubtotal,
+      items: shippingQuoteItems,
+      deliveryType,
+    }).then((response) => {
+      const quote = response.data;
+      if (!quote?.success || !Number.isFinite(Number(quote.fee)) || Number(quote.fee) < 0) {
+        throw new Error(quote?.message || "Unable to calculate delivery for this address.");
+      }
+      if (!cancelled) {
+        setShippingQuoteResult({ key: shippingQuoteKey, status: "ready", quote, error: "" });
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setShippingQuoteResult({
+          key: shippingQuoteKey,
+          status: "error",
+          quote: null,
+          error: error.response?.data?.message || error.message || "Unable to calculate delivery for this address.",
+        });
+      }
+    });
+    return () => { cancelled = true; };
+  }, [backendUrl, client.city, client.district, client.ncmBranch, client.province, deliveryType, itemsSubtotal, shippingQuoteItems, shippingQuoteKey]);
+
   // Dynamic Shipping Fee according to shipment rates (ShippingConfig)
   const calculatedShippingFee = useMemo(() => {
+    if (hasCurrentShippingQuote) return Number(shippingQuoteResult.quote.fee);
     if (!shippingConfig) return 50;
     const destCity = (client.city || "").trim().toLowerCase();
     const baseCity = (shippingConfig.baseCity || "Kathmandu").trim().toLowerCase();
@@ -393,7 +446,7 @@ const CreateOrder = ({ token }) => {
       return Number(shippingConfig.sameCityFee ?? 50);
     }
     return Number(shippingConfig.differentCityFee ?? 120);
-  }, [shippingConfig, client.city, itemsSubtotal]);
+  }, [hasCurrentShippingQuote, shippingQuoteResult.quote, shippingConfig, client.city, itemsSubtotal]);
 
   // Resolved Shipping Fee (auto vs custom override)
   const activeShippingFee = useMemo(() => {
@@ -723,6 +776,17 @@ const CreateOrder = ({ token }) => {
       return;
     }
 
+    if (deliveryType === "Door2Branch" && !hasCurrentShippingQuote) {
+      toast.error("Wait for the delivery quote to confirm door-to-hub availability and price.");
+      return;
+    }
+
+    const currentQuoteFailed = shippingQuoteResult.key === shippingQuoteKey && shippingQuoteResult.status === "error";
+    if (!useCustomShipping && !hasCurrentShippingQuote && !currentQuoteFailed) {
+      toast.error("Wait for the delivery quote to confirm the delivery charge before creating the order.");
+      return;
+    }
+
     try {
       setIsSubmitting(true);
 
@@ -742,10 +806,16 @@ const CreateOrder = ({ token }) => {
           landmark: client.landmark.trim(),
           street,
           state: client.state || client.province || "Bagmati Province",
+          deliveryType: hasCurrentShippingQuote
+            ? shippingQuoteResult.quote.deliveryType || "Door2Door"
+            : "Door2Door",
         },
         items: selectedItems,
         discount: activeDiscount,
-        deliveryFee: activeShippingFee,
+        ...((useCustomShipping && customDeliveryFee !== "") && { deliveryFee: activeShippingFee }),
+        deliveryType: hasCurrentShippingQuote
+          ? shippingQuoteResult.quote.deliveryType || "Door2Door"
+          : "Door2Door",
         paymentMethod,
         payment: isPaid,
         status: initialStatus,
@@ -897,16 +967,18 @@ const CreateOrder = ({ token }) => {
             {existingCustomer && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Step 2: Customer Code</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Optional: Verify Customer</span>
                   <span className="text-[10px] text-amber-800">{existingCustomer.name || "Existing customer"}</span>
                 </div>
+                <p className="text-[10px] leading-4 text-amber-900">
+                  Skip this code to create the order without linking it to the existing customer account. Enter the code to verify the account and apply eligible loyalty or gift benefits.
+                </p>
                 <input
                   type="text"
                   name="socialCode"
-                  required
                   maxLength={8}
                   autoComplete="off"
-                  placeholder="Ask the customer for their social code"
+                  placeholder="Optional customer code"
                   value={client.socialCode}
                   onChange={handleClientChange}
                   className="w-full px-3 py-2 text-xs bg-white border border-amber-300 rounded-lg focus:border-amber-500 focus:outline-none uppercase"
@@ -1435,6 +1507,38 @@ const CreateOrder = ({ token }) => {
                     {useCustomShipping ? "Reset to Auto" : "Manual Override"}
                   </button>
                 </div>
+
+                {hasCurrentShippingQuote && shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                  <fieldset className="space-y-2 rounded-lg border border-indigo-200 bg-white p-2.5">
+                    <legend className="px-1 text-[10px] font-bold uppercase text-indigo-900">Delivery method</legend>
+                    {(shippingQuoteResult.quote.deliveryOptions || []).map((option) => (
+                      <label key={option.type} className="flex cursor-pointer items-center gap-2 rounded-md border border-gray-200 p-2 text-[11px]">
+                        <input
+                          type="radio"
+                          name="adminDeliveryType"
+                          value={option.type}
+                          checked={deliveryType === option.type}
+                          onChange={() => setDeliveryType(option.type)}
+                          className="accent-indigo-700"
+                        />
+                        <span className="flex-1 font-semibold text-gray-800">
+                          {option.label}
+                          <span className="mt-0.5 block text-[10px] font-normal text-gray-500">
+                            {option.type === "Door2Branch"
+                              ? "Customer collects from the NCM destination branch."
+                              : "NCM delivers to the customer's address."}
+                          </span>
+                        </span>
+                        <span className="font-bold text-indigo-900">
+                          {Number(option.fee) === 0 ? "FREE" : `${currency} ${Number(option.fee).toLocaleString()}`}
+                        </span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+                {hasCurrentShippingQuote && !shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                  <p className="text-[10px] text-indigo-700">The selected distributor serves this same district, so only door-to-door delivery is offered.</p>
+                )}
 
                 {!useCustomShipping ? (
                   <div>

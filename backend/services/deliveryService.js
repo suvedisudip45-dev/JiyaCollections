@@ -453,7 +453,6 @@ export const buildNcmOrderPayload = ({
   delivery,
   origin,
   destination,
-  packageName,
 }) => ({
   name: input.name,
   phone: input.phone,
@@ -462,7 +461,9 @@ export const buildNcmOrderPayload = ({
   address: input.customerAddress,
   fbranch: origin,
   branch: destination,
-  package: packageName,
+  package: input.packageDescription,
+  package_type: input.packageType,
+  handling: input.isFragile ? "Fragile" : "Non-Fragile",
   vref_id: input.vendorReference,
   instruction: String(input.instruction || input.address.deliveryInstruction || "").slice(0, 500),
   delivery_type: input.deliveryType,
@@ -762,7 +763,7 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
     manufacturer: distributor || manufacturer,
     packagingMeta: assignmentNotes,
   });
-  const ncmPackageName = validateNcmDeliveryPackageDetails(input);
+  validateNcmDeliveryPackageDetails(input);
   const priorAttempts = await prisma.ncmRequestAttempt.findMany({
     where: { deliveryOrderId: delivery.id, operation: "CREATE_ORDER" },
     orderBy: { attemptNumber: "desc" },
@@ -821,7 +822,6 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
       delivery,
       origin: resolvedOrigin,
       destination: resolvedDestination,
-      packageName: ncmPackageName,
     });
 
     logger.info("NCM create payload ready", {
@@ -835,6 +835,8 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
       weight: ncmPayload.weight,
       cod_charge: ncmPayload.cod_charge,
       package: ncmPayload.package,
+      package_type: ncmPayload.package_type,
+      handling: ncmPayload.handling,
       vref_id: ncmPayload.vref_id,
       phone: "[REDACTED]",
       address: "[REDACTED]",

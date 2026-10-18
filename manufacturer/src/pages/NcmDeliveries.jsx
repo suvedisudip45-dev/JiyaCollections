@@ -41,6 +41,12 @@ const getFirstItemImage = (items = []) => {
 const getCustomerName = (address = {}) =>
   String(address.name || `${address.firstName || ""} ${address.lastName || ""}`).trim() || "Customer";
 
+const getSelectedDeliveryType = (record, overrides) =>
+  overrides[record?.assignmentId] ||
+  (record?.deliveryOptionsAvailable && record?.order?.address?.deliveryType === "Door2Branch"
+    ? "Door2Branch"
+    : "Door2Door");
+
 const NcmDeliveries = () => {
   const { token } = useManufacturer();
   const [activeTab, setActiveTab] = useState("ON_HOLD");
@@ -55,6 +61,7 @@ const NcmDeliveries = () => {
   const [loading, setLoading] = useState(true);
   const [booking, setBooking] = useState(false);
   const [retryingAssignmentId, setRetryingAssignmentId] = useState(null);
+  const [deliveryTypes, setDeliveryTypes] = useState({});
 
   const loadOrders = useCallback(async ({ preserveBatchResults = false } = {}) => {
     if (!token) return;
@@ -135,7 +142,13 @@ const NcmDeliveries = () => {
     try {
       const response = await axios.post(
         `${backendUrl}/api/distributor/orders/ncm/bulk-book`,
-        { assignmentIds: [...selectedIds] },
+        {
+          assignmentIds: [...selectedIds],
+          deliveryTypes: Object.fromEntries([...selectedIds].map((id) => [
+            id,
+            getSelectedDeliveryType(orders.find((record) => record.assignmentId === id), deliveryTypes),
+          ])),
+        },
         { headers: { token } },
       );
       const results = response.data?.results || [];
@@ -164,7 +177,12 @@ const NcmDeliveries = () => {
     try {
       const response = await axios.post(
         `${backendUrl}/api/distributor/orders/ncm/bulk-book`,
-        { assignmentIds: [record.assignmentId] },
+        {
+          assignmentIds: [record.assignmentId],
+          deliveryTypes: {
+            [record.assignmentId]: getSelectedDeliveryType(record, deliveryTypes),
+          },
+        },
         { headers: { token } },
       );
       const result = response.data?.results?.[0];
@@ -274,7 +292,7 @@ const NcmDeliveries = () => {
         <div className="flex flex-col gap-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-2 text-xs text-sky-950">
             <CheckSquare className="mt-0.5 h-4 w-4 shrink-0" />
-            <p>Select packed orders to send their individual NCM bookings together. A failed booking stays available for review; successful bookings are not repeated.</p>
+            <p>Select door-to-door or door-to-hub for each packed order, then submit their individual NCM bookings together. A failed booking stays available for review; successful bookings are not repeated.</p>
           </div>
           <button
             type="button"
@@ -324,6 +342,7 @@ const NcmDeliveries = () => {
                 <th className="px-4 py-3">Order / Products</th>
                 <th className="px-4 py-3">Customer / Destination</th>
                 <th className="px-4 py-3">Payment</th>
+                <th className="px-4 py-3">NCM delivery</th>
                 <th className="px-4 py-3">Delivery status</th>
                 <th className="px-4 py-3">Created</th>
                 <th className="px-4 py-3">Likely delivery</th>
@@ -337,6 +356,8 @@ const NcmDeliveries = () => {
                 const address = order.address || {};
                 const delivery = record.delivery;
                 const held = record.status === "on_hold";
+                const canChooseDeliveryType = held || delivery?.canReapply;
+                const selectedDeliveryType = getSelectedDeliveryType(record, deliveryTypes);
                 const status = held
                   ? "On hold"
                   : delivery?.displayStatus || delivery?.ncmStatus ||
@@ -381,6 +402,35 @@ const NcmDeliveries = () => {
                         {order.payment ? "Paid" : `Unpaid · ${order.paymentMethod || "COD"}`}
                       </span>
                       <p className="mt-1 text-slate-500">{currency}{Number(order.amount || 0).toLocaleString()}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      {canChooseDeliveryType ? (
+                        <fieldset disabled={booking || retryingAssignmentId === record.assignmentId} className="space-y-1.5">
+                          <legend className="sr-only">NCM delivery method for order {record.orderId}</legend>
+                          {[
+                            ["Door2Door", "Door to door"],
+                            ...(record.deliveryOptionsAvailable ? [["Door2Branch", "Door to hub"]] : []),
+                          ].map(([type, label]) => (
+                            <label key={type} className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-[10px] font-semibold text-slate-700">
+                              <input
+                                type="radio"
+                                name={`delivery-type-${record.assignmentId}`}
+                                value={type}
+                                checked={selectedDeliveryType === type}
+                                onChange={() => setDeliveryTypes((current) => ({
+                                  ...current,
+                                  [record.assignmentId]: type,
+                                }))}
+                              />
+                              {label}
+                            </label>
+                          ))}
+                        </fieldset>
+                      ) : (
+                        <span className="whitespace-nowrap font-semibold text-slate-700">
+                          {(delivery?.deliveryType || address.deliveryType) === "Door2Branch" ? "Door to hub" : "Door to door"}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${held ? "bg-amber-50 text-amber-800" : "bg-sky-50 text-sky-800"}`}>{status}</span>

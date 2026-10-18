@@ -159,10 +159,11 @@ const Orders = () => {
   };
 
   // Filter logic
-  const hubAssignments = assignments.filter((item) => item.status !== "on_hold");
+  const hubAssignments = assignments;
   const filteredOrders = hubAssignments.filter((item) => {
     // 1. Tab filter
     if (activeTab === "pending" && item.status !== "assigned") return false;
+    if (activeTab === "delivery_queue" && item.status !== "on_hold") return false;
     if (
       activeTab === "production" &&
       !["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(item.status)
@@ -204,6 +205,7 @@ const Orders = () => {
   const tabCounts = {
     all: hubAssignments.length,
     pending: hubAssignments.filter((a) => a.status === "assigned").length,
+    delivery_queue: hubAssignments.filter((a) => a.status === "on_hold").length,
     production: hubAssignments.filter((a) => ["accepted", "preparing", "quality_check", "letter_ready", "checklist_complete"].includes(a.status)).length,
     ready: hubAssignments.filter((a) => ["packed", "package_details_complete", "ready_for_pickup"].includes(a.status)).length,
     completed: hubAssignments.filter((a) => ["picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered"].includes(a.status)).length,
@@ -250,6 +252,7 @@ const Orders = () => {
         {[
           { id: "all", label: "All Assigned Orders", count: tabCounts.all },
           { id: "pending", label: "Pending Acceptance", count: tabCounts.pending, color: "text-rose-600" },
+          { id: "delivery_queue", label: "Delivery Queue", count: tabCounts.delivery_queue },
           { id: "production", label: "Processing & QA", count: tabCounts.production },
           { id: "ready", label: "Packed & Ready for Courier", count: tabCounts.ready },
           { id: "completed", label: "Delivered / In Transit", count: tabCounts.completed },
@@ -326,6 +329,8 @@ const Orders = () => {
             const address = order.address || {};
             const isSelected = selectedOrderIds.has(item.id);
             const isNewAssigned = item.status === "assigned";
+            const isReadOnly = ["on_hold", "ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes(String(item.status || "").toLowerCase()) ||
+              Boolean(item.delivery?.ncmOrderId || item.delivery?.pickedUpAt || item.delivery?.deliveredAt);
             const pickupReadyForThisOrder = distributorPickupReadiness.isReady;
             const dispatchWarningText = distributorPickupReadiness.missingFields.length
               ? `Pickup blocked: ${distributorPickupReadiness.missingFields[0]} missing.`
@@ -380,7 +385,7 @@ const Orders = () => {
                     to={`/orders/${item.id}`}
                     className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-1.5 font-bold text-white hover:bg-emerald-800"
                   >
-                    View / Proceed
+                    {isReadOnly ? "View Details" : "View / Proceed"}
                   </Link>
                 </td>
               </tr>

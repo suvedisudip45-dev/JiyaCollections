@@ -225,6 +225,7 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
   assert.match(input.packageDescription, /Shirt/i);
   assert.match(input.packageDescription, /Premium cotton shirt/i);
   assert.match(input.packageDescription, /Box/i);
+  assert.match(input.packageDescription, /Standard/);
   assert.equal(input.instruction, "Handle with care and leave at the gate");
 });
 
@@ -300,16 +301,41 @@ test("NCM booking keeps the system COD final and excludes the admin-paid deliver
       customerAddress: "Janakpur",
       vendorReference: "NCM123",
       deliveryType: "Door2Door",
+      packageDescription: "Jeans | Jeans | Box | Fragile",
+      packageType: "Box",
+      isFragile: true,
     },
     delivery: { packageWeight: 0.87 },
     origin: "SANKHU",
     destination: "JANAKPUR",
-    packageName: "Box",
   });
 
   assert.equal(payload.cod_charge, "1469");
   assert.equal(payload.fbranch, "SANKHU");
   assert.equal(payload.branch, "JANAKPUR");
+  assert.equal(payload.package, "Jeans | Jeans | Box | Fragile");
+  assert.equal(payload.package_type, "Box");
+  assert.equal(payload.handling, "Fragile");
+
+  const nonFragilePayload = buildNcmOrderPayload({
+    input: {
+      name: "Customer",
+      phone: "9800000000",
+      address: {},
+      codAmount: 1469,
+      customerAddress: "Janakpur",
+      vendorReference: "NCM124",
+      deliveryType: "Door2Door",
+      packageDescription: "Jeans | Jeans | Box | Standard",
+      packageType: "Box",
+      isFragile: false,
+    },
+    delivery: { packageWeight: 0.87 },
+    origin: "SANKHU",
+    destination: "JANAKPUR",
+  });
+  assert.equal(nonFragilePayload.package_type, "Box");
+  assert.equal(nonFragilePayload.handling, "Non-Fragile");
 });
 
 test("shipping-rate client normalizes legacy delivery type values", async () => {

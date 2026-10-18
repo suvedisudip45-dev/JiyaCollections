@@ -483,7 +483,25 @@ const OrderDetail = () => {
   const setDeliveryChoice = (value) => setDeliveryChoiceState({ assignmentId: id, value });
   const delivery = assignment.delivery || null;
   const benefits = order?.fulfillmentBenefits || {};
-  const isDispatchLocked = ["ready_for_pickup", "picked_up", "in_transit", "arrived_at_destination", "out_for_delivery", "delivered", "return_requested"].includes((assignment.status || "").toLowerCase());
+  const assignmentStatus = String(assignment.status || "").toLowerCase();
+  const deliveryState = String(delivery?.state || "").toUpperCase();
+  const isDispatchLocked = [
+    "on_hold",
+    "ready_for_pickup",
+    "picked_up",
+    "in_transit",
+    "arrived_at_destination",
+    "out_for_delivery",
+    "delivered",
+    "return_requested",
+  ].includes(assignmentStatus) ||
+    Boolean(
+      delivery?.ncmOrderId ||
+      delivery?.pickedUpAt ||
+      delivery?.deliveredAt ||
+      ["SUBMISSION_PENDING", "NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "PICKED_UP", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"]
+        .includes(deliveryState)
+    );
 
   const pickupReadiness = (() => {
     const fulfillmentProfile = isDistributor ? distributor : manufacturer;
@@ -619,10 +637,15 @@ const OrderDetail = () => {
         onPrevious={handleWorkflowPrevious}
         onNext={handleWorkflowNext}
         nextLabel={workflowStatus === "assigned" ? "Accept order" : isDistributor && workflowStatus === "accepted" ? "Confirm quality check" : workflowStatus === "accepted" ? "Start stitching & branding" : workflowStatus === "preparing" ? "Complete quality check" : workflowStatus === "quality_check" ? (isDistributor ? "Confirm letter included" : "Letter printed") : workflowStatus === "checklist_complete" ? "Mark packed" : workflowStatus === "packed" ? "Save package details" : workflowStatus === "package_details_complete" ? deliveryActionLabel : workflowStatus === "on_hold" ? "Waiting for batch dispatch" : "Continue"}
-        nextDisabled={workflowStatus === "on_hold" || workflowStatus === "ready_for_pickup" || workflowStatus === "delivered"}
-        previousDisabled={workflowIndex <= 0 || ["on_hold", "ready_for_pickup", "picked_up", "in_transit", "delivered"].includes(workflowStatus)}
+        nextDisabled={isDispatchLocked}
+        previousDisabled={workflowIndex <= 0 || isDispatchLocked}
         busy={actionLoading}
       >
+        {isDistributor && isDispatchLocked && (
+          <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700">
+            This order is in the delivery queue or has been handed to the delivery partner. Its fulfillment details are read-only.
+          </div>
+        )}
         {marketingCardsEnabled && order?.marketingCardRequired !== false && (
           <div className={`rounded-2xl border px-4 py-4 ${marketingCard ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
             <div className="flex items-start justify-between gap-3">
@@ -1070,14 +1093,16 @@ const OrderDetail = () => {
           </div>
 
           {/* Packaging & Quality Specs Card */}
-          <div className={`${workflowStatus === "packed" || workflowStatus === "package_details_complete" ? "" : "hidden"} bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4`}>
+          <div className={`${workflowStatus === "packed" || workflowStatus === "package_details_complete" || isDispatchLocked ? "" : "hidden"} bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4`}>
             <div className="flex items-center gap-2 text-slate-900 font-bold text-sm">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
               {isDistributor ? "Parcel details for delivery" : "Packaging & Quality Dispatch Parameters"}
             </div>
             <p className="text-xs text-slate-500">
             {isDistributor
-              ? "Confirm the parcel type, short contents description, weight, and dimensions before booking delivery."
+              ? isDispatchLocked
+                ? "Saved parcel type, contents, weight, dimensions, and handling notes."
+                : "Confirm the parcel type, short contents description, weight, and dimensions before booking delivery."
               : "Ensure proper packaging, tag inspection, and correct box dimensions before handing over to the delivery partner."}
             </p>
 

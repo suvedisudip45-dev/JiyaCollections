@@ -536,6 +536,7 @@ transfer flow:
    values before making an NCM request.
 8. Distributor fulfillment provides two delivery channels:
    - **NCM Courier Path**: Uses automated NCM booking, carrier tracking, and webhook sync. A distributor first holds package-complete orders in the NCM desk, then submits selected held orders for individual bookings.
+   - The Distributor Hub Orders list retains assignments after they enter the delivery queue, are booked with NCM, or are delivered. Open these records to review order, customer, delivery, and saved packaging details; fulfillment/package fields become read-only once queued or handed to the delivery partner.
    - **Distributor Self-Delivery Path**:
      - `GET /api/distributor/orders/assigned`: List orders allocated to the distributor hub.
      - `PATCH /api/distributor/orders/:id/status`: Updates status sequentially (`Dispatched` → `On the Way` → `Delivered`). Upon delivery, reserved inventory balances and on-hand stock are deducted transactionally, recording `FULFILLMENT` ledger entries and booking delivery accounting.
@@ -565,7 +566,7 @@ Relevant endpoints:
 |---|---|---|---|
 | `GET /api/distributor/orders/assigned` | Distributor | `distributor:assignments_read` | List orders allocated to this Distributor hub. |
 | `GET /api/distributor/orders/ncm` | Distributor | `distributor:assignments_read` | List NCM orders by hold, failed, booked (excluding delivered), delivered, or all-NCM filter, optionally filtered by carrier status; includes persisted carrier status and any provided ETA. |
-| `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings and return per-order outcomes. |
+| `POST /api/distributor/orders/ncm/bulk-book` | Distributor | `distributor:assignments_read` | Submit up to 50 held NCM orders as separate NCM bookings, with an optional per-assignment `deliveryTypes` map (`Door2Door` or `Door2Branch`); local distributor destinations only allow door-to-door. |
 | `POST /api/distributor/orders/:id/hold` | Distributor | `distributor:assignments_read` | Select self-delivery or NCM and place a package-complete order on hold. |
 | `GET /api/order-assignment/distributor/:id` | Distributor | `distributor:assignment_detail` | Read an assignment through the active distributor profile, including dual-role manufacturer/distributor accounts. |
 | `POST /api/distributor/orders/:id/self-delivery` | Distributor | `distributor:assignments_read` | Select distributor self-delivery after package completion; customer and distributor must share a district (registered or active coverage), or have an exact same-city match within the same province. |

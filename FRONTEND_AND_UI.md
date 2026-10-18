@@ -33,6 +33,8 @@ All four portals use a bounded in-memory cache for JSON GET responses only (10-s
 
 Location-entry forms across the storefront, Admin, and Manufacturer/Distributor portals load province and district choices from `GET /api/lookups/nepal`; active NCM branches and covered areas are also database-backed for workflows that need carrier coverage selection. The API and each portal reuse successful lookup responses for ten minutes. Customer checkout and Admin direct/social order creation use a required free-text street/neighborhood field with a separate NCM branch selector; manufacturer/distributor workflows retain covered-area selectors where operationally required. Lookup failures are shown in affected location selectors rather than silently allowing stale or empty options to appear valid.
 
+Admin direct/social orders can be created without an existing customer's social code. The code is optional verification for linking an existing account and applying eligible loyalty or gift benefits; when skipped, the order uses the details entered for that order and is not linked to the existing customer account.
+
 ### Styling setup
 
 The frontend CSS is defined in `frontend/src/index.css` and uses the following design tokens:
@@ -120,7 +122,7 @@ The storefront checkout is designed around server-authoritative pricing rather t
 
 The storefront shell uses shared responsive page and section gutters with a 1440px content cap. Major home sections, category product data, and footer content align to those gutters; category grids, policy highlights, the newsletter form, and footer columns reflow for narrow screens.
 
-Checkout refreshes its shipping quote when the customer changes the delivery province, district, NCM branch, or cart. The quote API uses the prioritized active distributors with available distributor-ledger stock. If one hub has all requested variants, checkout uses the route rate from that hub; otherwise it plans separate product shipments across hubs and charges the admin-configured flat split-shipment fee once for the checkout group. Checkout shows the applicable delivery tier, fee, and a customer-friendly multiple-package notice without exposing distributor names or internal allocation details. Order creation recalculates availability and the fee server-side, creates one independently assigned order per supplying hub, and stores a shared `checkoutGroupId` on those orders; each hub receives only its own item lines and creates its own delivery record. Existing free-shipping and loyalty rules continue to apply. The admin Shipping Rates page includes the split fee, an origin/destination simulator, and corridor overrides in a collapsed optional section.
+Checkout refreshes its shipping quote when the customer changes the delivery province, district, NCM branch, cart, or delivery method. The quote API uses the prioritized active distributors with available distributor-ledger stock. For a same-district/service-zone distributor (including the Kathmandu Valley cluster), checkout offers door-to-door only. For remote routes, checkout offers door-to-door or NCM door-to-hub (customer pickup at the destination branch), each showing its configured fee. If the cart splits across hubs, the quote uses the separately configured split-shipment fee for the selected delivery method once for the checkout group. Checkout shows the applicable delivery tier, fee, and a customer-friendly multiple-package notice without exposing distributor names or internal allocation details. Order creation recalculates availability, delivery method, and fee server-side, creates one independently assigned order per supplying hub, and stores a shared `checkoutGroupId` on those orders; each hub receives only its own item lines and creates its own delivery record. Existing free-shipping and loyalty rules continue to apply. Admin social-order creation previews the likely distributor allocation and offers the same delivery choices; manual delivery-fee override remains available. Shipping Settings exposes independent same-province, cross-province, and split-shipment fees for both delivery methods.
 
 Customer checkout and admin-created direct/social orders collect the customer's street/neighborhood as required free text instead of choosing an NCM covered area. Checkout provides an interactive Nepal map modal using OpenStreetMap/Nominatim; confirming a selected location prefills the street/area and applicable province/district/branch fields while leaving them editable. The Admin direct-order form offers a separate Google Maps search link. The backend strips HTML from the street field, enforces non-empty text and a 255-character limit, and rejects recognizable SQL injection syntax; database writes use Prisma parameterization. The NCM branch remains a separate delivery-routing selection.
 
@@ -139,8 +141,11 @@ fragile handling, and quality/packaging notes). Admins can request NCM delivery
 after package details are complete. Customer-order booking and tracking state
 is stored in the backend; NCM webhook updates are applied before acknowledging
 the webhook, and admin/distributor/manufacturer views read the persisted status
-instead of repeatedly querying NCM. NCM delivery charges are settled by the
-platform/admin and are not partner payables.
+instead of repeatedly querying NCM. The NCM create request sends the combined
+contents and handling summary as `package`, the selected parcel choice as
+`package_type`, and fragile status as `handling` (`Fragile` or `Non-Fragile`),
+so these values appear in their matching NCM portal fields. NCM delivery
+charges are settled by the platform/admin and are not partner payables.
 The Admin NCM deliveries table has an all-ages “Needs reconciliation” filter.
 Ambiguous or out-of-order provider updates retain the last trusted delivery
 status and appear with the carrier status/reason in the details view. Admins can
@@ -235,6 +240,7 @@ Journal entries, general ledger, trial balance, financial statements, and accoun
 - Inventory shows on-hand/reserved/available quantities plus total retail/cost estimates based on current product prices, labelled as estimates rather than historical cost-layer valuation. Finance separates balances from paginated transaction and settlement-request histories. Delivery history displays assignment status, self-delivery/NCM type, COD, and recent delivery events.
 - `/manufacturers` retains the existing searchable directory and opens `/manufacturers/:manufacturerId` for dedicated manufacturer details. Profile, factory ledger inventory, production, distributor transfers, finance, accounting transactions, and payable requests are separate permission-filtered sections; history is paginated and loaded per section. The profile editor reuses the existing update API for business/contact/pickup and contract-date fields, synchronizes linked login email changes, and leaves contract/account status controls to their existing workflow.
 - Distributor Management includes a Service-area coverage tab for assigning active distributors province/district coverage. Allocation prefers stocked exact-district hubs, then stocked same-province hubs, then review-ranked nationwide hubs. The customer Orders page lets customers rate the assigned hub after delivery; order allocation still requires every ordered variant and quantity to be available in distributor-ledger stock.
+- Distributor Hub Orders retains delivery-queued, courier-booked, and delivered assignments so the distributor can open their details, including saved packaging specifications. After queue handoff or carrier booking, the assignment detail is view-only and backend status updates reject fulfillment edits.
 
 ## 4. Manufacturer and Distributor Portal (`manufacturer/`)
 

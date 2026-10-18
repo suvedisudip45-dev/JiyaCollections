@@ -3,6 +3,7 @@ import { recordSystemAudit } from "./auditService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { prepareReadyDelivery, submitDeliveryToNcm } from "./deliveryService.js";
 import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
+import { isSameDistrict } from "./shippingRateService.js";
 
 const parseNotes = (value) => {
   if (!value) return {};
@@ -17,6 +18,11 @@ const parseNotes = (value) => {
 
 const fail = (message, statusCode = 400, code = "DISTRIBUTOR_DELIVERY_ERROR") =>
   Object.assign(new Error(message), { statusCode, code });
+
+const isLocalNcmDestination = (customerAddress, distributor) =>
+  isDistributorLocalDeliveryEligible({ customerAddress, distributor }) ||
+  [distributor.district, ...(distributor.locations || []).map(({ district }) => district)]
+    .some((district) => isSameDistrict({ district }, { district: customerAddress.district }));
 
 const validDeliveryTypes = new Set(["NCM", "SELF_DELIVERY"]);
 const NCM_STATUS_FILTERS = {
@@ -281,6 +287,16 @@ export const listDistributorNcmOrders = async ({
   ]);
   const orderMap = new Map(orders.map((order) => [order.id, order]));
   const deliveryMap = new Map(deliveries.map((delivery) => [delivery.orderId, delivery]));
+  const distributor = await client.distributor.findUnique({
+    where: { id: distributorId },
+    select: {
+      city: true,
+      province: true,
+      district: true,
+      locations: { where: { isActive: true }, select: { province: true, district: true } },
+    },
+  });
+  if (!distributor) throw fail("Distributor profile not found.", 404, "DISTRIBUTOR_NOT_FOUND");
   const records = assignments.map((assignment) => {
     const order = orderMap.get(assignment.orderId);
     const delivery = deliveryMap.get(assignment.orderId) || null;
@@ -291,6 +307,7 @@ export const listDistributorNcmOrders = async ({
       orderId: assignment.orderId,
       status: assignment.status,
       deliveryType: assignment.deliveryType,
+      deliveryOptionsAvailable: !isLocalNcmDestination(address, distributor),
       heldAt: parseNotes(assignment.notes).deliveryOnHoldAt || null,
       assignedAt: assignment.assignedAt,
       order: order ? {
@@ -339,7 +356,10 @@ export const listDistributorNcmOrders = async ({
 export const bookDistributorNcmOrders = async ({
   distributorId,
   assignmentIds,
+  deliveryTypes = {},
   client = prisma,
+  prepareDelivery = prepareReadyDelivery,
+  submitDelivery = submitDeliveryToNcm,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.");
   if (!Array.isArray(assignmentIds) || assignmentIds.length === 0) {
@@ -349,6 +369,17 @@ export const bookDistributorNcmOrders = async ({
 
   const uniqueIds = [...new Set(assignmentIds.map((id) => String(id || "").trim()).filter(Boolean))];
   if (!uniqueIds.length) throw fail("Select at least one valid order.");
+
+  const distributor = await client.distributor.findUnique({
+    where: { id: distributorId },
+    select: {
+      city: true,
+      province: true,
+      district: true,
+      locations: { where: { isActive: true }, select: { province: true, district: true } },
+    },
+  });
+  if (!distributor) throw fail("Distributor profile not found.", 404, "DISTRIBUTOR_NOT_FOUND");
 
   const results = [];
   for (const assignmentId of uniqueIds) {
@@ -369,8 +400,26 @@ export const bookDistributorNcmOrders = async ({
         throw fail("Only held NCM orders or definitively failed NCM submissions can be booked.", 409, "NCM_ORDER_NOT_ON_HOLD");
       }
 
+      const order = await client.order.findUnique({ where: { id: assignment.orderId } });
+      if (!order) throw fail("Order not found.", 404, "ORDER_NOT_FOUND");
+      const savedAddress = parseNotes(order.address);
+      const deliveryOptionsAvailable = !isLocalNcmDestination(savedAddress, distributor);
+      const requestedDeliveryType = deliveryTypes?.[assignmentId] ?? savedAddress.deliveryType ?? "Door2Door";
+      if (!["Door2Door", "Door2Branch"].includes(requestedDeliveryType)) {
+        throw fail("Choose door-to-door or door-to-hub delivery.", 400, "INVALID_DELIVERY_TYPE");
+      }
+      if (!deliveryOptionsAvailable && requestedDeliveryType === "Door2Branch") {
+        throw fail("Door-to-hub delivery is unavailable for a local destination. Choose door-to-door.", 409, "LOCAL_DELIVERY_TYPE_UNAVAILABLE");
+      }
+      if (savedAddress.deliveryType !== requestedDeliveryType) {
+        await client.order.update({
+          where: { id: order.id },
+          data: { address: { ...savedAddress, deliveryType: requestedDeliveryType } },
+        });
+      }
+
       const notes = parseNotes(assignment.notes);
-      const prepared = await prepareReadyDelivery({
+      const prepared = await prepareDelivery({
         orderId: assignment.orderId,
         distributorId,
         packageWeight: notes.packageWeight,
@@ -386,7 +435,7 @@ export const bookDistributorNcmOrders = async ({
       });
       const delivery = prepared.alreadySubmitted
         ? prepared.delivery
-        : await submitDeliveryToNcm(prepared.delivery.id, {
+        : await submitDelivery(prepared.delivery.id, {
             allowRetryAfterUnknown: isRetryableFailedSubmission,
           });
       results.push({ assignmentId, orderId, success: true, delivery });

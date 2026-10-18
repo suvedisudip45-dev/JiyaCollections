@@ -143,6 +143,7 @@ const Customer360Panel = ({ data, token, onStatusChange, hideProfile = false, hi
           </p>
         )}
       </Section>
+
         </>
       )}
 
@@ -259,6 +260,11 @@ const Customer360Panel = ({ data, token, onStatusChange, hideProfile = false, hi
       <Section title="Marketing cards & rewards" count={cardLinks.length + cardOrders.length + redemptions.length}>
         {cardLinks.length === 0 && cardOrders.length === 0 && redemptions.length === 0 ? <Empty /> : (
           <div className="space-y-2 text-xs">
+            <div className="grid grid-cols-3 gap-2">
+              <p className="rounded-lg bg-indigo-50 p-2"><b>Scanned:</b> {metrics.marketingCardsScanned ?? cardLinks.length}</p>
+              <p className="rounded-lg bg-amber-50 p-2"><b>Claimed:</b> {metrics.marketingRewardsClaimed ?? redemptions.filter(({ status }) => status === "CLAIMED").length}</p>
+              <p className="rounded-lg bg-emerald-50 p-2"><b>Used:</b> {metrics.marketingRewardsUsed ?? redemptions.filter(({ status }) => status === "REDEEMED").length}</p>
+            </div>
             {cardLinks.map((link) => (
               <div key={link.id} className="rounded-lg bg-slate-50 p-3">
                 <b>Card {link.card?.cardCode || link.cardId}</b> · {link.status} · Linked {dateText(link.linkedAt)} · Activated {dateText(link.activatedAt)}

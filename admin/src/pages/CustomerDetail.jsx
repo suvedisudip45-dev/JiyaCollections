@@ -290,6 +290,7 @@ const CustomerDetail = ({ token }) => {
 
   const { customer, metrics, loyalty } = profile;
   const addresses = Array.isArray(customer.addresses) ? customer.addresses : [];
+  const loyaltyReward = loyalty?.activeReward || {};
 
   return (
     <main className="mx-auto w-full max-w-5xl space-y-5 pb-10">
@@ -301,7 +302,7 @@ const CustomerDetail = ({ token }) => {
             <p className="text-xs font-bold uppercase tracking-[0.16em] text-indigo-600">Customer profile</p>
             <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-900">{customer.name}</h1>
             <p className="mt-1 text-sm text-slate-600">{customer.email || "No email"}{customer.phone ? ` · ${customer.phone}` : ""}</p>
-            <p className="mt-1 text-xs text-slate-500">Customer since {dateText(customer.createdAt)}{customer.socialCustomerCode ? ` · Code ${customer.socialCustomerCode}` : ""}</p>
+            <p className="mt-1 text-xs text-slate-500">Customer since {dateText(customer.createdAt)}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded-full px-3 py-1.5 text-xs font-bold ${customer.isDisabled ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>
@@ -325,6 +326,12 @@ const CustomerDetail = ({ token }) => {
             Disabled {dateText(customer.disabledAt)} · {customer.disabledReason || "No reason recorded"}
           </p>
         )}
+        <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3">
+          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-700">Customer code</span>
+          <code className="rounded-md bg-white px-2.5 py-1 font-mono text-sm font-bold tracking-widest text-slate-900">
+            {customer.socialCustomerCode || "Not assigned"}
+          </code>
+        </div>
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
           <Metric label="Lifetime order value" value={amountText(metrics.totalPurchaseAmount)} />
           <Metric label="Orders" value={metrics.orderCount} />
@@ -336,7 +343,52 @@ const CustomerDetail = ({ token }) => {
           <Metric label="Letters" value={metrics.letterCount} />
           <Metric label="Average order" value={amountText(metrics.averageOrderAmount)} />
           <Metric label="Loyalty level" value={loyalty?.currentLevel?.name || "—"} />
+          <Metric label="Marketing cards scanned" value={metrics.marketingCardsScanned ?? 0} />
+          <Metric label="Rewards claimed" value={metrics.marketingRewardsClaimed ?? 0} />
+          <Metric label="Rewards used" value={metrics.marketingRewardsUsed ?? 0} />
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-amber-200 bg-amber-50/50 p-5 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-800">Loyalty status</p>
+            <h2 className="mt-1 text-lg font-black text-slate-900">
+              {loyalty?.currentLevel?.badgeIcon ? `${loyalty.currentLevel.badgeIcon} ` : ""}
+              {loyalty?.currentLevel?.name || customer.loyaltyTier || "No loyalty tier"}
+            </h2>
+          </div>
+          <span className={`rounded-full px-3 py-1.5 text-xs font-bold ${
+            loyaltyReward.isEligible
+              ? "bg-emerald-100 text-emerald-800"
+              : "bg-slate-100 text-slate-700"
+          }`}>
+            {loyaltyReward.isEligible ? "Reward available" : "No active reward"}
+          </span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Metric label="Eligible orders" value={loyalty?.totalOrders ?? "—"} />
+          <Metric label="Eligible spend" value={amountText(loyalty?.totalSpend)} />
+          <Metric
+            label="Reward uses remaining"
+            value={loyaltyReward.isEligible
+              ? `${loyaltyReward.remainingUses} of ${loyaltyReward.orderLimit}`
+              : "—"}
+          />
+          <Metric label="Next loyalty level" value={loyalty?.nextLevel?.name || "Highest level"} />
+        </div>
+        {loyaltyReward.title && (
+          <div className="mt-3 rounded-xl border border-amber-200 bg-white p-3">
+            <p className="text-xs font-bold text-slate-900">{loyaltyReward.title}</p>
+            {loyaltyReward.description && <p className="mt-1 text-xs leading-5 text-slate-600">{loyaltyReward.description}</p>}
+            {Array.isArray(loyaltyReward.perkTags) && loyaltyReward.perkTags.length > 0 && (
+              <p className="mt-2 text-xs text-amber-900">{loyaltyReward.perkTags.join(" · ")}</p>
+            )}
+          </div>
+        )}
+        <p className="mt-3 text-[11px] leading-4 text-slate-500">
+          Marketing-card scans and claimed/used rewards are summarized above. Open customer activity below to inspect individual cards and reward history.
+        </p>
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">

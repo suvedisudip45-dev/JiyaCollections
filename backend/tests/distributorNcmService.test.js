@@ -17,6 +17,7 @@ const makeHoldClient = ({
   customerProvince = "Gandaki Province",
   distributorCity = "Pokhara",
   distributorProvince = "Gandaki Province",
+  distributorDistrict = "Kaski",
   hasDelivery = false,
   latestAttempt = null,
 } = {}) => {
@@ -41,7 +42,7 @@ const makeHoldClient = ({
       findUnique: async () => ({
         id: "order-1",
         status: "Confirmed",
-        address: { district, city: customerCity, province: customerProvince },
+        address: { district, city: customerCity, province: customerProvince, deliveryType: "Door2Door" },
       }),
       update: async (query) => {
         calls.push({ type: "order.update", query });
@@ -52,7 +53,7 @@ const makeHoldClient = ({
       findUnique: async () => ({
         city: distributorCity,
         province: distributorProvince,
-        district: "Kaski",
+        district: distributorDistrict,
         locations: [],
       }),
     },
@@ -153,6 +154,80 @@ test("bulk NCM booking only accepts orders explicitly held for NCM", async () =>
   });
   assert.equal(result.success, false);
   assert.equal(result.results[0].code, "NCM_ORDER_NOT_ON_HOLD");
+});
+
+test("bulk NCM booking saves and submits the selected door-to-hub method", async () => {
+  const { client, calls } = makeHoldClient({
+    assignmentStatus: "on_hold",
+    deliveryType: "NCM",
+    notes: JSON.stringify({ deliveryOnHold: true, packageWeight: 1 }),
+    district: "Parbat",
+    customerCity: "Kusma",
+  });
+  let preparedOptions;
+  const result = await bookDistributorNcmOrders({
+    distributorId: "distributor-1",
+    assignmentIds: ["assignment-1"],
+    deliveryTypes: { "assignment-1": "Door2Branch" },
+    client,
+    prepareDelivery: async (options) => {
+      preparedOptions = options;
+      return { delivery: { id: "delivery-1" } };
+    },
+    submitDelivery: async (deliveryId) => ({ id: deliveryId, deliveryType: "Door2Branch" }),
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(preparedOptions.orderId, "order-1");
+  assert.deepEqual(calls.find((call) => call.type === "order.update").query.data.address, {
+    district: "Parbat",
+    city: "Kusma",
+    province: "Gandaki Province",
+    deliveryType: "Door2Branch",
+  });
+  assert.equal(result.results[0].delivery.deliveryType, "Door2Branch");
+});
+
+test("bulk NCM booking rejects door-to-hub for a local distributor destination", async () => {
+  const { client, calls } = makeHoldClient({
+    assignmentStatus: "on_hold",
+    deliveryType: "NCM",
+    notes: JSON.stringify({ deliveryOnHold: true }),
+    district: "Kaski",
+    customerCity: "Pokhara",
+  });
+  const result = await bookDistributorNcmOrders({
+    distributorId: "distributor-1",
+    assignmentIds: ["assignment-1"],
+    deliveryTypes: { "assignment-1": "Door2Branch" },
+    client,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.results[0].code, "LOCAL_DELIVERY_TYPE_UNAVAILABLE");
+  assert.equal(calls.some((call) => call.type === "order.update"), false);
+});
+
+test("bulk NCM booking treats Kathmandu Valley districts as local", async () => {
+  const { client } = makeHoldClient({
+    assignmentStatus: "on_hold",
+    deliveryType: "NCM",
+    notes: JSON.stringify({ deliveryOnHold: true }),
+    district: "Bhaktapur",
+    customerCity: "Bhaktapur",
+    distributorCity: "Kathmandu",
+    distributorDistrict: "Kathmandu",
+    customerProvince: "Bagmati Province",
+    distributorProvince: "Bagmati Province",
+  });
+  const result = await bookDistributorNcmOrders({
+    distributorId: "distributor-1",
+    assignmentIds: ["assignment-1"],
+    deliveryTypes: { "assignment-1": "Door2Branch" },
+    client,
+  });
+
+  assert.equal(result.results[0].code, "LOCAL_DELIVERY_TYPE_UNAVAILABLE");
 });
 
 test("NCM reapplication is available for failed submissions without admin review", () => {

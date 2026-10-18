@@ -106,6 +106,7 @@ export const bookDistributorNcmOrders = async (req, res) => {
     const result = await bookDistributorNcmOrdersService({
       distributorId,
       assignmentIds: req.body?.assignmentIds,
+      deliveryTypes: req.body?.deliveryTypes,
     });
     return res.status(200).json(result);
   } catch (error) {

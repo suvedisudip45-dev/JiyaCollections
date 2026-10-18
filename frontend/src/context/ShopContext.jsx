@@ -88,7 +88,7 @@ const ShopContextProvider = (props) => {
   };
 
   // Authoritative backend shipping rate calculation
-  const calculateShippingRate = useCallback(async (district, province = "", subtotal = 0, items = [], ncmBranch = "") => {
+  const calculateShippingRate = useCallback(async (district, province = "", subtotal = 0, items = [], ncmBranch = "", deliveryType = "Door2Door") => {
     try {
       const res = await axios.post(backendUrl + "/api/shipping/calculate", {
         district,
@@ -96,6 +96,7 @@ const ShopContextProvider = (props) => {
         subtotal,
         items,
         ncmBranch,
+        deliveryType,
       });
       if (res.data.success) {
         return res.data;

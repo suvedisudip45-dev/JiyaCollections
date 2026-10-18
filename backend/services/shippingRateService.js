@@ -6,7 +6,7 @@ const normalizeDistrict = (district = "") => String(district || "")
   .replace(/\s+district$/i, "")
   .replace(/[^a-z0-9]/g, "");
 
-const isSameDistrict = (origin, destination) => {
+export const isSameDistrict = (origin, destination) => {
   const originDistrict = normalizeDistrict(origin.district);
   const destinationDistrict = normalizeDistrict(destination.district);
   const valleyDistricts = new Set(["kathmandu", "lalitpur", "bhaktapur"]);

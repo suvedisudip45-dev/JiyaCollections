@@ -27,7 +27,13 @@ const config = {
   differentDistrictFee: 120,
   sameProvinceFee: 150,
   differentProvinceFee: 250,
+  sameProvinceDoorToDoorFee: 160,
+  sameProvinceDoorToHubFee: 90,
+  differentProvinceDoorToDoorFee: 260,
+  differentProvinceDoorToHubFee: 140,
   splitShipmentFee: 175,
+  splitShipmentDoorToDoorFee: 190,
+  splitShipmentDoorToHubFee: 130,
   freeShippingMin: 1000,
   routeOverrides: [{
     originProvince: "Bagmati Province",
@@ -172,6 +178,68 @@ test("shipping quote uses the probable stocked distributor's route", async (t) =
     district: "Kathmandu",
     province: "Bagmati Province",
   });
+});
+
+test("shipping quote offers configured door-to-door and door-to-hub prices for a remote same-province distributor", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => ({ ...config, routeOverrides: [] }));
+  stubExistingProducts(t);
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "hub-1",
+    name: "Pokhara Hub",
+    district: "Kaski",
+    province: "Gandaki Province",
+    locations: [{ province: "Gandaki Province", district: "Kaski", isActive: true }],
+  }]);
+  stubMethod(t, prisma.inventoryBalance, "findMany", async () => [{
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "hub-1" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }]);
+
+  const quote = await resolveDistrictShippingFee({
+    district: "Parbat",
+    province: "Gandaki Province",
+    items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
+    deliveryType: "Door2Branch",
+  });
+
+  assert.equal(quote.deliveryType, "Door2Branch");
+  assert.equal(quote.deliveryOptionsAvailable, true);
+  assert.equal(quote.fee, 90);
+  assert.deepEqual(quote.deliveryOptions.map(({ type, fee }) => ({ type, fee })), [
+    { type: "Door2Door", fee: 160 },
+    { type: "Door2Branch", fee: 90 },
+  ]);
+});
+
+test("same-district routes suppress door-to-hub and resolve to door-to-door", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => ({ ...config, routeOverrides: [] }));
+  stubExistingProducts(t);
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "hub-1",
+    name: "Kathmandu Hub",
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    locations: [{ province: "Bagmati Province", district: "Kathmandu", isActive: true }],
+  }]);
+  stubMethod(t, prisma.inventoryBalance, "findMany", async () => [{
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "hub-1" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }]);
+
+  const quote = await resolveDistrictShippingFee({
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
+    deliveryType: "Door2Branch",
+  });
+
+  assert.equal(quote.deliveryType, "Door2Door");
+  assert.equal(quote.deliveryOptionsAvailable, false);
+  assert.deepEqual(quote.deliveryOptions, []);
 });
 
 test("shipping quote skips a higher-rated covered distributor without a registered route origin", async (t) => {
@@ -369,11 +437,18 @@ test("split shipping quote uses the admin-configured flat fee and lists each shi
       { productId: "product-1", size: "Medium", color: "Navy", quantity: 1 },
       { productId: "product-2", size: "Medium", color: "Navy", quantity: 1 },
     ],
+    deliveryType: "Door2Branch",
   });
 
   assert.equal(result.splitShipment, true);
-  assert.equal(result.fee, 175);
-  assert.equal(result.splitShipmentFee, 175);
+  assert.equal(result.fee, 130);
+  assert.equal(result.splitShipmentFee, 130);
+  assert.equal(result.deliveryType, "Door2Branch");
+  assert.equal(result.deliveryOptionsAvailable, true);
+  assert.deepEqual(result.deliveryOptions.map(({ type, fee }) => ({ type, fee })), [
+    { type: "Door2Door", fee: 190 },
+    { type: "Door2Branch", fee: 130 },
+  ]);
   assert.deepEqual(result.shipments.map(({ distributor }) => distributor.id).sort(), ["hub-1", "hub-2"]);
 });
 

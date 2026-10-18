@@ -718,9 +718,11 @@ const placeOrder = async (req, res) => {
         subtotal: itemsTotal,
         items: frozenItemsSnapshot,
         ncmBranch: address?.ncmBranch || address?.city || "",
+        deliveryType: address?.deliveryType || "Door2Door",
       });
       expectedFee = shippingResult.fee;
       shipmentPlan = shippingResult.shipments || [];
+      address.deliveryType = shippingResult.deliveryType || "Door2Door";
     } catch (cfgErr) {
       console.error("Error calculating authoritative shipping fee in placeOrder:", cfgErr);
       return res.status(cfgErr.status || 500).json({
@@ -1402,6 +1404,7 @@ const adminCreateOrder = async (req, res) => {
       items,
       discount = 0,
       deliveryFee,
+      deliveryType: requestedDeliveryType = client?.deliveryType || "Door2Door",
       paymentMethod = "COD",
       payment = false,
       status = "Order Placed",
@@ -1420,19 +1423,14 @@ const adminCreateOrder = async (req, res) => {
         message: "Contact number must contain exactly 10 digits and start with 97 or 98",
       });
     }
-
-    const customerDecision = await getAdminOrderCustomerForCreation(
-      client.phone,
-      client.socialCode || ""
-    );
-    if (customerDecision.state === "CODE_REQUIRED") {
-      return res.json({
-        success: false,
-        message: "This contact number already exists. Enter the social code provided by the customer.",
-      });
+    if (!["Door2Door", "Door2Branch"].includes(String(requestedDeliveryType))) {
+      return res.status(400).json({ success: false, message: "Choose door-to-door or door-to-hub delivery." });
     }
 
-    const customerData = customerDecision.customer;
+    const suppliedSocialCode = String(client.socialCode || "").trim();
+    const customerDecision = await getAdminOrderCustomerForCreation(client.phone, suppliedSocialCode);
+
+    const customerData = suppliedSocialCode ? customerDecision.customer : null;
     let resolvedClient = customerData
       ? {
           ...client,
@@ -1548,6 +1546,7 @@ const adminCreateOrder = async (req, res) => {
 
     // Dynamic shipping calculation according to shipment rates (ShippingConfig)
     let expectedFee = 50;
+    let resolvedDeliveryType = "Door2Door";
     try {
       const customerDistrict = resolvedClient.district || resolvedClient.city || "";
       const customerProvince = getAddressProvince(resolvedClient);
@@ -1555,16 +1554,29 @@ const adminCreateOrder = async (req, res) => {
         district: customerDistrict,
         province: customerProvince,
         subtotal: itemsTotal,
+        items: frozenItemsSnapshot,
+        ncmBranch: resolvedClient.ncmBranch || resolvedClient.city || "",
+        deliveryType: requestedDeliveryType,
       });
       expectedFee = shippingResult.fee;
+      resolvedDeliveryType = shippingResult.deliveryType || "Door2Door";
     } catch (cfgErr) {
       console.error("Error calculating shipping config in admin order:", cfgErr);
+      if (requestedDeliveryType === "Door2Branch") {
+        return res.status(cfgErr.status || 409).json({
+          success: false,
+          code: cfgErr.code || "SHIPPING_QUOTE_FAILED",
+          message: cfgErr.message || "Unable to confirm door-to-hub delivery availability and fee.",
+        });
+      }
     }
 
-    const resolvedFee =
-      deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== ""
-        ? Math.max(0, Number(deliveryFee))
-        : expectedFee;
+    const hasManualDeliveryFee = deliveryFee !== undefined && deliveryFee !== null && deliveryFee !== "";
+    const manualDeliveryFee = Number(deliveryFee);
+    if (hasManualDeliveryFee && (!Number.isFinite(manualDeliveryFee) || manualDeliveryFee < 0)) {
+      return res.status(400).json({ success: false, message: "Delivery fee must be a non-negative number." });
+    }
+    const resolvedFee = hasManualDeliveryFee ? manualDeliveryFee : expectedFee;
 
     const manualDiscount = Math.max(0, Number(discount) || 0);
     const finalAmount = Math.max(0, itemsTotal + resolvedFee - manualDiscount);
@@ -1640,6 +1652,7 @@ const adminCreateOrder = async (req, res) => {
       socialCode: resolvedClient.socialCode || "",
       orderNotes: resolvedClient.orderNotes || "",
       deliveryInstruction: resolvedClient.deliveryInstruction || resolvedClient.orderNotes || "",
+      deliveryType: resolvedDeliveryType,
       loyaltyExcluded: !customerDecision.loyaltyEligible,
       giftEligible: customerDecision.giftEligible,
     };

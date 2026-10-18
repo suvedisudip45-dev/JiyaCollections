@@ -669,11 +669,10 @@ const getMyAssignments = async (req, res) => {
     const pagination = getPagination(req.query);
 
     const where = distributorId
-      ? { distributorId, AND: [{ status: { not: "on_hold" } }] }
+      ? { distributorId }
       : { manufacturerId };
     if (status && status !== "all") {
-      if (distributorId) where.AND.push({ status });
-      else where.status = status;
+      where.status = status;
     }
 
     const [assignments, total] = await prisma.$transaction([
@@ -1040,6 +1039,38 @@ const updateAssignmentStatus = async (req, res) => {
     if (!assignment || !isOwner)
       return res.json({ success: false, message: "Assignment not found" });
 
+    const delivery = await prisma.deliveryOrder.findUnique({
+      where: { orderId: assignment.orderId },
+      select: { ncmOrderId: true, state: true, pickedUpAt: true, deliveredAt: true },
+    });
+    const lockedStatuses = new Set([
+      "on_hold",
+      "ready_for_pickup",
+      "picked_up",
+      "in_transit",
+      "arrived_at_destination",
+      "out_for_delivery",
+      "delivered",
+      "return_requested",
+    ]);
+    const deliveryHasBeenBooked = Boolean(
+      delivery?.ncmOrderId ||
+      delivery?.pickedUpAt ||
+      delivery?.deliveredAt ||
+      ["SUBMISSION_PENDING", "NCM_SUBMISSION_STARTED", "NCM_CREATED", "PICKUP_CONFIRMED", "PICKED_UP", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY", "DELIVERED"]
+        .includes(String(delivery?.state || "").toUpperCase())
+    );
+    if (
+      lockedStatuses.has(String(assignment.status || "").toLowerCase()) ||
+      deliveryHasBeenBooked
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "ORDER_FULFILLMENT_LOCKED",
+        message: "This order is in the delivery queue or has been handed to the delivery partner. Its fulfillment details are read-only.",
+      });
+    }
+
     if (giftInventoryId && normalizedStatus !== "checklist_complete") {
       return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
     }
@@ -1071,14 +1102,6 @@ const updateAssignmentStatus = async (req, res) => {
           code: error.code || "MARKETING_CARD_VALIDATION_FAILED",
         });
       }
-    }
-
-    const lockedStatuses = new Set(["ready_for_pickup", "picked_up", "in_transit", "delivered", "return_requested"]);
-    if (lockedStatuses.has(String(assignment.status || "").toLowerCase()) && (status !== undefined || packagingNotes !== undefined || packageWeight !== undefined || packageDimensions !== undefined || productType !== undefined || productDescription !== undefined || packageType !== undefined || isFragile !== undefined || deliveryInstruction !== undefined || instruction !== undefined || packagingChecklist !== undefined)) {
-      return res.status(409).json({
-        success: false,
-        message: "This order is already ready for dispatch. Packaging details are locked and cannot be changed after handoff.",
-      });
     }
 
     const existingNotes = parseNotes(assignment.notes);

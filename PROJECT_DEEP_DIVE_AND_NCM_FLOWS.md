@@ -201,11 +201,16 @@ The client uses `NCM_API_BASE_URL` (fallback: `https://demo.nepalcanmove.com`), 
 | --- | --- | --- |
 | Branch catalog | `GET /api/v2/branches` | Branch rows synchronized to local `NcmBranch`. |
 | Freight quote | `GET /api/v1/shipping-rate` | One of `data.delivery_charge`, `data.charge`, `data.shipping_charge`. The rate helper maps the app's `Door2Door` choice to NCM's `Pickup/Collect` rate query values. |
-| Create bulk shipment | `POST /api/v1/order/create` | Numeric carrier order ID from supported response nesting/keys; optional carrier tracking number fields. |
+| Create customer order | `POST /api/v1/order/create` | Sends the package contents summary as `package`, the selected parcel option as `package_type`, and `Fragile`/`Non-Fragile` as `handling`; consumes the numeric carrier order ID from supported response nesting/keys. |
+| Create bulk stock-transfer shipment | `POST /api/v1/order/create` | Uses the stock-transfer-specific payload below and consumes the numeric carrier order ID from supported response nesting/keys. |
 | Admin manual refresh | `GET /api/v1/order?id=<ncmOrderId>` and `GET /api/v1/order/status?id=<ncmOrderId>` | Detail fields such as `payment_status`, `delivery_charge`, `vendor_return`, `last_delivery_status`; status history uses `status` and `added_time`. |
 | Request vendor return | `POST /api/v2/vendor/order/return` with `{ "pk": "<ncmOrderId>", "comment": "<reason>" }` | Only a verified `vendor_return: true` response is treated as confirmed; it does not mean returned goods are physically received. |
 
 The API token and base URL remain server-side; these are not frontend request headers or client configuration.
+
+For customer-order bookings, do not replace the composed `package` summary with
+the package type alone: NCM displays that value as the package description.
+Send the parcel choice and fragile handling in their separate portal fields.
 
 #### Exact bulk stock-transfer create body
 

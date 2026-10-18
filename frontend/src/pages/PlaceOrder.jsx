@@ -29,6 +29,7 @@ const PlaceOrder = () => {
   const [
     method, setMethod
   ] = useState("cod");
+  const [deliveryType, setDeliveryType] = useState("Door2Door");
   const {
     navigate,
     backendUrl,
@@ -110,6 +111,7 @@ const PlaceOrder = () => {
     ncmBranch: formData.city || formData.ncmBranch || "",
     subtotal: orderSubtotal,
     items: shippingQuoteItems,
+    deliveryType,
   });
   const [shippingQuoteResult, setShippingQuoteResult] = useState({
     key: null,
@@ -449,7 +451,8 @@ const PlaceOrder = () => {
           formData.province,
           orderSubtotal,
           shippingQuoteItems,
-          formData.city || formData.ncmBranch || ""
+          formData.city || formData.ncmBranch || "",
+          deliveryType
         );
         if (!quote?.probableDistributor && !quote?.splitShipment) {
           throw new Error("A distributor for this cart and delivery location could not be confirmed.");
@@ -489,7 +492,7 @@ const PlaceOrder = () => {
     return () => {
       isCancelled = true;
     };
-  }, [shippingQuoteKey, shippingQuoteRetry, calculateShippingRate]);
+  }, [shippingQuoteKey, shippingQuoteRetry, calculateShippingRate, deliveryType]);
 
   useEffect(() => {
     if (shippingQuoteResult.key !== shippingQuoteKey || shippingQuoteResult.status !== "ready" || !shippingQuoteResult.quote) {
@@ -792,6 +795,7 @@ const PlaceOrder = () => {
           province: formData.province,
           district: formData.district,
           ncmBranch: formData.ncmBranch || formData.city,
+          deliveryType: shippingQuoteResult.quote.deliveryType || deliveryType,
           deliveryInstruction: formData.deliveryInstruction.trim(),
           country: "Nepal",
         },
@@ -1365,6 +1369,44 @@ const PlaceOrder = () => {
                     Retry
                   </button>
                 </div>
+              )}
+
+              {shippingQuoteStatus === "ready" && shippingQuoteResult.quote?.deliveryOptionsAvailable && (
+                <fieldset className="mb-3 rounded-xl border border-gray-200 bg-white p-3.5">
+                  <legend className="px-1 text-xs font-bold text-gray-900">Choose delivery method</legend>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(shippingQuoteResult.quote.deliveryOptions || []).map((option) => (
+                      <label
+                        key={option.type}
+                        className={`flex min-h-12 cursor-pointer items-center gap-2 rounded-lg border p-3 text-xs ${
+                          deliveryType === option.type
+                            ? "border-emerald-600 bg-emerald-50"
+                            : "border-gray-200 hover:border-emerald-300"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="deliveryType"
+                          value={option.type}
+                          checked={deliveryType === option.type}
+                          onChange={() => setDeliveryType(option.type)}
+                          className="accent-emerald-700"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-bold text-gray-900">{option.label}</span>
+                          <span className="block text-[10px] text-gray-600">
+                            {option.type === "Door2Branch"
+                              ? "Collect your parcel from the NCM destination branch."
+                              : "NCM delivers your parcel to the delivery address."}
+                          </span>
+                        </span>
+                        <span className="shrink-0 font-bold text-gray-900">
+                          {Number(option.fee) === 0 ? "FREE" : `Rs. ${Number(option.fee).toLocaleString()}`}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
               )}
 
               {/* Dynamic Shipping Rate Badge (only shown when NOT a loyalty free delivery) */}

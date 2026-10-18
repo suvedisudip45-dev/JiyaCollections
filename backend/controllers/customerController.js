@@ -689,7 +689,18 @@ export const getCustomerAdminProfile = async (req, res) => {
     const { userId } = req.params;
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ success: false, message: "Customer not found." });
-    const [account, orderSummary, cancelledOrderCount, exchangeCount, returnCount, reviewCount, letterCount] = await Promise.all([
+    const [
+      account,
+      orderSummary,
+      cancelledOrderCount,
+      exchangeCount,
+      returnCount,
+      reviewCount,
+      letterCount,
+      marketingCardsScanned,
+      marketingRewardsClaimed,
+      marketingRewardsUsed,
+    ] = await Promise.all([
       user.accountId
         ? prisma.authAccount.findUnique({
             where: { id: user.accountId },
@@ -708,6 +719,9 @@ export const getCustomerAdminProfile = async (req, res) => {
       prisma.customerReturn.count({ where: { userId } }),
       prisma.review.count({ where: { userId } }),
       prisma.customerLetterImage.count({ where: { userId } }),
+      prisma.marketingCardCustomer.count({ where: { customerId: userId, status: { not: "CANCELLED" } } }),
+      prisma.marketingBenefitRedemption.count({ where: { customerId: userId, status: "CLAIMED" } }),
+      prisma.marketingBenefitRedemption.count({ where: { customerId: userId, status: "REDEEMED" } }),
     ]);
     const count = orderSummary._count._all;
     const minimumOrderDate = orderSummary._min.date == null ? null : Number(orderSummary._min.date);
@@ -722,7 +736,7 @@ export const getCustomerAdminProfile = async (req, res) => {
         name: user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || "Customer",
         email: user.email,
         phone: user.phone || user.socialCustomerPhone || addresses[0]?.phone || "",
-        socialCustomerCode: user.socialCustomerCode || "",
+        socialCustomerCode: user.socialCustomerCode || parseJson(user.inactiveProfileData, {}).socialCustomerCode || "",
         gender: user.gender || "PREFER_NOT_TO_SAY",
         isDisabled: Boolean(user.isDisabled),
         disabledAt: user.disabledAt,
@@ -748,6 +762,9 @@ export const getCustomerAdminProfile = async (req, res) => {
         returnCount,
         reviewCount,
         letterCount,
+        marketingCardsScanned,
+        marketingRewardsClaimed,
+        marketingRewardsUsed,
       },
       loyalty: await calculateUserLoyalty(userId),
     });

@@ -12,7 +12,13 @@ const ShippingSettings = ({ token }) => {
     differentDistrictFee: 120,
     sameProvinceFee: 120,
     differentProvinceFee: 120,
+    sameProvinceDoorToDoorFee: 120,
+    sameProvinceDoorToHubFee: 120,
+    differentProvinceDoorToDoorFee: 120,
+    differentProvinceDoorToHubFee: 120,
     splitShipmentFee: 200,
+    splitShipmentDoorToDoorFee: 200,
+    splitShipmentDoorToHubFee: 200,
     routeOverrides: [],
     freeShippingMin: 0,
     ncmReturnSettlementRate: 0,
@@ -45,7 +51,13 @@ const ShippingSettings = ({ token }) => {
           differentDistrictFee: Number(c.differentDistrictFee ?? c.differentCityFee ?? 120),
           sameProvinceFee: Number(c.sameProvinceFee ?? c.differentDistrictFee ?? 120),
           differentProvinceFee: Number(c.differentProvinceFee ?? c.differentDistrictFee ?? 120),
+          sameProvinceDoorToDoorFee: Number(c.sameProvinceDoorToDoorFee ?? c.sameProvinceFee ?? 120),
+          sameProvinceDoorToHubFee: Number(c.sameProvinceDoorToHubFee ?? c.sameProvinceFee ?? 120),
+          differentProvinceDoorToDoorFee: Number(c.differentProvinceDoorToDoorFee ?? c.differentProvinceFee ?? 120),
+          differentProvinceDoorToHubFee: Number(c.differentProvinceDoorToHubFee ?? c.differentProvinceFee ?? 120),
           splitShipmentFee: Number(c.splitShipmentFee ?? 200),
+          splitShipmentDoorToDoorFee: Number(c.splitShipmentDoorToDoorFee ?? c.splitShipmentFee ?? 200),
+          splitShipmentDoorToHubFee: Number(c.splitShipmentDoorToHubFee ?? c.splitShipmentFee ?? 200),
           routeOverrides: Array.isArray(c.routeOverrides) ? c.routeOverrides : [],
           freeShippingMin: Number(c.freeShippingMin ?? 0),
           ncmReturnSettlementRate: Number(c.ncmReturnSettlementRate ?? 0),
@@ -143,7 +155,13 @@ const ShippingSettings = ({ token }) => {
           differentDistrictFee: config.differentDistrictFee,
           sameProvinceFee: config.sameProvinceFee,
           differentProvinceFee: config.differentProvinceFee,
+          sameProvinceDoorToDoorFee: config.sameProvinceDoorToDoorFee,
+          sameProvinceDoorToHubFee: config.sameProvinceDoorToHubFee,
+          differentProvinceDoorToDoorFee: config.differentProvinceDoorToDoorFee,
+          differentProvinceDoorToHubFee: config.differentProvinceDoorToHubFee,
           splitShipmentFee: config.splitShipmentFee,
+          splitShipmentDoorToDoorFee: config.splitShipmentDoorToDoorFee,
+          splitShipmentDoorToHubFee: config.splitShipmentDoorToHubFee,
           routeOverrides: config.routeOverrides,
           freeShippingMin: config.freeShippingMin,
           ncmReturnSettlementRate: config.ncmReturnSettlementRate,
@@ -232,68 +250,38 @@ const ShippingSettings = ({ token }) => {
               </div>
             </div>
 
-            {/* Same Province Fee */}
-            <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                Within Province Fee (Rs.)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
-                <input
-                  type="number"
-                  name="sameProvinceFee"
-                  value={config.sameProvinceFee}
-                  onChange={handleChange}
-                  min="0"
-                  step="1"
-                  className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
-                  placeholder="150"
-                />
+            {[
+              ["sameProvinceDoorToDoorFee", "Within Province · Door to Door", 120],
+              ["sameProvinceDoorToHubFee", "Within Province · Door to Hub", 120],
+              ["differentProvinceDoorToDoorFee", "Cross-Province · Door to Door", 120],
+              ["differentProvinceDoorToHubFee", "Cross-Province · Door to Hub", 120],
+              ["splitShipmentDoorToDoorFee", "Split Shipment · Door to Door", 200],
+              ["splitShipmentDoorToHubFee", "Split Shipment · Door to Hub", 200],
+            ].map(([name, label, placeholder]) => (
+              <div key={name}>
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                  {label} Fee (Rs.)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
+                  <input
+                    type="number"
+                    name={name}
+                    value={config[name]}
+                    onChange={handleChange}
+                    min="0"
+                    step="1"
+                    className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
+                    placeholder={String(placeholder)}
+                  />
+                </div>
+                {name.startsWith("splitShipment") && (
+                  <p className="mt-1 text-[11px] text-gray-500">
+                    Flat customer delivery charge when an order ships from more than one distributor hub.
+                  </p>
+                )}
               </div>
-            </div>
-
-            {/* Different Province Fee */}
-            <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                Cross-Province Fee (Rs.)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
-                <input
-                  type="number"
-                  name="differentProvinceFee"
-                  value={config.differentProvinceFee}
-                  onChange={handleChange}
-                  min="0"
-                  step="1"
-                  className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
-                  placeholder="250"
-                />
-              </div>
-            </div>
-
-            {/* Free Shipping Minimum */}
-            <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                Split Shipment Fee (Rs.)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm font-semibold">Rs.</span>
-                <input
-                  type="number"
-                  name="splitShipmentFee"
-                  value={config.splitShipmentFee}
-                  onChange={handleChange}
-                  min="0"
-                  step="1"
-                  className="w-full border border-gray-200 rounded-lg py-2.5 pl-10 pr-3 text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200"
-                  placeholder="200"
-                />
-              </div>
-              <p className="mt-1 text-[11px] text-gray-500">
-                Flat customer delivery charge when an order must ship from more than one distributor hub.
-              </p>
-            </div>
+            ))}
 
             {/* Free Shipping Minimum */}
             <div>
@@ -552,18 +540,19 @@ const ShippingSettings = ({ token }) => {
                 <span className="text-xs text-gray-600">Within District Fee</span>
                 <span className="text-sm font-bold text-sky-800">Rs. {config.sameDistrictFee}</span>
               </div>
-              <div className="flex items-center justify-between py-2 px-3 bg-amber-50 rounded-lg">
-                <span className="text-xs text-gray-600">Within Province Fee</span>
-                <span className="text-sm font-bold text-amber-800">Rs. {config.sameProvinceFee}</span>
-              </div>
-              <div className="flex items-center justify-between py-2 px-3 bg-violet-50 rounded-lg">
-                <span className="text-xs text-gray-600">Cross-Province Fee</span>
-                <span className="text-sm font-bold text-violet-800">Rs. {config.differentProvinceFee}</span>
-              </div>
-              <div className="flex items-center justify-between py-2 px-3 bg-orange-50 rounded-lg">
-                <span className="text-xs text-gray-600">Split Shipment Fee</span>
-                <span className="text-sm font-bold text-orange-800">Rs. {config.splitShipmentFee}</span>
-              </div>
+              {[
+                ["Within Province · Door to Door", config.sameProvinceDoorToDoorFee, "bg-amber-50 text-amber-800"],
+                ["Within Province · Door to Hub", config.sameProvinceDoorToHubFee, "bg-amber-50 text-amber-800"],
+                ["Cross-Province · Door to Door", config.differentProvinceDoorToDoorFee, "bg-violet-50 text-violet-800"],
+                ["Cross-Province · Door to Hub", config.differentProvinceDoorToHubFee, "bg-violet-50 text-violet-800"],
+                ["Split Shipment · Door to Door", config.splitShipmentDoorToDoorFee, "bg-orange-50 text-orange-800"],
+                ["Split Shipment · Door to Hub", config.splitShipmentDoorToHubFee, "bg-orange-50 text-orange-800"],
+              ].map(([label, fee, colors]) => (
+                <div key={label} className={`flex items-center justify-between py-2 px-3 ${colors.split(" ")[0]} rounded-lg`}>
+                  <span className="text-xs text-gray-600">{label}</span>
+                  <span className={`text-sm font-bold ${colors.split(" ")[1]}`}>Rs. {fee}</span>
+                </div>
+              ))}
               {Number(config.freeShippingMin) > 0 && (
                 <div className="flex items-center justify-between py-2 px-3 bg-emerald-50 rounded-lg">
                   <span className="text-xs text-gray-600">Free Shipping Above</span>
