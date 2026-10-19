@@ -219,7 +219,7 @@ Checkout accepts a single explicit reward choice (`CARD`, `LOYALTY`, or `NONE`).
 
 ### MFA / portal rules
 
-- MFA checks are enforced through `requiresMfa()` and token validation in `unifiedAuth.js`.
+- Privileged-portal MFA is enforced through `isMfaEnforced()` and token validation across login, refresh, workspace switching, and authentication middleware. Setting `NOTIFICATIONS_ENABLED=false` bypasses login MFA and its token checks because no verification delivery is available; enable notifications and configure a delivery channel to require OTP verification.
 - The code supports admin two-factor challenges and portal-specific authentication flows.
 - Password-change enforcement is active for admin accounts with `mustChangePassword`.
 

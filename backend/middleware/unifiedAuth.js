@@ -1,7 +1,7 @@
 import { prisma } from "../config/db.js";
 import { hasVerifiedMfa, verifyAccessToken } from "../services/tokenService.js";
 import { accountHasWorkspaceRole, getActiveWorkspaceRoles, isWorkspaceProfileActive } from "../services/authService.js";
-import { requiresMfa } from "../security/mfaPolicy.js";
+import { isMfaEnforced } from "../security/mfaPolicy.js";
 
 export { authorize, authorizeAny } from "./authorize.js";
 
@@ -19,7 +19,7 @@ export const extractToken = (req) => {
 /**
  * Unified Authentication Middleware
  */
-export const createAuthenticate = (client = prisma) => async (req, res, next) => {
+export const createAuthenticate = (client = prisma, env = process.env) => async (req, res, next) => {
   try {
     const token = extractToken(req);
     if (!token) {
@@ -141,7 +141,7 @@ export const createAuthenticate = (client = prisma) => async (req, res, next) =>
         code: "WORKSPACE_INACTIVE",
       });
     }
-    if (requiresMfa(role) && !hasVerifiedMfa(decoded)) {
+    if (isMfaEnforced(role, env) && !hasVerifiedMfa(decoded)) {
       return res.status(401).json({
         success: false,
         message: "Multi-factor verification is required.",

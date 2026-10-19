@@ -11,7 +11,7 @@ import {
 import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { normalizeRefreshPortal } from "../utils/refreshCookie.js";
-import { hasMfaEvidence, requiresMfa } from "../security/mfaPolicy.js";
+import { hasMfaEvidence, isMfaEnforced, requiresMfa } from "../security/mfaPolicy.js";
 import { recordSystemAudit } from "./auditService.js";
 import { logger } from "../utils/logger.js";
 
@@ -201,6 +201,7 @@ export const rotateRefreshToken = async ({
   ipAddress = "",
   userAgent = "",
   correlationId = null,
+  env = process.env,
 }) => {
   const decoded = verifyRefreshToken(refreshToken);
   if (!decoded.jti || !decoded.token_family_id || !decoded.accountId) {
@@ -212,7 +213,7 @@ export const rotateRefreshToken = async ({
     throw error;
   }
   const refreshRole = String(decoded.role).toUpperCase();
-  if (requiresMfa(refreshRole) && !hasMfaEvidence(decoded)) {
+  if (isMfaEnforced(refreshRole, env) && !hasMfaEvidence(decoded)) {
     const error = new Error("Multi-factor verification is required.");
     error.code = `${refreshRole}_MFA_REQUIRED`;
     throw error;
@@ -453,7 +454,7 @@ export const switchAccountWorkspace = async ({
     error.code = "WORKSPACE_NOT_GRANTED";
     throw error;
   }
-  if (requiresMfa(role) && !mfaVerified) {
+  if (isMfaEnforced(role) && !mfaVerified) {
     const error = new Error("Complete multi-factor verification before switching to this workspace.");
     error.statusCode = 401;
     error.code = `${role}_MFA_REQUIRED`;
@@ -629,6 +630,7 @@ export const authenticateAccount = async ({
   ipAddress = "",
   userAgent = "",
   correlationId = null,
+  env = process.env,
 }) => {
   const normalized = normalizeIdentifier(identifier);
   if (normalized.type === "UNKNOWN") {
@@ -811,7 +813,7 @@ export const authenticateAccount = async ({
     mustChangePassword: Boolean(account.mustChangePassword),
   };
 
-  if (requiresMfa(activeRole)) {
+  if (isMfaEnforced(activeRole, env)) {
     await logAuthEvent({
       accountId: account.id,
       identifier: normalized.value,
@@ -824,6 +826,20 @@ export const authenticateAccount = async ({
       status: "SUCCESS",
     });
     return { account: safeAccount, profile, requiresTwoFactor: true };
+  }
+
+  if (requiresMfa(activeRole)) {
+    await logAuthEvent({
+      accountId: account.id,
+      identifier: normalized.value,
+      action: `${activeRole}_MFA_BYPASSED_NOTIFICATIONS_DISABLED`,
+      role: activeRole,
+      portal: activeRole,
+      ipAddress,
+      userAgent,
+      correlationId,
+      status: "SUCCESS",
+    });
   }
 
   const tokenPair = await createLoginTokenPair({ account, profile, role: activeRole, ipAddress, userAgent });

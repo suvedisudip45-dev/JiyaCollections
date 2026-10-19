@@ -7,7 +7,7 @@
 ### Admin and privileged-portal sign-in
 
 1. The portal login UI submits an identifier and password to the backend. Some UIs AES-encrypt the password using Vite environment values before sending it.
-2. The backend resolves the credential, finds the account in MySQL through Prisma, checks the stored password hash, portal role, and account status, then creates a bounded MFA challenge for privileged roles.
+2. The backend resolves the credential, finds the account in MySQL through Prisma, and checks the stored password hash, portal role, and account status. When `NOTIFICATIONS_ENABLED=true`, privileged roles receive a bounded MFA challenge; when it is false, privileged login proceeds after password verification without MFA because verification delivery is disabled. Production deployments must keep notifications enabled and configure a delivery channel to retain privileged MFA protection.
 3. The user selects an email or SMS delivery method. The code is queued through the notification subsystem; the challenge stores a keyed hash, expiry, attempt count, and delivery metadata rather than the plaintext code.
 4. Successful verification consumes the challenge once and creates access/refresh sessions. The refresh token is issued as an HttpOnly cookie; portal code stores the access token in browser local storage.
 5. Authentication history is written to `AuthAuditLog`. Privileged authentication and unsuccessful authentication events are also enqueued for `SystemAuditLog`, with request correlation IDs when available.

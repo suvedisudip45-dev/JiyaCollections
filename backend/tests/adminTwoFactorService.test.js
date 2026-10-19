@@ -420,6 +420,7 @@ test("password-only refresh tokens cannot bypass MFA for privileged portals", as
     await assert.rejects(() => rotateRefreshToken({
       refreshToken,
       targetPortal: role,
+      env: { ...process.env, NOTIFICATIONS_ENABLED: "true" },
     }), (error) => error.code === `${role}_MFA_REQUIRED`);
   }
 });
