@@ -29,15 +29,19 @@ import {
   selectDistributorSelfDelivery,
   bulkDispatchSelfDeliveryOrders,
   updateSelfDeliveryOrderStatus,
+  requestDistributorDeliveryOtp,
   processDistributorOrderReturn,
 } from "../controllers/distributorDeliveryController.js";
 import {
   getDistributorStatement,
+  getDistributorCashRemittances,
+  submitDistributorCashRemittance,
   askDistributorSettlement,
   listDistributorRates,
 } from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
 import { publicRegistrationRateLimit } from "../middleware/authRateLimit.js";
+import { secureEvidenceUpload } from "../middleware/secureUpload.js";
 import {
   getProductAnalyticsLocations,
   getProductAnalyticsProducts,
@@ -47,7 +51,22 @@ import {
 
 const distributorRouter = express.Router();
 
-distributorRouter.post("/register", publicRegistrationRateLimit, registerDistributor);
+distributorRouter.post(
+  "/finance/remittances",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  ...secureEvidenceUpload("evidence"),
+  submitDistributorCashRemittance,
+);
+distributorRouter.get(
+  "/finance/remittances",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  getDistributorCashRemittances,
+);
+distributorRouter.get("/register", publicRegistrationRateLimit, registerDistributor);
 
 // Read-only product sales analytics are scoped by the authenticated distributor profile.
 distributorRouter.get(
@@ -205,6 +224,13 @@ distributorRouter.post(
   selectDistributorSelfDelivery,
 );
 distributorRouter.post(
+  "/orders/:id/delivery-otp",
+  authenticate,
+  authorize("distributor:assignments_read"),
+  setDistributorContext,
+  requestDistributorDeliveryOtp,
+);
+distributorRouter.post(
   "/orders/self-delivery/bulk-dispatch",
   authenticate,
   authorize("distributor:assignments_read"),
@@ -223,6 +249,7 @@ distributorRouter.post(
   authenticate,
   authorize("distributor:assignments_read"),
   setDistributorContext,
+  ...secureEvidenceUpload("evidence"),
   processDistributorOrderReturn,
 );
 

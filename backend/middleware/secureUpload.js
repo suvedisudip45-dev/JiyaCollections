@@ -15,6 +15,7 @@
 import multer from "multer";
 import path from "node:path";
 import { readFile, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 
 // ─── Allowed MIME types ───────────────────────────────────────────────
 const ALLOWED_MIME_TYPES = new Set([
@@ -64,6 +65,8 @@ const MAGIC_SIGNATURES = [
 // ─── Configuration ───────────────────────────────────────────────────
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB per file
 const MAX_TOTAL_FILES = 20; // Max files in a single request
+const EVIDENCE_MIME_TYPES = new Set(["image/jpeg", "image/png"]);
+const MAX_EVIDENCE_FILE_SIZE = 8 * 1024 * 1024;
 
 // ─── Filename sanitization ──────────────────────────────────────────
 const sanitizeFilename = (original) => {
@@ -120,9 +123,11 @@ const multerUpload = multer({
  * Rejects and deletes any file that fails verification.
  */
 const verifyMagicBytes = async (req, res, next) => {
-  if (!req.files || req.files.length === 0) return next();
+  if ((!req.files || req.files.length === 0) && !req.file) return next();
 
-  const files = Array.isArray(req.files) ? req.files : Object.values(req.files).flat();
+  const files = req.file
+    ? [req.file]
+    : Array.isArray(req.files) ? req.files : Object.values(req.files).flat();
   const invalidFiles = [];
 
   for (const file of files) {
@@ -244,5 +249,43 @@ const secureProductUpload = [
   verifyMagicBytes,
 ];
 
-export { secureProductUpload, verifyMagicBytes, sanitizeFilename, ALLOWED_MIME_TYPES };
+const evidenceUpload = multer({
+  storage: multer.diskStorage({
+    filename: (req, file, callback) => {
+      callback(null, `${Date.now()}_${randomUUID()}_${sanitizeFilename(file.originalname)}`);
+    },
+  }),
+  fileFilter: (_req, file, callback) => {
+    if (!EVIDENCE_MIME_TYPES.has(file.mimetype)) {
+      const error = new Error("Only JPG, JPEG, or PNG evidence images are accepted.");
+      error.code = "INVALID_FILE_TYPE";
+      return callback(error, false);
+    }
+    return callback(null, true);
+  },
+  limits: { fileSize: MAX_EVIDENCE_FILE_SIZE, files: 1 },
+});
+
+const secureEvidenceUpload = (fieldName = "evidence") => [
+  (req, res, next) => {
+    evidenceUpload.single(fieldName)(req, res, (error) => {
+      if (!error) return next();
+      const tooLarge = error.code === "LIMIT_FILE_SIZE";
+      return res.status(tooLarge ? 413 : 400).json({
+        success: false,
+        message: tooLarge ? "Evidence image must be 8 MB or smaller." : error.message,
+        code: tooLarge ? "EVIDENCE_IMAGE_TOO_LARGE" : "INVALID_EVIDENCE_IMAGE",
+      });
+    });
+  },
+  verifyMagicBytes,
+];
+
+export {
+  secureProductUpload,
+  secureEvidenceUpload,
+  verifyMagicBytes,
+  sanitizeFilename,
+  ALLOWED_MIME_TYPES,
+};
 export default secureProductUpload;

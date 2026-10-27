@@ -10,8 +10,14 @@ import {
   resolveUnknownCustomerReturn,
   submitApprovedCustomerReturn,
 } from "../services/customerReturnWorkflowService.js";
+import {
+  reviewDistributorCustomerRefund,
+  submitDistributorCustomerRefund,
+} from "../services/distributorReturnRefundService.js";
+import { settleDistributorRefundPayable } from "../services/distributorCashSettlementService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
-const sendError = (res, error) => res.status(error.status || 400).json({
+const sendError = (res, error) => res.status(error.statusCode || error.status || 400).json({
   success: false,
   code: error.code || "RETURN_REQUEST_FAILED",
   message: error.message || "Return request failed.",
@@ -151,6 +157,64 @@ export const adminCompleteReturnRefund = async (req, res) => {
       actorContext: actorContextFromRequest(req),
     });
     return res.json({ success: true, returnRecord });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const distributorSubmitCustomerRefund = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, code: "DISTRIBUTOR_PROFILE_REQUIRED", message: "An approved distributor profile is required." });
+    }
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/customer_refunds");
+    const result = await submitDistributorCustomerRefund({
+      distributorId,
+      returnId: req.params.id,
+      amount: req.body?.amount,
+      paymentMethod: req.body?.paymentMethod,
+      externalReference: req.body?.externalReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      idempotencyKey: req.body?.idempotencyKey || req.headers?.["idempotency-key"],
+      recordedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    return sendError(res, error);
+  }
+};
+
+export const adminReviewDistributorCustomerRefund = async (req, res) => {
+  try {
+    const result = await reviewDistributorCustomerRefund({
+      distributorId: req.body?.distributorId,
+      returnId: req.params.id,
+      decision: req.body?.decision,
+      reviewNotes: req.body?.reviewNotes,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: actorContextFromRequest(req),
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const adminSettleDistributorRefundPayable = async (req, res) => {
+  try {
+    const result = await settleDistributorRefundPayable({
+      distributorId: req.body?.distributorId,
+      accountingDocumentId: req.params.documentId,
+      financialAccountId: req.body?.financialAccountId,
+      amount: req.body?.amount,
+      idempotencyKey: req.body?.idempotencyKey || req.headers?.["idempotency-key"],
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: actorContextFromRequest(req),
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
   } catch (error) {
     return sendError(res, error);
   }

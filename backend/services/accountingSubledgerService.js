@@ -29,6 +29,7 @@ export const createAccountingDocument = async ({
   currency = "NPR",
   amount,
   notes = null,
+  idempotencyKey = null,
 }, { client = prisma } = {}) => {
   if (!partyId) throw new Error("Accounting document requires a valid partyId.");
   if (!documentNumber) throw new Error("Accounting document requires a unique documentNumber.");
@@ -42,23 +43,33 @@ export const createAccountingDocument = async ({
     throw new Error("Document side must be RECEIVABLE or PAYABLE.");
   }
 
+  const data = {
+    idempotencyKey: idempotencyKey ? String(idempotencyKey).trim() : null,
+    documentType: String(documentType).toUpperCase(),
+    documentNumber: String(documentNumber).trim(),
+    partyId,
+    side: normalizedSide,
+    sourceType: String(sourceType || "MANUAL"),
+    sourceId: String(sourceId || documentNumber),
+    issueDate: new Date(issueDate),
+    dueDate: dueDate ? new Date(dueDate) : null,
+    currency: String(currency || "NPR").toUpperCase(),
+    originalAmount: decAmount,
+    allocatedAmount: new Prisma.Decimal(0),
+    remainingAmount: decAmount,
+    status: "OPEN",
+    notes: notes ? String(notes) : null,
+  };
+  if (data.idempotencyKey) {
+    return client.accountingDocument.upsert({
+      where: { idempotencyKey: data.idempotencyKey },
+      create: data,
+      update: {},
+      include: { party: true },
+    });
+  }
   return client.accountingDocument.create({
-    data: {
-      documentType: String(documentType).toUpperCase(),
-      documentNumber: String(documentNumber).trim(),
-      partyId,
-      side: normalizedSide,
-      sourceType: String(sourceType || "MANUAL"),
-      sourceId: String(sourceId || documentNumber),
-      issueDate: new Date(issueDate),
-      dueDate: dueDate ? new Date(dueDate) : null,
-      currency: String(currency || "NPR").toUpperCase(),
-      originalAmount: decAmount,
-      allocatedAmount: new Prisma.Decimal(0),
-      remainingAmount: decAmount,
-      status: "OPEN",
-      notes: notes ? String(notes) : null,
-    },
+    data,
     include: { party: true },
   });
 };
@@ -73,7 +84,9 @@ export const allocatePaymentToDocuments = async ({
   amount,
   journalEntryId = null,
   targetDocumentIds = [],
+  sourceTypes = [],
   notes = null,
+  idempotencyKey = null,
 }, { client = prisma } = {}) => {
   if (!partyId) throw new Error("partyId is required for allocation.");
   let remainingToAllocate = toNonNegativeDecimal(amount, "Allocation amount");
@@ -90,6 +103,9 @@ export const allocatePaymentToDocuments = async ({
     status: { in: ["OPEN", "PARTIALLY_PAID"] },
     ...(Array.isArray(targetDocumentIds) && targetDocumentIds.length > 0
       ? { id: { in: targetDocumentIds } }
+      : {}),
+    ...(Array.isArray(sourceTypes) && sourceTypes.length > 0
+      ? { sourceType: { in: sourceTypes.map((sourceType) => String(sourceType).toUpperCase()) } }
       : {}),
   };
 
@@ -111,6 +127,41 @@ export const allocatePaymentToDocuments = async ({
       const newAllocated = new Prisma.Decimal(String(doc.allocatedAmount)).plus(allocAmount);
       const newRemaining = docRemaining.minus(allocAmount);
       const newStatus = newRemaining.equals(0) ? "PAID" : "PARTIALLY_PAID";
+      const allocationKey = idempotencyKey ? `${String(idempotencyKey).slice(0, 130)}:${doc.id}` : null;
+
+      if (allocationKey) {
+        const existingAllocation = await client.accountingAllocation.findUnique({
+          where: { idempotencyKey: allocationKey },
+        });
+        if (existingAllocation) {
+          if (
+            existingAllocation.documentId !== doc.id ||
+            !new Prisma.Decimal(String(existingAllocation.amount)).equals(allocAmount)
+          ) {
+            throw new Error("Accounting allocation idempotency key was reused with different details.");
+          }
+          allocations.push(existingAllocation);
+          remainingToAllocate = remainingToAllocate.minus(allocAmount);
+          continue;
+        }
+      }
+
+      const claimed = await client.accountingDocument.updateMany({
+        where: {
+          id: doc.id,
+          allocatedAmount: doc.allocatedAmount,
+          remainingAmount: doc.remainingAmount,
+          status: doc.status,
+        },
+        data: {
+          allocatedAmount: newAllocated,
+          remainingAmount: newRemaining,
+          status: newStatus,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new Error(`Accounting document ${doc.id} changed during payment allocation.`);
+      }
 
       const allocation = await client.accountingAllocation.create({
         data: {
@@ -119,20 +170,12 @@ export const allocatePaymentToDocuments = async ({
           amount: allocAmount,
           allocatedAt: new Date(),
           notes: notes || `Payment allocation of NPR ${allocAmount.toFixed(2)}`,
-        },
-      });
-
-      const updated = await client.accountingDocument.update({
-        where: { id: doc.id },
-        data: {
-          allocatedAmount: newAllocated,
-          remainingAmount: newRemaining,
-          status: newStatus,
+          idempotencyKey: allocationKey,
         },
       });
 
       allocations.push(allocation);
-      updatedDocs.push(updated);
+      updatedDocs.push({ ...doc, allocatedAmount: newAllocated, remainingAmount: newRemaining, status: newStatus });
       remainingToAllocate = remainingToAllocate.minus(allocAmount);
     }
   }

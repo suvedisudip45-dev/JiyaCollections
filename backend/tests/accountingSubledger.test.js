@@ -31,6 +31,18 @@ const createSubledgerHarness = () => {
         documents.set(doc.id, doc);
         return doc;
       },
+      upsert: async ({ where, create }) => {
+        const existing = [...documents.values()].find((doc) => doc.idempotencyKey === where.idempotencyKey);
+        if (existing) return existing;
+        const doc = {
+          id: `doc-${documents.size + 1}`,
+          ...create,
+          party: parties.get(create.partyId) || { id: create.partyId, name: "Party" },
+          allocations: [],
+        };
+        documents.set(doc.id, doc);
+        return doc;
+      },
       findMany: async ({ where, orderBy }) => {
         let list = [...documents.values()].filter((d) => {
           if (where.partyId && d.partyId !== where.partyId) return false;
@@ -55,8 +67,20 @@ const createSubledgerHarness = () => {
         Object.assign(doc, data);
         return doc;
       },
+      updateMany: async ({ where, data }) => {
+        const doc = documents.get(where.id);
+        if (
+          !doc ||
+          !new Prisma.Decimal(String(doc.allocatedAmount)).equals(where.allocatedAmount) ||
+          !new Prisma.Decimal(String(doc.remainingAmount)).equals(where.remainingAmount) ||
+          doc.status !== where.status
+        ) return { count: 0 };
+        Object.assign(doc, data);
+        return { count: 1 };
+      },
     },
     accountingAllocation: {
+      findUnique: async ({ where }) => allocations.find((allocation) => allocation.idempotencyKey === where.idempotencyKey) || null,
       create: async ({ data }) => {
         const alloc = { id: `alloc-${allocations.length + 1}`, ...data };
         allocations.push(alloc);
@@ -92,6 +116,24 @@ test("createAccountingDocument creates open document with positive Decimal amoun
   assert.equal(doc.originalAmount.toFixed(2), "15000.00");
   assert.equal(doc.allocatedAmount.toFixed(2), "0.00");
   assert.equal(doc.remainingAmount.toFixed(2), "15000.00");
+});
+
+test("createAccountingDocument idempotency prevents duplicate distributor COD invoices", async () => {
+  const { client, parties, documents } = createSubledgerHarness();
+  parties.set("party-1", { id: "party-1", displayName: "Distributor", partyType: "DISTRIBUTOR" });
+  const input = {
+    documentType: "INVOICE",
+    documentNumber: "DCO-order-1",
+    partyId: "party-1",
+    side: "RECEIVABLE",
+    sourceType: "DISTRIBUTOR_COD_SALE",
+    sourceId: "order-1",
+    amount: "1500.00",
+    idempotencyKey: "DISTRIBUTOR_COD_SALE:order-1",
+  };
+  await createAccountingDocument(input, { client });
+  await createAccountingDocument(input, { client });
+  assert.equal(documents.size, 1);
 });
 
 test("allocatePaymentToDocuments correctly applies partial payment and updates remaining balance", async () => {

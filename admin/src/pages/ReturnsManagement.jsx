@@ -13,6 +13,8 @@ const ReturnsManagement = ({ token }) => {
   const [products, setProducts] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refundActionId, setRefundActionId] = useState(null);
+  const [refundPayoutAccounts, setRefundPayoutAccounts] = useState({});
 
   // Modals
   const [showCustomerModal, setShowCustomerModal] = useState(false);
@@ -198,8 +200,64 @@ const ReturnsManagement = ({ token }) => {
 
   const totalCustomerRefunds = customerReturns
     .filter((record) => record.refundStatus === "COMPLETED")
-    .reduce((acc, record) => acc + Number(record.totalRefundAmount || 0), 0);
+    .reduce((acc, record) => acc + Number(record.approvedRefundAmount ?? record.totalRefundAmount ?? 0), 0);
   const totalSupplierDebits = supplierReturns.reduce((acc, r) => acc + Number(r.totalDebitAmount || 0), 0);
+
+  const reviewDistributorRefund = async (record, decision) => {
+    const refundEvent = record.distributorCashEvents?.[0];
+    if (!refundEvent || refundEvent.status !== "PENDING_VERIFICATION") return;
+    const reviewNotes = decision === "REJECT"
+      ? window.prompt("Why is this refund evidence being rejected?")?.trim()
+      : "";
+    if (decision === "REJECT" && !reviewNotes) return;
+
+    setRefundActionId(record.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/returns/customer/admin/${record.id}/distributor-refund-review`,
+        { distributorId: record.distributorId, decision, reviewNotes },
+        { headers: { token } }
+      );
+      toast.success(decision === "VERIFY" ? "Distributor refund verified and recorded." : "Refund evidence rejected; distributor may resubmit.");
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not review distributor refund.");
+    } finally {
+      setRefundActionId(null);
+    }
+  };
+
+  const payDistributorRefund = async (record) => {
+    const refundEvent = record.distributorCashEvents?.[0];
+    const document = refundEvent?.accountingDocument;
+    const amount = Number(document?.remainingAmount || 0);
+    const financialAccountId = refundPayoutAccounts[record.id] || accounts.find((account) =>
+      account.status === "ACTIVE" && account.currency === "NPR" && ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+    )?.id;
+    if (!document?.id || refundEvent?.status !== "POSTED" || amount <= 0 || !financialAccountId) {
+      toast.error("An open verified distributor payable and active NPR treasury account are required.");
+      return;
+    }
+    setRefundActionId(record.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/returns/customer/admin/distributor-refunds/${document.id}/settle`,
+        {
+          distributorId: record.distributorId,
+          financialAccountId,
+          amount: amount.toFixed(2),
+          idempotencyKey: window.crypto.randomUUID(),
+        },
+        { headers: { token } }
+      );
+      toast.success("Distributor refund payable settled.");
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not settle distributor refund payable.");
+    } finally {
+      setRefundActionId(null);
+    }
+  };
 
   return (
     <div className="space-y-8 pb-12">
@@ -324,12 +382,13 @@ const ReturnsManagement = ({ token }) => {
                   <th className="p-3 text-right">Refund Amount</th>
                   <th className="p-3 text-right">13% VAT Reversed</th>
                   <th className="p-3 text-center">Status</th>
+                  <th className="p-3 text-center">Distributor refund controls</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {customerReturns.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="p-6 text-center text-slate-400 font-medium">
+                    <td colSpan="9" className="p-6 text-center text-slate-400 font-medium">
                       No customer returns processed yet.
                     </td>
                   </tr>
@@ -371,7 +430,12 @@ const ReturnsManagement = ({ token }) => {
                         </td>
                         <td className="p-3 text-slate-600">{ret.reason}</td>
                         <td className="p-3 text-right font-black text-rose-600">
-                          {currency}{Number(ret.totalRefundAmount).toLocaleString()}
+                          {currency}{Number(ret.approvedRefundAmount ?? ret.totalRefundAmount).toLocaleString()}
+                          {ret.deliveryRoute === "DISTRIBUTOR" && Number(ret.approvedRefundAmount ?? ret.totalRefundAmount) < Number(ret.totalRefundAmount) && (
+                            <p className="mt-1 text-[9px] font-medium text-slate-500">
+                              Product value {currency}{Number(ret.totalRefundAmount).toLocaleString()} · charge {currency}{(Number(ret.totalRefundAmount) - Number(ret.approvedRefundAmount)).toLocaleString()}
+                            </p>
+                          )}
                         </td>
                         <td className="p-3 text-right text-slate-500 font-mono">
                           {currency}{Number(ret.vatRefunded).toLocaleString()}
@@ -380,6 +444,86 @@ const ReturnsManagement = ({ token }) => {
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700">
                             {ret.refundStatus}
                           </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          {ret.deliveryRoute === "DISTRIBUTOR" && (
+                            <div className="flex min-w-52 flex-col items-center gap-2">
+                              {ret.inspectionEvidenceUrl && (
+                                <a
+                                  href={ret.inspectionEvidenceUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[10px] font-semibold text-indigo-700 underline"
+                                >
+                                  View returned goods photo
+                                </a>
+                              )}
+                              {ret.distributorCashEvents?.[0] && (
+                                <>
+                                  <span className="text-[10px] text-slate-500">
+                                    Distributor evidence: {ret.distributorCashEvents[0].status}
+                                  </span>
+                                  {ret.distributorCashEvents[0].evidenceUrl && (
+                                    <a
+                                      href={ret.distributorCashEvents[0].evidenceUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-[10px] font-semibold text-blue-700 underline"
+                                    >
+                                      View payment evidence
+                                    </a>
+                                  )}
+                                </>
+                              )}
+                              {ret.distributorCashEvents?.[0]?.status === "PENDING_VERIFICATION" && (
+                                <div className="flex gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => reviewDistributorRefund(ret, "VERIFY")}
+                                    disabled={refundActionId === ret.id}
+                                    className="rounded-md bg-emerald-700 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                  >
+                                    Verify
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => reviewDistributorRefund(ret, "REJECT")}
+                                    disabled={refundActionId === ret.id}
+                                    className="rounded-md bg-rose-700 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              )}
+                              {ret.distributorCashEvents[0].status === "POSTED" &&
+                                Number(ret.distributorCashEvents[0].accountingDocument?.remainingAmount || 0) > 0 && (
+                                  <>
+                                    <select
+                                      value={refundPayoutAccounts[ret.id] || ""}
+                                      onChange={(event) => setRefundPayoutAccounts((current) => ({ ...current, [ret.id]: event.target.value }))}
+                                      className="max-w-52 rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px]"
+                                    >
+                                      <option value="">Select payout account</option>
+                                      {accounts.filter((account) =>
+                                        account.status === "ACTIVE" &&
+                                        account.currency === "NPR" &&
+                                        ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+                                      ).map((account) => (
+                                        <option key={account.id} value={account.id}>{account.accountName}</option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => payDistributorRefund(ret)}
+                                      disabled={refundActionId === ret.id}
+                                      className="rounded-md bg-slate-900 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
+                                    >
+                                      Pay remaining {currency}{Number(ret.distributorCashEvents[0].accountingDocument.remainingAmount).toFixed(2)}
+                                    </button>
+                                  </>
+                                )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );

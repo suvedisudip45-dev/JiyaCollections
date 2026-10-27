@@ -5,6 +5,7 @@ import {
   postDeliveredOrderAccounting,
   postConfirmedDeliveryReturnAccounting,
   postCustomerPaymentAccounting,
+  postDistributorCustomerRefundAccounting,
   postMarketingCpaRedemptionAccounting,
   postNcmRemittanceAccounting,
   postNcmSettlementAccounting,
@@ -46,6 +47,7 @@ const createComprehensiveHarness = () => {
     sequences: new Map(),
     events: [],
     entries: [],
+    documents: [],
   };
 
   const client = {
@@ -101,6 +103,18 @@ const createComprehensiveHarness = () => {
         return parties.get(key);
       },
     },
+    accountingDocument: {
+      upsert: async ({ where, create, include }) => {
+        let document = state.documents.find((entry) => entry.idempotencyKey === where.idempotencyKey);
+        if (!document) {
+          document = { id: `document-${state.documents.length + 1}`, ...create };
+          state.documents.push(document);
+        }
+        return include?.party
+          ? { ...document, party: [...parties.values()].find((party) => party.id === document.partyId) || null }
+          : document;
+      },
+    },
     journalEntry: {
       findUnique: async ({ where }) => state.entries.find((e) => e.idempotencyKey === where.idempotencyKey) || null,
       create: async ({ data }) => {
@@ -138,6 +152,9 @@ const createComprehensiveHarness = () => {
     },
     manufacturer: {
       findUnique: async ({ where }) => ({ id: where.id, name: "Alpha Textiles" }),
+    },
+    distributor: {
+      findUnique: async ({ where }) => ({ id: where.id, name: "Distributor One" }),
     },
     marketingPartner: {
       findUnique: async ({ where }) => ({ id: where.id, name: "Pokhara Food Hub" }),
@@ -195,6 +212,58 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(vatLine.credit.toFixed(2), "1300.00");
   assert.equal(cogsLine.debit.toFixed(2), "6000.00");
   assert.equal(mfgApLine.credit.toFixed(2), "6000.00");
+});
+
+test("self-delivered COD posts to distributor receivable and creates an idempotent AR document", async () => {
+  const { client, state, parties } = createComprehensiveHarness();
+  const order = {
+    id: "ord-distributor-cod-001",
+    userId: "user-cust-001",
+    amount: 1500,
+    deliveryCharge: 100,
+    paymentMethod: "COD",
+    collectionDistributorId: "dist-001",
+    orderType: "ONLINE_STORE",
+    items: [],
+  };
+
+  const first = await postDeliveredOrderAccounting(order, { client });
+  const second = await postDeliveredOrderAccounting(order, { client });
+  const receivableLine = first.lines.find((line) => line.account.accountCode === "1190");
+
+  assert.equal(first.id, second.id);
+  assert.equal(state.entries.length, 1);
+  assert.equal(receivableLine.debit.toFixed(2), "1500.00");
+  assert.equal(parties.get("DISTRIBUTOR:dist-001").displayName, "Distributor One");
+  assert.equal(state.documents.length, 1);
+  assert.equal(state.documents[0].idempotencyKey, "DISTRIBUTOR_COD_SALE:ord-distributor-cod-001");
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "1500.00");
+  assert.equal(state.documents[0].side, "RECEIVABLE");
+});
+
+test("verified distributor-paid customer refund creates balanced GL and distributor AP", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const journal = await postDistributorCustomerRefundAccounting({
+    client,
+    returnRecord: {
+      id: "return-dist-001",
+      distributorId: "dist-001",
+      approvedRefundAmount: "900.00",
+      vatRefunded: 103.54,
+      completedAt: new Date("2026-10-01T10:00:00.000Z"),
+      items: [
+        { condition: "RESTOCKABLE", unitCostPrice: 50, quantity: 2 },
+        { condition: "DAMAGED", unitCostPrice: 80, quantity: 1 },
+      ],
+    },
+  });
+  assert.equal(journal.totalDebit.toFixed(2), "1000.00");
+  assert.equal(journal.totalCredit.toFixed(2), "1000.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2190").credit.toFixed(2), "900.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1140").debit.toFixed(2), "100.00");
+  assert.equal(state.documents.length, 1);
+  assert.equal(state.documents[0].side, "PAYABLE");
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "900.00");
 });
 
 test("delivery accounting does not multiply batch logistics overhead across sold orders", async () => {
@@ -478,6 +547,25 @@ test("manufacturer payment reduces the manufacturer payable control account", as
   const treasuryLine = journal.lines.find((line) => line.account.id === "acc-1120");
   assert.equal(payableLine.supplierId, "mfg-001");
   assert.equal(treasuryLine.credit.toFixed(2), "1200.00");
+});
+
+test("distributor refund reimbursement clears the distributor payable control account", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+  const journal = await postSupplierPaymentAccounting({
+    payableId: "refund-document-001",
+    payeeName: "Distributor One",
+    amount: 875.5,
+    settlementAmount: 875.5,
+    payableAccountCode: "2190",
+    cashAccountId: "acc-1120",
+    accountingPartyId: "party-dist-001",
+    idempotencyKey: "DISTRIBUTOR_REFUND_PAYOUT:refund-001",
+    client,
+  });
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2190").debit.toFixed(2), "875.50");
+  assert.equal(journal.lines.find((line) => line.account.id === "acc-1120").credit.toFixed(2), "875.50");
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
 
 test("manufacturer local freight is expensed and accrued to payable when dispatched", async () => {

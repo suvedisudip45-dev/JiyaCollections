@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "./auditService.js";
-import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
@@ -10,6 +9,11 @@ import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
 } from "./returnExchangeSettlementService.js";
+import {
+  formatCollectionAmount,
+  isDistributorDeliveryOtpEnabled,
+  verifyDistributorDeliveryOtp,
+} from "./distributorDeliveryOtpService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -212,6 +216,8 @@ export const listAssignedDistributorOrders = async ({
             userId: order.userId,
             amount: order.amount,
             deliveryFee: order.deliveryFee,
+            loyaltyDiscount: order.loyaltyDiscount,
+            rewardApplied: order.rewardApplied,
             status: order.status,
             fulfillmentStatus: order.fulfillmentStatus,
             paymentMethod: order.paymentMethod,
@@ -361,6 +367,10 @@ export const updateSelfDeliveryStatus = async ({
   distributorId,
   assignmentIdOrOrderId,
   status,
+  otpCode = null,
+  collectionConfirmed = false,
+  paymentMethod = "CASH",
+  notificationConfig,
   notes = null,
   actorContext = {},
   client = prisma,
@@ -389,7 +399,7 @@ export const updateSelfDeliveryStatus = async ({
   const { canonicalStatus, internalStatus } = transition;
   const now = new Date();
 
-  return client.$transaction(async (tx) => {
+  const result = await client.$transaction(async (tx) => {
     let accountingStatus = null;
     const order = await tx.order.findUnique({
       where: { id: assignment.orderId },
@@ -423,7 +433,66 @@ export const updateSelfDeliveryStatus = async ({
       assignmentUpdateData.onTheWayAt = now;
     } else if (internalStatus === "delivered") {
       assignmentUpdateData.deliveredAt = now;
-      orderUpdateData.payment = true; // Mark payment collected if COD
+      const isUnpaidCod = String(order.paymentMethod || "COD").trim().toUpperCase() === "COD" && !order.payment;
+      if (isUnpaidCod) {
+        let collection;
+        const otpRequired = isDistributorDeliveryOtpEnabled(notificationConfig);
+        if (otpRequired) {
+          collection = await verifyDistributorDeliveryOtp({
+            tx,
+            distributorId,
+            order,
+            code: otpCode,
+            paymentMethod,
+            actorId: actorContext.actorId || distributorId,
+            now,
+          });
+          if (collection.error) return { deliveryOtpError: collection.error };
+        } else {
+          if (collectionConfirmed !== true) {
+            return {
+              deliveryOtpError: fail(
+                "Confirm that you collected the full COD amount before completing delivery.",
+                400,
+                "COD_COLLECTION_CONFIRMATION_REQUIRED",
+              ),
+            };
+          }
+          const normalizedPaymentMethod = String(paymentMethod || "").trim().toUpperCase();
+          if (!["CASH", "BANK_TRANSFER", "MOBILE_WALLET", "CARD"].includes(normalizedPaymentMethod)) {
+            return {
+              deliveryOtpError: fail("Select a valid customer payment method.", 400, "INVALID_PAYMENT_METHOD"),
+            };
+          }
+          collection = {
+            collectionAmount: formatCollectionAmount(order),
+            paymentMethod: normalizedPaymentMethod,
+          };
+        }
+        await tx.distributorCashEvent.create({
+          data: {
+            distributorId,
+            orderId: order.id,
+            eventType: "CUSTOMER_COLLECTION",
+            amount: collection.collectionAmount,
+            status: otpRequired ? "VERIFIED" : "PENDING_VERIFICATION",
+            paymentMethod: collection.paymentMethod,
+            idempotencyKey: `delivery-collection:${order.id}`,
+            occurredAt: now,
+            recordedByAccountId: actorContext.actorId || null,
+            ...(otpRequired
+              ? {
+                  verifiedByAccountId: actorContext.actorId || null,
+                  verifiedAt: now,
+                }
+              : {}),
+            notes: otpRequired
+              ? "Customer COD collection confirmed by delivery OTP."
+              : "Customer COD collection declared by distributor; SMS OTP was disabled.",
+          },
+        });
+      }
+      orderUpdateData.payment = true;
 
       const inventoryConsumption = await consumeDistributorOrderInventory({
         tx,
@@ -436,16 +505,27 @@ export const updateSelfDeliveryStatus = async ({
       orderUpdateData.items = inventoryConsumption.accountingItems;
 
       const accountingEvent = await enqueueDeliveredSaleAccounting(
-        { order: { ...order, ...orderUpdateData, deliveredAt: now } },
+        {
+          order: {
+            ...order,
+            ...orderUpdateData,
+            deliveredAt: now,
+            collectionDistributorId: isUnpaidCod ? distributorId : null,
+          },
+        },
         { client: tx },
       );
       accountingStatus = accountingEvent.status;
     }
 
-    const updatedAssignment = await tx.orderAssignment.update({
-      where: { id: assignment.id },
+    const assignmentClaim = await tx.orderAssignment.updateMany({
+      where: { id: assignment.id, status: assignment.status },
       data: assignmentUpdateData,
     });
+    if (assignmentClaim.count !== 1) {
+      throw fail("Order delivery status changed concurrently. Refresh and retry.", 409, "DELIVERY_STATUS_CONFLICT");
+    }
+    const updatedAssignment = { ...assignment, ...assignmentUpdateData };
 
     const updatedOrder = await tx.order.update({
       where: { id: order.id },
@@ -477,6 +557,8 @@ export const updateSelfDeliveryStatus = async ({
       ...(accountingStatus ? { accountingStatus } : {}),
     };
   });
+  if (result?.deliveryOtpError) throw result.deliveryOtpError;
+  return result;
 };
 
 export const dispatchDistributorSelfDeliveryOrders = async ({
@@ -552,6 +634,7 @@ export const processSelfDeliveryReturn = async ({
   damageType = null,
   damageNotes = null,
   returnRequestId = null,
+  inspectionEvidenceUrl,
   actorContext = {},
   client = prisma,
 } = {}) => {
@@ -563,7 +646,6 @@ export const processSelfDeliveryReturn = async ({
   if (!reason || String(reason).trim().length < 3) {
     throw fail("A valid return reason (at least 3 characters) is required.", 400);
   }
-
   const assignment = await client.orderAssignment.findFirst({
     where: {
       OR: [{ id: assignmentIdOrOrderId }, { orderId: assignmentIdOrOrderId }],
@@ -589,6 +671,9 @@ export const processSelfDeliveryReturn = async ({
   });
   if (!approvedReturn) {
     throw fail("This return request is not approved for this distributor or has already been processed.", 409, "RETURN_NOT_APPROVED_FOR_DISTRIBUTOR");
+  }
+  if (typeof inspectionEvidenceUrl !== "string" || !/^https:\/\//i.test(inspectionEvidenceUrl)) {
+    throw fail("A JPG or PNG return-goods evidence image is required.", 400, "RETURN_EVIDENCE_REQUIRED");
   }
 
   const order = await client.order.findUnique({
@@ -683,6 +768,11 @@ export const processSelfDeliveryReturn = async ({
       ) || orderItems[0] || {};
 
       const unitPrice = Number(matchingOrderLine.purchasedUnitPrice ?? matchingOrderLine.price ?? 0);
+      const unitCostPrice = Number(
+        matchingOrderLine.agreedUnitCogsVatInclusiveAtAcceptance ??
+        matchingOrderLine.costPrice ??
+        0,
+      );
       const lineRefund = unitPrice * quantity;
       totalRefundAmount += lineRefund;
 
@@ -693,6 +783,7 @@ export const processSelfDeliveryReturn = async ({
         color,
         quantity,
         unitPrice,
+        unitCostPrice,
         refundAmount: lineRefund,
         condition: isDamaged ? "DAMAGED" : "RESTOCKABLE",
       });
@@ -793,7 +884,12 @@ export const processSelfDeliveryReturn = async ({
       }
     }
 
-    const vatRefunded = Number((totalRefundAmount - totalRefundAmount / 1.13).toFixed(2));
+    if (!approvedReturn.approvedRefundAmount || !approvedReturn.refundPolicySnapshot) {
+      throw fail("This return has no approved refund-policy snapshot. Contact Admin before processing.", 409, "RETURN_REFUND_POLICY_MISSING");
+    }
+    if (Number(approvedReturn.totalRefundAmount).toFixed(2) !== Number(totalRefundAmount).toFixed(2)) {
+      throw fail("Returned product value differs from the Admin-approved return request.", 409, "RETURN_VALUE_MISMATCH");
+    }
 
     // 2. Create CustomerReturn record
     const now = new Date();
@@ -802,15 +898,15 @@ export const processSelfDeliveryReturn = async ({
       data: {
         items: processedItems,
         totalRefundAmount,
-        vatRefunded,
-        refundMethod: "STORE_CREDIT",
-        refundStatus: "COMPLETED",
+        vatRefunded: Number(approvedReturn.vatRefunded || 0),
+        refundMethod: "CASH",
+        refundStatus: "PENDING",
         inventoryAction: hasDamagedItems ? "DAMAGED_WRITE_OFF" : "RESTOCKED",
+        inspectionEvidenceUrl,
         notes: [approvedReturn.adminNotes, notes ? String(notes).trim() : ""].filter(Boolean).join("\n") || null,
-        lifecycleStatus: "REFUNDED",
+        lifecycleStatus: "REFUND_PENDING",
         inspectionResult: hasDamagedItems ? "PARTIAL" : "RESTOCKABLE",
         inspectedAt: now,
-        completedAt: now,
       },
     });
     await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
@@ -819,7 +915,7 @@ export const processSelfDeliveryReturn = async ({
         customerReturnId: customerReturn.id,
         eventType: "DISTRIBUTOR_RETURN_RECEIVED_AND_INSPECTED",
         fromStatus: "DISTRIBUTOR_RETURN_PROCESSING",
-        toStatus: "REFUNDED",
+        toStatus: "REFUND_PENDING",
         actorId: actorContext.actorId || distributorId,
         actorRole: "DISTRIBUTOR",
         reason: reason.trim(),
@@ -828,14 +924,7 @@ export const processSelfDeliveryReturn = async ({
       },
     });
 
-    // 3. Post Return Accounting
-    try {
-      await postCustomerReturnAccounting(customerReturn.id, tx);
-    } catch (err) {
-      console.warn("Accounting posting note on return:", err.message);
-    }
-
-    // 4. Update Order and Assignment status
+    // 3. Update Order and Assignment status
     await tx.orderAssignment.update({
       where: { id: assignment.id },
       data: {
@@ -852,7 +941,7 @@ export const processSelfDeliveryReturn = async ({
       },
     });
 
-    // 5. System Audit log to notify admin
+    // 4. System Audit log to notify admin
     await recordSystemAudit(
       {
         actorId: actorContext.actorId || distributorId,
@@ -868,6 +957,7 @@ export const processSelfDeliveryReturn = async ({
         afterState: {
           customerReturnId: customerReturn.id,
           totalRefundAmount,
+          approvedRefundAmount: approvedReturn.approvedRefundAmount.toString(),
           hasDamagedItems,
           inventoryAction: customerReturn.inventoryAction,
         },

@@ -287,6 +287,7 @@ model Notification {
   events   NotificationEvent[]
   outbox   NotificationOutbox[]
   adminTwoFactorChallenge AdminTwoFactorChallenge?
+  deliveryOtpChallenge DeliveryOtpChallenge?
 
   @@index([status, nextRetryAt])
   @@index([channel, status, createdAt])
@@ -657,6 +658,8 @@ model Order {
   cancelledByUserId           String?
   marketingCardRequired       Boolean             @default(true)
   deliveryOrder               DeliveryOrder?
+  deliveryOtpChallenges       DeliveryOtpChallenge[]
+  distributorCashEvents       DistributorCashEvent[]
   distributorReview           DistributorReview?
   letterDeliveries            LetterDelivery[]    @relation("OrderLetterDelivery")
   marketingCardOrder          MarketingCardOrder?
@@ -756,6 +759,7 @@ model ShippingConfig {
   ncmExchangeSettlementRate     Float    @default(0)
   distributorReturnSettlementRate   Float    @default(0)
   distributorExchangeSettlementRate Float    @default(0)
+  customerReturnChargeRate          Float    @default(0)
   updatedAt                     DateTime @updatedAt
 }
 
@@ -999,6 +1003,7 @@ model FinancialAccount {
   updatedAt            DateTime          @updatedAt
   outflows             CashTransaction[] @relation("FromAccount")
   inflows              CashTransaction[] @relation("ToAccount")
+  distributorRemittanceBatches DistributorRemittanceBatch[]
 
   @@index([accountingAccountId])
 }
@@ -1194,11 +1199,15 @@ model CustomerReturn {
   manufacturerReceivedAt DateTime?
   inspectedAt       DateTime?
   inspectionResult  String?  @db.VarChar(64)
+  inspectionEvidenceUrl String? @db.Text
   completedAt       DateTime?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   events            CustomerReturnEvent[]
   ncmAttempts       ReturnExchangeNcmAttempt[]
+  distributorCashEvents DistributorCashEvent[]
+  refundPolicySnapshot Json?
+  approvedRefundAmount Decimal? @db.Decimal(20, 2)
 
   @@index([lifecycleStatus, createdAt])
   @@index([orderId, lifecycleStatus])
@@ -1492,6 +1501,7 @@ model JournalEntry {
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
   lines              JournalLine[]
+  settlementOffset  DistributorSettlementOffset?
 
   @@index([transactionDate])
   @@index([sourceType, sourceId])
@@ -1533,7 +1543,7 @@ model JournalLine {
 
 model AccountingParty {
   id             String               @id @default(uuid())
-  partyType      String               @db.VarChar(40) // CUSTOMER | MANUFACTURER | MARKETING_PARTNER | CARRIER | VENDOR | PAYMENT_PROVIDER | OTHER
+  partyType      String               @db.VarChar(40) // CUSTOMER | MANUFACTURER | DISTRIBUTOR | MARKETING_PARTNER | CARRIER | VENDOR | PAYMENT_PROVIDER | OTHER
   sourceEntityId String               @db.VarChar(191)
   legalName      String?              @db.VarChar(255)
   displayName    String               @db.VarChar(255)
@@ -1588,6 +1598,7 @@ model AccountingEvent {
 
 model AccountingDocument {
   id              String                 @id @default(uuid())
+  idempotencyKey  String?                @unique @db.VarChar(191)
   documentType    String                 @db.VarChar(32) // INVOICE | BILL | CREDIT_NOTE | DEBIT_NOTE
   documentNumber  String                 @unique @db.VarChar(64)
   partyId         String
@@ -1606,6 +1617,7 @@ model AccountingDocument {
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
   allocations     AccountingAllocation[]
+  distributorCashEvents DistributorCashEvent[]
 
   @@index([partyId, side, status])
   @@index([sourceType, sourceId])
@@ -1620,6 +1632,7 @@ model AccountingAllocation {
   amount         Decimal            @db.Decimal(20, 2)
   allocatedAt    DateTime           @default(now())
   notes          String?            @db.Text
+  idempotencyKey String?            @unique @db.VarChar(191)
 
   @@index([documentId, allocatedAt])
   @@index([journalEntryId])
@@ -1731,6 +1744,10 @@ model Distributor {
   assignments OrderAssignment[]
   deliveryChargeNegotiations DistributorDeliveryChargeNegotiation[]
   settlementRequests DistributorSettlementRequest[]
+  cashEvents                   DistributorCashEvent[]
+  remittanceBatches            DistributorRemittanceBatch[]
+  settlementOffsets            DistributorSettlementOffset[]
+  deliveryOtpChallenges        DeliveryOtpChallenge[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   marketingCards         MarketingCard[]             @relation("MarketingCardDistributor")
   marketingCardAssignments MarketingCardAssignment[]
@@ -1741,6 +1758,110 @@ model Distributor {
   reviews                DistributorReview[]
 
   @@index([status, isActive])
+}
+
+model DeliveryOtpChallenge {
+  id                 String   @id @default(uuid())
+  orderId            String
+  distributorId      String
+  activeOrderKey     String?  @unique @db.VarChar(191)
+  notificationId     String?  @unique @db.VarChar(191)
+  idempotencyKey     String   @unique @db.VarChar(191)
+  codeHash           String   @db.VarChar(255)
+  collectionAmount   Decimal  @db.Decimal(20, 2)
+  status             String   @default("PENDING") @db.VarChar(24) // PENDING | VERIFIED | EXPIRED | LOCKED | SUPERSEDED
+  attemptCount       Int      @default(0)
+  maxAttempts        Int      @default(5)
+  expiresAt          DateTime
+  lastSentAt         DateTime @default(now())
+  verifiedAt         DateTime?
+  createdByAccountId String?
+  requestIp          String?  @db.VarChar(64)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  order              Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  distributor        Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  notification       Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, status, createdAt])
+  @@index([distributorId, status, createdAt])
+  @@index([status, expiresAt])
+}
+
+model DistributorRemittanceBatch {
+  id                  String   @id @default(uuid())
+  distributorId       String
+  financialAccountId  String?
+  amount              Decimal  @db.Decimal(20, 2)
+  receivedAt          DateTime @default(now())
+  reference            String?  @db.VarChar(191)
+  evidenceUrl          String?  @db.Text
+  status               String   @default("PENDING_REVIEW") @db.VarChar(24) // PENDING_REVIEW | VERIFIED | REJECTED
+  idempotencyKey       String   @unique @db.VarChar(191)
+  recordedByAccountId  String?
+  reviewedByAccountId  String?
+  reviewedAt           DateTime?
+  reviewNotes          String?  @db.Text
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  distributor          Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  financialAccount     FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  events               DistributorCashEvent[]
+
+  @@index([distributorId, status, receivedAt])
+  @@index([financialAccountId, receivedAt])
+}
+
+model DistributorCashEvent {
+  id                    String   @id @default(uuid())
+  distributorId         String
+  orderId               String?
+  customerReturnId      String?
+  remittanceBatchId     String?
+  accountingDocumentId  String?
+  eventType             String   @db.VarChar(32) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | APPROVED_ADJUSTMENT
+  amount                Decimal  @db.Decimal(20, 2)
+  status                String   @default("PENDING_VERIFICATION") @db.VarChar(24) // PENDING_VERIFICATION | VERIFIED | POSTED | REJECTED
+  paymentMethod         String?  @db.VarChar(32)
+  externalReference     String?  @db.VarChar(191)
+  evidenceUrl           String?  @db.Text
+  idempotencyKey        String   @unique @db.VarChar(191)
+  occurredAt            DateTime @default(now())
+  recordedByAccountId   String?
+  verifiedByAccountId   String?
+  verifiedAt            DateTime?
+  journalEntryId        String?  @db.VarChar(191)
+  cashTransactionId     String?  @db.VarChar(191)
+  notes                 String?  @db.Text
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  distributor           Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  order                 Order? @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customerReturn        CustomerReturn? @relation(fields: [customerReturnId], references: [id], onDelete: Restrict)
+  remittanceBatch       DistributorRemittanceBatch? @relation(fields: [remittanceBatchId], references: [id], onDelete: Restrict)
+  accountingDocument    AccountingDocument? @relation(fields: [accountingDocumentId], references: [id], onDelete: Restrict)
+
+  @@index([distributorId, eventType, status, occurredAt], map: "DistributorCashEvent_distributor_event_status_time_idx")
+  @@index([orderId, eventType, status])
+  @@index([customerReturnId, eventType, status])
+  @@index([remittanceBatchId])
+  @@index([accountingDocumentId, status])
+}
+
+model DistributorSettlementOffset {
+  id                  String   @id @default(uuid())
+  distributorId       String
+  amount              Decimal  @db.Decimal(20, 2)
+  journalEntryId      String   @unique
+  idempotencyKey      String   @unique @db.VarChar(191)
+  approvedByAccountId String?
+  approvedAt          DateTime @default(now())
+  notes               String?  @db.Text
+  createdAt           DateTime @default(now())
+  distributor         Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  journalEntry        JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@index([distributorId, approvedAt])
 }
 
 model DistributorLocation {

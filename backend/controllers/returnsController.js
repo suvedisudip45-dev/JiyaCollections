@@ -224,7 +224,29 @@ export const getCustomerReturns = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
     const [returns, total] = await prisma.$transaction([
-      prisma.customerReturn.findMany({ orderBy: { returnDate: "desc" }, skip: pagination.skip, take: pagination.limit }),
+      prisma.customerReturn.findMany({
+        orderBy: { returnDate: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: {
+          distributorCashEvents: {
+            where: { eventType: "CUSTOMER_REFUND" },
+            orderBy: { occurredAt: "desc" },
+            take: 1,
+            select: {
+              id: true,
+              amount: true,
+              status: true,
+              paymentMethod: true,
+              externalReference: true,
+              evidenceUrl: true,
+              accountingDocumentId: true,
+              journalEntryId: true,
+              accountingDocument: { select: { id: true, remainingAmount: true, status: true } },
+            },
+          },
+        },
+      }),
       prisma.customerReturn.count(),
     ]);
     res.json(paginatedResponse("returns", returns, pagination, total));

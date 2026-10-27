@@ -44,6 +44,7 @@ const buildDeliverySaleSnapshot = ({ order, deliveryOrder }) => {
     deliveryCharge: String(deliveryCharge),
     items: snapshotItems(order.items),
     paymentMethod: String(order.paymentMethod || "COD"),
+    collectionDistributorId: order.collectionDistributorId ? String(order.collectionDistributorId) : null,
     userId: order.userId ? String(order.userId) : null,
     customerName: order.customerName ? String(order.customerName) : null,
     manufacturerId: order.manufacturerId ? String(order.manufacturerId) : null,

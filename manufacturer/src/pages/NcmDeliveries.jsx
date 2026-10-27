@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { toast } from "react-toastify";
-import { CheckSquare, Clock3, ExternalLink, Package, RefreshCw, Search, Truck } from "lucide-react";
+import { CheckSquare, Clock3, ExternalLink, Package, Printer, RefreshCw, Search, Truck } from "lucide-react";
 import { backendUrl, currency, useManufacturer } from "../context/ManufacturerContext";
+import DistributorCourierSlip from "../components/DistributorCourierSlip";
 
 const TABS = [
   { key: "ON_HOLD", label: "On hold", countKey: "onHold" },
@@ -62,6 +63,7 @@ const NcmDeliveries = () => {
   const [booking, setBooking] = useState(false);
   const [retryingAssignmentId, setRetryingAssignmentId] = useState(null);
   const [deliveryTypes, setDeliveryTypes] = useState({});
+  const [slipOrders, setSlipOrders] = useState([]);
 
   const loadOrders = useCallback(async ({ preserveBatchResults = false } = {}) => {
     if (!token) return;
@@ -288,6 +290,19 @@ const NcmDeliveries = () => {
         </div>
       )}
 
+      {selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3">
+          <p className="text-xs font-semibold text-slate-700">{selectedIds.size} order{selectedIds.size === 1 ? "" : "s"} selected</p>
+          <button
+            type="button"
+            onClick={() => setSlipOrders(orders.filter(({ assignmentId }) => selectedIds.has(assignmentId)))}
+            className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white hover:bg-slate-800"
+          >
+            <Printer className="h-3.5 w-3.5" /> Print parcel slips
+          </button>
+        </div>
+      )}
+
       {activeTab === "ON_HOLD" && (
         <div className="flex flex-col gap-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-2 text-xs text-sky-950">
@@ -329,16 +344,14 @@ const NcmDeliveries = () => {
           <table className="w-full min-w-[1000px] text-left text-xs">
             <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
               <tr>
-                {activeTab === "ON_HOLD" && (
-                  <th className="w-10 px-3 py-3">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all visible held orders"
-                      checked={visibleOrders.length > 0 && visibleOrders.every(({ assignmentId }) => selectedIds.has(assignmentId))}
-                      onChange={toggleSelectVisible}
-                    />
-                  </th>
-                )}
+                <th className="w-10 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible orders"
+                    checked={visibleOrders.length > 0 && visibleOrders.every(({ assignmentId }) => selectedIds.has(assignmentId))}
+                    onChange={toggleSelectVisible}
+                  />
+                </th>
                 <th className="px-4 py-3">Order / Products</th>
                 <th className="px-4 py-3">Customer / Destination</th>
                 <th className="px-4 py-3">Payment</th>
@@ -367,16 +380,14 @@ const NcmDeliveries = () => {
                 const createdAt = order.date || order.createdAt;
                 return (
                   <tr key={record.assignmentId} className="hover:bg-slate-50/70">
-                    {activeTab === "ON_HOLD" && (
-                      <td className="px-3 py-3 align-top">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select order ${record.orderId}`}
-                          checked={selectedIds.has(record.assignmentId)}
-                          onChange={() => toggleSelected(record.assignmentId)}
-                        />
-                      </td>
-                    )}
+                    <td className="px-3 py-3 align-top">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select slip for order ${record.orderId}`}
+                        checked={selectedIds.has(record.assignmentId)}
+                        onChange={() => toggleSelected(record.assignmentId)}
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex min-w-64 items-start gap-3">
                         {firstImage
@@ -473,6 +484,10 @@ const NcmDeliveries = () => {
             <button type="button" onClick={() => setPage((current) => Math.min(pagination.totalPages, current + 1))} disabled={page >= pagination.totalPages || loading} className="rounded-lg border border-slate-200 bg-white px-3 py-2 font-semibold disabled:opacity-40">Next</button>
           </div>
         </div>
+      )}
+
+      {slipOrders.length > 0 && (
+        <DistributorCourierSlip orders={slipOrders} onClose={() => setSlipOrders([])} />
       )}
     </section>
   );

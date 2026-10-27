@@ -25,6 +25,7 @@ const ShippingSettings = ({ token }) => {
     ncmExchangeSettlementRate: 0,
     distributorReturnSettlementRate: 0,
     distributorExchangeSettlementRate: 0,
+    customerReturnChargeRate: 0,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -64,6 +65,7 @@ const ShippingSettings = ({ token }) => {
           ncmExchangeSettlementRate: Number(c.ncmExchangeSettlementRate ?? 0),
           distributorReturnSettlementRate: Number(c.distributorReturnSettlementRate ?? 0),
           distributorExchangeSettlementRate: Number(c.distributorExchangeSettlementRate ?? 0),
+          customerReturnChargeRate: Number(c.customerReturnChargeRate ?? 0),
         });
       }
     } catch (err) {
@@ -168,6 +170,7 @@ const ShippingSettings = ({ token }) => {
           ncmExchangeSettlementRate: config.ncmExchangeSettlementRate,
           distributorReturnSettlementRate: config.distributorReturnSettlementRate,
           distributorExchangeSettlementRate: config.distributorExchangeSettlementRate,
+          customerReturnChargeRate: config.customerReturnChargeRate,
         },
         { headers: { token } }
       );
@@ -302,6 +305,28 @@ const ShippingSettings = ({ token }) => {
                 />
               </div>
             </div>
+
+            <details className="rounded-lg border border-gray-200 p-3">
+              <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-gray-700">
+                Customer return refund policy
+              </summary>
+              <p className="mt-2 text-xs leading-5 text-gray-500">
+                This percentage is charged against returned product value. The original delivery fee is never included in the customer refund. The rate is snapshotted when Admin approves a return.
+              </p>
+              <label className="mt-3 block max-w-xs text-[11px] font-semibold text-gray-600">
+                Customer return charge (%)
+                <input
+                  type="number"
+                  name="customerReturnChargeRate"
+                  value={config.customerReturnChargeRate}
+                  onChange={handleChange}
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-xs"
+                />
+              </label>
+            </details>
 
             <details className="rounded-lg border border-gray-200 p-3">
               <summary className="cursor-pointer text-xs font-bold uppercase tracking-wider text-gray-700">

@@ -2,7 +2,14 @@ import { getPlatformFeatures, updatePlatformFeatures } from "../services/platfor
 
 export const getPublicPlatformFeatures = async (_req, res) => {
   try {
-    return res.json({ success: true, features: await getPlatformFeatures() });
+    return res.json({
+      success: true,
+      features: await getPlatformFeatures(),
+      companyContact: {
+        email: process.env.COMPANY_CONTACT_EMAIL || "",
+        phone: process.env.COMPANY_CONTACT_PHONE || "",
+      },
+    });
   } catch (error) {
     console.error("Error loading platform feature configuration:", error);
     return res.status(500).json({ success: false, message: "Unable to load feature settings." });

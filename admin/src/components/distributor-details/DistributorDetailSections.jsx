@@ -249,6 +249,233 @@ export const DistributorExchangesSection = ({ distributorId, token }) => (
   />
 );
 
+const DistributorCodRemittances = ({ distributorId, token }) => {
+  const [data, setData] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [accountByBatch, setAccountByBatch] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [busyBatchId, setBusyBatchId] = useState(null);
+  const [approvingNetting, setApprovingNetting] = useState(false);
+  const [nettingFormOpen, setNettingFormOpen] = useState(false);
+  const [nettingForm, setNettingForm] = useState({ amount: "", notes: "" });
+  const endpoint = `${backendUrl}/api/admin/distributors/${distributorId}/finance/remittances`;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [remittanceResponse, accountResponse] = await Promise.all([
+        axios.get(endpoint, { headers: { token }, params: { limit: 50 } }),
+        axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }),
+      ]);
+      setData(remittanceResponse.data);
+      setAccounts(accountResponse.data?.accounts || []);
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not load distributor COD remittances.");
+      setData(null);
+      setAccounts([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [endpoint, token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const review = async (batch, decision) => {
+    const reviewNotes = decision === "REJECT"
+      ? window.prompt("Why is this remittance being rejected?")?.trim()
+      : "";
+    if (decision === "REJECT" && !reviewNotes) return;
+    const financialAccountId = accountByBatch[batch.id] || accounts.find((account) =>
+      account.status === "ACTIVE" &&
+      account.currency === "NPR" &&
+      ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+    )?.id;
+    if (decision === "VERIFY" && !financialAccountId) {
+      toast.error("Select an active NPR treasury account before verifying.");
+      return;
+    }
+    setBusyBatchId(batch.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/admin/distributors/${distributorId}/finance/remittances/${batch.id}/review`,
+        { decision, financialAccountId, reviewNotes },
+        { headers: { token } }
+      );
+      toast.success(decision === "VERIFY" ? "COD remittance verified and posted." : "COD remittance rejected.");
+      await load();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not review COD remittance.");
+    } finally {
+      setBusyBatchId(null);
+    }
+  };
+
+  const approveNetting = async () => {
+    const maximum = Number(data?.position?.availableToOffset || 0);
+    if (!Number.isFinite(maximum) || maximum <= 0 || approvingNetting) return;
+    const amount = nettingForm.amount.trim();
+    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || Number(amount) > maximum) {
+      toast.error(`Enter a valid amount up to NPR ${maximum.toFixed(2)}.`);
+      return;
+    }
+    const notes = nettingForm.notes.trim();
+    if (!notes) {
+      toast.error("Add an Admin note explaining this offset.");
+      return;
+    }
+
+    setApprovingNetting(true);
+    try {
+      await axios.post(
+        `${backendUrl}/api/admin/distributors/${distributorId}/finance/refund-netting`,
+        { amount, notes, idempotencyKey: window.crypto.randomUUID() },
+        { headers: { token } },
+      );
+      toast.success("Refund payable offset against COD receivable was approved and posted.");
+      setNettingFormOpen(false);
+      setNettingForm({ amount: "", notes: "" });
+      await load();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not approve distributor balance offset.");
+    } finally {
+      setApprovingNetting(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-bold text-slate-900">COD receivables &amp; remittances</h2>
+          <p className="mt-1 text-xs text-slate-500">Gross COD receivables and verified distributor refund payables remain separately recorded. Only verified remittances or explicit Admin-approved offsets clear balances.</p>
+        </div>
+        <button type="button" onClick={load} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Refresh</button>
+      </div>
+      {loading ? <p className="py-5 text-center text-xs text-slate-500">Loading COD ledger…</p> : data ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              ["Open COD receivable", data.position?.outstandingReceivable],
+              ["Pending remittance review", data.position?.pendingRemittance],
+              ["Verified refund payable to distributor", data.position?.refundPayable],
+              ["Available for approved offset", data.position?.availableToOffset],
+            ].map(([label, amount]) => (
+              <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+                <p className="mt-1 text-base font-black text-slate-900">{amountText(amount)}</p>
+              </div>
+            ))}
+          </div>
+          {Number(data.position?.availableToOffset || 0) > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+              <p className="max-w-2xl text-xs leading-5 text-amber-950">
+                Review the verified customer-refund proof before offsetting. This action posts a journal entry and allocates both the COD receivable and distributor payable; pending remittances are excluded.
+              </p>
+              <button
+                type="button"
+                disabled={approvingNetting}
+                onClick={() => {
+                  setNettingForm({ amount: Number(data.position.availableToOffset).toFixed(2), notes: "" });
+                  setNettingFormOpen((open) => !open);
+                }}
+                className="rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
+              >
+                {nettingFormOpen ? "Close offset form" : `Prepare offset · ${amountText(data.position.availableToOffset)}`}
+              </button>
+            </div>
+          )}
+          {nettingFormOpen && Number(data.position?.availableToOffset || 0) > 0 && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                approveNetting();
+              }}
+              className="grid gap-3 rounded-xl border border-amber-200 bg-white p-4 sm:grid-cols-2"
+            >
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                Offset amount (maximum {amountText(data.position.availableToOffset)})
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  value={nettingForm.amount}
+                  onChange={(event) => setNettingForm((current) => ({ ...current, amount: event.target.value }))}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  required
+                />
+              </label>
+              <label className="space-y-1 text-xs font-semibold text-slate-700">
+                Admin reason
+                <input
+                  type="text"
+                  maxLength={2000}
+                  value={nettingForm.notes}
+                  onChange={(event) => setNettingForm((current) => ({ ...current, notes: event.target.value }))}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  required
+                />
+              </label>
+              <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2">
+                <p className="text-[10px] text-slate-500">This will reduce both the distributor COD receivable and verified refund payable. Pending remittances remain reserved.</p>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setNettingFormOpen(false)} className="rounded-lg border border-slate-300 px-3 py-2 text-[10px] font-bold text-slate-700">Cancel</button>
+                  <button type="submit" disabled={approvingNetting} className="rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">
+                    {approvingNetting ? "Posting offset…" : "Confirm and post offset"}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold text-slate-800">Approved receivable/payable offsets</h3>
+            {(data.offsets || []).length ? data.offsets.map((offset) => (
+              <div key={offset.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">Admin approved · {dateText(offset.approvedAt)}</p>
+                  {offset.notes && <p className="mt-1 text-[10px] text-slate-500">{offset.notes}</p>}
+                  <p className="mt-1 text-[10px] text-slate-500">Journal {offset.journalEntryId}</p>
+                </div>
+                <p className="text-xs font-black text-slate-900">{amountText(offset.amount)}</p>
+              </div>
+            )) : <p className="text-xs text-slate-500">No approved offsets.</p>}
+          </div>
+          <div className="space-y-2">
+            {(data.remittances || []).map((batch) => (
+              <div key={batch.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">{amountText(batch.amount)} · {batch.reference || "No reference"}</p>
+                  <p className="mt-1 text-[10px] text-slate-500">{dateText(batch.receivedAt)} · {batch.status}</p>
+                  {batch.evidenceUrl && <a className="mt-1 inline-block text-[10px] font-semibold text-blue-700 underline" href={batch.evidenceUrl} target="_blank" rel="noreferrer">View transfer evidence</a>}
+                  {batch.reviewNotes && <p className="mt-1 text-[10px] text-rose-700">Admin note: {batch.reviewNotes}</p>}
+                </div>
+                {batch.status === "PENDING_REVIEW" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={accountByBatch[batch.id] || ""}
+                      onChange={(event) => setAccountByBatch((current) => ({ ...current, [batch.id]: event.target.value }))}
+                      className="max-w-48 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[10px]"
+                    >
+                      <option value="">Select treasury account</option>
+                      {accounts.filter((account) =>
+                        account.status === "ACTIVE" &&
+                        account.currency === "NPR" &&
+                        ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+                      ).map((account) => <option key={account.id} value={account.id}>{account.accountName}</option>)}
+                    </select>
+                    <button type="button" disabled={busyBatchId === batch.id} onClick={() => review(batch, "VERIFY")} className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Verify</button>
+                    <button type="button" disabled={busyBatchId === batch.id} onClick={() => review(batch, "REJECT")} className="rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Reject</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {!data.remittances?.length && <p className="py-4 text-center text-xs text-slate-500">No COD remittances submitted.</p>}
+          </div>
+        </>
+      ) : <p className="py-5 text-center text-xs text-rose-600">COD remittance data is unavailable.</p>}
+    </section>
+  );
+};
+
 export const DistributorFinanceSection = ({ distributorId, token }) => {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -302,6 +529,8 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
           </div>
         </>
       ) : <p className="rounded-xl border border-rose-200 bg-white px-5 py-10 text-center text-sm text-rose-600">Financial summary is unavailable.</p>}
+
+      <DistributorCodRemittances distributorId={distributorId} token={token} />
 
       <div className="flex gap-2">
         {[["transactions", "Financial transactions"], ["settlements", "Settlement requests"]].map(([value, label]) => (

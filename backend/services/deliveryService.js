@@ -415,9 +415,7 @@ export const buildDeliveryInput = ({ order, assignment, manufacturer, packagingM
   const packagingNotes = String(packagingMeta.packagingNotes || meta.packagingNotes || "").trim();
 
   const packageDescription = [
-    productType,
     productDescription,
-    packageType,
     packageDimensions ? `Dimensions: ${packageDimensions}` : "",
     isFragile ? "Fragile" : "Standard",
     packagingNotes ? `Inspection/packaging: ${packagingNotes}` : "",

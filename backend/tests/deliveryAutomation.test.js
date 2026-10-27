@@ -197,6 +197,7 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
       {
         name: "Cotton Shirt",
         productType: "Apparel",
+        category: ["Men", "Women", "Kids"],
         description: "Premium cotton shirt",
         quantity: 1,
       },
@@ -222,10 +223,8 @@ test("delivery payload auto-fills packaging metadata and keeps it editable", () 
   });
 
   assert.equal(input.productType, "Shirt");
-  assert.match(input.packageDescription, /Shirt/i);
-  assert.match(input.packageDescription, /Premium cotton shirt/i);
-  assert.match(input.packageDescription, /Box/i);
-  assert.match(input.packageDescription, /Standard/);
+  assert.equal(input.packageDescription, "Premium cotton shirt | Standard");
+  assert.equal(input.packageType, "Box");
   assert.equal(input.instruction, "Handle with care and leave at the gate");
 });
 

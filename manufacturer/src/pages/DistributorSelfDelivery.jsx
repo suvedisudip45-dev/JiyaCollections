@@ -10,8 +10,10 @@ import {
   Clock3,
   ExternalLink,
   Package,
+  Printer,
 } from "lucide-react";
 import { backendUrl, useManufacturer, currency } from "../context/ManufacturerContext";
+import DistributorCourierSlip from "../components/DistributorCourierSlip";
 
 const PAGE_SIZE = 25;
 const DISPATCHABLE_STATUSES = new Set([
@@ -47,15 +49,31 @@ const DistributorSelfDelivery = () => {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [batchResults, setBatchResults] = useState([]);
   const [dispatching, setDispatching] = useState(false);
+  const [slipOrders, setSlipOrders] = useState([]);
+  const [deliveryOtpOrder, setDeliveryOtpOrder] = useState(null);
+  const [deliveryOtpRequired, setDeliveryOtpRequired] = useState(true);
+  const [deliveryOtpCode, setDeliveryOtpCode] = useState("");
+  const [deliveryPaymentMethod, setDeliveryPaymentMethod] = useState("CASH");
+  const [deliveryCollectionConfirmed, setDeliveryCollectionConfirmed] = useState(false);
 
   // Return QA Modal state
   const [returnOrder, setReturnOrder] = useState(null);
   const [returnRequestId, setReturnRequestId] = useState("");
   const [returnReason, setReturnReason] = useState("");
   const [returnItems, setReturnItems] = useState([]);
+  const [returnEvidenceFile, setReturnEvidenceFile] = useState(null);
   const [damageType, setDamageType] = useState("DELIVERY_DAMAGE");
   const [damageNotes, setDamageNotes] = useState("");
   const [submittingReturn, setSubmittingReturn] = useState(false);
+  const [refundToSubmit, setRefundToSubmit] = useState(null);
+  const [refundPaymentForm, setRefundPaymentForm] = useState({
+    amount: "",
+    paymentMethod: "CASH",
+    externalReference: "",
+    evidenceFile: null,
+    idempotencyKey: "",
+  });
+  const [submittingRefund, setSubmittingRefund] = useState(false);
   const [exchangeToInspect, setExchangeToInspect] = useState(null);
   const [exchangeInspectionItems, setExchangeInspectionItems] = useState([]);
   const [exchangeInspectionNotes, setExchangeInspectionNotes] = useState("");
@@ -106,15 +124,21 @@ const DistributorSelfDelivery = () => {
     loadOrders();
   }, [loadOrders]);
 
-  const handleStatusUpdate = async (orderRef, nextStatus) => {
+  const handleStatusUpdate = async (orderRef, nextStatus, deliveryPayment = {}) => {
     setUpdatingId(orderRef.assignmentId);
     try {
       const response = await axios.patch(
         `${backendUrl}/api/distributor/orders/${orderRef.assignmentId}/status`,
-        { status: nextStatus },
+        { status: nextStatus, ...deliveryPayment },
         { headers: { token } }
       );
       toast.success(response.data.message || `Status updated to ${nextStatus}.`);
+      if (nextStatus === "Delivered") {
+        setDeliveryOtpOrder(null);
+        setDeliveryOtpCode("");
+        setDeliveryPaymentMethod("CASH");
+        setDeliveryCollectionConfirmed(false);
+      }
       await loadOrders();
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to update delivery status.");
@@ -123,9 +147,61 @@ const DistributorSelfDelivery = () => {
     }
   };
 
+  const handleDeliveryStart = async (orderRef) => {
+    const order = orderRef.order || {};
+    const isUnpaidCod = String(order.paymentMethod || "COD").trim().toUpperCase() === "COD" && !order.payment;
+    if (!isUnpaidCod) {
+      await handleStatusUpdate(orderRef, "Delivered");
+      return;
+    }
+
+    setUpdatingId(orderRef.assignmentId);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/orders/${orderRef.orderId}/delivery-otp`,
+        {},
+        { headers: { token } }
+      );
+      setDeliveryOtpRequired(response.data.otpRequired !== false);
+      setDeliveryOtpCode("");
+      setDeliveryPaymentMethod("CASH");
+      setDeliveryCollectionConfirmed(false);
+      setDeliveryOtpOrder(orderRef);
+      toast.success(response.data.message || (
+        response.data.otpRequired === false
+          ? "Confirm COD collection to complete delivery."
+          : "Customer delivery code requested."
+      ));
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not request the customer delivery code.");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const handleDeliveryConfirmationSubmit = async (event) => {
+    event.preventDefault();
+    if (!deliveryOtpOrder) return;
+    if (deliveryOtpRequired && !/^\d{6}$/.test(deliveryOtpCode.trim())) {
+      toast.error("Enter the 6-digit code provided by the customer.");
+      return;
+    }
+    if (!deliveryOtpRequired && !deliveryCollectionConfirmed) {
+      toast.error("Confirm that you collected the full COD amount.");
+      return;
+    }
+    await handleStatusUpdate(deliveryOtpOrder, "Delivered", {
+      ...(deliveryOtpRequired ? { otpCode: deliveryOtpCode.trim() } : { collectionConfirmed: true }),
+      paymentMethod: deliveryPaymentMethod,
+    });
+  };
+
   const handleBulkDispatch = async () => {
-    if (!selectedIds.size || dispatching) return;
-    const count = selectedIds.size;
+    const assignmentIds = orders
+      .filter(({ assignmentId, status }) => selectedIds.has(assignmentId) && DISPATCHABLE_STATUSES.has(String(status || "").toLowerCase()))
+      .map(({ assignmentId }) => assignmentId);
+    if (!assignmentIds.length || dispatching) return;
+    const count = assignmentIds.length;
     if (!window.confirm(`Dispatch ${count} selected self-delivery order${count === 1 ? "" : "s"}?`)) return;
 
     setDispatching(true);
@@ -133,7 +209,7 @@ const DistributorSelfDelivery = () => {
     try {
       const response = await axios.post(
         `${backendUrl}/api/distributor/orders/self-delivery/bulk-dispatch`,
-        { assignmentIds: [...selectedIds] },
+        { assignmentIds },
         { headers: { token } }
       );
       const results = response.data?.results || [];
@@ -156,6 +232,7 @@ const DistributorSelfDelivery = () => {
 
   const openReturnModal = (orderRef, approvedReturn) => {
     setReturnOrder(orderRef);
+    setReturnEvidenceFile(null);
     setReturnRequestId(approvedReturn?.id || "");
     setReturnReason(approvedReturn?.reason || "Customer Return Request");
     setDamageType("DELIVERY_DAMAGE");
@@ -180,34 +257,80 @@ const DistributorSelfDelivery = () => {
 
   const handleReturnSubmit = async (e) => {
     e.preventDefault();
-    if (!returnOrder) return;
+    if (!returnOrder || !returnEvidenceFile) {
+      toast.error("Upload a JPG or PNG photo of the returned goods.");
+      return;
+    }
     setSubmittingReturn(true);
     try {
+      const formData = new FormData();
+      formData.append("returnRequestId", returnRequestId);
+      formData.append("reason", returnReason);
+      formData.append("damageType", damageType);
+      if (damageNotes) formData.append("damageNotes", damageNotes);
+      formData.append("items", JSON.stringify(returnItems.map((item) => ({
+        productId: item.productId,
+        size: item.size,
+        color: item.color,
+        quantity: Number(item.quantity),
+        condition: item.condition,
+      }))));
+      formData.append("evidence", returnEvidenceFile);
       const response = await axios.post(
         `${backendUrl}/api/distributor/orders/${returnOrder.assignmentId}/return`,
-        {
-          returnRequestId,
-          reason: returnReason,
-          damageType,
-          damageNotes: damageNotes || undefined,
-          items: returnItems.map((item) => ({
-            productId: item.productId,
-            size: item.size,
-            color: item.color,
-            quantity: Number(item.quantity),
-            condition: item.condition,
-          })),
-        },
+        formData,
         { headers: { token } }
       );
       toast.success(response.data.message || "Customer return and QA recorded successfully.");
       setReturnOrder(null);
       setReturnRequestId("");
+      setReturnEvidenceFile(null);
       await loadOrders();
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to process customer return.");
     } finally {
       setSubmittingReturn(false);
+    }
+  };
+
+  const openRefundPaymentModal = (returnRecord) => {
+    setRefundToSubmit(returnRecord);
+    setRefundPaymentForm({
+      amount: Number(returnRecord.approvedRefundAmount || 0).toFixed(2),
+      paymentMethod: "CASH",
+      externalReference: "",
+      evidenceFile: null,
+      idempotencyKey: window.crypto.randomUUID(),
+    });
+  };
+
+  const handleRefundPaymentSubmit = async (event) => {
+    event.preventDefault();
+    if (!refundToSubmit || submittingRefund) return;
+    if (!refundPaymentForm.evidenceFile) {
+      toast.error("Upload a JPG or PNG image as refund payment evidence.");
+      return;
+    }
+    setSubmittingRefund(true);
+    try {
+      const formData = new FormData();
+      formData.append("amount", refundPaymentForm.amount);
+      formData.append("paymentMethod", refundPaymentForm.paymentMethod);
+      formData.append("externalReference", refundPaymentForm.externalReference);
+      formData.append("idempotencyKey", refundPaymentForm.idempotencyKey);
+      formData.append("evidence", refundPaymentForm.evidenceFile);
+      const response = await axios.post(
+        `${backendUrl}/api/returns/customer/distributor/${refundToSubmit.id}/refund-payment`,
+        formData,
+        { headers: { token } }
+      );
+      toast.success(response.data.message || "Refund payment evidence submitted for Admin review.");
+      setRefundToSubmit(null);
+      await loadOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not submit customer refund evidence.");
+    } finally {
+      setSubmittingRefund(false);
     }
   };
 
@@ -271,13 +394,16 @@ const DistributorSelfDelivery = () => {
   const dispatchableOrders = filteredOrders.filter((orderRef) =>
     DISPATCHABLE_STATUSES.has(String(orderRef.status || "").toLowerCase())
   );
-  const allVisibleDispatchableSelected = dispatchableOrders.length > 0 &&
-    dispatchableOrders.every(({ assignmentId }) => selectedIds.has(assignmentId));
+  const selectedDispatchableCount = orders.filter(({ assignmentId, status }) =>
+    selectedIds.has(assignmentId) && DISPATCHABLE_STATUSES.has(String(status || "").toLowerCase())
+  ).length;
+  const allVisibleSelected = filteredOrders.length > 0 &&
+    filteredOrders.every(({ assignmentId }) => selectedIds.has(assignmentId));
   const toggleSelectVisible = () => {
     setSelectedIds((current) => {
       const next = new Set(current);
-      dispatchableOrders.forEach(({ assignmentId }) => {
-        if (allVisibleDispatchableSelected) next.delete(assignmentId);
+      filteredOrders.forEach(({ assignmentId }) => {
+        if (allVisibleSelected) next.delete(assignmentId);
         else next.add(assignmentId);
       });
       return next;
@@ -350,11 +476,11 @@ const DistributorSelfDelivery = () => {
         <section className="rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-4 sm:p-5 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-bold text-[#171717]">Approved return & exchange requests</h2>
-              <p className="mt-1 text-[11px] text-[#575757]">These self-delivery requests were approved by admin and routed to your hub.</p>
+              <h2 className="text-sm font-bold text-[#171717]">Return & exchange workflow</h2>
+              <p className="mt-1 text-[11px] text-[#575757]">Admin-approved returns and exchanges routed to your hub, including refund verification status.</p>
             </div>
             <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">
-              {customerReturnRequests.length + exchangeRequests.length} pending
+              {customerReturnRequests.length + exchangeRequests.length} request(s)
             </span>
           </div>
           <div className="grid gap-3 lg:grid-cols-2">
@@ -368,10 +494,29 @@ const DistributorSelfDelivery = () => {
                       {(Array.isArray(request.items) ? request.items : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
                     </p>
                   </div>
-                  <button type="button" onClick={() => openApprovedReturn(request)} className="shrink-0 rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-rose-800">
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-bold text-rose-800">{request.lifecycleStatus}</span>
+                </div>
+                {request.lifecycleStatus === "DISTRIBUTOR_RETURN_PENDING" && (
+                  <button type="button" onClick={() => openApprovedReturn(request)} className="mt-3 rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-rose-800">
                     Receive & inspect
                   </button>
-                </div>
+                )}
+                {request.lifecycleStatus === "REFUND_PENDING" && (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-[#171717]">
+                      Admin-approved refund: {currency}{Number(request.approvedRefundAmount || 0).toFixed(2)}
+                    </span>
+                    <button type="button" onClick={() => openRefundPaymentModal(request)} className="rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-rose-800">
+                      Record customer refund
+                    </button>
+                  </div>
+                )}
+                {request.lifecycleStatus === "DISTRIBUTOR_REFUND_REVIEW" && (
+                  <p className="mt-3 text-[11px] font-semibold text-amber-800">Refund evidence submitted · awaiting Admin verification.</p>
+                )}
+                {request.lifecycleStatus === "REFUNDED" && (
+                  <p className="mt-3 text-[11px] font-semibold text-emerald-800">Customer refund verified and completed.</p>
+                )}
               </article>
             ))}
             {exchangeRequests.map((request) => (
@@ -451,20 +596,32 @@ const DistributorSelfDelivery = () => {
         ))}
       </div>
 
-      {dispatchableOrders.length > 0 && (
+      {(dispatchableOrders.length > 0 || selectedIds.size > 0) && (
         <div className="flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-2 text-xs text-amber-950">
             <CheckSquare className="mt-0.5 h-4 w-4 shrink-0" />
-            <p>Select ready orders to dispatch them together. Each order is dispatched and recorded individually.</p>
+            <p>Select order slips to print and attach outside each package. Dispatch only applies to selected orders that are ready.</p>
           </div>
-          <button
-            type="button"
-            onClick={handleBulkDispatch}
-            disabled={!selectedIds.size || dispatching}
-            className="shrink-0 rounded-xl bg-[#171717] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#262626] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {dispatching ? "Dispatching orders..." : `Dispatch selected (${selectedIds.size})`}
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setSlipOrders(orders.filter(({ assignmentId }) => selectedIds.has(assignmentId)))}
+              disabled={!selectedIds.size}
+              className="inline-flex items-center gap-2 rounded-xl border border-[#171717] bg-white px-4 py-2.5 text-xs font-bold text-[#171717] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Printer className="h-3.5 w-3.5" /> Print slips ({selectedIds.size})
+            </button>
+            {dispatchableOrders.length > 0 && (
+              <button
+                type="button"
+                onClick={handleBulkDispatch}
+                disabled={!selectedDispatchableCount || dispatching}
+                className="shrink-0 rounded-xl bg-[#171717] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#262626] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {dispatching ? "Dispatching orders..." : `Dispatch selected (${selectedDispatchableCount})`}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -498,8 +655,8 @@ const DistributorSelfDelivery = () => {
                 <th className="w-10 px-3 py-3">
                   <input
                     type="checkbox"
-                    aria-label="Select all dispatchable visible orders"
-                    checked={allVisibleDispatchableSelected}
+                    aria-label="Select all visible orders"
+                    checked={allVisibleSelected}
                     onChange={toggleSelectVisible}
                   />
                 </th>
@@ -529,14 +686,12 @@ const DistributorSelfDelivery = () => {
                 return (
                   <tr key={orderRef.assignmentId} className="hover:bg-[#f8f7f4]/70">
                     <td className="px-3 py-3 align-top">
-                      {canDispatch && (
-                        <input
-                          type="checkbox"
-                          aria-label={`Select order ${orderRef.orderId}`}
-                          checked={selectedIds.has(orderRef.assignmentId)}
-                          onChange={() => toggleSelected(orderRef.assignmentId)}
-                        />
-                      )}
+                      <input
+                        type="checkbox"
+                        aria-label={`Select slip for order ${orderRef.orderId}`}
+                        checked={selectedIds.has(orderRef.assignmentId)}
+                        onChange={() => toggleSelected(orderRef.assignmentId)}
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex min-w-64 items-start gap-3">
@@ -618,11 +773,11 @@ const DistributorSelfDelivery = () => {
                       {currentStatus === "on_the_way" && (
                         <button
                           type="button"
-                          onClick={() => handleStatusUpdate(orderRef, "Delivered")}
+                          onClick={() => handleDeliveryStart(orderRef)}
                           disabled={updatingId === orderRef.assignmentId || dispatching}
                           className="whitespace-nowrap rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
                         >
-                          {updatingId === orderRef.assignmentId ? "Updating..." : "Mark delivered & collect"}
+                          {updatingId === orderRef.assignmentId ? "Requesting..." : "Mark delivered & collect"}
                         </button>
                       )}
                       {currentStatus === "delivered" && <span className="font-bold text-emerald-700">Delivered</span>}
@@ -663,6 +818,103 @@ const DistributorSelfDelivery = () => {
       )}
 
       {/* Customer Return QA Modal */}
+      {slipOrders.length > 0 && (
+        <DistributorCourierSlip orders={slipOrders} onClose={() => setSlipOrders([])} />
+      )}
+
+      {deliveryOtpOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <form
+            onSubmit={handleDeliveryConfirmationSubmit}
+            className="w-full max-w-md space-y-4 rounded-2xl border border-[#dedbd3] bg-white p-6 shadow-2xl"
+          >
+            <div>
+              <h2 className="text-base font-bold text-[#171717]">
+                {deliveryOtpRequired ? "Verify customer COD delivery" : "Confirm customer COD collection"}
+              </h2>
+              <p className="mt-1 text-xs leading-5 text-[#575757]">
+                {deliveryOtpRequired
+                  ? "A one-time code was queued for SMS to the customer's registered phone. Ask the customer to read it to you only at handoff."
+                  : "SMS verification is disabled. Confirm only after handing over the order and collecting the full amount."}
+                {" "}Collect {currency}{Number(deliveryOtpOrder.order?.amount || 0).toLocaleString()} before confirming delivery.
+              </p>
+            </div>
+            {deliveryOtpRequired ? (
+              <div>
+                <label htmlFor="delivery-otp-code" className="mb-1 block text-xs font-bold text-[#171717]">
+                  Customer verification code
+                </label>
+                <input
+                  id="delivery-otp-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  value={deliveryOtpCode}
+                  onChange={(event) => setDeliveryOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="6-digit code"
+                  className="w-full rounded-lg border border-[#dedbd3] px-3 py-2 text-sm tracking-[0.3em] focus:border-[#171717] focus:outline-none"
+                  required
+                  autoFocus
+                />
+              </div>
+            ) : (
+              <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
+                <input
+                  type="checkbox"
+                  checked={deliveryCollectionConfirmed}
+                  onChange={(event) => setDeliveryCollectionConfirmed(event.target.checked)}
+                  className="mt-1"
+                />
+                <span>I confirm that I handed the order to the customer and collected the full COD amount shown above.</span>
+              </label>
+            )}
+            <div>
+              <label htmlFor="delivery-payment-method" className="mb-1 block text-xs font-bold text-[#171717]">
+                Customer payment method
+              </label>
+              <select
+                id="delivery-payment-method"
+                value={deliveryPaymentMethod}
+                onChange={(event) => setDeliveryPaymentMethod(event.target.value)}
+                className="w-full rounded-lg border border-[#dedbd3] bg-white px-3 py-2 text-xs"
+              >
+                <option value="CASH">Cash</option>
+                <option value="BANK_TRANSFER">Bank transfer</option>
+                <option value="MOBILE_WALLET">Mobile wallet</option>
+                <option value="CARD">Card</option>
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeliveryOtpOrder(null);
+                  setDeliveryOtpCode("");
+                  setDeliveryCollectionConfirmed(false);
+                }}
+                disabled={updatingId === deliveryOtpOrder.assignmentId}
+                className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs font-semibold text-[#575757] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={updatingId === deliveryOtpOrder.assignmentId || (
+                  deliveryOtpRequired ? deliveryOtpCode.length !== 6 : !deliveryCollectionConfirmed
+                )}
+                className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {updatingId === deliveryOtpOrder.assignmentId
+                  ? "Confirming..."
+                  : deliveryOtpRequired ? "Verify & confirm delivery" : "Confirm collection & delivery"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {exchangeToInspect && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <form onSubmit={submitExchangeInspection} className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl space-y-4">
@@ -800,10 +1052,25 @@ const DistributorSelfDelivery = () => {
                 </div>
               )}
 
+              <label className="block">
+                <span className="mb-1 block font-bold text-[#171717]">Returned goods photo (JPG or PNG, max 8 MB)</span>
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                  onChange={(event) => setReturnEvidenceFile(event.target.files?.[0] || null)}
+                  required
+                  className="w-full rounded-lg border border-[#dedbd3] p-2 file:mr-3 file:rounded-md file:border-0 file:bg-[#f1f0ec] file:px-3 file:py-1.5 file:text-[10px] file:font-semibold"
+                />
+                <span className="mt-1 block text-[10px] text-[#575757]">Capture the returned item and its condition for Admin review.</span>
+              </label>
+
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#dedbd3]">
                 <button
                   type="button"
-                  onClick={() => setReturnOrder(null)}
+                  onClick={() => {
+                    setReturnOrder(null);
+                    setReturnEvidenceFile(null);
+                  }}
                   className="px-3.5 py-1.5 border border-[#dedbd3] rounded-lg text-[#575757]"
                 >
                   Cancel
@@ -818,6 +1085,68 @@ const DistributorSelfDelivery = () => {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {refundToSubmit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <form onSubmit={handleRefundPaymentSubmit} className="w-full max-w-lg space-y-4 rounded-2xl border border-[#dedbd3] bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-3 border-b border-[#dedbd3] pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-[#171717]">Record customer refund</h3>
+                <p className="mt-1 text-[11px] text-[#575757]">
+                  RMA #{String(refundToSubmit.id).slice(0, 8).toUpperCase()} · Admin-approved amount {currency}{Number(refundToSubmit.approvedRefundAmount || 0).toFixed(2)}
+                </p>
+              </div>
+              <button type="button" onClick={() => setRefundToSubmit(null)} className="rounded-lg border border-[#dedbd3] px-2 py-1 text-xs text-[#575757]">Close</button>
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-bold text-[#171717]">Refund amount</label>
+              <input value={refundPaymentForm.amount} readOnly className="w-full rounded-lg border border-[#dedbd3] bg-[#f8f7f4] p-2 text-xs font-semibold text-[#575757]" />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-bold text-[#171717]">Payment method</label>
+              <select
+                value={refundPaymentForm.paymentMethod}
+                onChange={(event) => setRefundPaymentForm((current) => ({ ...current, paymentMethod: event.target.value }))}
+                className="w-full rounded-lg border border-[#dedbd3] bg-white p-2 text-xs"
+              >
+                <option value="CASH">Cash</option>
+                <option value="BANK_TRANSFER">Bank transfer</option>
+                <option value="MOBILE_WALLET">Mobile wallet</option>
+                <option value="CARD">Card</option>
+              </select>
+            </div>
+            {refundPaymentForm.paymentMethod !== "CASH" && (
+              <div>
+                <label className="mb-1 block text-[11px] font-bold text-[#171717]">Transaction reference</label>
+                <input
+                  value={refundPaymentForm.externalReference}
+                  onChange={(event) => setRefundPaymentForm((current) => ({ ...current, externalReference: event.target.value }))}
+                  maxLength={191}
+                  required
+                  className="w-full rounded-lg border border-[#dedbd3] p-2 text-xs"
+                />
+              </div>
+            )}
+            <div>
+              <label className="mb-1 block text-[11px] font-bold text-[#171717]">Refund payment evidence image (JPG or PNG, max 8 MB)</label>
+              <input
+                type="file"
+                accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                onChange={(event) => setRefundPaymentForm((current) => ({ ...current, evidenceFile: event.target.files?.[0] || null }))}
+                required
+                className="w-full rounded-lg border border-[#dedbd3] p-2 text-xs file:mr-3 file:rounded-md file:border-0 file:bg-[#f1f0ec] file:px-3 file:py-1.5 file:text-[10px] file:font-semibold"
+              />
+              <p className="mt-1 text-[10px] text-[#575757]">Admin must verify this evidence before the refund is completed or reimbursed.</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] pt-3">
+              <button type="button" onClick={() => setRefundToSubmit(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
+              <button type="submit" disabled={submittingRefund} className="rounded-lg bg-[#171717] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {submittingRefund ? "Submitting..." : "Submit for Admin review"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

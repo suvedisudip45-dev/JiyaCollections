@@ -73,6 +73,8 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
     userId: "user-1",
     amount: 1500,
     deliveryFee: 100,
+    loyaltyDiscount: 75,
+    rewardApplied: { giftDescription: "Complimentary scarf" },
     status: "Order Placed",
     fulfillmentStatus: "assigned",
     paymentMethod: "COD",
@@ -104,6 +106,8 @@ test("2. listAssignedDistributorOrders fetches orders for the distributor hub", 
   assert.equal(result.orders.length, 1);
   assert.equal(result.orders[0].orderId, "order-1");
   assert.equal(result.orders[0].order.amount, 1500);
+  assert.equal(result.orders[0].order.loyaltyDiscount, 75);
+  assert.deepEqual(result.orders[0].order.rewardApplied, { giftDescription: "Complimentary scarf" });
   assert.equal(result.orders[0].expectedDeliveryCharge, 175);
 });
 
@@ -188,6 +192,7 @@ test("bulk self-delivery dispatch runs the existing dispatch transition once per
           update: async ({ where, data }) => ({ id: where.id, ...data }),
         },
         orderAssignment: {
+          updateMany: async () => ({ count: 1 }),
           update: async ({ where, data }) => ({ ...assignments.get(where.id), ...data }),
         },
         systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
@@ -302,11 +307,13 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     status: "on_the_way",
     assignedAt: new Date(),
   };
-  const mockOrder = {
+  let mockOrder = {
     id: "order-1",
     date: 1791566316000n,
     amount: 200,
     deliveryFee: 20,
+    paymentMethod: "PREPAID",
+    payment: true,
     status: "On the Way",
     fulfillmentStatus: "out_for_delivery",
     items: JSON.stringify([{ productId: "prod-1", size: "M", color: "Black", quantity: 2 }]),
@@ -318,6 +325,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
   let ledgerCreated = false;
   let balanceUpdated = false;
   let balanceReadCount = 0;
+  const cashEvents = [];
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
@@ -332,7 +340,14 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
         update: async ({ data }) => ({ id: "prod-1", ...data }),
       },
       orderAssignment: {
+        updateMany: async () => ({ count: 1 }),
         update: async ({ data }) => ({ ...mockAssignment, ...data }),
+      },
+      distributorCashEvent: {
+        create: async ({ data }) => {
+          cashEvents.push(data);
+          return data;
+        },
       },
       inventoryLocation: {
         findFirst: async () => mockLocation,
@@ -384,6 +399,56 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
   assert.equal(res.accountingStatus, "PENDING");
   assert.equal(balanceUpdated, true);
   assert.equal(ledgerCreated, true);
+
+  mockOrder = { ...mockOrder, paymentMethod: "COD", payment: false };
+  balanceReadCount = 0;
+  const codResult = await updateSelfDeliveryStatus({
+    distributorId: "dist-1",
+    assignmentIdOrOrderId: "assign-1",
+    status: "Delivered",
+    collectionConfirmed: true,
+    notificationConfig: { enabled: false, sms: { enabled: false } },
+  });
+  assert.equal(codResult.order.payment, true);
+  assert.equal(cashEvents[0].amount, "200.00");
+  assert.equal(cashEvents[0].status, "PENDING_VERIFICATION");
+  assert.match(cashEvents[0].notes, /SMS OTP was disabled/);
+});
+
+test("COD delivery without SMS OTP requires explicit distributor collection confirmation", async () => {
+  const assignment = {
+    id: "assign-cod",
+    orderId: "order-cod",
+    distributorId: "dist-1",
+    deliveryType: "SELF_DELIVERY",
+    status: "on_the_way",
+  };
+  const client = {
+    orderAssignment: { findFirst: async () => assignment },
+    deliveryOrder: { findUnique: async () => null },
+    $transaction: async (callback) => callback({
+      order: {
+        findUnique: async () => ({
+          id: "order-cod",
+          amount: 1500,
+          deliveryFee: 100,
+          paymentMethod: "COD",
+          payment: false,
+        }),
+      },
+    }),
+  };
+
+  await assert.rejects(
+    updateSelfDeliveryStatus({
+      distributorId: "dist-1",
+      assignmentIdOrOrderId: "assign-cod",
+      status: "Delivered",
+      notificationConfig: { enabled: false, sms: { enabled: false } },
+      client,
+    }),
+    { code: "COD_COLLECTION_CONFIRMATION_REQUIRED" },
+  );
 });
 
 test("4. processSelfDeliveryReturn restocks good items and writes off damaged items with discrepancy", async (t) => {
@@ -414,6 +479,10 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.customerReturn, "findFirst", async () => ({
     id: "return-1",
+    totalRefundAmount: 2200,
+    approvedRefundAmount: "2200.00",
+    refundPolicySnapshot: { version: 1, ratePercent: "0.00" },
+    vatRefunded: 253.1,
     items: JSON.stringify([
       { productId: "prod-1", size: "M", color: "Black", quantity: 1 },
       { productId: "prod-2", size: "L", color: "Blue", quantity: 1 },
@@ -471,11 +540,16 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     reason: "Size mismatch & stitching flaw",
     damageType: "STITCH_DAMAGE",
     damageNotes: "Torn collar seam on arrival",
+    inspectionEvidenceUrl: "https://res.cloudinary.com/demo/return-photo.png",
   });
 
   assert.equal(res.success, true);
   assert.equal(res.hasDamagedItems, true);
   assert.equal(res.totalRefundAmount, 2200);
+  assert.equal(res.customerReturn.lifecycleStatus, "REFUND_PENDING");
+  assert.equal(res.customerReturn.refundStatus, "PENDING");
+  assert.equal(res.customerReturn.refundMethod, "CASH");
+  assert.equal(res.customerReturn.inspectionEvidenceUrl, "https://res.cloudinary.com/demo/return-photo.png");
   assert.equal(movements.length, 2);
   assert.equal(movements.find((m) => m.movementType === "RETURN").destinationLocationId, "loc-stock");
   assert.equal(movements.find((m) => m.movementType === "DAMAGE").destinationLocationId, "loc-damaged");

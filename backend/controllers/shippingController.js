@@ -54,6 +54,7 @@ const DEFAULT_CONFIG = {
   ncmExchangeSettlementRate: 0,
   distributorReturnSettlementRate: 0,
   distributorExchangeSettlementRate: 0,
+  customerReturnChargeRate: 0,
 };
 
 // Checkout routes use the selected distributor origin; older callers retain district-only rates.
@@ -408,6 +409,7 @@ export const updateShippingConfig = async (req, res) => {
       ncmExchangeSettlementRate,
       distributorReturnSettlementRate,
       distributorExchangeSettlementRate,
+      customerReturnChargeRate,
     } = req.body;
 
     const sameFeeVal = sameDistrictFee !== undefined ? sameDistrictFee : sameCityFee;
@@ -439,9 +441,13 @@ export const updateShippingConfig = async (req, res) => {
       ...(ncmExchangeSettlementRate !== undefined ? [Number(ncmExchangeSettlementRate)] : []),
       ...(distributorReturnSettlementRate !== undefined ? [Number(distributorReturnSettlementRate)] : []),
       ...(distributorExchangeSettlementRate !== undefined ? [Number(distributorExchangeSettlementRate)] : []),
+      ...(customerReturnChargeRate !== undefined ? [Number(customerReturnChargeRate)] : []),
     ];
     if ([...Object.values(numericRates), ...optionalRates].some((value) => !Number.isFinite(value) || value < 0)) {
       return res.status(400).json({ success: false, message: "Shipping rates and the free-delivery threshold must be non-negative numbers." });
+    }
+    if (customerReturnChargeRate !== undefined && Number(customerReturnChargeRate) > 100) {
+      return res.status(400).json({ success: false, message: "Customer return charge must be between 0 and 100 percent." });
     }
     const updatedData = {
       ...numericRates,
@@ -460,6 +466,7 @@ export const updateShippingConfig = async (req, res) => {
     if (ncmExchangeSettlementRate !== undefined) updatedData.ncmExchangeSettlementRate = Number(ncmExchangeSettlementRate);
     if (distributorReturnSettlementRate !== undefined) updatedData.distributorReturnSettlementRate = Number(distributorReturnSettlementRate);
     if (distributorExchangeSettlementRate !== undefined) updatedData.distributorExchangeSettlementRate = Number(distributorExchangeSettlementRate);
+    if (customerReturnChargeRate !== undefined) updatedData.customerReturnChargeRate = Number(customerReturnChargeRate);
     if (routeOverrides !== undefined) updatedData.routeOverrides = normalizeShippingRouteOverrides(routeOverrides);
 
     const existing = await prisma.shippingConfig.findFirst();

@@ -5,6 +5,7 @@ import { normalizeBalancedJournalLines } from "./accountingMoney.js";
 import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
 import { classifySaleChannel, calculateManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
+import { createAccountingDocument } from "./accountingSubledgerService.js";
 
 // ==========================================
 // 1. STANDARD CHART OF ACCOUNTS DEFINITION
@@ -21,6 +22,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "1160", accountName: "Supplier Advances & Prepaid Expenses", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1170", accountName: "NCM COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1180", accountName: "Payment Gateway Clearing", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1190", accountName: "Distributor COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1500", accountName: "Non-Current & Fixed Assets", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1000" },
   { accountCode: "1510", accountName: "Computers & IT Equipment", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1500" },
   { accountCode: "1520", accountName: "Furniture & Store Fixtures", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1500" },
@@ -38,6 +40,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "2160", accountName: "Manufacturer Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2170", accountName: "Marketing Partner Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2180", accountName: "NCM Carrier Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2190", accountName: "Distributor Refund Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2500", accountName: "Non-Current Liabilities & Debt", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2510", accountName: "Bank Term Loans & Credit Facilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2500" },
 
@@ -93,11 +96,13 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "INPUT_VAT_RECEIVABLE", accountCode: "1150" },
   { mappingKey: "NCM_COD_RECEIVABLE", accountCode: "1170" },
   { mappingKey: "PAYMENT_GATEWAY_CLEARING", accountCode: "1180" },
+  { mappingKey: "DISTRIBUTOR_COD_RECEIVABLE", accountCode: "1190" },
   { mappingKey: "AP_CONTROL", accountCode: "2110" },
   { mappingKey: "OUTPUT_VAT_PAYABLE", accountCode: "2120" },
   { mappingKey: "MANUFACTURER_PAYABLE", accountCode: "2160" },
   { mappingKey: "MARKETING_PARTNER_PAYABLE", accountCode: "2170" },
   { mappingKey: "NCM_CARRIER_PAYABLE", accountCode: "2180" },
+  { mappingKey: "DISTRIBUTOR_PAYABLE", accountCode: "2190" },
   { mappingKey: "PRODUCT_SALES_REVENUE", accountCode: "4100" },
   { mappingKey: "DELIVERY_REVENUE", accountCode: "4200" },
   { mappingKey: "COLLABORATION_FEE_REVENUE", accountCode: "4300" },
@@ -257,6 +262,7 @@ export const postJournalEntry = async ({
   createdBy = "system",
   allowClosedPeriod = false,
   accountingEventId = null,
+  afterPost = null,
   client = prisma,
 }) => {
   const cleanDate = transactionDate ? new Date(transactionDate) : new Date();
@@ -270,7 +276,10 @@ export const postJournalEntry = async ({
           where: { idempotencyKey: idempKey },
           include: { lines: { include: { account: true } } },
         });
-        if (existingEntry?.status === "POSTED") return existingEntry;
+        if (existingEntry?.status === "POSTED") {
+          if (afterPost) await afterPost(tx, existingEntry);
+          return existingEntry;
+        }
       }
 
       const { fiscalYear, period, fiscalYearNumber } = await ensureFiscalYearAndPeriod(cleanDate, tx);
@@ -389,6 +398,8 @@ export const postJournalEntry = async ({
           data: { currentBalance: { increment: delta } },
         });
       }
+
+      if (afterPost) await afterPost(tx, journalEntry);
 
       await tx.accountingEvent.update({
         where: { id: accountingEvent.id },
@@ -521,7 +532,10 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   }
 
   const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
-  const tenderMappingKey = isCod ? "NCM_COD_RECEIVABLE" : "BANK";
+  const collectionDistributorId = isCod ? String(order.collectionDistributorId || "").trim() : "";
+  const tenderMappingKey = isCod
+    ? collectionDistributorId ? "DISTRIBUTOR_COD_RECEIVABLE" : "NCM_COD_RECEIVABLE"
+    : "BANK";
 
   let customerParty = null;
   if (order.userId) {
@@ -529,6 +543,20 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       partyType: "CUSTOMER",
       sourceEntityId: order.userId,
       displayName: order.customerName || `Customer (${order.userId.slice(-6)})`,
+    }, { client });
+  }
+
+  let collectionDistributorParty = null;
+  if (collectionDistributorId) {
+    const distributor = await client.distributor.findUnique({
+      where: { id: collectionDistributorId },
+      select: { id: true, name: true },
+    });
+    if (!distributor) throw new Error("Distributor for COD receivable was not found.");
+    collectionDistributorParty = await ensureAccountingParty({
+      partyType: "DISTRIBUTOR",
+      sourceEntityId: collectionDistributorId,
+      displayName: distributor.name || `Distributor (${collectionDistributorId.slice(-6)})`,
     }, { client });
   }
 
@@ -549,8 +577,8 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       debit: grossAmount,
       credit: 0,
       description: `Receivable/Tender for Order #${order.id.slice(-6)}`,
-      customerId: order.userId,
-      accountingPartyId: customerParty?.id,
+      customerId: collectionDistributorParty ? null : order.userId,
+      accountingPartyId: collectionDistributorParty?.id || customerParty?.id,
     },
     {
       mappingKey: "PRODUCT_SALES_REVENUE",
@@ -675,6 +703,20 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     description: `Delivered sale, revenue, VAT, and manufacturer COGS for Order #${order.id.slice(-6)}`,
     lines,
     accountingEventId: opts.accountingEventId,
+    afterPost: collectionDistributorParty
+      ? async (tx) => createAccountingDocument({
+        documentType: "INVOICE",
+        documentNumber: `DCO-${order.id}`,
+        partyId: collectionDistributorParty.id,
+        side: "RECEIVABLE",
+        sourceType: "DISTRIBUTOR_COD_SALE",
+        sourceId: order.id,
+        amount: grossAmount,
+        issueDate: transactionDate,
+        idempotencyKey: `DISTRIBUTOR_COD_SALE:${order.id}`,
+        notes: `COD collected by distributor for delivered order ${order.id}.`,
+      }, { client: tx })
+      : null,
     client,
   });
 };
@@ -1436,6 +1478,117 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
   } catch (error) {
     console.error("Error in postCustomerReturnAccounting:", error);
     throw error;
+  }
+};
+
+export const postDistributorCustomerRefundAccounting = async ({
+  returnRecord,
+  client = prisma,
+} = {}) => {
+  if (!returnRecord?.id || !returnRecord.distributorId) {
+    throw new Error("Distributor refund accounting requires a return and distributor.");
+  }
+  const totalRefund = new Prisma.Decimal(String(
+    returnRecord.approvedRefundAmount ?? returnRecord.totalRefundAmount ?? 0,
+  )).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (totalRefund.lessThanOrEqualTo(0)) throw new Error("Approved distributor refund must be greater than zero.");
+  const vat = new Prisma.Decimal(String(returnRecord.vatRefunded || 0))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (vat.isNegative() || vat.greaterThan(totalRefund)) {
+    throw new Error("Approved distributor refund VAT is invalid.");
+  }
+  const netReturn = totalRefund.minus(vat);
+  const distributor = await client.distributor.findUnique({
+    where: { id: returnRecord.distributorId },
+    select: { id: true, name: true },
+  });
+  if (!distributor) throw new Error("Distributor for return refund payable was not found.");
+  const distributorParty = await ensureAccountingParty({
+    partyType: "DISTRIBUTOR",
+    sourceEntityId: distributor.id,
+    displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
+  }, { client });
+
+  const items = parseItemsForAccounting(returnRecord.items);
+  const restockedInventoryCost = items.reduce((total, item) => {
+    if (String(item.condition || "").toUpperCase() !== "RESTOCKABLE") return total;
+    const unitCost = new Prisma.Decimal(String(item.unitCostPrice || 0));
+    const quantity = new Prisma.Decimal(String(item.quantity || 0));
+    return total.plus(unitCost.mul(quantity));
+  }, new Prisma.Decimal(0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+  const lines = [
+    {
+      mappingKey: "SALES_RETURNS",
+      debit: netReturn,
+      credit: 0,
+      description: `Sales return for distributor-refunded RMA #${returnRecord.id.slice(-6)}`,
+      accountingPartyId: distributorParty.id,
+    },
+    {
+      mappingKey: "OUTPUT_VAT_PAYABLE",
+      debit: vat,
+      credit: 0,
+      description: `Output VAT reversal for distributor-refunded RMA #${returnRecord.id.slice(-6)}`,
+    },
+    {
+      mappingKey: "DISTRIBUTOR_PAYABLE",
+      debit: 0,
+      credit: totalRefund,
+      description: `Customer refund reimbursement payable to ${distributor.name}`,
+      accountingPartyId: distributorParty.id,
+    },
+  ];
+  if (restockedInventoryCost.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: restockedInventoryCost,
+        credit: 0,
+        description: `Returned inventory received by distributor for RMA #${returnRecord.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: restockedInventoryCost,
+        description: `Reverse COGS for returned inventory in RMA #${returnRecord.id.slice(-6)}`,
+      },
+    );
+  }
+
+  const transactionDate = returnRecord.completedAt || returnRecord.inspectedAt || new Date();
+  return postJournalEntry({
+    transactionDate: new Date(transactionDate),
+    sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+    sourceId: returnRecord.id,
+    idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
+    referenceNumber: `RMA-${returnRecord.id.slice(-6)}`,
+    description: `Verified customer refund paid by distributor for RMA #${returnRecord.id.slice(-6)}`,
+    lines,
+    client,
+    afterPost: (tx) => createAccountingDocument({
+      documentType: "BILL",
+      documentNumber: `DREF-${returnRecord.id}`,
+      partyId: distributorParty.id,
+      side: "PAYABLE",
+      sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+      sourceId: returnRecord.id,
+      amount: totalRefund,
+      issueDate: transactionDate,
+      idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
+      notes: `Admin-verified customer refund paid by distributor for RMA ${returnRecord.id}.`,
+    }, { client: tx }),
+  });
+};
+
+const parseItemsForAccounting = (items) => {
+  if (Array.isArray(items)) return items;
+  if (typeof items !== "string") return [];
+  try {
+    const parsed = JSON.parse(items);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 };
 

@@ -158,6 +158,35 @@ confirm delivery or confirm it was not delivered require an investigation note
 and are recorded in `DeliveryEvent`. Only confirmed delivery enters the
 delivered-sale inventory and accounting transaction.
 
+For unpaid distributor self-delivery COD, when notifications and SMS are
+enabled, the distributor requests a short-lived, hashed customer OTP bound to
+the assigned order, distributor, and exact order amount. When either setting is
+disabled, delivery instead requires an explicit distributor confirmation that
+the full amount was collected; the cash event is marked pending verification.
+Delivery, inventory consumption, the distributor cash event, and accounting-
+outbox enqueue are committed together.
+The delivered-sale journal debits `DISTRIBUTOR_COD_RECEIVABLE` (1190), not
+carrier receivables or company cash. Distributors submit remittance amount,
+reference, and a JPG/PNG transfer evidence image; Admin verification rechecks the open receivable
+inside a serializable transaction, posts the treasury receipt, creates a cash
+transaction, and allocates the amount to the distributor's receivable documents.
+
+Admin return approval snapshots the configured percentage charge against
+returned product value; the original delivery fee is excluded. For distributor
+returns, receipt and inspection only create a refund task. Return inspection
+records a JPG/PNG photo of the returned goods. The distributor submits a
+JPG/PNG payment evidence image for the exact approved amount, and an Admin must verify
+it before the return completes and the company recognizes a distributor payable
+(2190). Admin payout is a separate idempotent operation against an active NPR
+treasury account and the specific payable document. Gross receivables and
+payables remain separately recorded; an Admin may explicitly approve an offset
+through the distributor Finance detail. The offset is capped at the lower of
+open COD receivable less pending remittances and verified refund payable, then
+posts a balanced 2190/1190 journal and allocates both subledger documents in
+one serializable transaction. Offset history and an audit event are retained.
+These cash flows use scoped distributor context, idempotency keys, and
+transactional accounting and audit records.
+
 Manufacturer-to-distributor stock-transfer booking resolves the destination
 branch from the distributor profile and validates origin and destination
 against active `NcmBranch` records. A catalog-matched branch marked
@@ -300,6 +329,8 @@ data, not manufacturer or distributor payables.
 - `server.js` boots the application and also initializes the default accounting chart of accounts via `ensureStandardChartOfAccounts()`.
 - Delivered NCM and distributor self-delivery transitions enqueue a versioned, hashed `AccountingEvent` snapshot in the same transaction as the delivery update. The scheduled delivery-accounting worker claims due events with conditional updates, retries transient failures, and posts through the central journal engine; journal creation and event completion share a transaction. Accounting APIs expose unresolved event status so reports can warn that unposted sales are excluded from GL figures. Apply `20261017000000_delivery_accounting_outbox_schedule` and regenerate Prisma Client before deployment; that migration has not yet been applied.
 - The Admin finance dashboard exposes a `postedAccounting` summary calculated from posted `JournalLine` rows, while operational cost detail remains a separate analytical view. Use posted journal totals for financial statements; display unresolved delivery-accounting outbox events as exclusions rather than treating them as posted.
+- Distributor COD/refund workflows additionally require applying `20261027100000_distributor_cod_and_return_cash` and regenerating Prisma Client. Apply it only after review and backup; integration/concurrency verification belongs on an isolated migrated test database.
+- Apply `20261027130000_distributor_refund_receivable_netting` and regenerate Prisma Client before enabling Admin-approved refund-payable/COD-receivable offsets. The migration adds an offset audit record and does not rewrite existing balances; confirm idempotency-key uniqueness before deployment.
 - `npm test` in `backend/` runs unit/regression test files under `backend/tests/` sequentially; test files are isolated in individual Node test-runner processes and failures do not prevent later files from running. Tests that access the real Prisma database are opt-in with `RUN_DATABASE_INTEGRATION_TESTS=1` and must be run against an isolated, migrated/seeded test database because they create and mutate records.
 - Startup now validates JWT configuration, awaits the database connection, Cloudinary setup, and standard chart initialization before opening the HTTP listener. Critical initialization failures are logged and cause a non-zero process exit instead of serving a partially initialized API.
 - `sanitizeMiddleware` is called before route handling to reduce injection risk.

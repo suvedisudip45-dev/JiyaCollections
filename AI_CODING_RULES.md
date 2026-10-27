@@ -69,6 +69,9 @@ Examples:
 - shipping logic belongs in backend shipping config and delivery integration
 - card assignment and redemption logic belongs in the marketing-card routes and service layer
 - return/exchange reconciliation belongs in the order exchange and delivery domain, not as isolated UI-only logic
+- Distributor-collected COD is a distributor receivable until an evidenced remittance is Admin-verified and posted to company treasury. Require the customer OTP before unpaid COD delivery; do not treat distributor cash collection as company cash.
+- Distributor-paid customer refunds require Admin-approved refund policy, return receipt/inspection, exact approved amount, distributor payment evidence, and Admin verification. Keep the resulting distributor payable separate from COD receivable; never mark receipt/inspection alone as a completed refund or automatically net balances. Only an explicit Admin-approved offset may clear both subledgers, capped by verified refund payable and open COD receivable less pending remittances, in one serializable balanced journal/allocation/audit transaction.
+- Snapshot return charges at Admin approval against returned product value; the original delivery fee is not refundable. Do not cache financial balances or use client-supplied amounts as accounting authority.
 
 ### 1.6 Match the repo’s naming and state conventions
 

@@ -5,6 +5,7 @@ import {
   setFulfillmentContext,
 } from "../middleware/unifiedAuth.js";
 import express from "express";
+import { secureEvidenceUpload } from "../middleware/secureUpload.js";
 import {
   getCustomerReturns,
   createSupplierReturn,
@@ -18,9 +19,12 @@ import {
   adminListReturnRequests,
   adminRetryReturnSubmission,
   adminResolveUnknownReturn,
+  adminReviewDistributorCustomerRefund,
+  adminSettleDistributorRefundPayable,
   customerCreateReturnRequest,
   customerListReturnRequests,
   manufacturerListReturnRequests,
+  distributorSubmitCustomerRefund,
 } from "../controllers/customerReturnWorkflowController.js";
 import {
   adminDecideExchangeRequest,
@@ -54,6 +58,14 @@ returnsRouter.post("/exchange/admin/:id/resolve-ncm", authenticate, authorize("e
 returnsRouter.post("/customer/request", authenticate, authorize("returns:customer_create"), customerCreateReturnRequest);
 returnsRouter.get("/customer/requests", authenticate, authorize("returns:customer_read"), customerListReturnRequests);
 returnsRouter.get("/customer/manufacturer", authenticate, authorizeAny("distributor:delivery_return", "manufacturer:delivery_return", "returns:customer_read", "returns:admin_read"), setFulfillmentContext, manufacturerListReturnRequests);
+returnsRouter.post(
+  "/customer/distributor/:id/refund-payment",
+  authenticate,
+  authorize("distributor:delivery_return"),
+  setFulfillmentContext,
+  ...secureEvidenceUpload("evidence"),
+  distributorSubmitCustomerRefund,
+);
 returnsRouter.get("/customer/list", authenticate, authorize("returns:admin_read"), getCustomerReturns);
 returnsRouter.post("/customer/create", authenticate, authorize("returns:admin_create"), adminCreateReturnRequest);
 returnsRouter.get("/customer/admin/requests", authenticate, authorize("returns:admin_read"), adminListReturnRequests);
@@ -62,6 +74,8 @@ returnsRouter.post("/customer/admin/:id/retry-ncm", authenticate, authorize("ret
 returnsRouter.post("/customer/admin/:id/resolve-ncm", authenticate, authorize("returns:admin_review"), adminResolveUnknownReturn);
 returnsRouter.post("/customer/admin/:id/inspection", authenticate, authorize("returns:admin_inspect"), adminInspectReturn);
 returnsRouter.post("/customer/admin/:id/refunded", authenticate, authorize("returns:admin_refund"), adminCompleteReturnRefund);
+returnsRouter.post("/customer/admin/:id/distributor-refund-review", authenticate, authorize("returns:admin_refund"), adminReviewDistributorCustomerRefund);
+returnsRouter.post("/customer/admin/distributor-refunds/:documentId/settle", authenticate, authorize("returns:admin_refund"), adminSettleDistributorRefundPayable);
 
 // Supplier Returns (Debit Notes)
 returnsRouter.post("/supplier/create", authenticate, authorize("returns:supplier_create"), createSupplierReturn);

@@ -11,8 +11,6 @@ import {
   Send,
   RotateCw,
   X,
-  CreditCard,
-  Building,
 } from "lucide-react";
 import { backendUrl, useManufacturer, currency } from "../context/ManufacturerContext";
 
@@ -27,18 +25,34 @@ const DistributorFinanceDashboard = () => {
   const [askAmount, setAskAmount] = useState("");
   const [askNotes, setAskNotes] = useState("");
   const [submittingAsk, setSubmittingAsk] = useState(false);
+  const [showRemittanceModal, setShowRemittanceModal] = useState(false);
+  const [remittanceForm, setRemittanceForm] = useState({
+    amount: "",
+    reference: "",
+    evidenceFile: null,
+    idempotencyKey: "",
+  });
+  const [submittingRemittance, setSubmittingRemittance] = useState(false);
 
   const loadStatement = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await axios.get(
-        `${backendUrl}/api/distributor/finance/statement`,
-        {
+      const [statementResponse, remittanceResponse] = await Promise.all([
+        axios.get(`${backendUrl}/api/distributor/finance/statement`, {
           headers: { token },
           params: { withVat: withVat ? "true" : "false" },
-        }
-      );
-      setStatement(response.data);
+        }),
+        axios.get(`${backendUrl}/api/distributor/finance/remittances`, {
+          headers: { token },
+          params: { limit: 20 },
+        }),
+      ]);
+      setStatement({
+        ...statementResponse.data,
+        cashPosition: remittanceResponse.data.position,
+        remittances: remittanceResponse.data.remittances || [],
+        settlementOffsets: remittanceResponse.data.offsets || [],
+      });
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not load financial statement.");
     } finally {
@@ -86,6 +100,51 @@ const DistributorFinanceDashboard = () => {
 
   const summary = statement?.summary || {};
   const transactions = statement?.transactions || [];
+  const cashPosition = statement?.cashPosition || {};
+  const remittances = statement?.remittances || [];
+
+  const openRemittanceModal = () => {
+    setRemittanceForm({
+      amount: Number(cashPosition.availableToRemit || 0).toFixed(2),
+      reference: "",
+      evidenceFile: null,
+      idempotencyKey: window.crypto.randomUUID(),
+    });
+    setShowRemittanceModal(true);
+  };
+
+  const handleSubmitRemittance = async (event) => {
+    event.preventDefault();
+    const amount = Number(remittanceForm.amount);
+    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(remittanceForm.amount.trim()) || !Number.isFinite(amount) || amount <= 0) {
+      toast.error("Enter a positive remittance amount with no more than two decimal places.");
+      return;
+    }
+    if (amount > Number(cashPosition.availableToRemit || 0)) {
+      toast.error("The remittance cannot exceed your available COD receivable.");
+      return;
+    }
+    setSubmittingRemittance(true);
+    try {
+      const formData = new FormData();
+      formData.append("amount", remittanceForm.amount);
+      formData.append("reference", remittanceForm.reference);
+      formData.append("idempotencyKey", remittanceForm.idempotencyKey);
+      formData.append("evidence", remittanceForm.evidenceFile);
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/finance/remittances`,
+        formData,
+        { headers: { token } }
+      );
+      toast.success(response.data.message || "COD remittance submitted for Admin verification.");
+      setShowRemittanceModal(false);
+      await loadStatement();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not submit COD remittance.");
+    } finally {
+      setSubmittingRemittance(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -142,7 +201,7 @@ const DistributorFinanceDashboard = () => {
         {/* Net Outstanding Balance */}
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-5 shadow-xs space-y-2">
           <div className="flex items-center justify-between text-[#575757]">
-            <span className="text-xs font-bold uppercase tracking-wider">Net Settlement Payable</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Delivery Settlement Payable</span>
             <Wallet className="w-4 h-4 text-[#171717]" />
           </div>
           <p className="text-2xl font-bold text-[#171717]">
@@ -150,7 +209,7 @@ const DistributorFinanceDashboard = () => {
             {(summary.netPayableBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </p>
           <p className="text-[11px] text-[#575757]">
-            Available for immediate settlement withdrawal
+            Company delivery earnings owed to you; excludes COD and customer-return balances.
           </p>
         </div>
 
@@ -199,6 +258,70 @@ const DistributorFinanceDashboard = () => {
           </p>
         </div>
       </div>
+
+      <section className="space-y-4 rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-4 sm:p-5">
+        <div>
+          <h2 className="text-sm font-bold text-[#171717]">Customer COD, refunds &amp; settlement</h2>
+          <p className="mt-1 max-w-4xl text-[11px] leading-5 text-[#575757]">
+            You collect COD and owe it to the company. For an approved return, you pay the customer the Admin-approved refund after charges; the company records that amount as payable to you after verifying your proof. An Admin may explicitly offset eligible balances. Pending remittances are excluded from offset until reviewed.
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            ["COD receivable owed to company", cashPosition.outstandingReceivable],
+            ["Remittance awaiting Admin review", cashPosition.pendingRemittance],
+            ["Verified refund payable to you", cashPosition.refundPayable],
+            ["Eligible for Admin-approved offset", cashPosition.availableToOffset],
+          ].map(([label, amount]) => (
+            <div key={label} className="rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-[#575757]">{label}</p>
+              <p className="mt-1 text-base font-black text-[#171717]">
+                {currency}{Number(amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+          ))}
+        </div>
+        {Number(cashPosition.availableToRemit || 0) > 0 && (
+          <button
+            type="button"
+            onClick={openRemittanceModal}
+            className="flex items-center gap-2 rounded-xl bg-[#171717] px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-[#262626]"
+          >
+            <Send className="h-3.5 w-3.5" />
+            Submit COD remittance
+          </button>
+        )}
+        <div className="space-y-2">
+          <h3 className="text-xs font-bold text-[#171717]">COD remittance history</h3>
+          <div className="divide-y divide-[#dedbd3] rounded-xl border border-[#dedbd3]">
+            {remittances.length ? remittances.map((remittance) => (
+              <div key={remittance.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs">
+                <div>
+                  <p className="font-bold text-[#171717]">{currency}{Number(remittance.amount || 0).toFixed(2)} · {remittance.reference || "No reference"}</p>
+                  <p className="mt-1 text-[10px] text-[#575757]">{new Date(remittance.receivedAt).toLocaleString()} · {remittance.status}</p>
+                  {remittance.reviewNotes && <p className="mt-1 text-[10px] text-rose-700">Admin note: {remittance.reviewNotes}</p>}
+                </div>
+                {remittance.evidenceUrl && <a href={remittance.evidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] font-semibold text-blue-700 underline">View submitted evidence</a>}
+              </div>
+            )) : <p className="p-4 text-center text-[11px] text-[#575757]">No COD remittances submitted yet.</p>}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xs font-bold text-[#171717]">Admin-approved offsets</h3>
+          <div className="divide-y divide-[#dedbd3] rounded-xl border border-[#dedbd3]">
+            {statement?.settlementOffsets?.length ? statement.settlementOffsets.map((offset) => (
+              <div key={offset.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs">
+                <div>
+                  <p className="font-bold text-[#171717]">COD receivable and refund payable offset</p>
+                  <p className="mt-1 text-[10px] text-[#575757]">{new Date(offset.approvedAt).toLocaleString()} · Approved by Admin</p>
+                  {offset.notes && <p className="mt-1 text-[10px] text-[#575757]">{offset.notes}</p>}
+                </div>
+                <p className="font-black text-[#171717]">{currency}{Number(offset.amount || 0).toFixed(2)}</p>
+              </div>
+            )) : <p className="p-4 text-center text-[11px] text-[#575757]">No Admin-approved offsets recorded.</p>}
+          </div>
+        </div>
+      </section>
 
       {/* Active Rate Card Terms */}
       {statement?.rateCard && (
@@ -353,6 +476,59 @@ const DistributorFinanceDashboard = () => {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {showRemittanceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <form onSubmit={handleSubmitRemittance} className="w-full max-w-md space-y-4 overflow-hidden rounded-2xl border border-[#dedbd3] bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-[#dedbd3] bg-[#f8f7f4] px-5 py-4">
+              <div>
+                <h3 className="text-sm font-bold text-[#171717]">Submit COD remittance</h3>
+                <p className="mt-1 text-[10px] text-[#575757]">Available to remit: {currency}{Number(cashPosition.availableToRemit || 0).toFixed(2)}</p>
+              </div>
+              <button type="button" onClick={() => setShowRemittanceModal(false)} className="rounded-lg p-1 text-[#575757]" aria-label="Close remittance form"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="space-y-3 px-5 pb-2 text-xs">
+              <label className="block">
+                <span className="mb-1 block font-bold text-[#171717]">Amount</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max={cashPosition.availableToRemit || 0}
+                  value={remittanceForm.amount}
+                  onChange={(event) => setRemittanceForm((current) => ({ ...current, amount: event.target.value }))}
+                  className="w-full rounded-lg border border-[#dedbd3] p-2.5"
+                  required
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block font-bold text-[#171717]">Bank / wallet transfer reference</span>
+                <input
+                  value={remittanceForm.reference}
+                  onChange={(event) => setRemittanceForm((current) => ({ ...current, reference: event.target.value }))}
+                  maxLength={191}
+                  required
+                  className="w-full rounded-lg border border-[#dedbd3] p-2.5"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block font-bold text-[#171717]">Transfer evidence image (JPG or PNG, max 8 MB)</span>
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                  onChange={(event) => setRemittanceForm((current) => ({ ...current, evidenceFile: event.target.files?.[0] || null }))}
+                  required
+                  className="w-full rounded-lg border border-[#dedbd3] p-2.5 file:mr-3 file:rounded-md file:border-0 file:bg-[#f1f0ec] file:px-3 file:py-1.5 file:text-[10px] file:font-semibold"
+                />
+              </label>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] px-5 py-4">
+              <button type="button" onClick={() => setShowRemittanceModal(false)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-[#575757]">Cancel</button>
+              <button type="submit" disabled={submittingRemittance} className="rounded-lg bg-[#171717] px-4 py-2 font-bold text-white disabled:opacity-50">{submittingRemittance ? "Submitting..." : "Submit for Admin review"}</button>
+            </div>
+          </form>
         </div>
       )}
     </div>

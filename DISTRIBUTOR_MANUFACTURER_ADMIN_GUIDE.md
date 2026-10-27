@@ -35,8 +35,10 @@ single warehouse-style view.
 
 The detail API is mounted at `/api/admin/distributors`. Profile, login history,
 inventory, returns, exchanges, finance summary, paginated finance transactions,
-and paginated settlement requests have distinct endpoints and `distributor:admin_*`
-permissions. Every detail endpoint requires the `ADMIN` role. The distributor
+paginated settlement requests, and COD remittance reviews have distinct
+endpoints and `distributor:admin_*` permissions; remittance verification also
+requires `finance:receivable_collect`. Every detail endpoint requires the
+`ADMIN` role. The distributor
 profile editor reuses the existing audited application-profile update flow,
 while delivery, return, commission, incentive, and VAT values reuse the
 approved distributor rate-card workflow.
@@ -47,8 +49,42 @@ page rather than mixing their inventory, production, or financial history.
 Inventory totals include current on-hand and available units and estimate
 retail/cost value from current product prices. These estimates are not a
 historical cost-layer valuation. The financial summary reuses the distributor
-statement service; its `receivables` value is currently zero and should not be
-interpreted as a complete accounting-party receivables balance.
+statement service. Its legacy earnings summary is not the accounting-party
+receivables ledger; use the adjacent COD receivable/remittance panel for
+distributor cash balances. That panel displays open COD receivable, pending
+remittance review, verified distributor refund payable, and the balance eligible
+for an Admin-approved offset separately, with offset history.
+
+## Distributor COD and customer refund cash
+
+For unpaid distributor self-delivery, when notifications and SMS are enabled,
+a customer OTP is required before the parcel can be marked delivered. The OTP
+is bound to the assigned order, distributor, and amount. If either setting is
+disabled, the distributor must explicitly confirm that the full COD amount was
+collected; the cash event is recorded as pending verification, not as OTP
+verified. Delivery and the distributor COD receivable are still recorded, but
+this does not mark the company as having received cash. In the Distributor
+Finance dashboard, submit COD remittances with
+the transfer reference and a JPG/PNG image of the transfer evidence. Admins review the evidence in the
+distributor detail Finance tab, select the receiving NPR treasury account, and
+verify or reject the batch. Verification posts company cash, clears the
+distributor receivable, and records the allocation and audit event atomically.
+
+Admin return approval snapshots the configured customer return charge
+percentage against returned product value; the original delivery fee is not
+refunded. A distributor must receive and inspect the return, then record the
+exact approved customer refund amount, payment method, reference (except cash),
+and a JPG/PNG image of the refund evidence in Self-Delivery Management. Return
+inspection also requires a JPG/PNG photo of the returned goods. Admin verification completes
+the return and creates a distributor payable. Rejected evidence reopens the
+refund task. The Admin Returns page can settle that payable from an active NPR
+treasury account; payout is recorded separately from COD remittance. If both
+verified refund payable and COD receivable are open, an Admin can explicitly
+approve a partial or full offset in distributor Finance detail. The maximum
+excludes pending remittance submissions and cannot exceed either open balance.
+Approval posts a journal entry, allocates both gross accounting documents
+atomically, and records the Admin, reason, and offset for audit; the Distributor
+Finance dashboard shows the resulting history.
 
 The Logistics sidebar also exposes `/ncm-deliveries` and
 `/self-deliveries` as separate admin monitoring views. The first lists local

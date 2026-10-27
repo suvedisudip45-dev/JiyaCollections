@@ -134,6 +134,9 @@ const createConsumerHarness = ({ notificationType = "GENERAL", challenge = null,
     adminTwoFactorChallenge: {
       findUnique: async () => challenge,
     },
+    deliveryOtpChallenge: {
+      findUnique: async () => challenge,
+    },
     notificationAttempt: {
       create: async ({ data }) => { state.attempts.push(data); return data; },
       update: async ({ data }) => { Object.assign(state.attempts[0], data); return state.attempts[0]; },
@@ -179,8 +182,8 @@ test("consumer accepts an outbox message before relay marks it queued", async ()
   assert.deepEqual(harness.stateChanges, ["ACK"]);
 });
 
-test("consumer cancels portal OTP and password-reset notifications for inactive or expired challenges", async () => {
-  for (const notificationType of ["ADMIN_2FA", "PORTAL_2FA", "PASSWORD_RESET"]) {
+test("consumer cancels portal and delivery OTP notifications for inactive or expired challenges", async () => {
+  for (const notificationType of ["ADMIN_2FA", "PORTAL_2FA", "PASSWORD_RESET", "DISTRIBUTOR_DELIVERY_OTP"]) {
     for (const challenge of [
       { status: "CANCELLED", expiresAt: new Date(Date.now() + 60_000) },
       { status: "PENDING", expiresAt: new Date(Date.now() - 1) },

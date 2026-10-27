@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { prisma } from "../config/db.js";
 import { isBeforeNcmHandoff } from "../services/orderCancellationService.js";
-import { decideCustomerReturnRequest, nextCustomerReturnNcmState, resolveCustomerReturnNcmState, returnItemsFromOrder } from "../services/customerReturnWorkflowService.js";
+import { calculateCustomerReturnRefundPolicy, decideCustomerReturnRequest, nextCustomerReturnNcmState, resolveCustomerReturnNcmState, returnItemsFromOrder } from "../services/customerReturnWorkflowService.js";
 import { buildExchangeNcmReturnComment, decideCustomerExchangeRequest, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
 import { resolveReturnExchangeRoute } from "../services/returnExchangeRouting.js";
 import {
@@ -49,6 +49,18 @@ test("return and exchange settlement rates are selected by delivery route and op
   assert.equal(resolveReturnExchangeSettlementRate(config, "DISTRIBUTOR", "EXCHANGE"), 29);
   assert.equal(resolveReturnExchangeSettlementRate(null, "NCM", "RETURN"), 0);
   assert.equal(resolveReturnExchangeSettlementRate(config, "UNKNOWN", "RETURN"), 0);
+});
+
+test("customer return fee is percentage of returned product value and excludes original delivery charge", () => {
+  const policy = calculateCustomerReturnRefundPolicy({
+    productValue: "1500.00",
+    chargeRatePercent: 10,
+    originalDeliveryFee: "120.00",
+  });
+  assert.equal(policy.snapshot.customerReturnCharge, "150.00");
+  assert.equal(policy.snapshot.approvedRefundAmount, "1350.00");
+  assert.equal(policy.snapshot.originalDeliveryFeeRefunded, "0.00");
+  assert.equal(policy.approvedRefundAmount.toFixed(2), "1350.00");
 });
 
 test("completed logistics creates one payable to the selected provider", async () => {
@@ -329,6 +341,7 @@ test("admin approval routes a self-delivery return to the original distributor w
     lifecycleStatus: "PENDING_ADMIN_REVIEW",
     deliveryRoute: "DISTRIBUTOR",
     distributorId: "dist-1",
+    totalRefundAmount: 1000,
   };
   let updateData;
   stubMethod(t, prisma.customerReturn, "findUnique", async () => ({ ...current, ...updateData }));
@@ -343,6 +356,9 @@ test("admin approval routes a self-delivery return to the original distributor w
         updateData = data;
         return { count: 1 };
       },
+    },
+    order: {
+      findUnique: async () => ({ deliveryFee: 100 }),
     },
     orderAssignment: {
       findUnique: async () => ({ distributorId: "dist-1", deliveryType: "SELF_DELIVERY" }),
@@ -367,4 +383,6 @@ test("admin approval routes a self-delivery return to the original distributor w
   assert.equal(updateData.distributorId, "dist-1");
   assert.equal(Object.hasOwn(updateData, "ncmChargePayer"), false);
   assert.equal(updateData.logisticsSettlementAmount, 17);
+  assert.equal(updateData.approvedRefundAmount.toFixed(2), "1000.00");
+  assert.equal(updateData.refundPolicySnapshot.originalDeliveryFeeRefunded, "0.00");
 });

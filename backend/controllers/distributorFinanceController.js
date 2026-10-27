@@ -8,6 +8,15 @@ import {
   getDistributorRateCards,
 } from "../services/distributorRateCardService.js";
 import { prisma } from "../config/db.js";
+import {
+  getDistributorCashPosition,
+  listDistributorRemittances,
+  listDistributorSettlementOffsets,
+  netDistributorRefundPayable,
+  reviewDistributorRemittance,
+  submitDistributorRemittance,
+} from "../services/distributorCashSettlementService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
 /**
  * GET /api/distributor/finance/statement
@@ -49,6 +58,139 @@ export const getDistributorStatement = async (req, res) => {
       success: false,
       message: error.message || "Failed to load financial statement.",
       code: error.code || "FINANCIAL_STATEMENT_ERROR",
+    });
+  }
+};
+
+export const getDistributorCashRemittances = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    }
+    const [position, remittances, offsets] = await Promise.all([
+      getDistributorCashPosition({ distributorId }),
+      listDistributorRemittances({ distributorId, take: req.query.limit || 50, cursor: req.query.cursor || null }),
+      listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+    ]);
+    return res.status(200).json({ success: true, position, remittances, offsets });
+  } catch (error) {
+    console.error("getDistributorCashRemittances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to load distributor COD remittances.",
+      code: error.code || "DISTRIBUTOR_CASH_POSITION_ERROR",
+    });
+  }
+};
+
+export const getAdminDistributorCashRemittances = async (req, res) => {
+  try {
+    const distributorId = req.params.id;
+    const [position, remittances, offsets] = await Promise.all([
+      getDistributorCashPosition({ distributorId }),
+      listDistributorRemittances({
+        distributorId,
+        take: req.query.limit || 50,
+        cursor: req.query.cursor || null,
+      }),
+      listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+    ]);
+    return res.status(200).json({ success: true, position, remittances, offsets });
+  } catch (error) {
+    console.error("getAdminDistributorCashRemittances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to load distributor COD remittances.",
+      code: error.code || "DISTRIBUTOR_CASH_POSITION_ERROR",
+    });
+  }
+};
+
+export const approveDistributorRefundNetting = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON netting approval body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await netDistributorRefundPayable({
+      distributorId: req.params.id,
+      amount: req.body.amount,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
+      notes: req.body.notes || null,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    console.error("approveDistributorRefundNetting error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to approve distributor refund netting.",
+      code: error.code || "DISTRIBUTOR_NETTING_ERROR",
+    });
+  }
+};
+
+export const submitDistributorCashRemittance = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A multipart remittance request body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    }
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/remittances");
+    const result = await submitDistributorRemittance({
+      distributorId,
+      amount: req.body.amount,
+      reference: req.body.reference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
+      recordedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    console.error("submitDistributorCashRemittance error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to submit distributor COD remittance.",
+      code: error.code || "DISTRIBUTOR_REMITTANCE_ERROR",
+    });
+  }
+};
+
+export const reviewDistributorCashRemittance = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON remittance review body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await reviewDistributorRemittance({
+      distributorId: req.params.id,
+      batchId: req.params.batchId,
+      decision: req.body.decision,
+      financialAccountId: req.body.financialAccountId || null,
+      reviewNotes: req.body.reviewNotes || null,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("reviewDistributorCashRemittance error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to review distributor COD remittance.",
+      code: error.code || "DISTRIBUTOR_REMITTANCE_REVIEW_ERROR",
     });
   }
 };

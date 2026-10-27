@@ -5,6 +5,8 @@ import {
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
+import { issueDistributorDeliveryOtp } from "../services/distributorDeliveryOtpService.js";
+import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 import {
   bookDistributorNcmOrders as bookDistributorNcmOrdersService,
   holdDistributorOrderForDelivery,
@@ -171,7 +173,7 @@ export const updateSelfDeliveryOrderStatus = async (req, res) => {
     }
 
     const id = req.params.id || req.body.id || req.body.assignmentId || req.body.orderId;
-    const { status, notes } = req.body;
+    const { status, notes, otpCode, collectionConfirmed, paymentMethod } = req.body;
 
     if (!status) {
       return res.status(400).json({
@@ -192,6 +194,9 @@ export const updateSelfDeliveryOrderStatus = async (req, res) => {
       distributorId,
       assignmentIdOrOrderId: id,
       status,
+      otpCode,
+      collectionConfirmed,
+      paymentMethod,
       notes,
       actorContext,
     });
@@ -203,6 +208,33 @@ export const updateSelfDeliveryOrderStatus = async (req, res) => {
       success: false,
       message: error.message || "Failed to update order delivery status.",
       code: error.code || "DELIVERY_STATUS_ERROR",
+    });
+  }
+};
+
+export const requestDistributorDeliveryOtp = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) {
+      return res.status(403).json({
+        success: false,
+        message: "An approved distributor profile is required.",
+      });
+    }
+
+    const result = await issueDistributorDeliveryOtp({
+      distributorId,
+      orderId: req.params.id,
+      actorId: req.auth?.accountId || req.auth?.userId || null,
+      requestIp: req.ip || null,
+    });
+    return res.status(202).json(result);
+  } catch (error) {
+    console.error("requestDistributorDeliveryOtp error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to request customer delivery verification.",
+      code: error.code || "DELIVERY_OTP_REQUEST_ERROR",
     });
   }
 };
@@ -244,6 +276,7 @@ export const bulkDispatchSelfDeliveryOrders = async (req, res) => {
  * Process self-delivery customer returns, conduct return QA, update stock (restock or damage write-off), and inform Admin.
  */
 export const processDistributorOrderReturn = async (req, res) => {
+  let uploadedEvidence;
   try {
     const distributorId = req.distributorId || req.auth?.distributorId;
     if (!distributorId) {
@@ -255,6 +288,18 @@ export const processDistributorOrderReturn = async (req, res) => {
 
     const id = req.params.id || req.body.id || req.body.orderId || req.body.assignmentId;
     const { items, reason, notes, damageType, damageNotes, returnRequestId } = req.body;
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_return_evidence/goods");
+    let parsedItems = items;
+    if (typeof parsedItems === "string") {
+      try {
+        parsedItems = JSON.parse(parsedItems);
+      } catch {
+        const error = new Error("Return items must be valid JSON.");
+        error.statusCode = 400;
+        error.code = "INVALID_RETURN_ITEMS";
+        throw error;
+      }
+    }
 
     const actorContext = {
       actorId: req.auth?.accountId || req.auth?.userId || null,
@@ -267,17 +312,19 @@ export const processDistributorOrderReturn = async (req, res) => {
     const result = await processSelfDeliveryReturn({
       distributorId,
       assignmentIdOrOrderId: id,
-      items,
+      items: parsedItems,
       reason,
       notes,
       damageType,
       damageNotes,
       returnRequestId,
+      inspectionEvidenceUrl: uploadedEvidence.secure_url,
       actorContext,
     });
 
     return res.status(200).json(result);
   } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
     console.error("processDistributorOrderReturn error:", error);
     return res.status(error.statusCode || 500).json({
       success: false,

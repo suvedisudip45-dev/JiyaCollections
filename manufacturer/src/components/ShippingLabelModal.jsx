@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
 import { useManufacturer } from "../context/ManufacturerContext";
+import "./DistributorCourierSlip.css";
 
 const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) => {
   const { manufacturer } = useManufacturer();
@@ -81,14 +82,14 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
         )}
 
         {/* 4x6 Printable Slip Canvas */}
-        <div className="border-2 border-slate-900 p-5 rounded-2xl bg-white space-y-3 font-sans text-xs print:m-0 print:border-none">
+        <div className="thermal-shipping-label border-2 border-slate-900 p-5 rounded-2xl bg-white space-y-3 font-sans text-xs print:m-0 print:border-none">
           {/* Header Row */}
           <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3">
             <div>
               <span className="text-xl font-black tracking-tight text-slate-900 block">
                 AAMA CLOTHINGS
               </span>
-              <span className="text-[10px] font-bold text-emerald-800 tracking-wider uppercase">
+              <span className="text-[10px] font-bold tracking-wider uppercase">
                 Regional Hub: {senderInfo.city}
               </span>
             </div>
@@ -102,16 +103,6 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
             </div>
           </div>
 
-          {/* Barcode Visual Mock */}
-          <div className="py-2 text-center bg-slate-50 rounded border border-slate-200">
-            <div className="font-mono text-lg tracking-[0.3em] font-bold text-slate-900 select-none">
-              ||| | |||| | || ||| || |||
-            </div>
-            <span className="text-[9px] font-mono text-slate-500">
-              PKG-NP-{orderIdShort}-{Date.now().toString().slice(-4)}
-            </span>
-          </div>
-
           {/* Addresses Grid: From Hub & To Customer */}
           <div className="grid grid-cols-2 gap-3 border-b-2 border-slate-900 pb-3">
             {/* Sender Hub */}
@@ -120,14 +111,14 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
                 FROM (Fulfillment Hub):
               </span>
               <p className="font-bold text-slate-900">{senderInfo.name}</p>
-              <p className="text-slate-600">{senderInfo.street}</p>
-              <p className="text-slate-600">{senderInfo.city}, Nepal</p>
-              <p className="text-slate-500 font-mono">📞 {senderInfo.phone}</p>
+              <p>{senderInfo.street}</p>
+              <p>{senderInfo.city}, Nepal</p>
+              <p>Phone: {senderInfo.phone}</p>
             </div>
 
             {/* Recipient Customer */}
-            <div className="space-y-0.5 bg-slate-50 p-2 rounded-xl border border-slate-200">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+            <div className="space-y-0.5 p-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider block">
                 SHIP TO (Customer):
               </span>
               <p className="font-black text-slate-900 text-sm">
@@ -135,12 +126,12 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
               </p>
               <p className="text-slate-700 font-semibold">{address.street || "Direct Address"}</p>
               {address.landmark && (
-                <p className="text-amber-800 text-[10px] font-bold">
-                  📍 Landmark: {address.landmark}
+                <p className="text-[10px] font-bold">
+                  Landmark: {address.landmark}
                 </p>
               )}
               <p className="text-slate-800 font-bold">{address.city}, Nepal</p>
-              <p className="text-indigo-700 font-bold font-mono">📞 {address.phone}</p>
+              <p className="font-bold">Phone: {address.phone}</p>
             </div>
           </div>
 
@@ -166,19 +157,19 @@ const ShippingLabelModal = ({ order, orders = [], currency = "Rs.", onClose }) =
           </div>
 
           {/* Payment & COD Badge */}
-          <div className="flex items-center justify-between bg-slate-900 text-white p-3 rounded-xl">
+          <div className="thermal-payment flex items-center justify-between p-3">
             <div>
-              <span className="text-[10px] text-slate-300 uppercase tracking-wider block">
+              <span className="text-[10px] uppercase tracking-wider block">
                 Payment Method
               </span>
               <span className="font-bold text-xs">{currentOrder.paymentMethod}</span>
             </div>
 
             <div className="text-right">
-              <span className="text-[10px] text-slate-300 uppercase tracking-wider block">
+              <span className="text-[10px] uppercase tracking-wider block">
                 {currentOrder.payment ? "PAID IN FULL" : "CASH TO COLLECT (COD)"}
               </span>
-              <span className="text-base font-black text-emerald-400">
+              <span className="text-base font-black">
                 {currency}{currentOrder.payment ? "0.00" : currentOrder.amount}
               </span>
             </div>

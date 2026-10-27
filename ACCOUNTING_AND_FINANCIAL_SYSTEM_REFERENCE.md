@@ -31,6 +31,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Assets | Input VAT receivable | 1150 | Recoverable VAT in supported supplier-cost cases |
 | Assets | NCM COD receivable | 1170 | COD due from NCM in the delivery-sale flow |
 | Assets | Payment gateway clearing | 1180 | Exists in the chart; not the default tender mapping in delivered-sale posting |
+| Assets | Distributor COD receivable | 1190 | COD due from the assigned distributor until an evidenced remittance is verified and allocated |
 | Assets | Fixed assets | 1510–1530 | Asset classes |
 | Assets | Accumulated depreciation | 1590 | Contra-asset |
 | Liabilities | Accounts payable | 2110 | General AP |
@@ -39,6 +40,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Liabilities | Manufacturer payable | 2160 | Manufacturer production, logistics and certain order costs |
 | Liabilities | Marketing partner payable | 2170 | Partner settlements |
 | Liabilities | NCM carrier payable | 2180 | Exists in the chart; NCM remittance flow below uses direct expense instead |
+| Liabilities | Distributor payable | 2190 | Admin-verified customer refunds paid by distributors; cleared by a separate treasury payout |
 | Liabilities | Term loans | 2510 | Investor/lender debt |
 | Equity | Share capital / premium | 3100 / 3200 | Share issuance and capital |
 | Equity | Retained earnings | 3300 | Account exists; automatic year-end close was not established in the reviewed flows |
@@ -76,9 +78,22 @@ DR COGS
     CR inventory
 ```
 
-For COD, this posting currently uses NCM COD receivable 1170 as the tender account. For non-COD, it uses Bank 1120. The existing gateway-clearing account 1180 is not selected by this function. The sale's gross total is separated into product and delivery amounts, and each is divided by 1.13 to calculate the taxable base; the remainder is treated as 13% embedded VAT.
+For NCM COD, this posting uses NCM COD receivable 1170. For distributor-collected self-delivery COD, it uses distributor COD receivable 1190 and creates an idempotent distributor receivable document. For non-COD, it uses Bank 1120. The existing gateway-clearing account 1180 is not selected by this function. The sale's gross total is separated into product and delivery amounts using `Order.amount` and `Order.deliveryFee`, and each is divided by 1.13 to calculate the taxable base; the remainder is treated as 13% embedded VAT.
 
-The NCM delivery completion path in `backend/services/deliveryService.js` passes the `DeliveryOrder` to the poster, including its `customerDeliveryCharge`. The distributor self-delivery path calls the same poster without a `DeliveryOrder`.
+The NCM delivery completion path in `backend/services/deliveryService.js` passes the `DeliveryOrder` to the poster, including its `customerDeliveryCharge`. The distributor self-delivery path calls the same poster without a `DeliveryOrder`; the poster therefore uses the locked `Order.deliveryFee` field.
+
+When notifications and SMS are enabled, unpaid distributor COD delivery
+requires a short-lived hashed customer OTP bound to the order, assigned
+distributor, and exact order amount. When either is disabled, the dashboard
+instead requires the distributor to confirm that the full amount was collected;
+the cash event remains `PENDING_VERIFICATION` and records this as a distributor
+declaration, not OTP verification. The delivery transition, inventory movement,
+`DistributorCashEvent`, and accounting-outbox enqueue are transactional. A
+distributor's collection is not company cash: it remains an open 1190 receivable
+until the distributor submits a bank/wallet reference and a JPG/PNG image of the
+transfer evidence, which an Admin verifies.
+Verification posts the selected treasury inflow, journal, cash transaction,
+receivable allocation, and batch/event status atomically.
 
 For NCM deliveries, only an exact recognized delivered milestone or an explicit
 Admin “confirm delivered” decision can start the delivered-sale transaction.
@@ -87,15 +102,36 @@ reconciliation queue and do not change COD/order state, consume inventory, or
 enqueue delivered-sale accounting. An Admin decision is recorded with its
 investigation note in the delivery event history.
 
-### Material delivery-charge and COD gaps
+### Distributor return and reimbursement postings
 
-These are important before relying on the books for delivery profitability:
+Admin return approval snapshots the configured return-charge percentage
+against returned product value. The original delivery fee is excluded from the
+refund. For a distributor-routed return, receipt/inspection does not mark the
+customer paid and does not create the legacy customer-refund payable. The
+distributor records the exact Admin-approved amount, payment method/reference,
+and a JPG/PNG image of the refund evidence. Return inspection also requires a
+JPG/PNG photo of the returned goods. Admin verification alone completes the
+refund and posts:
 
-1. The checkout schema stores the quote in `Order.deliveryFee` (`backend/prisma/schema.prisma`, `Order` model), while the sale poster reads `order.deliveryCharge` or `deliveryOrder.customerDeliveryCharge`. `Order` does not declare a `deliveryCharge` field. Therefore, the NCM path can use the delivery order's customer charge, but the self-delivery path as currently called has no corresponding value passed to the poster; its delivery-revenue component may be zero even though `Order.deliveryFee` was charged.
-2. COD is always mapped to NCM COD receivable in the delivered-sale poster, including when called from distributor self-delivery. That does not distinguish cash collected by a distributor from cash collected by NCM.
-3. The order-placement path sets COD and unpaid (`payment: false`) in the shown online checkout flow. The poster uses Bank for all non-COD methods rather than selecting the payment gateway clearing account.
+```text
+DR sales returns / output VAT reversal
+    CR distributor payable (2190)
+DR inventory / CR COGS (restockable returned units only)
+```
 
-These are implementation observations, not assumptions about how a particular deployment configures its payment provider. Check the order path, settlement path and actual delivery mode together when correcting them.
+The matching payable accounting document is linked to the distributor party.
+Admin payout is separate: it debits 2190, credits the selected NPR treasury
+account, creates a cash outflow, and allocates the amount to that specific
+payable document in one serializable transaction. Distributor COD receivable
+and refund payable are deliberately reported separately until an Admin
+explicitly approves an offset in distributor Finance detail. An offset is
+limited to the lower of verified refund payable and open COD receivable less
+pending remittances; it debits 2190, credits 1190, and allocates both gross
+subledger documents in the same serializable transaction. The unique
+`DistributorSettlementOffset` record, linked journal, Admin actor, notes, and
+audit event preserve the approval history. The existing gateway-clearing
+account 1180 remains unselected for non-COD delivered-sale tenders and should
+be addressed independently.
 
 ## 4. Product cost and COGS
 
@@ -253,20 +289,18 @@ Use the dashboard's `postedAccounting` section when comparing to posted GL state
 
 The following items are directly relevant to improving the accounting design:
 
-1. **Delivery amount field mismatch:** checkout writes `Order.deliveryFee`; the sale poster looks for `Order.deliveryCharge` or a delivery-order charge. Self-delivery does not pass a delivery-order object.
-2. **COD party mismatch:** self-delivery COD is posted to NCM COD receivable, just like NCM-collected COD.
-3. **Non-COD tender mapping:** delivered-sale posting uses Bank 1120 for all non-COD tenders, despite payment gateway clearing 1180 existing.
-4. **Distributor payout:** the reviewed payout path updates treasury and request records but did not show the matching GL payable settlement.
-5. **Direct-income mapping:** the direct-income controller calls a helper that credits customer AR 1130 rather than visibly crediting an income account.
-6. **Non-atomic posting in some flows:** expense, direct income, depreciation, loan/equity and some delivery paths invoke GL posting asynchronously or catch posting errors after changing operational state. In these paths, GL and operational data can diverge.
-7. **COGS source differences:** cost-layer allocations, legacy manufacturer cost snapshots, product `costPrice`, and percentage-estimated COGS all coexist.
-8. **Profit distributions are estimates:** fixed 55% estimated COGS is not actual batch COGS or GL net income; retained earnings are recorded in the distribution model but not proven to post to 3300.
-9. **Payable/receivable systems coexist:** operational `AccountPayable`/`AccountReceivable`, accounting-party journals, supplier settlements and distributor settlements require explicit reconciliation.
-10. **VAT treatment varies by pathway:** production supplier VAT now captures inclusive/exclusive/exempt terms and only posts input VAT after Admin invoice verification. Other legacy supplier-cost and sale/delivery paths retain their existing assumptions; do not treat VAT as income or apply the production rule to unrelated flows.
+1. **Non-COD tender mapping:** delivered-sale posting uses Bank 1120 for all non-COD tenders, despite payment gateway clearing 1180 existing.
+2. **Legacy distributor settlement:** existing delivery-earnings payout requests remain a separate operational flow and should be reconciled against their relevant GL accounts; do not confuse them with COD remittance or the new 2190 customer-refund reimbursement.
+3. **Direct-income mapping:** the direct-income controller calls a helper that credits customer AR 1130 rather than visibly crediting an income account.
+4. **Non-atomic posting in some flows:** expense, direct income, depreciation, loan/equity and some delivery paths invoke GL posting asynchronously or catch posting errors after changing operational state. In these paths, GL and operational data can diverge.
+5. **COGS source differences:** cost-layer allocations, legacy manufacturer cost snapshots, product `costPrice`, and percentage-estimated COGS all coexist.
+6. **Profit distributions are estimates:** fixed 55% estimated COGS is not actual batch COGS or GL net income; retained earnings are recorded in the distribution model but not proven to post to 3300.
+7. **Payable/receivable systems coexist:** operational `AccountPayable`/`AccountReceivable`, accounting-party journals, supplier settlements and legacy distributor settlements require explicit reconciliation.
+8. **VAT treatment varies by pathway:** production supplier VAT now captures inclusive/exclusive/exempt terms and only posts input VAT after Admin invoice verification. Other legacy supplier-cost and sale/delivery paths retain their existing assumptions; do not treat VAT as income or apply the production rule to unrelated flows.
 
 ## 15. Recommended guardrails for an accounting enhancement
 
-These are constraints for a future implementation, not claims about current behavior:
+These guardrails apply to the existing and future accounting work:
 
 - Define one authoritative source for posted revenue, delivery revenue, VAT, COGS, logistics, operating expense and cash movement; build dashboards from that source or clearly label estimates.
 - Keep order customer delivery charge, NCM's actual fee, distributor's delivery compensation, and manufacturer-to-distributor freight as separate amounts and separate business events.
@@ -291,6 +325,8 @@ These are constraints for a future implementation, not claims about current beha
 - Distributor rate cards: [distributorRateCardService.js](./backend/services/distributorRateCardService.js)
 - NCM delivery state and accounting call: [deliveryService.js](./backend/services/deliveryService.js)
 - Distributor self-delivery state and accounting call: [distributorSelfDeliveryService.js](./backend/services/distributorSelfDeliveryService.js)
+- Distributor COD remittance, cash position, and refund-payable payout: [distributorCashSettlementService.js](./backend/services/distributorCashSettlementService.js)
+- Distributor-submitted customer-refund evidence and Admin review: [distributorReturnRefundService.js](./backend/services/distributorReturnRefundService.js)
 - NCM remittance and delivery settlement controller: [deliveryController.js](./backend/controllers/deliveryController.js)
 - Expense and direct-income workflows: [expenseController.js](./backend/controllers/expenseController.js)
 - Finance analytics, expenses, depreciation, loans, equity and profit distributions: [financialController.js](./backend/controllers/financialController.js)

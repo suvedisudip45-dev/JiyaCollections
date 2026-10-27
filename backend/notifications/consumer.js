@@ -122,11 +122,16 @@ export const processNotificationMessage = async ({ message, channel, providers, 
     return;
   }
 
-  if (["ADMIN_2FA", "PORTAL_2FA", "PASSWORD_RESET"].includes(notification.notificationType)) {
-    const challenge = await client.adminTwoFactorChallenge.findUnique({
-      where: { notificationId: notification.id },
-      select: { status: true, expiresAt: true },
-    });
+  if (["ADMIN_2FA", "PORTAL_2FA", "PASSWORD_RESET", "DISTRIBUTOR_DELIVERY_OTP"].includes(notification.notificationType)) {
+    const challenge = notification.notificationType === "DISTRIBUTOR_DELIVERY_OTP"
+      ? await client.deliveryOtpChallenge.findUnique({
+        where: { notificationId: notification.id },
+        select: { status: true, expiresAt: true },
+      })
+      : await client.adminTwoFactorChallenge.findUnique({
+        where: { notificationId: notification.id },
+        select: { status: true, expiresAt: true },
+      });
     if (!challenge || challenge.status !== "PENDING" || challenge.expiresAt <= now) {
       await client.$transaction(async (tx) => {
         const cancelled = await tx.notification.updateMany({
@@ -135,6 +140,8 @@ export const processNotificationMessage = async ({ message, channel, providers, 
             status: "CANCELLED",
             failureCode: notification.notificationType === "ADMIN_2FA"
               ? "ADMIN_2FA_CHALLENGE_INACTIVE"
+              : notification.notificationType === "DISTRIBUTOR_DELIVERY_OTP"
+                ? "DISTRIBUTOR_DELIVERY_OTP_INACTIVE"
               : notification.notificationType === "PASSWORD_RESET"
                 ? "PASSWORD_RESET_CHALLENGE_INACTIVE"
                 : "PORTAL_2FA_CHALLENGE_INACTIVE",

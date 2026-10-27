@@ -194,6 +194,8 @@ The application exposes modules such as:
 
 - `/finance`, `/treasury`, `/assets`, `/partners`, `/expenses`, `/tax`
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
+- `/returns` includes Admin review of distributor-paid customer refund evidence and the separate treasury payout action for the resulting distributor payable.
+- `/distributors/:distributorId` Finance includes a COD receivable/remittance panel with transfer evidence, Admin verification/rejection, and separate refund-payable reporting.
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
 - `/payables` displays distributor settlement requests with the payable balance and lets an authorized Admin make full or partial payment from a selected treasury account.
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
@@ -259,18 +261,26 @@ Turning a flag off does not delete loyalty or personalized-letter history. Its r
 | `/` | Dashboard |
 | `/orders` | Assigned customer-order queue (distributor workspace only) |
 | `/orders/:id` | Distributor customer-order fulfillment workflow |
+| `/distributor/deliveries` | Self-delivery tracking and parcel slip printing |
+| `/ncm` | NCM booking/tracking and parcel slip printing |
 | `/direct-orders` | Distributor direct hub orders (distributor workspace only) |
 | `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
 | `/distributor/demand` | Factory stock requests, inbound carrier/local transfer tracking, and receipt QA |
 | `/collaborations` | Collaboration items |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |
-| `/finance` | Manufacturer finance data |
+| `/finance` | Manufacturer finance data; distributor delivery earnings plus COD receivable, remittance evidence/status, and separate refund payable |
 | `/customer-loyalty` | Distributor customer loyalty and promotion view |
 | `/gift-inventory` | Distributor gift-stock acceptance/rejection and available/reserved quantities |
 | `/marketing-cards` | Distributor card receipt and processing |
 
 These hub pages are gated to `activeWorkspace === "DISTRIBUTOR"`; they are not manufacturer features. Distributor order packing displays the assigned catalog gift and requires an explicit inclusion check before the packing transition is accepted. Gift delivery status follows the authoritative NCM webhook rather than a frontend-only success action. Historical manufacturer gift/card/order records remain available in storage but new hub activity uses distributor ownership and backend authorization.
+
+Distributor self-delivery and NCM order lists allow selecting orders for a shared compact 80 mm thermal parcel slip. The slip includes recipient and sender contact/location, order and carrier references where available, item variants, quantities, unit and line prices, assigned gifts, totals, and the amount to collect. Print slips separately from dispatch or NCM booking; attach each printed slip to the outside of its parcel. The browser print dialog should use the printer's 80 mm roll setting.
+
+The distributor Finance dashboard keeps COD balances distinct from delivery-service earnings: open company receivable, pending remittance, verified refund payable, and eligibility for an Admin-approved offset are shown separately. The cash panel spans the dashboard width rather than being squeezed into the earnings summary grid. Distributors submit COD transfers with a bank/wallet reference and a JPG/PNG image; Admin verification posts the receipt. Admins can explicitly approve a partial or full offset in distributor detail after reviewing refund evidence; the UI presents the available cap and offset history. The self-delivery return panel requires a JPG/PNG photo of returned goods and lets the distributor submit customer-refund method/reference/image for review. Delivery/refund money flows are not browser-cached because stale financial balances could permit invalid submissions.
+
+The public `GET /api/features` response includes company contact values configured through the backend's `COMPANY_CONTACT_EMAIL` and `COMPANY_CONTACT_PHONE` environment variables. The Manufacturer/Distributor portal displays those values on parcel slips; blank values are omitted.
 
 The distributor demand screen loads the factory catalog separately from inbound
 transfer history so a history API error does not hide requestable stock. Its

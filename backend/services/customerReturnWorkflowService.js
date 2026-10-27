@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, requestOrderReturn } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
@@ -50,6 +51,32 @@ const parseObject = (value) => {
 const normalize = (value) => String(value || "").trim().toLowerCase();
 const itemKey = (item) => [String(item.productId || ""), normalize(item.size), normalize(item.color)].join("|");
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
+
+export const calculateCustomerReturnRefundPolicy = ({ productValue, chargeRatePercent = 0, originalDeliveryFee = 0 }) => {
+  const base = new Prisma.Decimal(String(productValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const rate = new Prisma.Decimal(String(chargeRatePercent || 0));
+  const deliveryFee = new Prisma.Decimal(String(originalDeliveryFee || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (!base.isFinite() || base.isNegative() || !rate.isFinite() || rate.isNegative() || rate.greaterThan(100) || !deliveryFee.isFinite() || deliveryFee.isNegative()) {
+    throw fail("Customer return policy contains an invalid amount or percentage.", "INVALID_RETURN_REFUND_POLICY", 409);
+  }
+  const charge = base.mul(rate).div(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const approvedRefund = Prisma.Decimal.max(base.minus(charge), 0);
+  const refundableVat = approvedRefund.minus(approvedRefund.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
+  return {
+    snapshot: {
+      version: 1,
+      chargeType: "PERCENT_OF_RETURNED_PRODUCT_VALUE",
+      ratePercent: rate.toFixed(2),
+      returnedProductValue: base.toFixed(2),
+      customerReturnCharge: charge.toFixed(2),
+      originalDeliveryFee: deliveryFee.toFixed(2),
+      originalDeliveryFeeRefunded: "0.00",
+      approvedRefundAmount: approvedRefund.toFixed(2),
+    },
+    approvedRefundAmount: approvedRefund,
+    vatRefunded: refundableVat,
+  };
+};
 
 export const returnItemsFromOrder = (orderItems, requestedItems, previousReturns = []) => {
   const purchased = new Map();
@@ -229,7 +256,26 @@ export const listAdminCustomerReturns = async ({ skip = 0, take = 30, status }) 
   const [returns, total] = await prisma.$transaction([
     prisma.customerReturn.findMany({
       where,
-      include: { events: { orderBy: { occurredAt: "asc" } }, ncmAttempts: { orderBy: { attemptNumber: "asc" } } },
+      include: {
+        events: { orderBy: { occurredAt: "asc" } },
+        ncmAttempts: { orderBy: { attemptNumber: "asc" } },
+        distributorCashEvents: {
+          where: { eventType: "CUSTOMER_REFUND" },
+          orderBy: { occurredAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            amount: true,
+            status: true,
+            paymentMethod: true,
+            externalReference: true,
+            evidenceUrl: true,
+            accountingDocumentId: true,
+            journalEntryId: true,
+            accountingDocument: { select: { id: true, remainingAmount: true, status: true } },
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
       skip,
       take,
@@ -243,17 +289,26 @@ export const listManufacturerCustomerReturns = ({ manufacturerId, distributorId 
   const where = {
     requestKey: { not: null },
     lifecycleStatus: { in: distributorId
-      ? ["DISTRIBUTOR_RETURN_PENDING"]
+      ? ["DISTRIBUTOR_RETURN_PENDING", "REFUND_PENDING", "DISTRIBUTOR_REFUND_REVIEW", "REFUNDED"]
       : ["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT", "RECEIVED_AT_WAREHOUSE", "REFUND_PENDING", "REFUNDED"] },
   };
   if (distributorId) {
     where.distributorId = distributorId;
+    where.deliveryRoute = "DISTRIBUTOR";
   } else if (manufacturerId) {
     where.manufacturerId = manufacturerId;
   }
   return prisma.customerReturn.findMany({
     where,
-    include: { events: { orderBy: { occurredAt: "asc" } } },
+    include: {
+      events: { orderBy: { occurredAt: "asc" } },
+      distributorCashEvents: {
+        where: { eventType: "CUSTOMER_REFUND" },
+        orderBy: { occurredAt: "desc" },
+        take: 1,
+        select: { id: true, amount: true, status: true, paymentMethod: true },
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 };
@@ -489,6 +544,14 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
       }
       const approvedStatus = route.route === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN";
       const shippingConfig = await tx.shippingConfig.findFirst();
+      const orderPricing = current.orderId
+        ? await tx.order.findUnique({ where: { id: current.orderId }, select: { deliveryFee: true } })
+        : null;
+      const refundPolicy = calculateCustomerReturnRefundPolicy({
+        productValue: current.totalRefundAmount,
+        chargeRatePercent: shippingConfig?.customerReturnChargeRate ?? 0,
+        originalDeliveryFee: orderPricing?.deliveryFee ?? 0,
+      });
       const updated = await tx.customerReturn.updateMany({
         where: { id: returnId, lifecycleStatus: "PENDING_ADMIN_REVIEW" },
         data: {
@@ -496,6 +559,9 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
           adminReviewerId: adminId,
           adminNotes: decisionReason,
           approvedAt: new Date(),
+          refundPolicySnapshot: refundPolicy.snapshot,
+          approvedRefundAmount: refundPolicy.approvedRefundAmount,
+          vatRefunded: refundPolicy.vatRefunded.toNumber(),
           ...(route.route === "NCM" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
           logisticsSettlementAmount: resolveReturnExchangeSettlementRate(shippingConfig, route.route, "RETURN"),
           deliveryRoute: route.route,
@@ -511,7 +577,11 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
         actorId: adminId,
         actorRole: "ADMIN",
         reason: decisionReason,
-        metadata: { deliveryRoute: route.route, distributorId: route.distributorId },
+        metadata: {
+          deliveryRoute: route.route,
+          distributorId: route.distributorId,
+          refundPolicy: refundPolicy.snapshot,
+        },
         idempotencyKey: `RETURN:${returnId}:${approvedStatus}`,
       });
       await recordSystemAudit(actorContext, {
@@ -523,6 +593,7 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
           lifecycleStatus: approvedStatus,
           deliveryRoute: route.route,
           distributorId: route.distributorId,
+          approvedRefundAmount: refundPolicy.approvedRefundAmount.toFixed(2),
           ...(route.route === "NCM" ? { chargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
         },
       }, { client: tx });
@@ -707,7 +778,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
       },
     });
     await createReturnExchangeSettlementPayable(tx, updated, "RETURN");
-    if (returnAccepted) {
+    if (returnAccepted && current.deliveryRoute !== "DISTRIBUTOR") {
       await tx.accountPayable.create({
         data: {
           title: `Customer Refund: RMA #${current.id.slice(0, 8)} (${current.customerName})`,
@@ -715,16 +786,16 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
           category: "OPERATING_EXPENSE",
           referenceType: "CUSTOMER_REFUND",
           referenceId: current.id,
-          totalAmount: current.totalRefundAmount,
+          totalAmount: current.approvedRefundAmount ?? current.totalRefundAmount,
           paidAmount: 0,
-          remainingBalance: current.totalRefundAmount,
+          remainingBalance: current.approvedRefundAmount ?? current.totalRefundAmount,
           status: "UNPAID",
           priority: "HIGH",
           notes: `Approved customer return refund. NCM charge: ${current.ncmDeliveryCharge ?? "not supplied"}; payer: ${current.ncmChargePayer}.`,
         },
       });
-      await applyCollaborationReturnAdjustments({ orderId: current.orderId, items, returnedAt: now, client: tx });
     }
+    if (returnAccepted) await applyCollaborationReturnAdjustments({ orderId: current.orderId, items, returnedAt: now, client: tx });
     await addReturnEvent(tx, {
       returnId: current.id,
       eventType: returnAccepted ? "INSPECTED_PASSED" : "INSPECTED_FAILED",
@@ -755,9 +826,10 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
   }, { isolationLevel: "Serializable" });
 
   await postReturnExchangeSettlementAccounting({ operation: "RETURN", requestId: record.id });
-  if (record.lifecycleStatus === "REFUND_PENDING") {
+  if (record.lifecycleStatus === "REFUND_PENDING" && record.deliveryRoute !== "DISTRIBUTOR") {
     postCustomerReturnAccounting({
       ...record,
+      totalRefundAmount: record.approvedRefundAmount ?? record.totalRefundAmount,
       restockedInventoryCost: inspection === "RESTOCKABLE" ? restockedInventoryCost : 0,
     }, { recordAsPayable: true }).catch((error) => {
       console.error("Customer return accounting post failed", { returnId: record.id, error: error.message });
@@ -869,6 +941,9 @@ export const markCustomerReturnRefunded = async ({ returnId, adminId, actorConte
   const updated = await prisma.$transaction(async (tx) => {
     const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
     if (!current || current.lifecycleStatus !== "REFUND_PENDING") throw fail("Only an inspected return awaiting refund can be marked refunded.", "RETURN_REFUND_NOT_READY", 409);
+    if (current.deliveryRoute === "DISTRIBUTOR") {
+      throw fail("Distributor-paid refunds must be submitted with payment evidence and verified by Admin.", "RETURN_REFUND_REVIEW_REQUIRED", 409);
+    }
     const payable = await tx.accountPayable.findFirst({
       where: { referenceType: "CUSTOMER_REFUND", referenceId: returnId },
       orderBy: { createdAt: "desc" },

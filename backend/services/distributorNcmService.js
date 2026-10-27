@@ -314,6 +314,8 @@ export const listDistributorNcmOrders = async ({
         id: order.id,
         amount: Number(order.amount || 0),
         deliveryFee: Number(order.deliveryFee || 0),
+        loyaltyDiscount: Number(order.loyaltyDiscount || 0),
+        rewardApplied: order.rewardApplied,
         status: order.status,
         fulfillmentStatus: order.fulfillmentStatus,
         paymentMethod: order.paymentMethod,

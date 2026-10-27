@@ -10,6 +10,11 @@ import {
   getAdminDistributorSettlements,
   listAdminDistributors,
 } from "../controllers/adminDistributorDetailController.js";
+import {
+  getAdminDistributorCashRemittances,
+  reviewDistributorCashRemittance,
+  approveDistributorRefundNetting,
+} from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
 const adminDistributorDetailRouter = express.Router();
@@ -35,5 +40,20 @@ adminDistributorDetailRouter.get("/:id/exchanges", authorize("distributor:admin_
 adminDistributorDetailRouter.get("/:id/finance", authorize("distributor:admin_finance_read"), getAdminDistributorFinance);
 adminDistributorDetailRouter.get("/:id/finance/transactions", authorize("distributor:admin_finance_read"), getAdminDistributorFinanceTransactions);
 adminDistributorDetailRouter.get("/:id/finance/settlements", authorize("distributor:admin_finance_read"), getAdminDistributorSettlements);
+adminDistributorDetailRouter.get(
+  "/:id/finance/remittances",
+  authorize("distributor:admin_finance_read"),
+  getAdminDistributorCashRemittances,
+);
+adminDistributorDetailRouter.post(
+  "/:id/finance/remittances/:batchId/review",
+  authorize("finance:receivable_collect"),
+  reviewDistributorCashRemittance,
+);
+adminDistributorDetailRouter.post(
+  "/:id/finance/refund-netting",
+  authorize("finance:receivable_collect"),
+  approveDistributorRefundNetting,
+);
 
 export default adminDistributorDetailRouter;
