@@ -134,29 +134,45 @@ test("password recovery creates an SMS-only OTP challenge with a masked contact"
   assert.equal(account.passwordResetMonthlyCount, 1);
 });
 
-test("password recovery accepts the fixed OTP in production mode", async () => {
+test("password recovery stays unavailable outside development and test while the fixed OTP remains unchanged", async () => {
   const { client } = makeClient();
-  const productionEnv = { ...TEST_ENV, NODE_ENV: "production", OTP_LENGTH: "8" };
-  const request = await requestPasswordResetOtp({
-    email: "customer@example.test",
-    phone: "9812345678",
-    portal: "CUSTOMER",
-    client,
-    notificationConfig: NOTIFICATION_CONFIG,
-    env: productionEnv,
-    now: new Date("2026-10-15T10:00:00.000Z"),
-  });
-
-  assert.equal(request.otpLength, 6);
-  const verified = await verifyPasswordResetOtp({
-    challengeId: request.challengeId,
-    otp: "111111",
-    portal: "CUSTOMER",
-    client,
-    env: productionEnv,
-    now: new Date("2026-10-15T10:01:00.000Z"),
-  });
-  assert.ok(verified.tfaToken);
+  for (const environment of ["production", "staging", undefined]) {
+    const restrictedEnv = { ...TEST_ENV, NODE_ENV: environment, OTP_LENGTH: "8" };
+    await assert.rejects(
+      requestPasswordResetOtp({
+        email: "customer@example.test",
+        phone: "9812345678",
+        portal: "CUSTOMER",
+        client,
+        notificationConfig: NOTIFICATION_CONFIG,
+        env: restrictedEnv,
+        now: new Date("2026-10-15T10:00:00.000Z"),
+      }),
+      { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+    );
+    await assert.rejects(
+      verifyPasswordResetOtp({
+        challengeId: "123e4567-e89b-12d3-a456-426614174000",
+        otp: "111111",
+        portal: "CUSTOMER",
+        client,
+        env: restrictedEnv,
+      }),
+      { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+    );
+    await assert.rejects(
+      completePasswordReset({
+        challengeId: "123e4567-e89b-12d3-a456-426614174000",
+        tfaToken: "unused",
+        newPassword: "StrongPass123!",
+        confirmPassword: "StrongPass123!",
+        portal: "CUSTOMER",
+        client,
+        env: restrictedEnv,
+      }),
+      { code: "PASSWORD_RESET_DISABLED", statusCode: 503 },
+    );
+  }
 });
 
 test("password recovery attempt and TFA token limits use environment configuration", async () => {

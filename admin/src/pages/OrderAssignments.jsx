@@ -7,6 +7,7 @@ import { usePermissions } from "../auth/PermissionsContext";
 import Pagination from "../components/Pagination";
 
 const ASSIGNMENT_PAGE_SIZE = 10;
+const UNASSIGNED_PAGE_SIZE = 10;
 
 const getAssignmentNotes = (assignment) => {
   try {
@@ -16,6 +17,14 @@ const getAssignmentNotes = (assignment) => {
   }
 };
 
+const getPendingAgeLabel = (order) => {
+  const createdAt = order?.createdAt || order?.date;
+  const createdAtMs = createdAt ? new Date(createdAt).getTime() : NaN;
+  if (!Number.isFinite(createdAtMs)) return null;
+  const daysPending = Math.floor(Math.max(0, Date.now() - createdAtMs) / 86400000);
+  return `Pending since ${new Date(createdAtMs).toLocaleDateString()} · ${daysPending} day${daysPending === 1 ? "" : "s"} pending`;
+};
+
 const OrderAssignments = ({ token }) => {
   const { can } = usePermissions();
   const canRetryAllocation = can("assignment:create");
@@ -23,6 +32,9 @@ const OrderAssignments = ({ token }) => {
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
   const [unassignedOrders, setUnassignedOrders] = useState([]);
+  const [unassignedPage, setUnassignedPage] = useState(1);
+  const [unassignedPagination, setUnassignedPagination] = useState(null);
+  const [unassignedHasMore, setUnassignedHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [retryingOrderId, setRetryingOrderId] = useState("");
   const [allocationFailures, setAllocationFailures] = useState({});
@@ -43,7 +55,7 @@ const OrderAssignments = ({ token }) => {
         }),
         axios.get(`${backendUrl}/api/order-assignment/admin/unassigned`, {
           headers: { token },
-          params: { limit: 50 },
+          params: { page: unassignedPage, limit: UNASSIGNED_PAGE_SIZE },
         }),
       ]);
 
@@ -52,14 +64,25 @@ const OrderAssignments = ({ token }) => {
         setPagination(assignRes.data.pagination || null);
       }
       if (unassignedRes.data.success) {
-        setUnassignedOrders(unassignedRes.data.orders || []);
+        const orders = unassignedRes.data.orders || [];
+        const nextPagination = unassignedRes.data.pagination || null;
+        setUnassignedOrders(orders);
+        setUnassignedPagination(nextPagination);
+        setUnassignedHasMore(
+          nextPagination
+            ? nextPagination.page < nextPagination.totalPages
+            : orders.length >= UNASSIGNED_PAGE_SIZE,
+        );
+        if (nextPagination?.totalPages && unassignedPage > nextPagination.totalPages) {
+          setUnassignedPage(nextPagination.totalPages);
+        }
       }
     } catch {
       toast.error("Failed to load order assignments");
     } finally {
       setLoading(false);
     }
-  }, [page, statusFilter, token]);
+  }, [page, statusFilter, token, unassignedPage]);
 
   const retryAllocation = async (orderId) => {
     setRetryingOrderId(orderId);
@@ -215,10 +238,10 @@ const OrderAssignments = ({ token }) => {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-sm font-bold text-slate-900">Orders awaiting distributor assignment</h2>
-            <p className="text-xs text-slate-600">Coverage sets routing priority, while available ledger stock is required. Retry after updating coverage or inventory.</p>
+            <p className="text-xs text-slate-600">Coverage sets routing priority, while available ledger stock is required. Retry after updating coverage or inventory. Older orders remain available on later pages.</p>
           </div>
           <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
-            {unassignedOrders.length}
+            {unassignedPagination?.total ?? `${unassignedOrders.length} shown`}
           </span>
         </div>
         {loading ? (
@@ -232,12 +255,18 @@ const OrderAssignments = ({ token }) => {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-48">
                     <p className="font-mono text-xs font-bold text-slate-900">#{order.id.slice(-8)}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-amber-800">
+                      Awaiting distributor assignment
+                    </p>
                     <p className="text-xs text-slate-600">
                       {[order.address?.district, order.address?.province || order.address?.state].filter(Boolean).join(", ") || "Destination not set"}
                     </p>
                     <p className="text-[11px] text-slate-500">
                       {order.items?.length || 0} line item{order.items?.length === 1 ? "" : "s"} · {currency}{Number(order.amount || 0).toLocaleString()} · {order.fulfillmentStatus || "pending"}
                     </p>
+                    {getPendingAgeLabel(order) && (
+                      <p className="text-[11px] text-slate-500">{getPendingAgeLabel(order)}</p>
+                    )}
                   </div>
                   {canRetryAllocation && (
                     <button
@@ -270,6 +299,40 @@ const OrderAssignments = ({ token }) => {
               </div>
             ))}
           </div>
+        )}
+        {!loading && (
+          unassignedPagination ? (
+            <Pagination
+              page={unassignedPagination.page || unassignedPage}
+              totalPages={unassignedPagination.totalPages || 1}
+              total={unassignedPagination.total ?? unassignedOrders.length}
+              limit={unassignedPagination.limit || UNASSIGNED_PAGE_SIZE}
+              loading={loading}
+              onPageChange={setUnassignedPage}
+            />
+          ) : (
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <span className="text-xs text-slate-500">Page {unassignedPage} · {unassignedOrders.length} orders shown</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={loading || unassignedPage === 1}
+                  onClick={() => setUnassignedPage((current) => current - 1)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || !unassignedHasMore}
+                  onClick={() => setUnassignedPage((current) => current + 1)}
+                  className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )
         )}
       </section>
 

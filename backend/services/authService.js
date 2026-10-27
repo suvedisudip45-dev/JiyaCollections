@@ -11,7 +11,7 @@ import {
 import { decryptAES } from "../utils/crypto.js";
 import { normalizePhoneNumber } from "../utils/socialCustomerProfile.js";
 import { normalizeRefreshPortal } from "../utils/refreshCookie.js";
-import { hasMfaEvidence, isMfaEnforced, requiresMfa } from "../security/mfaPolicy.js";
+import { hasMfaEvidence, isMfaEnforced } from "../security/mfaPolicy.js";
 import { recordSystemAudit } from "./auditService.js";
 import { logger } from "../utils/logger.js";
 
@@ -826,20 +826,6 @@ export const authenticateAccount = async ({
       status: "SUCCESS",
     });
     return { account: safeAccount, profile, requiresTwoFactor: true };
-  }
-
-  if (requiresMfa(activeRole)) {
-    await logAuthEvent({
-      accountId: account.id,
-      identifier: normalized.value,
-      action: `${activeRole}_MFA_BYPASSED_NOTIFICATIONS_DISABLED`,
-      role: activeRole,
-      portal: activeRole,
-      ipAddress,
-      userAgent,
-      correlationId,
-      status: "SUCCESS",
-    });
   }
 
   const tokenPair = await createLoginTokenPair({ account, profile, role: activeRole, ipAddress, userAgent });

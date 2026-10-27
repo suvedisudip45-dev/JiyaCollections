@@ -4,7 +4,7 @@ import "dotenv/config";
 import { generateAccessToken } from "../services/tokenService.js";
 import { createAuthenticate } from "../middleware/unifiedAuth.js";
 
-const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
+const invoke = async ({ role, mfaVerified = false, authMethods = [], env = { NOTIFICATIONS_ENABLED: "false" } }) => {
   const accountId = `account-${role.toLowerCase()}`;
   const profileId = `profile-${role.toLowerCase()}`;
   const token = generateAccessToken({ accountId, profileId, role, mfaVerified, authMethods });
@@ -27,6 +27,7 @@ const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
         customerProfile: role === "CUSTOMER" ? { id: profileId } : null,
         adminProfile: role === "ADMIN" ? { id: profileId } : null,
         manufacturerProfile: role === "MANUFACTURER" ? { id: profileId } : null,
+        distributorProfile: role === "DISTRIBUTOR" ? { id: profileId, status: "ACTIVE", isActive: true } : null,
         marketingPartnerProfile: role === "MARKETING_PARTNER" ? { id: profileId } : null,
         roleMappings: [],
       }),
@@ -35,14 +36,14 @@ const invoke = async ({ role, mfaVerified = false, authMethods = [] }) => {
   const req = { headers: { authorization: `Bearer ${token}` }, body: {} };
   let response;
   let nextCalled = false;
-  await createAuthenticate(client)(req, {
+  await createAuthenticate(client, env)(req, {
     status: (code) => ({ json: (body) => { response = { code, body }; } }),
   }, () => { nextCalled = true; });
   return { req, response, nextCalled };
 };
 
-test("all privileged portal access requires signed password and OTP evidence", async () => {
-  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER"]) {
+test("all privileged portal access requires signed password and OTP evidence even when notifications are disabled", async () => {
+  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER", "DISTRIBUTOR"]) {
     const result = await invoke({ role });
     assert.equal(result.nextCalled, false);
     assert.equal(result.response.code, 401);

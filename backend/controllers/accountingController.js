@@ -1036,3 +1036,41 @@ export const togglePeriodStatus = async (req, res) => {
     res.json({ success: false, message: error.message });
   }
 };
+
+export const closeFiscalYearController = async (req, res) => {
+  try {
+    const { fiscalYearId } = req.body;
+    if (!fiscalYearId) {
+      return res.status(400).json({ success: false, message: "fiscalYearId is required." });
+    }
+    const { closeFiscalYear } = await import("../services/fiscalClosingService.js");
+    const result = await closeFiscalYear({
+      fiscalYearId,
+      closedBy: req.user?.email || req.auth?.role || "ADMIN",
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Close Fiscal Year Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const reopenFiscalYearController = async (req, res) => {
+  try {
+    const { fiscalYearId, reason } = req.body;
+    if (!fiscalYearId) {
+      return res.status(400).json({ success: false, message: "fiscalYearId is required." });
+    }
+    const { reopenFiscalYear } = await import("../services/fiscalClosingService.js");
+    const result = await reopenFiscalYear({
+      fiscalYearId,
+      reopenedBy: req.user?.email || req.auth?.role || "ADMIN",
+      reason: reason || "Administrative Reopening",
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Reopen Fiscal Year Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+

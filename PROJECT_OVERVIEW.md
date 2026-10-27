@@ -14,7 +14,7 @@ The repository separates factory production and replenishment from customer-faci
 | Backend ORM / DB | Prisma 5.22.0, MySQL via `DATABASE_URL` |
 | Frontend | React 18.3.1 + Vite 5, React Router 6/7, Tailwind CSS 3 |
 | Manufacturer portal | React 19.2.8 + Vite 8 + Tailwind |
-| API auth | JWT access/refresh tokens; custom RBAC enforcement; MFA checks for some portal flows |
+| API auth | JWT access/refresh tokens; custom RBAC enforcement; MFA required for privileged portal flows |
 | Storage | Cloudinary integration for product/media/contract uploads |
 | Payments | Stripe, Razorpay |
 | Email / SMS / notifications | SMTP + Sparrow SMS primitives and a notification worker, but production enablement is still gated |
@@ -57,13 +57,18 @@ The repository separates factory production and replenishment from customer-faci
 ### Partially implemented or intentionally gated
 
 - Notification worker exists as a separate subsystem. Portal MFA and password recovery enqueue SMS through it; most business flows do not automatically send SMS/email, and inbound SMS processing is not implemented.
-- SMS password recovery is implemented for customer, manufacturer, and distributor accounts; recovery requires matching account email and phone and the account's active primary portal role, preventing cross-portal resets. The marketing portal's signup, password-reset, and email-verification flows remain outside this implementation.
+- SMS password recovery is available only in `development` and `test`; it remains unavailable in staging, production, and unspecified environments while its code remains the fixed `111111` by explicit development instruction. Before enabling recovery elsewhere, implement and verify random per-challenge OTPs. The marketing portal's signup, password-reset, and email-verification flows remain outside this implementation.
+- Privileged portal MFA enforcement does not depend on notification enablement. If notifications or a delivery method are unavailable, privileged login cannot complete; configure and verify the notification worker before enabling those portals in production.
 - Accounting remains partially implemented; see the accounting audit for unresolved posting, report-snapshot, Treasury, tender, and subledger gaps. The delivered-sale outbox covers delivery posting only and does not close those wider gaps.
 - Delivered-sale outbox deployment requires applying `20261017000000_delivery_accounting_outbox_schedule` and regenerating Prisma Client first; migration and isolated-database concurrency verification are pending.
 - Distributor COD/refund deployment additionally requires applying `20261027100000_distributor_cod_and_return_cash` and regenerating Prisma Client. No migration was applied to the configured database; verify migration and concurrent remittance/refund/payout behavior on an isolated database first.
 - Distributor remittance and refund evidence uses JPG/PNG image uploads; return-goods inspection also requires a photo. Apply `20261027120000_return_and_cash_evidence_images` and regenerate Prisma Client before deploying the new return inspection field.
 - Prisma generation in a local Windows environment may be blocked by a native query-engine DLL lock while the backend server is running; this is an environment issue, not a schema-level application bug.
 - Loyalty gifts trigger automatically when the backend applies an eligible loyalty reward to an order; order-value promotions use separate configurable thresholds. Campaign/product-category triggers and automatic return-inspection reconciliation remain follow-up work; returned/lost gift outcomes can currently be recorded through the protected lifecycle API.
+
+### Production migration safety
+
+Use Prisma Migrate's deployment command from `backend/` (`npm run db:migrate:deploy`) only after reviewing pending migrations, taking a recoverable database backup, and validating the migration against an isolated staging copy. Do not use `db:push`, `db:sync`, or `db:reset` as a production deployment step. A deploy command does not make a destructive migration safe; review its data impact and coordinate an explicit rollout/rollback plan first. Database-backed integration tests must also target an isolated test database.
 
 ## 4. High-Level Platform Map
 

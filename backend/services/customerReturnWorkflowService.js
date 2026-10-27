@@ -221,6 +221,20 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
       productValue: totalRefundAmount,
       vatRatePercent: vatRate,
     }).vatRefunded.toNumber();
+
+    const { evaluateCustomerReturnAutoApproval } = await import("./autoApprovalPolicyService.js");
+    const autoApproval = await evaluateCustomerReturnAutoApproval({
+      order,
+      reasonCode: normalizedReason,
+      refundAmount: totalRefundAmount,
+      hasEvidence: items.some((item) => Boolean(item.evidenceUrl || item.evidence)),
+      client: tx,
+    });
+
+    const initialLifecycleStatus = autoApproval.shouldAutoApprove
+      ? (order.deliveryRoute === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN")
+      : "PENDING_ADMIN_REVIEW";
+
     const created = await tx.customerReturn.create({
       data: {
         requestKey: key,
@@ -238,21 +252,21 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
         refundStatus: "PENDING",
         inventoryAction: "PENDING_INSPECTION",
         reason: normalizedReason,
-        lifecycleStatus: "PENDING_ADMIN_REVIEW",
+        lifecycleStatus: initialLifecycleStatus,
         originalNcmOrderId: order.ncmOrderId,
       },
     });
     await addReturnEvent(tx, {
       returnId: created.id,
-      eventType: "REQUESTED",
-      toStatus: "PENDING_ADMIN_REVIEW",
-      actorId: actorRole === "ADMIN" ? adminId : customerId,
-      actorRole,
-      reason: normalizedReason,
-      metadata: { items: processedItems, originalNcmOrderId: order.ncmOrderId, deliveryRoute: order.deliveryRoute, distributorId: order.distributorId },
+      eventType: autoApproval.shouldAutoApprove ? "AUTO_APPROVED_BY_POLICY" : "REQUESTED",
+      toStatus: initialLifecycleStatus,
+      actorId: autoApproval.shouldAutoApprove ? "SYSTEM_AUTO_POLICY" : (actorRole === "ADMIN" ? adminId : customerId),
+      actorRole: autoApproval.shouldAutoApprove ? "SYSTEM" : actorRole,
+      reason: autoApproval.shouldAutoApprove ? autoApproval.reason : normalizedReason,
+      metadata: { items: processedItems, originalNcmOrderId: order.ncmOrderId, deliveryRoute: order.deliveryRoute, distributorId: order.distributorId, autoApproval },
       idempotencyKey: `RETURN:${created.id}:REQUESTED`,
     });
-    return { returnRecord: created, duplicate: false };
+    return { returnRecord: created, duplicate: false, autoApproved: autoApproval.shouldAutoApprove };
   }, { isolationLevel: "Serializable" });
 
   return result;
@@ -708,11 +722,15 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
                 availableQuantity: { increment: quantity },
               },
             });
-            restockedInventoryCost += Number(allocation.costLayer.unitCogs) * quantity;
+            const rawUnitCogs = allocation.costLayer?.unitCogs;
+            const unitCogs = Number(rawUnitCogs);
+            if (rawUnitCogs === null || rawUnitCogs === undefined || String(rawUnitCogs).trim() === "" || !Number.isFinite(unitCogs) || unitCogs < 0) {
+              throw fail("A verified unit cost is required to restock this return allocation.", "RETURN_COST_INVALID", 409);
+            }
+            restockedInventoryCost += unitCogs * quantity;
             remainingReturnQuantity -= quantity;
           }
         }
-        restockedInventoryCost += Number(item.unitCostPrice || 0) * remainingReturnQuantity;
         const product = await tx.product.findUnique({ where: { id: item.productId } });
         if (!product) throw fail(`Product not found for returned item ${item.name || item.productId}.`, "RETURN_PRODUCT_NOT_FOUND", 409);
         const inventory = current.manufacturerId

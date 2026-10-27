@@ -65,7 +65,7 @@ test("ADMIN access token without MFA is rejected after session validation", asyn
   assert.equal(result.response.body.code, "ADMIN_MFA_REQUIRED");
 });
 
-test("privileged access tokens without MFA are accepted when notifications are disabled", async () => {
+test("privileged access tokens without MFA are rejected when notifications are disabled", async () => {
   const account = {
     id: "admin-account",
     role: "ADMIN",
@@ -79,8 +79,9 @@ test("privileged access tokens without MFA are accepted when notifications are d
   const token = generateAccessToken({ accountId: account.id, profileId: "admin-profile", role: "ADMIN" });
   const result = await invokeAuthenticate(token, account, "/api/order/list", { NOTIFICATIONS_ENABLED: "false" });
 
-  assert.equal(result.nextCalled, true);
-  assert.equal(result.response, undefined);
+  assert.equal(result.nextCalled, false);
+  assert.equal(result.response.code, 401);
+  assert.equal(result.response.body.code, "ADMIN_MFA_REQUIRED");
 });
 
 test("role-mismatched tokens are rejected", async () => {
@@ -199,7 +200,7 @@ test("forced Admin password rotation blocks APIs except session inspection and p
   assert.equal(passwordChange.nextCalled, true);
 });
 
-test("privileged login honors notification setting when profile is active despite pending account status", async () => {
+test("privileged login still requires MFA when notifications are disabled and the profile is active", async () => {
   const unique = crypto.randomUUID().slice(0, 8);
   const email = `partner-approval-sync-${unique}@example.test`;
   const account = await prisma.authAccount.create({
@@ -226,15 +227,15 @@ test("privileged login honors notification setting when profile is active despit
   });
 
   try {
-    const bypassedResult = await authenticateAccount({
+    const notificationsDisabledResult = await authenticateAccount({
       identifier: email,
       password: "StrongPass123!",
       targetPortal: "MARKETING_PARTNER",
       env: { ...process.env, NOTIFICATIONS_ENABLED: "false" },
     });
 
-    assert.equal(bypassedResult.requiresTwoFactor, undefined);
-    assert.ok(bypassedResult.token);
+    assert.equal(notificationsDisabledResult.requiresTwoFactor, true);
+    assert.equal(notificationsDisabledResult.token, undefined);
 
     const result = await authenticateAccount({
       identifier: email,

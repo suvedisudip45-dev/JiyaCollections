@@ -1473,6 +1473,72 @@ export const postDistributorSettlementRequestAccounting = async ({
  * CR Cash/Bank (1110/1120) or Customer Refund Payable (2140) / AP (2110)
  * (If restocked): DR Merchandise Inventory (1140), CR COGS (5100)
  */
+export const buildCustomerReturnAccountingLines = ({
+  returnId,
+  customerName,
+  totalRefund,
+  vat,
+  isPayable,
+  refundMethod,
+  treasuryGlAccountId,
+  restockedInventoryCost,
+}) => {
+  const netReturn = Number((totalRefund - vat).toFixed(2));
+  const creditAccount = isPayable ? "2110" : refundMethod === "BANK_TRANSFER" ? "1120" : refundMethod === "CASH" ? "1110" : "2140";
+  const lines = [
+    {
+      accountCode: "4500",
+      debit: netReturn,
+      credit: 0,
+      description: `Sales Return ex-VAT for RMA #${returnId ? returnId.slice(-6) : ""}`,
+      customerName,
+    },
+    {
+      accountCode: "2120",
+      debit: vat,
+      credit: 0,
+      description: `Output VAT adjustment for RMA #${returnId ? returnId.slice(-6) : ""}`,
+    },
+    {
+      ...(treasuryGlAccountId ? { accountId: treasuryGlAccountId } : { accountCode: creditAccount }),
+      debit: 0,
+      credit: totalRefund,
+      description: `Refund payout/credit to ${customerName}`,
+      customerName,
+    },
+  ];
+
+  const restockCost = Number(restockedInventoryCost);
+  if (Number.isFinite(restockCost) && restockCost > 0) {
+    lines.push(
+      {
+        accountCode: "1140",
+        debit: restockCost,
+        credit: 0,
+        description: `Restock inventory for RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+      {
+        accountCode: "5100",
+        debit: 0,
+        credit: restockCost,
+        description: `Reverse COGS for restocked item in RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+    );
+  }
+  return lines;
+};
+
+export const resolveCustomerReturnTreasuryGlAccountId = async (client, financialAccountId) => {
+  const selectedTreasuryAccount = await client.financialAccount.findUnique({
+    where: { id: financialAccountId },
+  });
+  const treasuryGlAccountId = selectedTreasuryAccount?.accountId || null;
+  if (!treasuryGlAccountId) {
+    throw new Error("The selected refund treasury account is not linked to a General Ledger account.");
+  }
+  return treasuryGlAccountId;
+};
+
 export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) => {
   try {
     const client = opts.client || prisma;
@@ -1494,51 +1560,23 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
       ).toNumber();
     }
     vat = Number(vat);
-    const netReturn = Number((totalRefund - vat).toFixed(2));
     const isPayable = opts.recordAsPayable !== undefined ? opts.recordAsPayable : returnOrParams.refundMethod === "PAYABLE";
     const refundMethod = returnOrParams.refundMethod || (isPayable ? "PAYABLE" : "CASH");
-    const creditAccount = isPayable ? "2110" : refundMethod === "BANK_TRANSFER" ? "1120" : refundMethod === "CASH" ? "1110" : "2140";
-
-    const lines = [
-      {
-        accountCode: "4500",
-        debit: netReturn,
-        credit: 0,
-        description: `Sales Return ex-VAT for RMA #${returnId ? returnId.slice(-6) : ""}`,
-        customerName,
-      },
-      {
-        accountCode: "2120",
-        debit: vat,
-        credit: 0,
-        description: `Output VAT adjustment for RMA #${returnId ? returnId.slice(-6) : ""}`,
-      },
-      {
-        accountCode: creditAccount,
-        debit: 0,
-        credit: totalRefund,
-        description: `Refund payout/credit to ${customerName}`,
-        customerName,
-      },
-    ];
-
-    const restockCost = Number(returnOrParams.restockedInventoryCost || 0);
-    if (restockCost > 0) {
-      lines.push(
-        {
-          accountCode: "1140",
-          debit: restockCost,
-          credit: 0,
-          description: `Restock inventory for RMA #${returnId ? returnId.slice(-6) : ""}`,
-        },
-        {
-          accountCode: "5100",
-          debit: 0,
-          credit: restockCost,
-          description: `Reverse COGS for restocked item in RMA #${returnId ? returnId.slice(-6) : ""}`,
-        }
-      );
+    const selectedTreasuryAccountId = opts.refundFromAccountId || returnOrParams.refundFromAccountId;
+    let treasuryGlAccountId = null;
+    if (!isPayable && selectedTreasuryAccountId) {
+      treasuryGlAccountId = await resolveCustomerReturnTreasuryGlAccountId(client, selectedTreasuryAccountId);
     }
+    const lines = buildCustomerReturnAccountingLines({
+      returnId,
+      customerName,
+      totalRefund,
+      vat,
+      isPayable,
+      refundMethod,
+      treasuryGlAccountId,
+      restockedInventoryCost: returnOrParams.restockedInventoryCost,
+    });
 
     return await postJournalEntry({
       transactionDate: returnOrParams.returnDate ? new Date(returnOrParams.returnDate) : new Date(),
@@ -2034,6 +2072,60 @@ export const postShareBuybackAccounting = async (params) => {
     return result;
   } catch (error) {
     console.error("Error in postShareBuybackAccounting:", error);
+  }
+};
+
+/**
+ * 11c. Partner Profit Distribution Accounting
+ * DR Partner Drawings (3500)
+ * CR Bank Accounts (1120) or Partner Profit Distributions Payable (2150)
+ */
+export const postProfitDistributionAccounting = async ({
+  distributionId,
+  partnerId,
+  partnerName,
+  amount,
+  fiscalYear = "FY",
+  isImmediatePayout = false,
+  cashAccountCode = "1120",
+  createdBy = "system",
+  client = prisma,
+}) => {
+  try {
+    const distAmount = Number(amount || 0);
+    if (distAmount <= 0) return null;
+
+    const lines = [
+      {
+        accountCode: "3500",
+        debit: distAmount,
+        credit: 0,
+        description: `Profit distribution dividend declared for ${partnerName} (${fiscalYear})`,
+      },
+      {
+        accountCode: isImmediatePayout ? cashAccountCode : "2150",
+        debit: 0,
+        credit: distAmount,
+        description: isImmediatePayout
+          ? `Dividend paid out to ${partnerName}`
+          : `Dividend payable accrued for ${partnerName}`,
+      },
+    ];
+
+    return await postJournalEntry({
+      transactionDate: new Date(),
+      sourceType: "PROFIT_DISTRIBUTION",
+      sourceId: `${distributionId}-${partnerId}`,
+      idempotencyKey: `PROFIT_DISTRIBUTION:${distributionId}:${partnerId}`,
+      referenceNumber: `DIST-${String(distributionId).slice(-6)}`,
+      description: `Profit Distribution to ${partnerName} - Rs ${distAmount.toFixed(2)} (${fiscalYear})`,
+      lines,
+      createdBy,
+      client,
+    });
+  } catch (error) {
+    console.error("Error in postProfitDistributionAccounting:", error);
+    throw error;
   }
 };
 

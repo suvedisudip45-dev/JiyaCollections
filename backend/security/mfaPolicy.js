@@ -1,5 +1,3 @@
-import { parseBoolean } from "../notifications/config.js";
-
 export const MFA_REQUIRED_PORTALS = Object.freeze([
   "ADMIN",
   "MARKETING_PARTNER",
@@ -11,8 +9,7 @@ export const normalizePortal = (portal) => String(portal || "").trim().toUpperCa
 
 export const requiresMfa = (portal) => MFA_REQUIRED_PORTALS.includes(normalizePortal(portal));
 
-export const isMfaEnforced = (portal, env = process.env) =>
-  requiresMfa(portal) && parseBoolean("NOTIFICATIONS_ENABLED", env.NOTIFICATIONS_ENABLED);
+export const isMfaEnforced = (portal) => requiresMfa(portal);
 
 export const hasMfaEvidence = (claims) => Boolean(
   claims?.mfa_verified === true &&
@@ -21,5 +18,5 @@ export const hasMfaEvidence = (claims) => Boolean(
   claims.amr.includes("otp"),
 );
 
-export const hasRequiredMfa = (portal, claims, env = process.env) =>
-  !isMfaEnforced(portal, env) || hasMfaEvidence(claims);
+export const hasRequiredMfa = (portal, claims) =>
+  !isMfaEnforced(portal) || hasMfaEvidence(claims);

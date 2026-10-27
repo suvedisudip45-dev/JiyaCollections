@@ -10,6 +10,7 @@ import {
   postSupplierPaymentAccounting,
   postCustomerPaymentAccounting,
   postDirectExpenseAccounting,
+  postProfitDistributionAccounting,
 } from "../services/accountingPostingEngine.js";
 import {
   calculateFinancialDashboardProductCosts,
@@ -2500,12 +2501,68 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       return res.json({ success: false, message: "No active partners registered to distribute profit to" });
     }
 
-    const grossRevenue = orders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
-    const taxableRevenue = grossRevenue / 1.13;
-    const estCOGS = taxableRevenue * 0.55;
-    const totalExpenses = operatingExpensesList.reduce((acc, e) => acc + Number(e.amount || 0), 0);
+    // 1. Query Real COGS from General Ledger (Account 5100)
+    const cogsJournalResult = await prisma.journalLine.aggregate({
+      where: {
+        account: { accountCode: "5100" },
+        journalEntry: {
+          status: "POSTED",
+          transactionDate: { gte: pStart, lte: pEnd },
+        },
+      },
+      _sum: { debit: true, credit: true },
+    });
+    let realCOGS = Number((cogsJournalResult._sum.debit || 0) - (cogsJournalResult._sum.credit || 0));
 
-    const netProfit = Math.max(0, taxableRevenue - estCOGS - totalExpenses);
+    // Fallback: If no GL entries found for 5100 in period, calculate accurately using calculateFinancialDashboardProductCosts
+    if (realCOGS <= 0 && orders.length > 0) {
+      const [costLayers, mfrInventories, productsList] = await Promise.all([
+        prisma.manufacturerInventoryCostLayer.findMany({ include: { productionRequest: true } }),
+        prisma.manufacturerInventory.findMany({ where: { priceStatus: "APPROVED" } }),
+        prisma.product.findMany({ select: { id: true, costPrice: true } }),
+      ]);
+      const productCosting = calculateFinancialDashboardProductCosts({
+        orders,
+        costLayers,
+        manufacturerInventories: mfrInventories,
+        products: productsList,
+      });
+      realCOGS = Number(productCosting.directCOGS || 0);
+    }
+
+    // 2. Query Real Net Revenue from GL (4100 Gross Sales - 4110 Discounts + 4200 Shipping)
+    const revenueResult = await prisma.journalLine.aggregate({
+      where: {
+        account: { accountCode: { in: ["4100", "4200"] } },
+        journalEntry: {
+          status: "POSTED",
+          transactionDate: { gte: pStart, lte: pEnd },
+        },
+      },
+      _sum: { credit: true, debit: true },
+    });
+    let grossRevenue = Number((revenueResult._sum.credit || 0) - (revenueResult._sum.debit || 0));
+    if (grossRevenue <= 0) {
+      grossRevenue = orders.reduce((acc, o) => acc + Number(o.amount || 0), 0);
+    }
+
+    // 3. Query Operating Expenses from GL (6000-6999)
+    const opexResult = await prisma.journalLine.aggregate({
+      where: {
+        account: { accountCode: { gte: "6000", lte: "6999" } },
+        journalEntry: {
+          status: "POSTED",
+          transactionDate: { gte: pStart, lte: pEnd },
+        },
+      },
+      _sum: { debit: true, credit: true },
+    });
+    let totalExpenses = Number((opexResult._sum.debit || 0) - (opexResult._sum.credit || 0));
+    if (totalExpenses <= 0) {
+      totalExpenses = operatingExpensesList.reduce((acc, e) => acc + Number(e.amount || 0), 0);
+    }
+
+    const netProfit = Math.max(0, grossRevenue - realCOGS - totalExpenses);
     const retainPct = Number(retainedEarningsPercentage || 20);
     const retainedAmount = Number(((netProfit * retainPct) / 100).toFixed(2));
     const distributableAmount = Number((netProfit - retainedAmount).toFixed(2));
@@ -2568,6 +2625,16 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
             description: `Profit Distribution Dividend to ${item.name} (${item.percentage}%)`,
           },
         });
+        // Post double-entry journal: DR 3500 (Partner Drawings) / CR 1120 (Bank)
+        await postProfitDistributionAccounting({
+          distributionId: record.id,
+          partnerId: item.partnerId,
+          partnerName: item.name,
+          amount: item.amount,
+          fiscalYear: fiscalYear || "2082/2083",
+          isImmediatePayout: true,
+          cashAccountCode: "1120",
+        });
       }
     } else if (distributableAmount > 0) {
       for (const item of breakdown) {
@@ -2587,6 +2654,15 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
               priority: "HIGH",
               notes: `Declared profit dividend share for partner ${item.name} for period ${pStart.toISOString().slice(0, 10)} to ${pEnd.toISOString().slice(0, 10)}.`,
             },
+          });
+          // Post double-entry journal: DR 3500 (Partner Drawings) / CR 2150 (Payable)
+          await postProfitDistributionAccounting({
+            distributionId: record.id,
+            partnerId: item.partnerId,
+            partnerName: item.name,
+            amount: item.amount,
+            fiscalYear: fiscalYear || "2082/2083",
+            isImmediatePayout: false,
           });
         }
       }

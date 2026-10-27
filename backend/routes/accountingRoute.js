@@ -14,6 +14,8 @@ import {
   getFiscalYearsAndPeriods,
   createFiscalYear,
   togglePeriodStatus,
+  closeFiscalYearController,
+  reopenFiscalYearController,
 } from "../controllers/accountingController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 
@@ -41,5 +43,8 @@ accountingRouter.get("/subledger-reconciliation", authenticate, authorize("accou
 accountingRouter.get("/fiscal-years", authenticate, authorize("accounting:fiscal_years_read"), getFiscalYearsAndPeriods);
 accountingRouter.post("/create-fiscal-year", authenticate, authorize("accounting:fiscal_year_create"), createFiscalYear);
 accountingRouter.post("/toggle-period", authenticate, authorize("accounting:period_toggle"), togglePeriodStatus);
+accountingRouter.post("/close-fiscal-year", authenticate, authorize("accounting:fiscal_year_create"), closeFiscalYearController);
+accountingRouter.post("/reopen-fiscal-year", authenticate, authorize("accounting:fiscal_year_create"), reopenFiscalYearController);
 
 export default accountingRouter;
+

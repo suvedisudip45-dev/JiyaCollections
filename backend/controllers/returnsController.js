@@ -200,11 +200,9 @@ export const createCustomerReturn = async (req, res) => {
     }
 
     // Post to Double-Entry General Ledger (Sales Returns & Allowances / Output VAT / Cash or AP)
-    postCustomerReturnAccounting(returnRecord, {
+    await postCustomerReturnAccounting(returnRecord, {
       refundFromAccountId,
       recordAsPayable,
-    }).catch((glErr) => {
-      console.error("General Ledger customer return posting error:", glErr);
     });
 
     res.json({

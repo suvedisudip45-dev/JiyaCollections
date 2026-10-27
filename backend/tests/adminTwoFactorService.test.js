@@ -322,7 +322,7 @@ test("fixed OTP is available only through explicit development configuration", a
     "MANUFACTURER",
     developmentEnvironment,
   );
-  assert.notEqual(manufacturerChallenge.otp, "111111");
+  assert.equal(manufacturerChallenge.otp, "111111");
 
   await assert.rejects(() => sendPortalTwoFactorCode({
     challengeId: "123e4567-e89b-12d3-a456-426614174000",

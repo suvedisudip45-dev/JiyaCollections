@@ -12,6 +12,16 @@ import { loadOtpConfig } from "./otpService.js";
 const PASSWORD_RESET_PORTALS = new Set(["CUSTOMER", "MANUFACTURER", "DISTRIBUTOR"]);
 const PASSWORD_RESET_OTP = "111111";
 
+const ensurePasswordResetAvailable = (env) => {
+  if (!["development", "test"].includes(String(env.NODE_ENV || "").toLowerCase())) {
+    throw fail(
+      "Password recovery is temporarily unavailable.",
+      503,
+      "PASSWORD_RESET_DISABLED",
+    );
+  }
+};
+
 const fail = (message, statusCode = 400, code = "PASSWORD_RESET_FAILED") => {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -86,6 +96,7 @@ export const requestPasswordResetOtp = async ({
   env = process.env,
   now = new Date(),
 } = {}) => {
+  ensurePasswordResetAvailable(env);
   const email = String(rawEmail || "").trim().toLowerCase();
   const phone = normalizePhoneNumber(rawPhone);
   const portal = normalizePortal(rawPortal);
@@ -241,6 +252,7 @@ export const verifyPasswordResetOtp = async ({
   env = process.env,
   now = new Date(),
 } = {}) => {
+  ensurePasswordResetAvailable(env);
   const portal = normalizePortal(rawPortal);
   const secret = String(env.OTP_SERVER_SECRET || "");
   const length = PASSWORD_RESET_OTP.length;
@@ -378,6 +390,7 @@ export const completePasswordReset = async ({
   env = process.env,
   now = new Date(),
 } = {}) => {
+  ensurePasswordResetAvailable(env);
   const portal = normalizePortal(rawPortal);
   const secret = String(env.OTP_SERVER_SECRET || "");
   if (!PASSWORD_RESET_PORTALS.has(portal)) throw fail("Password recovery is not available for this portal.", 400, "PASSWORD_RESET_PORTAL_INVALID");

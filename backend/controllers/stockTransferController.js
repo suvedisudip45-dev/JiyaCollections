@@ -721,6 +721,21 @@ export const createStockTransferRequest = async (req, res) => {
         distributorId: req.distributorId,
         name: `Distributor ${req.distributorId.slice(-8)}`,
       });
+      const { evaluateStockTransferAutoApproval } = await import("../services/autoApprovalPolicyService.js");
+      const autoApproval = await evaluateStockTransferAutoApproval({
+        distributorId: req.distributorId,
+        manufacturerId,
+        requestedLines,
+        factoryBalances,
+        client: tx,
+      });
+
+      const initialStatus = autoApproval.shouldAutoApprove ? "APPROVED" : "PENDING_ADMIN_APPROVAL";
+      const initialLines = requestedLines.map((line) => ({
+        ...line,
+        approvedQuantity: autoApproval.shouldAutoApprove ? line.requestedQuantity : 0,
+      }));
+
       return tx.stockTransfer.create({
         data: {
           manufacturerId,
@@ -728,7 +743,11 @@ export const createStockTransferRequest = async (req, res) => {
           sourceLocationId: sourceLocation.id,
           destinationLocationId: destinationLocation.id,
           requestedByAccountId: req.auth.accountId,
-          lines: { create: requestedLines },
+          status: initialStatus,
+          reviewedByAccountId: autoApproval.shouldAutoApprove ? "SYSTEM_AUTO_POLICY" : null,
+          reviewedAt: autoApproval.shouldAutoApprove ? new Date() : null,
+          adminNote: autoApproval.shouldAutoApprove ? autoApproval.reason : null,
+          lines: { create: initialLines },
         },
         include: transferInclude,
       });
