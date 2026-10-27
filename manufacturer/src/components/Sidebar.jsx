@@ -89,7 +89,7 @@ const Sidebar = () => {
   };
 
   const navLinkStyle = ({ isActive }) =>
-    `flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-medium transition-all ${
+    `flex w-max shrink-0 items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-medium transition-all lg:w-full lg:shrink ${
       isActive
         ? "bg-[#171717] text-white shadow-xs font-semibold"
         : "text-[#575757] hover:text-[#171717] hover:bg-[#f8f7f4]"
@@ -100,10 +100,10 @@ const Sidebar = () => {
   // ── DISTRIBUTOR VIEW ─────────────────────────────────────────
   if (activeWorkspace === "DISTRIBUTOR") {
     return (
-      <aside className="w-64 shrink-0 min-h-[calc(100vh-65px)] bg-[#ffffff] border-r border-[#dedbd3] p-4 flex flex-col justify-between select-none">
-        <div className="space-y-6 overflow-y-auto max-h-[calc(100vh-140px)] pr-1">
+      <aside className="flex w-full shrink-0 flex-col justify-between border-b border-[#dedbd3] bg-white p-2 select-none lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
+        <div className="min-w-0 lg:max-h-[calc(100vh-140px)] lg:space-y-6 lg:overflow-y-auto lg:pr-1">
           <div>
-            <div className="flex items-center justify-between px-3 mb-2">
+            <div className="mb-1 hidden items-center justify-between px-3 lg:flex">
               <p className="text-[10px] font-bold uppercase tracking-wider text-[#171717]">
                 Distributor Hub
               </p>
@@ -111,7 +111,7 @@ const Sidebar = () => {
                 ACTIVE
               </span>
             </div>
-            <nav className="space-y-1">
+            <nav aria-label="Distributor navigation" className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 lg:block lg:space-y-1 lg:overflow-visible">
               <NavLink to="/distributor" className={navLinkStyle} end>
                 <div className="flex items-center gap-3">
                   <Building className="w-4 h-4 text-emerald-600" />
@@ -205,7 +205,7 @@ const Sidebar = () => {
         </div>
 
         {/* Footer */}
-        <div className="pt-3 border-t border-[#dedbd3]">
+        <div className="hidden border-t border-[#dedbd3] pt-3 lg:block">
           <div className="flex items-center gap-2 px-3 py-2 bg-[#f8f7f4] rounded-xl border border-[#dedbd3]">
             <span className={`w-2 h-2 rounded-full ${distributor?.isActive ? "bg-emerald-600 animate-pulse" : "bg-slate-400"}`} />
             <div className="text-[11px] leading-tight min-w-0">
@@ -224,13 +224,13 @@ const Sidebar = () => {
 
   // ── MANUFACTURER VIEW ────────────────────────────────────────
   return (
-    <aside className="w-64 shrink-0 min-h-[calc(100vh-65px)] bg-[#ffffff] border-r border-[#dedbd3] p-4 flex flex-col justify-between select-none">
-      <div className="space-y-6 overflow-y-auto max-h-[calc(100vh-140px)] pr-1">
+    <aside className="flex w-full shrink-0 flex-col justify-between border-b border-[#dedbd3] bg-white p-2 select-none lg:min-h-[calc(100vh-65px)] lg:w-64 lg:border-b-0 lg:border-r lg:p-4">
+      <div className="min-w-0 lg:max-h-[calc(100vh-140px)] lg:space-y-6 lg:overflow-y-auto lg:pr-1">
         <div>
-          <p className="px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757] mb-2">
+          <p className="mb-2 hidden px-3 text-[10px] font-bold uppercase tracking-wider text-[#575757] lg:block">
             Manufacturer Portal (Factory)
           </p>
-          <nav className="space-y-1">
+          <nav aria-label="Manufacturer navigation" className="flex min-w-0 gap-1.5 overflow-x-auto pb-0.5 lg:block lg:space-y-1 lg:overflow-visible">
             <NavLink to="/" className={navLinkStyle} end>
               <div className="flex items-center gap-3">
                 <LayoutDashboard className="w-4 h-4" />
@@ -282,7 +282,7 @@ const Sidebar = () => {
 
         {/* Distributor application banner (only for pure manufacturers) */}
         {!hasDistributorRole && (
-          <div className="p-3.5 bg-[#f8f7f4] border border-[#dedbd3] rounded-2xl space-y-2.5">
+          <div className="hidden space-y-2.5 rounded-2xl border border-[#dedbd3] bg-[#f8f7f4] p-3.5 lg:block">
             <div className="flex items-center gap-2 text-[#171717]">
               <Building className="w-4 h-4" />
               <p className="text-xs font-bold">Become a Distributor</p>
@@ -302,7 +302,7 @@ const Sidebar = () => {
       </div>
 
       {/* Footer */}
-      <div className="pt-3 border-t border-[#dedbd3]">
+      <div className="hidden border-t border-[#dedbd3] pt-3 lg:block">
         <div className="flex items-center gap-2 px-3 py-2 bg-[#f8f7f4] rounded-xl border border-[#dedbd3]">
           <span className={`w-2 h-2 rounded-full ${manufacturer?.isAvailable ? "bg-emerald-600 animate-pulse" : "bg-slate-400"}`} />
           <div className="text-[11px] leading-tight min-w-0">

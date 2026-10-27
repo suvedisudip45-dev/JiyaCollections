@@ -39,3 +39,19 @@
   }
 }
 
+@layer utilities {
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-color: #b8b2a7 transparent;
+    scrollbar-width: thin;
+  }
+
+  .overflow-x-auto::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .overflow-x-auto::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: #b8b2a7;
+  }
+}

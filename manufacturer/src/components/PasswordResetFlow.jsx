@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 import { ArrowLeft, ArrowRight, CheckCircle2, KeyRound, Loader2, MessageSquareText } from "lucide-react";
+import OtpInput from "./OtpInput";
 
 const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
   const [step, setStep] = useState("phone");
@@ -57,7 +58,7 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
       <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
       <section className="relative z-10 w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/90 p-6 shadow-2xl sm:p-8">
@@ -111,18 +112,12 @@ const PasswordResetFlow = ({ backendUrl, portal, onBack, onComplete }) => {
                 Enter the code sent to <span className="font-semibold text-white">{maskedPhone}</span>.
               </div>
               <label className="block text-sm font-medium text-slate-200" htmlFor="reset-otp">SMS verification code</label>
-              <input
+              <OtpInput
                 id="reset-otp"
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                required
-                maxLength={otpLength}
-                pattern={`[0-9]{${otpLength}}`}
+                label="SMS verification code"
                 value={otp}
-                onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, otpLength))}
-                placeholder={`${otpLength}-digit code`}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-center text-lg tracking-[0.4em] text-white outline-none focus:border-emerald-500"
+                onChange={setOtp}
+                length={otpLength}
               />
             </>
           )}

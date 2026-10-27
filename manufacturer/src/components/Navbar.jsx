@@ -45,17 +45,17 @@ const Navbar = () => {
   const isOnline = distributor?.isActive;
 
   return (
-    <header className="sticky top-0 z-40 bg-[#ffffff]/95 backdrop-blur-md border-b border-[#dedbd3] px-4 sm:px-6 py-3 flex items-center justify-between shadow-xs">
+    <header className="sticky top-0 z-40 flex flex-col gap-2 border-b border-[#dedbd3] bg-[#ffffff]/95 px-3 py-2.5 shadow-xs backdrop-blur-md sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-3">
       {/* Left: Brand / Hub Identity */}
-      <div className="flex items-center gap-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white font-black text-lg shadow-xs ${
+      <div className="flex min-w-0 items-center gap-3">
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg font-black text-white shadow-xs ${
           isDistributorView ? "bg-emerald-700" : "bg-[#171717]"
         }`}>
           {isDistributorView ? "D" : "M"}
         </div>
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-sm sm:text-base font-bold text-[#171717] leading-tight">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="max-w-[52vw] truncate text-sm font-bold leading-tight text-[#171717] sm:max-w-[24rem] sm:text-base">
               {profile?.businessName || profile?.name}
             </h1>
             <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#f8f7f4] text-[#171717] text-[11px] font-semibold border border-[#dedbd3]">
@@ -63,10 +63,10 @@ const Navbar = () => {
               {isDistributorView ? "Distributor Hub" : "Verified Partner"}
             </span>
           </div>
-          <div className="flex items-center gap-2 text-xs text-[#575757]">
-            <span className="flex items-center gap-1">
+          <div className="flex min-w-0 items-center gap-2 text-xs text-[#575757]">
+            <span className="flex min-w-0 items-center gap-1">
               <MapPin className="w-3 h-3 text-emerald-600" />
-              {profile?.city || "Nepal"}
+              <span className="truncate">{profile?.city || "Nepal"}</span>
             </span>
             {!isDistributorView && manufacturer?.qualityRating && (
               <>
@@ -82,7 +82,7 @@ const Navbar = () => {
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2 sm:gap-3">
+      <div className="flex w-full items-center justify-between gap-1.5 sm:w-auto sm:justify-end sm:gap-3">
 
         {/* Distributor Online/Offline Toggle — only in distributor view */}
         {isDistributorView && (

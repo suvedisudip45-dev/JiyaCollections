@@ -7,6 +7,7 @@ import { useManufacturer } from "../context/ManufacturerContext";
 import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import { storeAuthTokens } from "../auth/tokenStorage";
 import PasswordResetFlow from "../components/PasswordResetFlow";
+import OtpInput from "../components/OtpInput";
 
 const encryptValue = (plaintext) => {
   const key = CryptoJS.enc.Hex.parse(import.meta.env.VITE_AES_KEY);
@@ -894,7 +895,7 @@ const Login = () => {
 
   if (loginStep !== "credentials") {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+      <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
         <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="w-full max-w-md relative z-10">
@@ -903,7 +904,7 @@ const Login = () => {
               {loginStep === "otp" ? <ShieldCheck className="w-8 h-8" /> : <Factory className="w-8 h-8" />}
             </div>
             <h1 className="text-2xl font-black text-white">{loginStep === "otp" ? "Verify your identity" : "Choose a delivery method"}</h1>
-            <p className="text-sm text-slate-400 mt-2">Manufacturer Hub access verification</p>
+            <p className="text-sm text-slate-400 mt-2">{loginPortal === "DISTRIBUTOR" ? "Distributor Hub access verification" : "Manufacturer Hub access verification"}</p>
           </div>
           <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl">
             {loginStep === "method" ? (
@@ -934,18 +935,13 @@ const Login = () => {
                   <p className="text-sm text-slate-400">Code sent to <span className="font-semibold text-slate-200">{method === "SMS" ? challenge?.maskedPhone : challenge?.maskedEmail}</span></p>
                 </div>
                 <div>
-                  <label htmlFor="manufacturer-otp" className="sr-only">One-time verification code</label>
-                  <input
+                  <OtpInput
                     id="manufacturer-otp"
+                    label="One-time verification code"
                     value={otp}
-                    onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, challenge?.codeLength || 6))}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-4 text-center font-mono text-2xl tracking-[0.45em] text-white outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20"
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={challenge?.codeLength || 6}
+                    onChange={setOtp}
+                    length={challenge?.codeLength || 6}
                     autoFocus
-                    required
                   />
                 </div>
                 <div className="flex items-center justify-between border-y border-slate-800 py-3 text-sm">
@@ -973,7 +969,7 @@ const Login = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="relative flex min-h-[100svh] items-center justify-center overflow-hidden bg-slate-950 px-3 py-6 sm:p-4">
       {/* Background Glow */}
       <div className="absolute top-1/4 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />

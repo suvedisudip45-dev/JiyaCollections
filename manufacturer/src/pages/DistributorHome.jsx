@@ -724,8 +724,8 @@ const DistributorHome = () => {
       </section>
 
       {receivingLine && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-          <form onSubmit={submitReceipt} className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-6 shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-3 sm:items-center sm:p-4">
+          <form onSubmit={submitReceipt} className="my-auto max-h-[calc(100dvh-1.5rem)] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-white p-4 shadow-xl sm:max-h-[calc(100dvh-2rem)] sm:p-6">
             <div>
               <h3 className="text-lg font-semibold text-slate-900">Record shipment receipt</h3>
               <p className="mt-1 text-sm text-slate-500">Up to {receivingLine.remaining} units remain for this SKU line.</p>
