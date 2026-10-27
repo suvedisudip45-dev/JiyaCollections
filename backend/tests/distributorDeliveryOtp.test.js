@@ -104,6 +104,10 @@ test("delivery OTP issues an encrypted SMS challenge bound to the distributor an
       client: harness.client,
       notificationConfig,
       otpConfig: { length: 6, expiryMinutes: 5 },
+      otpGenerator: (length) => {
+        assert.equal(length, 6);
+        return "654321";
+      },
       now: new Date("2026-01-01T00:00:00.000Z"),
     });
 
@@ -118,7 +122,7 @@ test("delivery OTP issues an encrypted SMS challenge bound to the distributor an
 
     const message = decryptNotificationText(harness.state.notification.payload.secureContent, secret);
     const code = message.match(/\b\d{6}\b/)?.[0];
-    assert.ok(code);
+    assert.equal(code, "654321");
     assert.doesNotMatch(JSON.stringify(harness.state.notification.payload), new RegExp(code));
 
     const verified = await verifyDistributorDeliveryOtp({

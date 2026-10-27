@@ -7,6 +7,16 @@ const DEFAULT_BONUS_RATE = 0;
 const DEFAULT_INCENTIVE_RATE = 0;
 const DEFAULT_VAT_RATE = 13;
 
+const nonNegativeRateValue = (value, label, maximum = 999_999_999_999_999_999) => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > maximum) {
+    const error = new Error(`${label} must be between 0 and ${maximum}.`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return Number(parsed.toFixed(2));
+};
+
 /**
  * Record or negotiate delivery rate card between Admin and Distributor.
  */
@@ -55,22 +65,49 @@ export const recordDistributorRateCard = async ({
     }
   }
 
-  const numDeliveryCharge = Math.max(0, Number(deliveryCharge || 0));
-  const numReturnCharge = Math.max(0, Number(returnCharge || 0));
-  const numCommissionRate = Math.max(0, Number(commissionRate || 0));
-  const numBonusRate = Math.max(0, Number(bonusRate || 0));
-  const numIncentiveRate = Math.max(0, Number(incentiveRate || 0));
-  const numVatRate = Math.max(0, Number(vatRate !== undefined ? vatRate : DEFAULT_VAT_RATE));
+  const numDeliveryCharge = nonNegativeRateValue(deliveryCharge, "Delivery charge");
+  const numReturnCharge = nonNegativeRateValue(returnCharge, "Return charge");
+  const numCommissionRate = nonNegativeRateValue(commissionRate, "Commission rate", 100);
+  const numBonusRate = nonNegativeRateValue(bonusRate, "Delivery incentive");
+  const numIncentiveRate = nonNegativeRateValue(incentiveRate, "Incentive rate");
+  const numVatRate = nonNegativeRateValue(vatRate !== undefined ? vatRate : DEFAULT_VAT_RATE, "VAT rate", 100);
+  let startsAt = effectiveFrom ? new Date(effectiveFrom) : new Date();
+  if (!Number.isFinite(startsAt.getTime())) {
+    const error = new Error("Rate card effective date must be valid.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const endsAt = effectiveUntil ? new Date(effectiveUntil) : null;
+  if (endsAt && (!Number.isFinite(endsAt.getTime()) || endsAt <= startsAt)) {
+    const error = new Error("Rate card effective end must be after its effective start.");
+    error.statusCode = 400;
+    throw error;
+  }
 
-  // Find existing active negotiation for distributor and product
+  const pending = await client.distributorDeliveryChargeNegotiation.findFirst({
+    where: {
+      distributorId,
+      productId: productId || null,
+      status: "PENDING",
+    },
+    orderBy: { createdAt: "desc" },
+  });
   const existing = await client.distributorDeliveryChargeNegotiation.findFirst({
     where: {
       distributorId,
       productId: productId || null,
-      status: { in: ["APPROVED", "PENDING"] },
+      status: "APPROVED",
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: { effectiveFrom: "desc" },
   });
+
+  if (
+    existing?.status === "APPROVED" &&
+    !effectiveFrom &&
+    startsAt <= new Date(existing.effectiveFrom || existing.createdAt || 0)
+  ) {
+    startsAt = new Date(new Date(existing.effectiveFrom || existing.createdAt || 0).getTime() + 1);
+  }
 
   const data = {
     distributorId,
@@ -87,14 +124,34 @@ export const recordDistributorRateCard = async ({
     proposedByAccountId: proposedByAccountId || null,
     reviewedByAccountId: reviewedByAccountId || proposedByAccountId || null,
     reviewedAt: status === "APPROVED" ? new Date() : null,
-    effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : new Date(),
-    effectiveUntil: effectiveUntil ? new Date(effectiveUntil) : null,
+    effectiveFrom: startsAt,
+    effectiveUntil: endsAt,
     notes: notes || null,
   };
 
-  if (existing) {
-    return client.distributorDeliveryChargeNegotiation.update({
+  if (pending && startsAt <= new Date(existing?.effectiveFrom || existing?.createdAt || 0)) {
+    const error = new Error("A new approved rate card must start after the existing rate card became effective.");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (existing && startsAt <= new Date(existing.effectiveFrom || existing.createdAt || 0)) {
+    const error = new Error("A new approved rate card must start after the existing rate card became effective.");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (
+    existing &&
+    (!existing.effectiveUntil || existing.effectiveUntil > startsAt)
+  ) {
+    await client.distributorDeliveryChargeNegotiation.update({
       where: { id: existing.id },
+      data: { effectiveUntil: new Date(startsAt.getTime() - 1) },
+    });
+  }
+
+  if (pending) {
+    return client.distributorDeliveryChargeNegotiation.update({
+      where: { id: pending.id },
       data,
       include: {
         distributor: { select: { id: true, name: true, city: true, phone: true } },
@@ -142,6 +199,7 @@ export const getDistributorRateCards = async ({
 export const resolveActiveRateCard = async ({
   distributorId,
   productId = null,
+  effectiveAt = new Date(),
   client = prisma,
 } = {}) => {
   if (!distributorId) {
@@ -164,6 +222,8 @@ export const resolveActiveRateCard = async ({
         distributorId,
         productId,
         status: "APPROVED",
+        OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: effectiveAt } }],
+        AND: [{ OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: effectiveAt } }] }],
       },
       orderBy: { effectiveFrom: "desc" },
     });
@@ -188,6 +248,8 @@ export const resolveActiveRateCard = async ({
       distributorId,
       productId: null,
       status: "APPROVED",
+      OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: effectiveAt } }],
+      AND: [{ OR: [{ effectiveUntil: null }, { effectiveUntil: { gt: effectiveAt } }] }],
     },
     orderBy: { effectiveFrom: "desc" },
   });

@@ -63,7 +63,7 @@ export const ADMIN_SECTION_PERMISSIONS = {
   supply: ["assignment:admin_list", "delivery:admin_list", "manufacturer:admin_list", "manufacturer:admin_detail", "manufacturer:production_admin", "distributor:admin_list", "inventory:admin_read_all", "inventory:admin_low_stock", "transfer:admin_read"],
   marketing: ["marketing_card:admin_manage", "marketing_card:own_store_manage", "marketing_card:custom_assign"],
   operations: ["inventory:admin_read_all", "inventory:ledger_read", "cogs:read", "shipping:config_update"],
-  finance: ["finance:dashboard_read", "finance:treasury_read", "finance:assets_read", "finance:partnership_read", "expense:read", "finance:income_read", "finance:tax_report_read", "returns:supplier_read", "finance:payables_read", "finance:receivable_collect", "finance:statements_read"],
+  finance: ["finance:dashboard_read", "finance:treasury_read", "finance:assets_read", "finance:partnership_read", "expense:read", "finance:income_read", "finance:tax_report_read", "finance:tax_configure", "returns:supplier_read", "finance:payables_read", "finance:receivable_collect", "finance:statements_read"],
   accounting: ["accounting:coa_read", "accounting:journal_read", "accounting:ledger_read", "accounting:trial_balance_read", "accounting:fiscal_years_read", "accounting:subledger_read"],
   customers: ["customer:admin_list", "customer:admin_detail", "customer:admin_orders_read", "customer:account_manage", "customer:letter_manage", "loyalty:level_manage", "review:admin_list", "storyletter:admin_manage"],
   platform: ["platform:features_manage"],

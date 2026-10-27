@@ -12,6 +12,7 @@ import {
   postReturnExchangeSettlementAccounting,
   resolveReturnExchangeSettlementRate,
 } from "./returnExchangeSettlementService.js";
+import { resolveVatRatePercent } from "./vatRateService.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
@@ -52,21 +53,29 @@ const normalize = (value) => String(value || "").trim().toLowerCase();
 const itemKey = (item) => [String(item.productId || ""), normalize(item.size), normalize(item.color)].join("|");
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 
-export const calculateCustomerReturnRefundPolicy = ({ productValue, chargeRatePercent = 0, originalDeliveryFee = 0 }) => {
+export const calculateCustomerReturnRefundPolicy = ({
+  productValue,
+  chargeRatePercent = 0,
+  originalDeliveryFee = 0,
+  vatRatePercent = 13,
+}) => {
   const base = new Prisma.Decimal(String(productValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const rate = new Prisma.Decimal(String(chargeRatePercent || 0));
   const deliveryFee = new Prisma.Decimal(String(originalDeliveryFee || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  if (!base.isFinite() || base.isNegative() || !rate.isFinite() || rate.isNegative() || rate.greaterThan(100) || !deliveryFee.isFinite() || deliveryFee.isNegative()) {
+  const vatRate = new Prisma.Decimal(String(vatRatePercent));
+  if (!base.isFinite() || base.isNegative() || !rate.isFinite() || rate.isNegative() || rate.greaterThan(100) || !deliveryFee.isFinite() || deliveryFee.isNegative() || !vatRate.isFinite() || vatRate.isNegative() || vatRate.greaterThan(100)) {
     throw fail("Customer return policy contains an invalid amount or percentage.", "INVALID_RETURN_REFUND_POLICY", 409);
   }
   const charge = base.mul(rate).div(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const approvedRefund = Prisma.Decimal.max(base.minus(charge), 0);
-  const refundableVat = approvedRefund.minus(approvedRefund.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
+  const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+  const refundableVat = approvedRefund.minus(approvedRefund.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
   return {
     snapshot: {
       version: 1,
       chargeType: "PERCENT_OF_RETURNED_PRODUCT_VALUE",
       ratePercent: rate.toFixed(2),
+      vatRatePercent: vatRate.toFixed(2),
       returnedProductValue: base.toFixed(2),
       customerReturnCharge: charge.toFixed(2),
       originalDeliveryFee: deliveryFee.toFixed(2),
@@ -207,7 +216,11 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
     });
     const processedItems = returnItemsFromOrder(order.items, items, previousReturns);
     const totalRefundAmount = processedItems.reduce((sum, item) => sum + item.refundAmount, 0);
-    const vatRefunded = Number((totalRefundAmount - (totalRefundAmount / 1.13)).toFixed(2));
+    const vatRate = await resolveVatRatePercent(order.date, { client: tx });
+    const vatRefunded = calculateCustomerReturnRefundPolicy({
+      productValue: totalRefundAmount,
+      vatRatePercent: vatRate,
+    }).vatRefunded.toNumber();
     const created = await tx.customerReturn.create({
       data: {
         requestKey: key,
@@ -545,12 +558,14 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
       const approvedStatus = route.route === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN";
       const shippingConfig = await tx.shippingConfig.findFirst();
       const orderPricing = current.orderId
-        ? await tx.order.findUnique({ where: { id: current.orderId }, select: { deliveryFee: true } })
+        ? await tx.order.findUnique({ where: { id: current.orderId }, select: { deliveryFee: true, date: true } })
         : null;
+      const vatRate = await resolveVatRatePercent(orderPricing?.date, { client: tx });
       const refundPolicy = calculateCustomerReturnRefundPolicy({
         productValue: current.totalRefundAmount,
         chargeRatePercent: shippingConfig?.customerReturnChargeRate ?? 0,
         originalDeliveryFee: orderPricing?.deliveryFee ?? 0,
+        vatRatePercent: vatRate,
       });
       const updated = await tx.customerReturn.updateMany({
         where: { id: returnId, lifecycleStatus: "PENDING_ADMIN_REVIEW" },
@@ -777,7 +792,15 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
         inspectedAt: now,
       },
     });
-    await createReturnExchangeSettlementPayable(tx, updated, "RETURN");
+    const logisticsPayable = await createReturnExchangeSettlementPayable(tx, updated, "RETURN");
+    if (logisticsPayable) {
+      await postReturnExchangeSettlementAccounting({
+        operation: "RETURN",
+        requestId: updated.id,
+        payable: logisticsPayable,
+        client: tx,
+      });
+    }
     if (returnAccepted && current.deliveryRoute !== "DISTRIBUTOR") {
       await tx.accountPayable.create({
         data: {
@@ -796,6 +819,13 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
       });
     }
     if (returnAccepted) await applyCollaborationReturnAdjustments({ orderId: current.orderId, items, returnedAt: now, client: tx });
+    if (returnAccepted && current.deliveryRoute !== "DISTRIBUTOR") {
+      await postCustomerReturnAccounting({
+        ...updated,
+        totalRefundAmount: updated.approvedRefundAmount ?? updated.totalRefundAmount,
+        restockedInventoryCost: inspection === "RESTOCKABLE" ? restockedInventoryCost : 0,
+      }, { recordAsPayable: true, client: tx });
+    }
     await addReturnEvent(tx, {
       returnId: current.id,
       eventType: returnAccepted ? "INSPECTED_PASSED" : "INSPECTED_FAILED",
@@ -825,16 +855,6 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
     return updated;
   }, { isolationLevel: "Serializable" });
 
-  await postReturnExchangeSettlementAccounting({ operation: "RETURN", requestId: record.id });
-  if (record.lifecycleStatus === "REFUND_PENDING" && record.deliveryRoute !== "DISTRIBUTOR") {
-    postCustomerReturnAccounting({
-      ...record,
-      totalRefundAmount: record.approvedRefundAmount ?? record.totalRefundAmount,
-      restockedInventoryCost: inspection === "RESTOCKABLE" ? restockedInventoryCost : 0,
-    }, { recordAsPayable: true }).catch((error) => {
-      console.error("Customer return accounting post failed", { returnId: record.id, error: error.message });
-    });
-  }
   return record;
 };
 

@@ -326,6 +326,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
   let balanceUpdated = false;
   let balanceReadCount = 0;
   const cashEvents = [];
+  const deliveryEarnings = [];
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.deliveryOrder, "findUnique", async () => null);
@@ -349,6 +350,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
           return data;
         },
       },
+      distributor: { findUnique: async () => ({ id: "dist-1", name: "Test Distributor" }) },
       inventoryLocation: {
         findFirst: async () => mockLocation,
       },
@@ -389,6 +391,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     distributorId: "dist-1",
     assignmentIdOrOrderId: "assign-1",
     status: "Delivered",
+    accrueDeliveryEarning: async (earning) => deliveryEarnings.push(earning),
   });
 
   assert.equal(res.success, true);
@@ -399,6 +402,8 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
   assert.equal(res.accountingStatus, "PENDING");
   assert.equal(balanceUpdated, true);
   assert.equal(ledgerCreated, true);
+  assert.equal(deliveryEarnings.length, 1);
+  assert.equal(deliveryEarnings[0].assignmentId, "assign-1");
 
   mockOrder = { ...mockOrder, paymentMethod: "COD", payment: false };
   balanceReadCount = 0;
@@ -408,6 +413,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     status: "Delivered",
     collectionConfirmed: true,
     notificationConfig: { enabled: false, sms: { enabled: false } },
+    accrueDeliveryEarning: async (earning) => deliveryEarnings.push(earning),
   });
   assert.equal(codResult.order.payment, true);
   assert.equal(cashEvents[0].amount, "200.00");
@@ -594,9 +600,14 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
   };
 
   stubMethod(t, prisma.distributor, "findUnique", async () => ({ id: "dist-1" }));
-  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
+  let latestRateCard = mockRateCard;
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => latestRateCard);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findMany", async () => [mockRateCard]);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "update", async ({ data }) => ({ ...mockRateCard, ...data }));
+  stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "create", async ({ data }) => {
+    latestRateCard = { id: "rate-2", ...data };
+    return latestRateCard;
+  });
 
   const saved = await recordDistributorRateCard({
     distributorId: "dist-1",
@@ -662,6 +673,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     { id: "o-2", amount: 2000, paymentMethod: "COD" },
     { id: "o-4", amount: 3000, paymentMethod: "COD" },
   ]);
+  stubMethod(t, prisma.distributorServiceEarning, "findMany", async () => []);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => settlements);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
 
@@ -906,6 +918,107 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     postPaymentAccounting: async ({ idempotencyKey }) => {
       paymentAccountingKeys.push(idempotencyKey);
     },
+  });
+
+  test("Admin payout allocates an immutable earning document and clears distributor payable 2190", async () => {
+    let settlement = {
+      id: "set-subledger-1",
+      distributorId: "dist-1",
+      amount: 100,
+      paidAmount: 0,
+      status: "PENDING",
+      metadata: { settlementBasis: "ACCOUNTING_SUBLEDGER", earningDocumentIds: ["earning-doc-1"] },
+      distributor: { id: "dist-1", name: "Kathmandu Hub" },
+    };
+    const document = {
+      id: "earning-doc-1",
+      partyId: "party-1",
+      side: "PAYABLE",
+      sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+      originalAmount: "100.00",
+      allocatedAmount: "0.00",
+      remainingAmount: "100.00",
+      status: "OPEN",
+      issueDate: new Date("2026-10-27T00:00:00.000Z"),
+    };
+    let balance = 500;
+    const cashTransactions = new Map();
+    const allocations = new Map();
+    let paymentJournalArguments;
+    const tx = {
+      distributorSettlementRequest: {
+        findUnique: async () => settlement,
+        updateMany: async ({ data }) => {
+          settlement = { ...settlement, ...data };
+          return { count: 1 };
+        },
+      },
+      accountingParty: { upsert: async () => ({ id: "party-1" }) },
+      accountingDocument: {
+        findMany: async () => [document],
+        updateMany: async ({ data }) => {
+          Object.assign(document, data);
+          return { count: 1 };
+        },
+      },
+      accountingAllocation: {
+        findUnique: async ({ where }) => allocations.get(where.idempotencyKey) || null,
+        create: async ({ data }) => {
+          const allocation = { id: "allocation-1", ...data };
+          allocations.set(data.idempotencyKey, allocation);
+          return allocation;
+        },
+      },
+      financialAccount: {
+        findUnique: async () => ({
+          id: "fa-1",
+          accountName: "Operating Bank",
+          accountType: "BANK",
+          status: "ACTIVE",
+          currentBalance: balance,
+          accountingAccountId: "gl-bank",
+          accountingAccount: { accountType: "ASSET", normalBalance: "DEBIT" },
+        }),
+        updateMany: async ({ data }) => {
+          balance -= Number(data.currentBalance.decrement);
+          return { count: 1 };
+        },
+      },
+      cashTransaction: {
+        findUnique: async ({ where }) => cashTransactions.get(where.idempotencyKey) || null,
+        create: async ({ data }) => {
+          const transaction = { id: "cash-1", ...data };
+          cashTransactions.set(data.idempotencyKey, transaction);
+          return transaction;
+        },
+      },
+      systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
+    };
+    const client = { $transaction: async (callback) => callback(tx) };
+
+    const result = await executeAdminDistributorSettlement({
+      settlementId: settlement.id,
+      amount: 60,
+      financialAccountId: "fa-1",
+      idempotencyKey: "settlement-subledger-payment-1",
+      adminAccountId: "admin-1",
+      client,
+      postPaymentAccounting: async (args) => {
+        paymentJournalArguments = args;
+        return { id: "payment-journal-1" };
+      },
+      resolveAccountingParty: async () => ({ id: "party-1" }),
+      writeAudit: async () => {},
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.settlement.status, "PARTIALLY_PAID");
+    assert.equal(document.remainingAmount.toString(), "40");
+    assert.equal(document.status, "PARTIALLY_PAID");
+    assert.equal(balance, 440);
+    assert.equal(paymentJournalArguments.payableAccountCode, "2190");
+    assert.equal(paymentJournalArguments.accountingPartyId, "party-1");
+    assert.equal(allocations.size, 1);
   });
 
   assert.equal(res.success, true);

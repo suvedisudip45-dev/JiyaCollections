@@ -10,7 +10,6 @@ import {
   postSupplierPaymentAccounting,
   postCustomerPaymentAccounting,
   postDirectExpenseAccounting,
-  postNcmRemittanceAccounting,
 } from "../services/accountingPostingEngine.js";
 import {
   calculateFinancialDashboardProductCosts,
@@ -20,6 +19,7 @@ import {
 import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import { executeAdminDistributorSettlement } from "../services/distributorFinanceService.js";
+import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
@@ -3870,58 +3870,23 @@ export const collectReceivable = async (req, res) => {
       if (adjustmentType !== "NONE") {
         return res.status(400).json({ success: false, message: "NCM COD settlements already account for courier fees and do not support an additional discount or fine." });
       }
-      if (ncmSettlement.settlementState === "SETTLED") {
-        return res.status(409).json({
-          success: false,
-          alreadySettled: true,
-          message: `NCM COD remittance for delivery order has already been collected and settled. No further collection allowed.`,
-          settledAt: ncmSettlement.settledAt,
-        });
-      }
       const cod = Number(ncmSettlement.codCollected || ncmSettlement.codExpected || collectAmount);
       const fee = Number(ncmSettlement.deliveryFeeActual || ncmSettlement.deliveryFeeExpected || 0);
-
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: toAccountId },
-          data: { currentBalance: { increment: collectAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            idempotencyKey,
-            amount: collectAmount,
-            type: "INFLOW",
-            toAccountId,
-            category: "COD_REMITTANCE",
-            partyName: "Nepal Can Move (NCM)",
-            referenceId: ncmSettlement.id,
-            description: `NCM COD Remittance collected into ${toAccount.accountName}${notes ? ` - ${notes}` : ""}`,
-          },
-        }),
-        prisma.deliveryFinancialSettlement.update({
-          where: { id: ncmSettlement.id },
-          data: {
-            settlementState: "SETTLED",
-            settledAt: new Date(),
-            codCollected: cod,
-          },
-        }),
-      ]);
-
-      // Post NCM Remittance to Double-Entry General Ledger
-      postNcmRemittanceAccounting({
-        settlementId: ncmSettlement.id,
-        codCollected: cod,
-        deliveryFeeActual: fee,
-        isCash: toAccount.accountType === "CASH",
-        destinationAccountName: toAccount.accountName,
-      }).catch((glErr) => {
-        console.error("General Ledger NCM remittance posting error:", glErr);
+      const expectedNetDeposit = Number((cod - fee).toFixed(2));
+      const result = await confirmNcmSettlementBatch({
+        settlementIds: [ncmSettlement.id],
+        financialAccountId: toAccountId,
+        expectedNetDeposit: collectAmount,
+        reference: req.body?.reference || idempotencyKey,
+        notes,
+        createdBy: req.auth?.email || "ADMIN",
       });
 
-      return res.json({
+      return res.status(200).json({
         success: true,
-        message: `Successfully collected NCM COD remittance of Rs ${collectAmount.toLocaleString()} into ${toAccount.accountName}. Settlement marked as SETTLED.`,
+        alreadyProcessed: result.alreadyProcessed,
+        transactionId: result.transactionId,
+        message: `Successfully collected NCM COD remittance of NPR ${expectedNetDeposit.toLocaleString()} into ${toAccount.accountName}.`,
       });
     }
 

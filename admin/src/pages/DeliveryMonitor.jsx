@@ -197,7 +197,9 @@ const DeliveryMonitor = ({ token }) => {
     try {
       // Fetch open settlements to confirm
       const listRes = await axios.get(`${backendUrl}/api/delivery/admin/settlements?limit=100`, { headers: { token } });
-      const openSettlements = (listRes.data.settlements || []).filter((s) => s.settlementState !== "SETTLED");
+      const openSettlements = (listRes.data.settlements || []).filter((settlement) =>
+        ["PENDING", "COD_RECEIVED", "REQUESTED"].includes(settlement.settlementState)
+      );
       if (!openSettlements.length) {
         toast.info("No open settlements found to confirm.");
         setConfirmRemitModalOpen(false);

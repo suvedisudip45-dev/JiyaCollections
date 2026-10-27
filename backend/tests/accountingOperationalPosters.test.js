@@ -17,6 +17,7 @@ import {
 } from "../services/accountingPostingEngine.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
 import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
+import { postReturnExchangeSettlementAccounting } from "../services/returnExchangeSettlementService.js";
 
 const createComprehensiveHarness = () => {
   const accounts = STANDARD_CHART_OF_ACCOUNTS.map((acc) => ({
@@ -48,6 +49,7 @@ const createComprehensiveHarness = () => {
     events: [],
     entries: [],
     documents: [],
+    vatRateVersions: [],
   };
 
   const client = {
@@ -114,6 +116,18 @@ const createComprehensiveHarness = () => {
           ? { ...document, party: [...parties.values()].find((party) => party.id === document.partyId) || null }
           : document;
       },
+    },
+    taxConfiguration: {
+      findUnique: async () => ({ vatRate: 13 }),
+    },
+    vatRateVersion: {
+      findFirst: async ({ where }) => state.vatRateVersions
+        .filter((version) =>
+          version.status === where.status &&
+          version.effectiveFrom <= where.effectiveFrom.lte &&
+          (!version.effectiveUntil || version.effectiveUntil > where.effectiveFrom.lte)
+        )
+        .sort((left, right) => right.effectiveFrom - left.effectiveFrom)[0] || null,
     },
     journalEntry: {
       findUnique: async ({ where }) => state.entries.find((e) => e.idempotencyKey === where.idempotencyKey) || null,
@@ -212,6 +226,28 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(vatLine.credit.toFixed(2), "1300.00");
   assert.equal(cogsLine.debit.toFixed(2), "6000.00");
   assert.equal(mfgApLine.credit.toFixed(2), "6000.00");
+});
+
+test("delivered sales use the VAT rate effective on the source order date", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.vatRateVersions.push({
+    id: "vat-20",
+    vatRate: new Prisma.Decimal("20.00"),
+    effectiveFrom: new Date("2027-01-01T00:00:00.000Z"),
+    effectiveUntil: null,
+    status: "ACTIVE",
+  });
+
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-vat-20",
+    amount: 1200,
+    paymentMethod: "ONLINE_BANK",
+    date: BigInt(Date.parse("2027-01-02T00:00:00.000Z")),
+    items: [],
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "4100").credit.toFixed(2), "1000.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2120").credit.toFixed(2), "200.00");
 });
 
 test("self-delivered COD posts to distributor receivable and creates an idempotent AR document", async () => {
@@ -664,6 +700,18 @@ test("NCM cash remittance posts through the caller transaction client", async ()
   assert.equal(journal.lines.find((line) => line.account.accountCode === "1170").credit.toFixed(2), "1331.00");
 });
 
+test("NCM remittance rejects carrier fees greater than collected COD", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  await assert.rejects(() => postNcmRemittanceAccounting({
+    settlementId: "ncm-settlement-invalid-fee",
+    codCollected: 100,
+    deliveryFeeActual: 101,
+  }, { client }), /Carrier fee cannot exceed NCM COD collected/);
+  assert.equal(state.entries.length, 0);
+});
+
 test("confirmed delivery return reverses sales revenue, output VAT, and manufacturer AP", async () => {
   const { client } = createComprehensiveHarness();
 
@@ -809,4 +857,25 @@ test("NCM carrier settlement clears COD receivable and books carrier expense", a
   assert.equal(bankLine.debit.toFixed(2), "9650.00"); // 10,000 - 350
   assert.equal(feeLine.debit.toFixed(2), "350.00");
   assert.equal(codLine.credit.toFixed(2), "10000.00");
+});
+
+test("return logistics payable and expense journal can post in its source transaction", async () => {
+  const { client } = createComprehensiveHarness();
+  const journal = await postReturnExchangeSettlementAccounting({
+    operation: "RETURN",
+    requestId: "return-logistics-001",
+    payable: {
+      title: "Return logistics settlement",
+      payeeName: "NCM",
+      totalAmount: new Prisma.Decimal("42.00"),
+      createdAt: new Date("2026-10-01T00:00:00.000Z"),
+    },
+    client,
+  });
+
+  assert.equal(journal.status, "POSTED");
+  assert.equal(journal.totalDebit.toFixed(2), "42.00");
+  assert.equal(journal.totalCredit.toFixed(2), "42.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "6430").debit.toFixed(2), "42.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "42.00");
 });

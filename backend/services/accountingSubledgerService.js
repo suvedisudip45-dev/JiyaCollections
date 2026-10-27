@@ -189,10 +189,10 @@ export const allocatePaymentToDocuments = async ({
 };
 
 /**
- * Reconciles open subledger documents against the control GL account balance.
+ * Reconciles open subledger documents against the mapped control GL account balance.
  */
 export const reconcileSubledgerToControl = async ({
-  side = "RECEIVABLE", // RECEIVABLE (1130) | PAYABLE (2160 / 2110)
+  side = "RECEIVABLE", // RECEIVABLE (1130, 1170, 1190) | PAYABLE (2110, 2160-2190)
   accountCode,
   partyType = null,
 }, { client = prisma } = {}) => {

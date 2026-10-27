@@ -9,6 +9,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
 import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
+import { buildPartySubledgerReconciliation } from "../services/partySubledgerReconciliationService.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
 
 const getNepalDateBoundary = (value, endOfDay = false) => {
@@ -887,7 +888,8 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 
 export const getSubledgerReconciliation = async (req, res) => {
   try {
-    const [arAccount, apAccount, payables, receivables, accounts, accountingPostingStatus] = await Promise.all([
+    const partyControlCodes = ["1170", "1190", "2180", "2190"];
+    const [arAccount, apAccount, payables, receivables, accounts, accountingPostingStatus, partyDocumentGroups, partyControlAccounts] = await Promise.all([
       prisma.account.findUnique({ where: { accountCode: "1130" } }),
       prisma.account.findUnique({ where: { accountCode: "2110" } }),
       prisma.accountPayable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_PAID"] } } }),
@@ -897,6 +899,19 @@ export const getSubledgerReconciliation = async (req, res) => {
         include: { accountingAccount: true },
       }),
       getDeliveryAccountingOutboxStatus(),
+      prisma.accountingDocument.groupBy({
+        by: ["side", "sourceType"],
+        where: {
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          sourceType: { in: ["NCM_COD_SALE", "DISTRIBUTOR_COD_SALE", "NCM_CARRIER_FEE", "DISTRIBUTOR_DELIVERY_EARNING"] },
+        },
+        _sum: { remainingAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.account.findMany({
+        where: { accountCode: { in: partyControlCodes } },
+        select: { accountCode: true, currentBalance: true },
+      }),
     ]);
 
     const arControlBalance = Number(arAccount?.currentBalance || 0);
@@ -906,6 +921,10 @@ export const getSubledgerReconciliation = async (req, res) => {
     const sumPayables = payables.reduce((acc, p) => acc + Number(p.remainingBalance || 0), 0);
 
     const cashAndBankReconciliation = buildTreasuryGlReconciliation(accounts);
+    const partySubledgers = buildPartySubledgerReconciliation({
+      documentGroups: partyDocumentGroups,
+      accounts: partyControlAccounts,
+    });
 
     res.json({
       success: true,
@@ -913,6 +932,7 @@ export const getSubledgerReconciliation = async (req, res) => {
       coverageGaps: [
         "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
         "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
+        "Party-level checks below cover only the listed NCM and distributor source types; historical and other-party documents still require migration and reconciliation.",
         "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
       ],
       reconciliation: {
@@ -920,6 +940,7 @@ export const getSubledgerReconciliation = async (req, res) => {
         coverageGaps: [
           "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
           "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
+          "Party-level checks below cover only the listed NCM and distributor source types; historical and other-party documents still require migration and reconciliation.",
           "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
         ],
         accountsReceivable: {
@@ -938,6 +959,7 @@ export const getSubledgerReconciliation = async (req, res) => {
           variance: Number((apControlBalance - sumPayables).toFixed(2)),
           isReconciled: Math.abs(apControlBalance - sumPayables) <= 0.05,
         },
+        partySubledgers,
         cashAndBank: {
           glControlAccounts: "Explicitly mapped Treasury asset accounts",
           ...cashAndBankReconciliation,

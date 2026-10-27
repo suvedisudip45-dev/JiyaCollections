@@ -38,13 +38,12 @@ const DistributorApplications = ({ token }) => {
   const [ratesLoading, setRatesLoading] = useState(false);
   const [selectedDistributorForRate, setSelectedDistributorForRate] = useState(null);
   const [rateForm, setRateForm] = useState({
-    baseDeliveryFee: 100,
-    perKmFee: 15,
-    perKgFee: 10,
-    commissionRate: 0.05,
-    bonusRate: 0.02,
-    incentiveRate: 0.01,
-    vatRate: 0.13,
+    deliveryCharge: 100,
+    returnCharge: 50,
+    commissionRate: 0,
+    bonusRate: 0,
+    incentiveRate: 0,
+    vatRate: 0,
     vatInclusive: false,
   });
 
@@ -125,7 +124,7 @@ const DistributorApplications = ({ token }) => {
       const response = await axios.get(`${backendUrl}/api/admin/distributor-rates`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setRatesList(response.data?.rates || []);
+      setRatesList(response.data?.rateCards || []);
     } catch (e) {
       toast.error(e.response?.data?.message || "Failed to load rate cards.");
     } finally {
@@ -343,14 +342,27 @@ const DistributorApplications = ({ token }) => {
         {
           distributorId: selectedDistributorForRate.id,
           ...rateForm,
+          status: "APPROVED",
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      toast.success(`Rates updated for ${selectedDistributorForRate.name}`);
-      setSelectedDistributorForRate(null);
+      toast.success(`A new rate-card version was saved for ${selectedDistributorForRate.name}`);
       loadRates();
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to update rates");
+    }
+  };
+
+  const expireRateCard = async (rateCard) => {
+    if (!window.confirm("Close this rate card? Past earnings will remain unchanged.")) return;
+    try {
+      await axios.delete(`${backendUrl}/api/admin/distributor-rates/${rateCard.id}`, {
+        headers: { token },
+      });
+      toast.success("Rate card closed; its history was retained.");
+      loadRates();
+    } catch (requestError) {
+      toast.error(requestError.response?.data?.message || "Rate card could not be closed.");
     }
   };
 
@@ -683,10 +695,10 @@ const DistributorApplications = ({ token }) => {
                   <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-600">
                     <tr>
                       <th className="px-4 py-3">Distributor</th>
-                      <th className="px-4 py-3">Base Fee</th>
-                      <th className="px-4 py-3">Per Km / Kg</th>
-                      <th className="px-4 py-3">Comm / Bonus</th>
-                      <th className="px-4 py-3">VAT</th>
+                      <th className="px-4 py-3">Delivery / Return</th>
+                      <th className="px-4 py-3">Commission / Incentive</th>
+                      <th className="px-4 py-3">Effective Period</th>
+                      <th className="px-4 py-3">Status / VAT</th>
                       <th className="px-4 py-3 text-right">Action</th>
                     </tr>
                   </thead>
@@ -699,34 +711,42 @@ const DistributorApplications = ({ token }) => {
                       ratesList.map((rate) => (
                         <tr key={rate.id} className="hover:bg-slate-50/60">
                           <td className="px-4 py-3 font-semibold text-slate-900">{rate.distributor?.name || rate.distributorId}</td>
-                          <td className="px-4 py-3 text-slate-700 font-medium">Rs {rate.baseDeliveryFee}</td>
-                          <td className="px-4 py-3 text-xs text-slate-600">
-                            +Rs {rate.perKmFee}/km · +Rs {rate.perKgFee}/kg
+                          <td className="px-4 py-3 text-slate-700 font-medium">
+                            Rs {Number(rate.deliveryCharge).toFixed(2)} / Rs {Number(rate.returnCharge).toFixed(2)}
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-600">
-                            {(rate.commissionRate * 100).toFixed(1)}% / {(rate.bonusRate * 100).toFixed(1)}%
+                            {Number(rate.commissionRate).toFixed(2)}% / Rs {Number(rate.bonusRate).toFixed(2)}
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-600">
-                            {(rate.vatRate * 100).toFixed(0)}% {rate.vatInclusive ? "(Inc)" : "(Excl)"}
+                            {rate.effectiveFrom ? new Date(rate.effectiveFrom).toLocaleDateString() : "—"} – {rate.effectiveUntil ? new Date(rate.effectiveUntil).toLocaleDateString() : "Open"}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-600">
+                            {rate.status} · No input VAT without verified invoice
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
                               onClick={() => {
                                 setSelectedDistributorForRate(rate.distributor);
                                 setRateForm({
-                                  baseDeliveryFee: rate.baseDeliveryFee,
-                                  perKmFee: rate.perKmFee,
-                                  perKgFee: rate.perKgFee,
-                                  commissionRate: rate.commissionRate,
-                                  bonusRate: rate.bonusRate,
-                                  incentiveRate: rate.incentiveRate,
-                                  vatRate: rate.vatRate,
-                                  vatInclusive: rate.vatInclusive,
+                                  deliveryCharge: Number(rate.deliveryCharge),
+                                  returnCharge: Number(rate.returnCharge),
+                                  commissionRate: Number(rate.commissionRate),
+                                  bonusRate: Number(rate.bonusRate),
+                                  incentiveRate: Number(rate.incentiveRate),
+                                  vatRate: 0,
+                                  vatInclusive: false,
                                 });
                               }}
                               className="text-xs font-semibold text-blue-600 hover:text-blue-800"
                             >
-                              Edit
+                              Revise
+                            </button>
+                            <button
+                              onClick={() => expireRateCard(rate)}
+                              disabled={!canEditCoverage || !["APPROVED", "PENDING"].includes(rate.status)}
+                              className="ml-3 text-xs font-semibold text-rose-600 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Close
                             </button>
                           </td>
                         </tr>
@@ -765,20 +785,24 @@ const DistributorApplications = ({ token }) => {
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Base Fee (Rs)</label>
+                    <label className="block text-slate-600 font-medium mb-0.5">Delivery earning (NPR)</label>
                     <input
                       type="number"
-                      value={rateForm.baseDeliveryFee}
-                      onChange={(e) => setRateForm({ ...rateForm, baseDeliveryFee: Number(e.target.value) })}
+                      min="0"
+                      step="0.01"
+                      value={rateForm.deliveryCharge}
+                      onChange={(e) => setRateForm({ ...rateForm, deliveryCharge: Number(e.target.value) })}
                       className="w-full rounded-lg border border-slate-300 p-2 text-sm"
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Per Km Fee (Rs)</label>
+                    <label className="block text-slate-600 font-medium mb-0.5">Return service earning (NPR)</label>
                     <input
                       type="number"
-                      value={rateForm.perKmFee}
-                      onChange={(e) => setRateForm({ ...rateForm, perKmFee: Number(e.target.value) })}
+                      min="0"
+                      step="0.01"
+                      value={rateForm.returnCharge}
+                      onChange={(e) => setRateForm({ ...rateForm, returnCharge: Number(e.target.value) })}
                       className="w-full rounded-lg border border-slate-300 p-2 text-sm"
                     />
                   </div>
@@ -786,60 +810,31 @@ const DistributorApplications = ({ token }) => {
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Per Kg Fee (Rs)</label>
+                    <label className="block text-slate-600 font-medium mb-0.5">Commission (% of delivery earning)</label>
                     <input
                       type="number"
-                      value={rateForm.perKgFee}
-                      onChange={(e) => setRateForm({ ...rateForm, perKgFee: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Commission Rate (0-1)</label>
-                    <input
-                      type="number"
+                      min="0"
+                      max="100"
                       step="0.01"
                       value={rateForm.commissionRate}
                       onChange={(e) => setRateForm({ ...rateForm, commissionRate: Number(e.target.value) })}
                       className="w-full rounded-lg border border-slate-300 p-2 text-sm"
                     />
                   </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Bonus Rate (0-1)</label>
+                    <label className="block text-slate-600 font-medium mb-0.5">Delivery incentive (NPR)</label>
                     <input
                       type="number"
+                      min="0"
                       step="0.01"
                       value={rateForm.bonusRate}
                       onChange={(e) => setRateForm({ ...rateForm, bonusRate: Number(e.target.value) })}
                       className="w-full rounded-lg border border-slate-300 p-2 text-sm"
                     />
                   </div>
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">VAT Rate (0-1)</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={rateForm.vatRate}
-                      onChange={(e) => setRateForm({ ...rateForm, vatRate: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
                 </div>
 
-                <div className="pt-2">
-                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={rateForm.vatInclusive}
-                      onChange={(e) => setRateForm({ ...rateForm, vatInclusive: e.target.checked })}
-                      className="rounded border-slate-300 text-blue-600"
-                    />
-                    VAT Inclusive Delivery Rates
-                  </label>
-                </div>
+                <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">No recoverable input VAT is claimed on distributor service payments unless a verified eligible tax invoice is supported by the accounting workflow.</p>
 
                 <button
                   onClick={handleSaveRateCard}

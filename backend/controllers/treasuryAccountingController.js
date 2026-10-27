@@ -3,8 +3,8 @@ import { prisma } from "../config/db.js";
 import {
   postCustomerPaymentAccounting,
   postJournalEntry,
-  postNcmRemittanceAccounting,
 } from "../services/accountingPostingEngine.js";
+import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   getDirectCashOffsetAccountCode,
@@ -278,60 +278,20 @@ export const collectReceivable = async (req, res) => {
       const cod = Number(ncmSettlement.codCollected || ncmSettlement.codExpected || 0);
       const fee = Number(ncmSettlement.deliveryFeeActual || ncmSettlement.deliveryFeeExpected || 0);
       const netDeposit = Number((cod - fee).toFixed(2));
-      if (ncmSettlement.settlementState === "SETTLED") {
-        return res.status(409).json({ success: false, alreadySettled: true, message: "This NCM settlement is already marked settled." });
-      }
-      if (netDeposit < 0 || Math.abs(netDeposit - amountNumber) > 0.05) {
-        return res.status(400).json({
-          success: false,
-          message: `Expected net remittance is NPR ${netDeposit.toFixed(2)} (COD ${cod.toFixed(2)} less carrier fee ${fee.toFixed(2)}).`,
-        });
-      }
-
-      const treasury = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
-      if (!treasury) return res.status(404).json({ success: false, message: "Deposit Treasury account not found." });
-      if (!treasury.accountingAccountId) {
-        return res.status(409).json({ success: false, message: "Map the destination Treasury account to a GL account first." });
-      }
-      const glAccount = await prisma.account.findUnique({ where: { id: treasury.accountingAccountId }, select: { accountCode: true } });
-      if (!glAccount) return res.status(409).json({ success: false, message: "The Treasury GL mapping is unavailable." });
-
-      const cashTransaction = await prisma.$transaction(async (tx) => {
-        const updatedSettlement = await tx.deliveryFinancialSettlement.updateMany({
-          where: { id: ncmSettlement.id, settlementState: { not: "SETTLED" } },
-          data: { settlementState: "SETTLED", settledAt: new Date(), codCollected: cod },
-        });
-        if (updatedSettlement.count !== 1) {
-          throw Object.assign(new Error("This NCM settlement was concurrently settled."), { statusCode: 409 });
-        }
-        await tx.financialAccount.update({
-          where: { id: toAccountId },
-          data: { currentBalance: { increment: netDeposit } },
-        });
-        const transaction = await tx.cashTransaction.create({
-          data: {
-            idempotencyKey,
-            amount: netDeposit,
-            type: "INFLOW",
-            toAccountId,
-            category: "COD_REMITTANCE",
-            partyName: "Nepal Can Move (NCM)",
-            referenceId: ncmSettlement.id,
-            description: `NCM COD ${cod.toFixed(2)} less carrier fee ${fee.toFixed(2)}${notes ? ` - ${notes}` : ""}`,
-          },
-        });
-        await postNcmRemittanceAccounting({
-          settlementId: ncmSettlement.id,
-          codCollected: cod,
-          deliveryFeeActual: fee,
-          cashAccountCode: glAccount.accountCode,
-          destinationAccountName: treasury.accountName,
-          createdBy: req.auth?.email || "admin",
-        }, { client: tx });
-        return transaction;
+      const result = await confirmNcmSettlementBatch({
+        settlementIds: [ncmSettlement.id],
+        financialAccountId: toAccountId,
+        expectedNetDeposit: amountNumber,
+        reference: idempotencyKey,
+        notes,
+        createdBy: req.auth?.email || "admin",
       });
-
-      return res.json({ success: true, transactionId: cashTransaction.id, message: `NPR ${netDeposit.toFixed(2)} NCM remittance posted.` });
+      return res.json({
+        success: true,
+        alreadyProcessed: result.alreadyProcessed,
+        transactionId: result.transactionId,
+        message: `NPR ${netDeposit.toFixed(2)} NCM remittance posted.`,
+      });
     }
 
     if (String(receivableId).startsWith("AR-MFG-DIRECT-")) {

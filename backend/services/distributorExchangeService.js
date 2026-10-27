@@ -302,7 +302,15 @@ export const processDistributorExchange = async ({
         completedAt: now,
       },
     });
-    await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+    const logisticsPayable = await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+    if (logisticsPayable) {
+      await postReturnExchangeSettlementAccounting({
+        operation: "EXCHANGE",
+        requestId: updated.id,
+        payable: logisticsPayable,
+        client: tx,
+      });
+    }
     await addEvent(tx, {
       requestId: request.id,
       type: "DISTRIBUTOR_REPLACEMENT_DELIVERED",
@@ -314,8 +322,5 @@ export const processDistributorExchange = async ({
     });
     return updated;
   }, { isolationLevel: "Serializable" });
-  if (record.status === "COMPLETED") {
-    await postReturnExchangeSettlementAccounting({ operation: "EXCHANGE", requestId: record.id });
-  }
   return record;
 };

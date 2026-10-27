@@ -8,6 +8,7 @@ import {
   getDistributorRateCards,
 } from "../services/distributorRateCardService.js";
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import {
   getDistributorCashPosition,
   listDistributorRemittances,
@@ -444,6 +445,103 @@ export const listDistributorRates = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to list rate cards.",
+    });
+  }
+};
+
+export const adminUpdateDistributorRateCard = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const { prior, revised } = await prisma.$transaction(async (tx) => {
+      const current = await tx.distributorDeliveryChargeNegotiation.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!current) throw Object.assign(new Error("Distributor rate card not found."), { statusCode: 404, code: "RATE_CARD_NOT_FOUND" });
+      if (!["APPROVED", "PENDING"].includes(current.status)) {
+        throw Object.assign(new Error("Only pending or approved rate cards can be revised."), { statusCode: 409, code: "RATE_CARD_NOT_REVISIONABLE" });
+      }
+      const next = await recordDistributorRateCard({
+        distributorId: current.distributorId,
+        productId: current.productId,
+        deliveryCharge: req.body.deliveryCharge ?? current.deliveryCharge,
+        returnCharge: req.body.returnCharge ?? current.returnCharge,
+        commissionRate: req.body.commissionRate ?? current.commissionRate,
+        bonusRate: req.body.bonusRate ?? current.bonusRate,
+        incentiveRate: req.body.incentiveRate ?? current.incentiveRate,
+        vatRate: req.body.vatRate ?? current.vatRate,
+        vatInclusive: req.body.vatInclusive ?? current.vatInclusive,
+        status: "APPROVED",
+        proposedByRole: "ADMIN",
+        proposedByAccountId: actorId,
+        reviewedByAccountId: actorId,
+        effectiveFrom: req.body.effectiveFrom || new Date(),
+        effectiveUntil: req.body.effectiveUntil ?? null,
+        notes: req.body.notes || `Revised from rate card ${current.id}`,
+        client: tx,
+      });
+      await recordSystemAudit(
+        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "DISTRIBUTOR_RATE_CARD_REVISED",
+          entityType: "DistributorDeliveryChargeNegotiation",
+          entityId: next.id,
+          beforeState: { id: current.id, deliveryCharge: String(current.deliveryCharge), status: current.status },
+          afterState: { id: next.id, deliveryCharge: String(next.deliveryCharge), supersedesRateCardId: current.id },
+        },
+        { client: tx },
+      );
+      return { prior: current, revised: next };
+    });
+    return res.status(201).json({ success: true, message: "A new immutable rate-card version was created.", rateCard: revised, supersedesRateCardId: prior.id });
+  } catch (error) {
+    console.error("adminUpdateDistributorRateCard error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to revise distributor rate card.",
+      code: error.code || "RATE_CARD_ERROR",
+    });
+  }
+};
+
+export const adminExpireDistributorRateCard = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const now = new Date();
+    const { updated } = await prisma.$transaction(async (tx) => {
+      const rateCard = await tx.distributorDeliveryChargeNegotiation.findUnique({
+        where: { id: req.params.id },
+      });
+      if (!rateCard) throw Object.assign(new Error("Distributor rate card not found."), { statusCode: 404, code: "RATE_CARD_NOT_FOUND" });
+      if (!["APPROVED", "PENDING"].includes(rateCard.status)) {
+        throw Object.assign(new Error("This rate card is already closed."), { statusCode: 409, code: "RATE_CARD_ALREADY_CLOSED" });
+      }
+      const future = rateCard.effectiveFrom && rateCard.effectiveFrom > now;
+      const closed = await tx.distributorDeliveryChargeNegotiation.update({
+        where: { id: rateCard.id },
+        data: rateCard.status === "PENDING" || future
+          ? { status: "EXPIRED", reviewedByAccountId: actorId, reviewedAt: now }
+          : { effectiveUntil: rateCard.effectiveUntil && rateCard.effectiveUntil < now ? rateCard.effectiveUntil : now },
+      });
+      await recordSystemAudit(
+        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "DISTRIBUTOR_RATE_CARD_EXPIRED",
+          entityType: "DistributorDeliveryChargeNegotiation",
+          entityId: rateCard.id,
+          beforeState: { status: rateCard.status, effectiveUntil: rateCard.effectiveUntil },
+          afterState: { status: closed.status, effectiveUntil: closed.effectiveUntil },
+        },
+        { client: tx },
+      );
+      return { updated: closed };
+    });
+    return res.status(200).json({ success: true, message: "Rate card was closed without deleting its financial history.", rateCard: updated });
+  } catch (error) {
+    console.error("adminExpireDistributorRateCard error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to close distributor rate card.",
+      code: error.code || "RATE_CARD_ERROR",
     });
   }
 };

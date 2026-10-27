@@ -293,8 +293,7 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
     if (!methods.includes(normalizedMethod)) {
       throw failure("Selected verification method is unavailable.", 503, "ADMIN_2FA_DELIVERY_UNAVAILABLE");
     }
-    const otp = 111111;
-    // generateConfiguredOtp(config, env, challenge.targetPortal);
+    const otp = generateConfiguredOtp(config, env, challenge.targetPortal);
     const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
     const otpHash = hashOtp(challengeId, otp, config.secret);
     const notification = await queuePortalCode({
@@ -390,8 +389,7 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
       throw failure("Selected verification method is unavailable.", 503, "PORTAL_2FA_DELIVERY_UNAVAILABLE");
     }
 
-    const otp = 111111;
-    // generateConfiguredOtp(config, env, challenge.targetPortal);
+    const otp = generateConfiguredOtp(config, env, challenge.targetPortal);
     const otpHash = hashOtp(challengeId, otp, config.secret);
     const expiresAt = new Date(now.getTime() + config.expiryMinutes * 60 * 1000);
     if (challenge.notificationId) {

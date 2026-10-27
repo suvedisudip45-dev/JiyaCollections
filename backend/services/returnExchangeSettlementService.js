@@ -1,5 +1,5 @@
 import { prisma } from "../config/db.js";
-import { postExpenseAccounting } from "./accountingPostingEngine.js";
+import { postJournalEntry } from "./accountingPostingEngine.js";
 
 const RATE_FIELDS = {
   NCM: {
@@ -61,18 +61,41 @@ export const createReturnExchangeSettlementPayable = async (tx, request, operati
   });
 };
 
-export const postReturnExchangeSettlementAccounting = async ({ operation, requestId }) => {
+export const postReturnExchangeSettlementAccounting = async ({
+  operation,
+  requestId,
+  payable: suppliedPayable = null,
+  client = prisma,
+}) => {
   const referenceType = operation === "RETURN" ? "RETURN_LOGISTICS_SETTLEMENT" : "EXCHANGE_LOGISTICS_SETTLEMENT";
-  const payable = await prisma.accountPayable.findFirst({
+  const payable = suppliedPayable || await client.accountPayable.findFirst({
     where: { referenceType, referenceId: requestId },
   });
-  if (!payable) return;
-  await postExpenseAccounting({
-    expenseId: `LOGISTICS-${referenceType}-${requestId}`,
-    category: "DELIVERY",
-    title: payable.title,
-    amount: payable.totalAmount,
-    isPayable: true,
-    payeeName: payable.payeeName,
+  if (!payable || Number(payable.totalAmount || 0) <= 0) return null;
+  const amount = String(payable.totalAmount);
+  return postJournalEntry({
+    transactionDate: payable.createdAt || new Date(),
+    sourceType: "EXPENSE_PAYMENT",
+    sourceId: `LOGISTICS-${referenceType}-${requestId}`,
+    idempotencyKey: `EXPENSE:LOGISTICS-${referenceType}-${requestId}:${amount}`,
+    referenceNumber: `EXP-${requestId.slice(-6)}`,
+    description: payable.title || `${operation} logistics settlement`,
+    createdBy: "SYSTEM",
+    lines: [
+      {
+        accountCode: "6430",
+        debit: payable.totalAmount,
+        credit: 0,
+        description: payable.title || `${operation} logistics expense`,
+      },
+      {
+        accountCode: "2110",
+        debit: 0,
+        credit: payable.totalAmount,
+        description: `Recorded as liability to ${payable.payeeName || "carrier"}`,
+        supplierName: payable.payeeName || "",
+      },
+    ],
+    client,
   });
 };

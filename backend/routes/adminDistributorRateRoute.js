@@ -2,6 +2,8 @@ import express from "express";
 import {
   adminRecordDistributorRates,
   listDistributorRates,
+  adminUpdateDistributorRateCard,
+  adminExpireDistributorRateCard,
   adminExecuteSettlement,
   listAdminDistributorSettlements,
 } from "../controllers/distributorFinanceController.js";
@@ -29,6 +31,20 @@ adminDistributorRateRouter.get(
   requireAdminRole,
   authorize("distributor:admin_list"),
   listDistributorRates,
+);
+adminDistributorRateRouter.patch(
+  "/:id",
+  authenticate,
+  requireAdminRole,
+  authorize("distributor:admin_review"),
+  adminUpdateDistributorRateCard,
+);
+adminDistributorRateRouter.delete(
+  "/:id",
+  authenticate,
+  requireAdminRole,
+  authorize("distributor:admin_review"),
+  adminExpireDistributorRateCard,
 );
 
 export const adminDistributorFinanceRouter = express.Router();

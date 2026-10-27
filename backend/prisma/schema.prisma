@@ -1361,6 +1361,20 @@ model TaxConfiguration {
   updatedAt            DateTime @updatedAt
 }
 
+model VatRateVersion {
+  id              String   @id @default(uuid())
+  vatRate         Decimal  @db.Decimal(5, 2)
+  effectiveFrom   DateTime
+  effectiveUntil  DateTime?
+  status          String   @default("ACTIVE") @db.VarChar(16) // ACTIVE | CANCELLED
+  createdBy       String?  @db.VarChar(191)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([effectiveFrom])
+  @@index([status, effectiveFrom, effectiveUntil])
+}
+
 model TaxFilingRecord {
   id                    String    @id @default(uuid())
   periodType            String // MONTHLY_VAT, ANNUAL_INCOME_TAX
@@ -1748,6 +1762,7 @@ model Distributor {
   remittanceBatches            DistributorRemittanceBatch[]
   settlementOffsets            DistributorSettlementOffset[]
   deliveryOtpChallenges        DeliveryOtpChallenge[]
+  serviceEarnings              DistributorServiceEarning[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   marketingCards         MarketingCard[]             @relation("MarketingCardDistributor")
   marketingCardAssignments MarketingCardAssignment[]
@@ -1905,6 +1920,34 @@ model DistributorDeliveryChargeNegotiation {
 
   @@index([distributorId, status, effectiveFrom])
   @@index([productId, status])
+}
+
+model DistributorServiceEarning {
+  id                    String      @id @default(uuid())
+  distributorId         String
+  assignmentId          String      @db.VarChar(191)
+  orderId               String      @db.VarChar(191)
+  serviceType           String      @default("DELIVERY") @db.VarChar(24)
+  idempotencyKey        String      @unique @db.VarChar(191)
+  rateCardId            String?     @db.VarChar(191)
+  effectiveAt           DateTime
+  deliveryCharge        Decimal     @default(0) @db.Decimal(20, 2)
+  incentiveAmount       Decimal     @default(0) @db.Decimal(20, 2)
+  commissionAmount      Decimal     @default(0) @db.Decimal(20, 2)
+  otherCharges          Decimal     @default(0) @db.Decimal(20, 2)
+  vatRate               Decimal     @default(0) @db.Decimal(5, 2)
+  vatAmount             Decimal     @default(0) @db.Decimal(20, 2)
+  vatInvoiceVerified    Boolean     @default(false)
+  payableAmount         Decimal     @db.Decimal(20, 2)
+  accountingDocumentId  String?     @unique @db.VarChar(191)
+  journalEntryId        String?     @db.VarChar(191)
+  snapshot              Json
+  createdAt             DateTime    @default(now())
+  distributor           Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+
+  @@index([distributorId, effectiveAt])
+  @@index([orderId, serviceType])
+  @@index([assignmentId, serviceType])
 }
 
 model DistributorSettlementRequest {

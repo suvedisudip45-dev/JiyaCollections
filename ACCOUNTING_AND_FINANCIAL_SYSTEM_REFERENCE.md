@@ -39,7 +39,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Liabilities | Customer refunds/advances | 2140 | Customer refund/advance control |
 | Liabilities | Manufacturer payable | 2160 | Manufacturer production, logistics and certain order costs |
 | Liabilities | Marketing partner payable | 2170 | Partner settlements |
-| Liabilities | NCM carrier payable | 2180 | Exists in the chart; NCM remittance flow below uses direct expense instead |
+| Liabilities | NCM carrier payable | 2180 | Accrued for actual carrier fees and cleared when netted against remittance |
 | Liabilities | Distributor payable | 2190 | Admin-verified customer refunds paid by distributors; cleared by a separate treasury payout |
 | Liabilities | Term loans | 2510 | Investor/lender debt |
 | Equity | Share capital / premium | 3100 / 3200 | Share issuance and capital |
@@ -54,7 +54,11 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Operating expense | Payroll, rent, utilities, marketing, delivery, depreciation, etc. | 6100–6700 | Operating costs |
 | Finance expense / other income | Finance expense / other income | 7100 / 8100 | Loan interest and other postings |
 
-The account code is not proof that a particular workflow actually uses the account; for example, 1180 and 2180 exist but some reviewed transaction paths do not post through them.
+The account code is not proof that a particular workflow actually uses the account; for example, 1180 exists in the chart but is not selected by the delivered-sale poster.
+
+### VAT rate configuration
+
+Admin can schedule an immutable `VatRateVersion` for a future UTC effective timestamp from the Tax Compliance page. Versions are append-only; only the latest future version can be cancelled, and effective or historical rates cannot be edited or deleted. New delivered-sale and full delivery-return postings resolve the rate against the source order timestamp. Customer return approval stores the applicable rate in the refund-policy snapshot so later rate changes do not alter an approved refund. Until a version exists for the source date, the legacy singleton `TaxConfiguration.vatRate` is used, with 13% as the final fallback. Pre-version historical tax therefore still needs accountant-reviewed reconciliation; do not treat this configuration as a legal tax opinion.
 
 ## 3. Customer orders, checkout price and delivery charges
 
@@ -78,7 +82,7 @@ DR COGS
     CR inventory
 ```
 
-For NCM COD, this posting uses NCM COD receivable 1170. For distributor-collected self-delivery COD, it uses distributor COD receivable 1190 and creates an idempotent distributor receivable document. For non-COD, it uses Bank 1120. The existing gateway-clearing account 1180 is not selected by this function. The sale's gross total is separated into product and delivery amounts using `Order.amount` and `Order.deliveryFee`, and each is divided by 1.13 to calculate the taxable base; the remainder is treated as 13% embedded VAT.
+For NCM COD, this posting uses NCM COD receivable 1170. For distributor-collected self-delivery COD, it uses distributor COD receivable 1190 and creates an idempotent distributor receivable document. For non-COD, it uses Bank 1120. The existing gateway-clearing account 1180 is not selected by this function. The sale's gross total is separated into product and delivery amounts using `Order.amount` and `Order.deliveryFee`; the effective rate for the order timestamp is used to calculate the taxable base and embedded VAT.
 
 The NCM delivery completion path in `backend/services/deliveryService.js` passes the `DeliveryOrder` to the poster, including its `customerDeliveryCharge`. The distributor self-delivery path calls the same poster without a `DeliveryOrder`; the poster therefore uses the locked `Order.deliveryFee` field.
 
@@ -190,19 +194,23 @@ NCM bookings are a separate carrier flow. Do not treat the existence of an NCM b
 
 `backend/services/distributorFinanceService.js` derives distributor delivery earnings from delivered assignments, returns, incentives, commission/discount, VAT mode and settlement requests. It returns an operational payable balance owed by the platform to the distributor. Its statement explicitly reports `receivables: 0`; it is not a general accounts-receivable ledger between distributor and platform.
 
-The service resolves the distributor's active approved rate card, with a product-specific card before a general card, and a fallback default if none exists. The current statement code applies the resolved rate to delivered historical assignments rather than visibly using an immutable per-delivery rate snapshot. Consequently, changing an active card may affect how historical statement earnings are recomputed.
+The service resolves the distributor's active approved rate card, with a product-specific card before a general card, and a fallback default if none exists. New completed self-deliveries write a `DistributorServiceEarning` with the exact delivery, incentive, commission, effective timestamp, rate-card identifier, and tax treatment used. That event creates one debit to delivery expense 6430, one credit to distributor payable 2190, and a linked payable accounting document in the same delivery transaction. A unique source key prevents duplicate accrual. Distributor service VAT is zero unless a future verified-invoice workflow explicitly supports eligible input VAT; a configured rate is not evidence for a tax claim.
 
 This distributor rate card concerns distributor compensation. It is distinct from the customer-facing destination/origin shipping quote. In particular, the customer charge and distributor payment do not have to be equal.
 
+Admin rate-card revisions create new versions, while closing a card retains its history. Approved rate-card values are not rewritten to update past earnings. The Admin rate editor uses the actual delivery, return, commission-percent, and incentive-amount fields.
+
+Settlement requests backed by these source documents are paid from the recorded earning documents, with the journal clearing 2190, Treasury/cash movement, and document allocations in a serializable transaction. Legacy settlement requests retain their older `AccountPayable` path. Historical delivered assignments without a `DistributorServiceEarning` are still displayed using the legacy calculation and must be reconciled before those historical figures are treated as immutable or accounting-authoritative.
+
 ### NCM versus distributor self-delivery
 
-- **NCM delivery:** the NCM booking COD is the system-provided order COD and does not include the carrier's delivery fee. The admin is responsible for that fee. Carrier settlement records expected/actual COD and delivery fees; on remittance, treasury receives net COD after the fee, and the GL poster debits cash/bank for net COD, debits delivery expense 6430 for the carrier fee, and credits NCM COD receivable 1170 for gross COD.
+- **NCM delivery:** delivered COD sales create an NCM receivable document linked to the source order. The remittance workflow requires those documents to exist and allocates gross COD against only the selected source orders. The actual carrier fee is accrued to expense 6430 and payable 2180 with a party-level bill; the net receipt journal debits cash/bank, clears 2180, and credits NCM COD receivable 1170. The fee bill and COD invoices are allocated in the same serializable transaction as the journal and Treasury cash movement.
 - **Distributor self-delivery:** completion consumes distributor inventory and calls the delivered-sale poster. The distributor finance statement separately calculates delivery earnings and settlements. Its COD tender mapping currently shares the NCM COD mapping, as noted above.
 - **Stock and goods:** distributor on-hand quantities are inventory-location/ledger concerns, not the same as distributor financial receivables. Distributor replenishment is a `StockTransfer`; it should not be conflated with the customer-order `OrderAssignment`.
 
-### Distributor settlement GL integration caveat
+### Distributor settlement accounting
 
-The reviewed distributor settlement execution updates Treasury cash, creates a `CashTransaction`, and updates the settlement request. Unlike the manufacturer settlement flow, no matching GL payment posting was visible in the reviewed execution path. Treat the distributor operational settlement amount and GL payable balance as requiring reconciliation until that path is confirmed or integrated.
+For new earning documents, a settlement request does not accrue service expense a second time. Admin payout is limited to open earning-document balances and clears distributor payable control account 2190. Old request-created payables remain supported only for existing settlement requests; do not create a new legacy payable for a delivery that already has an earning document.
 
 ## 7. NCM COD and carrier charges
 
@@ -214,13 +222,15 @@ DR delivery expense 6430       actual carrier fee
     CR NCM COD receivable 1170  total COD collected
 ```
 
-The admin settlement controller also increments the selected `FinancialAccount`, creates an inflow `CashTransaction`, and marks delivery settlements settled. The GL posting is invoked in that settlement transaction.
+The shared `backend/services/ncmSettlementService.js` processes Admin remittances from the delivery monitor and the legacy single-receipt endpoints. It bounds a batch to 100 unique settlements, verifies a mapped active NPR asset account, validates the net deposit, claims each open settlement, requires matching open NCM COD source documents, accrues a batch-level NCM carrier bill, posts the accrual and settlement journals, allocates gross COD and carrier fees, links the settlement journal to each included row, increments Treasury and writes the idempotent inflow `CashTransaction` in one serializable transaction. Replaying a processed batch does not post cash or fees twice. Unexplained adjustments and non-positive deposits are rejected for reconciliation instead of being silently booked.
 
-Although carrier payable 2180 exists, the inspected remittance poster recognizes the actual carrier fee as direct delivery expense rather than accruing and clearing a separate carrier payable. Use the actual settlement record values, not only the expected quote, for carrier expense reconciliation.
+The settlement list defaults to the same three remittable states accepted by the service, so return-pending and already settled rows are not accidentally selected by the Admin batch action. Admin 2FA issuance and resend use cryptographically random OTPs, with a fixed OTP permitted only through an explicit development-only configuration; never configure that override in production.
+
+The NCM bill currently represents the fee netted from a remittance batch, not a separately invoiced fee collected at another date. Use actual settlement values, not only the expected quote. If the carrier later supplies a separate fee invoice, do not accrue it again; reconcile the source document and remittance before posting any additional bill.
 
 ## 8. Returns, exchanges and refunds
 
-The delivery return poster reverses relevant sale revenue and VAT and handles return-related settlement, manufacturer payable/commission/overhead and inventory/COGS reversal where applicable. The older `postCustomerReturnAccounting` path separately posts return/allowance 4500, reverses output VAT, credits cash/bank or refund payable, and can restore inventory/reverse COGS when a restocked cost is provided.
+The delivery return poster reverses relevant sale revenue and VAT using the original order date's effective VAT rate and handles return-related settlement, manufacturer payable/commission/overhead and inventory/COGS reversal where applicable. Customer return approval snapshots the approved charge, non-refundable original delivery fee, refund and VAT portion, and the original effective VAT rate. Distributor-paid customer refunds create party-level distributor payables; the company payout later clears that obligation instead of paying the customer a second time. The older `postCustomerReturnAccounting` path separately posts return/allowance 4500, reverses output VAT, credits cash/bank or refund payable, and can restore inventory/reverse COGS when a restocked cost is provided.
 
 These are separate paths. A return request, exchange request, physical stock receipt and customer refund are not necessarily the same event. Confirm the workflow's final/confirmed transition and stock evidence before assuming revenue, cash, payable and COGS were all reversed.
 

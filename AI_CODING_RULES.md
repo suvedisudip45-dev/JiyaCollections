@@ -25,6 +25,8 @@ The backend is the real source of truth for:
 - order assignment, shipping, and handoff logic
 - NCM reconciliation and exchange review logic
 - accounting postings and ledger integrity
+- distributor earning snapshots and party-level AR/AP documents/allocations, including NCM COD and carrier-fee netting
+- effective-dated VAT configuration and approved return tax snapshots
 - location-based discount resolution and distributor hub assignment for checkout
 - distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
 - distributor allocation requires active distributors with enough distributor-ledger stock and ranks candidates by configured (or default registered) service area, same district, NCM branch, same province, then nationwide; quality rating resolves ties within each tier
@@ -33,6 +35,8 @@ The backend is the real source of truth for:
 - product sales analytics must use separate bounded aggregate endpoints, derive distributor ownership from authenticated workspace context, and omit revenue fields entirely from distributor responses; validate date ranges, product IDs, pagination, and sort fields in the backend
 
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
+
+Financial source records and posted journals are append-only evidence. Correct them through audited reversals or adjustments, not edit/delete operations. Allocate receipts and payouts to the source-party documents they settle, and do not claim a party balance is reconciled when only a legacy table or a subset of source types was checked. VAT changes must be future effective-dated versions; a later rate must never rewrite a posted transaction or approved refund snapshot.
 
 ### 1.2 Never infer successful courier creation from optimistic UI state
 

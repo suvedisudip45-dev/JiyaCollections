@@ -44,6 +44,7 @@ const AccountingHealth = ({ token }) => {
 
   const ar = reconciliation?.accountsReceivable || {};
   const ap = reconciliation?.accountsPayable || {};
+  const partySubledgers = reconciliation?.partySubledgers || [];
   const cashBank = reconciliation?.cashAndBank || {};
   const isTbBalanced = Boolean(trialBalanceData?.isBalanced);
   const isBsBalanced = Boolean(financialStatements?.isBalanceSheetBalanced);
@@ -329,6 +330,54 @@ const AccountingHealth = ({ token }) => {
           </Link>
         </div>
       </div>
+
+      <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
+        <div className="border-b border-slate-100 px-5 py-4">
+          <h2 className="text-sm font-bold text-slate-900">Distributor &amp; NCM Party Subledgers</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Open source documents compared with their mapped control accounts. Historical/unmatched balances remain flagged for reconciliation.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-3 font-semibold">Party balance</th>
+                <th className="px-5 py-3 font-semibold">GL control</th>
+                <th className="px-5 py-3 text-right font-semibold">Open documents</th>
+                <th className="px-5 py-3 text-right font-semibold">Subledger</th>
+                <th className="px-5 py-3 text-right font-semibold">GL</th>
+                <th className="px-5 py-3 text-right font-semibold">Variance</th>
+                <th className="px-5 py-3 text-right font-semibold">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {partySubledgers.map((row) => (
+                <tr key={`${row.side}:${row.sourceType}`} className="text-slate-700">
+                  <td className="px-5 py-3 font-medium">{row.label}</td>
+                  <td className="px-5 py-3 font-mono">{row.controlAccountCode}</td>
+                  <td className="px-5 py-3 text-right">{Number(row.documentCount || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.subledgerTotal || 0).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-right font-mono">Rs {Number(row.glControlBalance || 0).toLocaleString()}</td>
+                  <td className={`px-5 py-3 text-right font-mono ${Number(row.variance || 0) === 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                    Rs {Number(row.variance || 0).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${row.isReconciled ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      {row.isReconciled ? "MATCH" : "REVIEW"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {partySubledgers.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-5 py-8 text-center text-slate-400">Party subledger balances are unavailable.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       {/* DOUBLE ENTRY FINANCIAL INVARIANTS STATUS */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

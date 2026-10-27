@@ -99,6 +99,7 @@ export const issueDistributorDeliveryOtp = async ({
   client = prisma,
   notificationConfig = loadNotificationConfig(),
   otpConfig = loadOtpConfig(),
+  otpGenerator = generateSecureOtp,
   now = new Date(),
 } = {}) => {
   if (!distributorId || !orderId) throw fail("Distributor and order IDs are required.");
@@ -118,8 +119,7 @@ export const issueDistributorDeliveryOtp = async ({
     throw fail("Secure customer delivery verification is not configured.", 503, "DELIVERY_OTP_UNAVAILABLE");
   }
 
-  const code = "111111"; // For testing purposes only
-  // const code = generateSecureOtp(otpConfig.length);
+  const code = otpGenerator(otpConfig.length);
   const activeOrderKey = `${orderId}:ACTIVE`;
   try {
     const result = await client.$transaction(async (tx) => {

@@ -3,10 +3,17 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const TaxCompliance = ({ token }) => {
   const [taxData, setTaxData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [vatVersions, setVatVersions] = useState([]);
+  const [vatRate, setVatRate] = useState("13");
+  const [vatEffectiveDate, setVatEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  const [savingVatRate, setSavingVatRate] = useState(false);
+  const { canAny } = usePermissions();
+  const canConfigureVat = canAny(["finance:tax_configure"]);
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -31,9 +38,59 @@ const TaxCompliance = ({ token }) => {
     }
   };
 
+  const fetchVatVersions = async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/finance/vat-rates`, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Failed to load VAT rate history.");
+      setVatVersions(response.data.versions || []);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Failed to load VAT rate history.");
+    }
+  };
+
+  const scheduleVatRate = async (event) => {
+    event.preventDefault();
+    if (!vatEffectiveDate || !/^\d{1,3}(?:\.\d{1,2})?$/.test(vatRate)) {
+      toast.error("Enter a valid VAT percentage and future effective date.");
+      return;
+    }
+    try {
+      setSavingVatRate(true);
+      const response = await axios.post(`${backendUrl}/api/finance/vat-rates`, {
+        vatRate,
+        effectiveFrom: `${vatEffectiveDate}T00:00:00.000Z`,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "VAT rate could not be scheduled.");
+      toast.success(response.data.message || "VAT rate scheduled.");
+      await fetchVatVersions();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "VAT rate could not be scheduled.");
+    } finally {
+      setSavingVatRate(false);
+    }
+  };
+
+  const cancelVatRate = async (versionId) => {
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/vat-rates/${versionId}/cancel`, {}, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Scheduled VAT rate could not be cancelled.");
+      toast.success(response.data.message || "Scheduled VAT rate cancelled.");
+      await fetchVatVersions();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Scheduled VAT rate could not be cancelled.");
+    }
+  };
+
   useEffect(() => {
     if (token) fetchTaxReport(selectedMonth);
   }, [token, selectedMonth]);
+
+  useEffect(() => {
+    if (token) fetchVatVersions();
+  }, [token]);
 
   if (loading && !taxData) {
     return (
@@ -61,11 +118,11 @@ const TaxCompliance = ({ token }) => {
             <span className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 rounded-lg border border-amber-200/60">
               Taxation &amp; Compliance
             </span>
-            <span className="text-xs font-medium text-slate-400">Nepal IRD Standards (13% VAT &amp; 25% CIT)</span>
+            <span className="text-xs font-medium text-slate-400">Configured effective VAT rates &amp; CIT projection</span>
           </div>
-          <h1 className="text-2xl font-black text-slate-900 mt-1">VAT &amp; Legal Tax Optimization</h1>
+          <h1 className="text-2xl font-black text-slate-900 mt-1">VAT &amp; Tax Reconciliation</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            13% VAT monthly offset reconciler, corporate income tax projection, and legal tax-minimizing advisory.
+          Effective-dated output VAT tracking, posted-ledger reconciliation, and corporate income tax projection.
           </p>
         </div>
 
@@ -92,7 +149,103 @@ const TaxCompliance = ({ token }) => {
         </div>
       </div>
 
-      {/* 13% NEPAL VAT MONTHLY RECONCILER */}
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Effective-Dated VAT Rate History</h2>
+            <p className="mt-1 max-w-3xl text-xs text-slate-500">
+              New rates apply only to transactions on or after their UTC effective date. Historical and effective rates are immutable; cancel only a future scheduled version.
+            </p>
+          </div>
+          <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800">
+            Confirm statutory rates with your accountant
+          </span>
+        </div>
+
+        {canConfigureVat && (
+          <form onSubmit={scheduleVatRate} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <label className="text-xs font-semibold text-slate-700">
+              New VAT rate (%)
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                required
+                value={vatRate}
+                onChange={(event) => setVatRate(event.target.value)}
+                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="text-xs font-semibold text-slate-700">
+              Effective from (UTC)
+              <input
+                type="date"
+                required
+                value={vatEffectiveDate}
+                onChange={(event) => setVatEffectiveDate(event.target.value)}
+                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={savingVatRate}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {savingVatRate ? "Scheduling..." : "Schedule rate"}
+            </button>
+          </form>
+        )}
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="py-2 pr-4 font-semibold">Rate</th>
+                <th className="py-2 pr-4 font-semibold">Effective from (UTC)</th>
+                <th className="py-2 pr-4 font-semibold">Effective until (exclusive)</th>
+                <th className="py-2 pr-4 font-semibold">Status</th>
+                {canConfigureVat && <th className="py-2 text-right font-semibold">Action</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {vatVersions.map((version) => {
+                const isFutureActive = version.status === "ACTIVE" && new Date(version.effectiveFrom) > new Date();
+                return (
+                  <tr key={version.id} className="text-slate-700">
+                    <td className="py-3 pr-4 font-semibold">{Number(version.vatRate).toFixed(2)}%</td>
+                    <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
+                    <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                    <td className="py-3 pr-4">{version.status}</td>
+                    {canConfigureVat && (
+                      <td className="py-3 text-right">
+                        {isFutureActive && (
+                          <button
+                            type="button"
+                            onClick={() => cancelVatRate(version.id)}
+                            className="font-semibold text-rose-700 hover:text-rose-900"
+                          >
+                            Cancel scheduled rate
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+              {vatVersions.length === 0 && (
+                <tr>
+                  <td colSpan={canConfigureVat ? 5 : 4} className="py-6 text-center text-slate-400">
+                    No rate versions scheduled. The current legacy tax configuration remains in effect.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* MONTHLY VAT RECONCILER */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div className="flex items-center justify-between pb-4 border-b border-slate-100">
           <div>

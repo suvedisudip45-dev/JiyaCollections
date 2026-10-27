@@ -36,6 +36,11 @@ import {
   collectReceivable,
 } from "../controllers/treasuryAccountingController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
+import {
+  cancelVatRateVersionAdmin,
+  createVatRateVersionAdmin,
+  getVatRateVersions,
+} from "../controllers/vatRateController.js";
 
 const financialRouter = express.Router();
 
@@ -98,6 +103,9 @@ financialRouter.post("/revert-settlement", authenticate, authorize("finance:paya
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);
+financialRouter.get("/vat-rates", authenticate, authorize("finance:tax_report_read"), getVatRateVersions);
+financialRouter.post("/vat-rates", authenticate, authorize("finance:tax_configure"), createVatRateVersionAdmin);
+financialRouter.post("/vat-rates/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelVatRateVersionAdmin);
 
 // Financial Statements
 financialRouter.get("/statements", authenticate, authorize("finance:statements_read"), getFinancialStatements);

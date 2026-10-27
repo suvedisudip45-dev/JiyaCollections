@@ -212,9 +212,14 @@ The schema includes a full accounting engine with:
 - `AccountReceivable`
 - `JournalEntry`
 - `JournalLine`
+- `AccountingParty`
+- `AccountingDocument`
+- `AccountingAllocation`
+- `DistributorServiceEarning`
 - `AccountingPeriod`
 - `FiscalYear`
 - `TaxConfiguration`
+- `VatRateVersion`
 - `TaxFilingRecord`
 - `OperatingExpense`
 - `DirectIncome`
@@ -229,7 +234,13 @@ For posted accounting, accepted production layers are traced to distributor stoc
 
 `AccountingEvent` also serves as the durable delivered-sale outbox for NCM and distributor self-delivery. The delivery transaction stores a versioned source snapshot and payload hash; `nextAttemptAt` and `claimedAt` support scheduled retries and stale-claim recovery. The worker links the journal to the source event and commits journal creation plus the `POSTED` event state atomically. The additive migration `20261017000000_delivery_accounting_outbox_schedule` must be applied and Prisma Client regenerated before deploying this worker; it has not yet been applied.
 
-Migration `20261017150000_distributor_settlement_payables` adds `DistributorSettlementRequest.paidAmount`. Distributor finance recognizes delivery earnings only from completed self-delivery assignments, excluding assignments marked NCM and any order with a corresponding NCM `DeliveryOrder`. Pending request balances are reserved from the amount available for a subsequent settlement request. Each distributor settlement request creates a linked `AccountPayable` and posts the requested gross delivery-service expense to account 6430 against accounts payable 2110. Admin payout is performed from `/payables`; each payment debits 2110, credits the selected treasury account's linked GL account (or cash/bank control account), and updates the request, payable, cash transaction, and journal in one transaction. `DistributorSettlementRequest.paidAmount` tracks partial payments. Settlement VAT is not claimed as recoverable input VAT without verified supplier-invoice evidence.
+Completed self-delivery creates an immutable `DistributorServiceEarning` with delivery/incentive/commission/tax snapshots plus linked journal and payable `AccountingDocument` references. Admin payouts allocate against these documents and clear control 2190. Old `DistributorSettlementRequest` and `AccountPayable` data remain a legacy reconciliation path; do not generate duplicate expense accruals for deliveries already represented by an earning snapshot.
+
+NCM-delivered COD records receivable `AccountingDocument` rows by source order against control 1170. A confirmed NCM batch accrues the carrier fee to 6430/2180, creates its payable document, then allocates gross COD and fee payable against the remittance journal in one transaction. Distributor-collected COD uses party documents against 1190; distributor-paid refunds and delivery compensation use payable documents against 2190. `AccountingHealth` compares these source-specific open balances to their respective GL controls. It intentionally reports partial coverage while historical and other-party documents remain unreconciled.
+
+`VatRateVersion` stores append-only VAT percentages and UTC effective intervals. The Admin Tax Compliance page can schedule only future rates and cancel only the latest scheduled version. Delivered sales and full-delivery returns resolve the rate from the source order timestamp. Approved customer return snapshots retain the applicable rate and VAT refund; subsequent versions do not change approved amounts.
+
+Migrations `20261027150000_distributor_service_earnings` and `20261027160000_effective_vat_rate_versions` are additive and must be applied, then Prisma Client regenerated, before deploying these changes. Do not treat schema validation alone as migration rollout or as reconciliation of legacy financial rows.
 
 ### 3.9 Gift promotions and distributor gift stock
 

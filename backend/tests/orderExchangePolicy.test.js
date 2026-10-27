@@ -358,7 +358,13 @@ test("admin approval routes a self-delivery return to the original distributor w
       },
     },
     order: {
-      findUnique: async () => ({ deliveryFee: 100 }),
+      findUnique: async () => ({ deliveryFee: 100, date: BigInt(Date.now()) }),
+    },
+    vatRateVersion: {
+      findFirst: async () => null,
+    },
+    taxConfiguration: {
+      findUnique: async () => ({ vatRate: 13 }),
     },
     orderAssignment: {
       findUnique: async () => ({ distributorId: "dist-1", deliveryType: "SELF_DELIVERY" }),

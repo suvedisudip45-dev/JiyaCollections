@@ -6,6 +6,7 @@ import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
 import { classifySaleChannel, calculateManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { createAccountingDocument } from "./accountingSubledgerService.js";
+import { resolveVatRatePercent } from "./vatRateService.js";
 
 // ==========================================
 // 1. STANDARD CHART OF ACCOUNTS DEFINITION
@@ -18,7 +19,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "1120", accountName: "Bank Accounts", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1130", accountName: "Accounts Receivable (Control)", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1140", accountName: "Merchandise Inventory", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
-  { accountCode: "1150", accountName: "Input VAT Receivable (13%)", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1150", accountName: "Input VAT Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1160", accountName: "Supplier Advances & Prepaid Expenses", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1170", accountName: "NCM COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1180", accountName: "Payment Gateway Clearing", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
@@ -33,14 +34,14 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "2000", accountName: "Liabilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: null },
   { accountCode: "2100", accountName: "Current Liabilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2110", accountName: "Accounts Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
-  { accountCode: "2120", accountName: "Output VAT Payable (13%)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2120", accountName: "Output VAT Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2130", accountName: "Corporate Income Tax / TDS Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2140", accountName: "Customer Refunds & Advances Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2150", accountName: "Partner Profit Distributions Payable", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2160", accountName: "Manufacturer Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2170", accountName: "Marketing Partner Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2180", accountName: "NCM Carrier Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
-  { accountCode: "2190", accountName: "Distributor Refund Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2190", accountName: "Distributor Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2500", accountName: "Non-Current Liabilities & Debt", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2510", accountName: "Bank Term Loans & Credit Facilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2500" },
 
@@ -460,11 +461,13 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   ));
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const productTaxable = productGross.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const vatRate = await resolveVatRatePercent(order.date, { client });
+  const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+  const productTaxable = productGross.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const productVat = productGross.minus(productTaxable);
 
   const deliveryTaxable = deliveryCharge.greaterThan(0)
-    ? deliveryCharge.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
+    ? deliveryCharge.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
     : new Prisma.Decimal(0);
   const deliveryVat = deliveryCharge.minus(deliveryTaxable);
   const totalVat = productVat.plus(deliveryVat);
@@ -547,6 +550,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   }
 
   let collectionDistributorParty = null;
+  let ncmParty = null;
   if (collectionDistributorId) {
     const distributor = await client.distributor.findUnique({
       where: { id: collectionDistributorId },
@@ -557,6 +561,12 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       partyType: "DISTRIBUTOR",
       sourceEntityId: collectionDistributorId,
       displayName: distributor.name || `Distributor (${collectionDistributorId.slice(-6)})`,
+    }, { client });
+  } else if (tenderMappingKey === "NCM_COD_RECEIVABLE") {
+    ncmParty = await ensureAccountingParty({
+      partyType: "CARRIER",
+      sourceEntityId: "NCM",
+      displayName: "Nepal Can Move (NCM)",
     }, { client });
   }
 
@@ -577,8 +587,8 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       debit: grossAmount,
       credit: 0,
       description: `Receivable/Tender for Order #${order.id.slice(-6)}`,
-      customerId: collectionDistributorParty ? null : order.userId,
-      accountingPartyId: collectionDistributorParty?.id || customerParty?.id,
+      customerId: collectionDistributorParty || ncmParty ? null : order.userId,
+      accountingPartyId: collectionDistributorParty?.id || ncmParty?.id || customerParty?.id,
     },
     {
       mappingKey: "PRODUCT_SALES_REVENUE",
@@ -592,7 +602,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       mappingKey: "OUTPUT_VAT_PAYABLE",
       debit: 0,
       credit: totalVat,
-      description: `13% Output VAT Collected on Order #${order.id.slice(-6)}`,
+      description: `${vatRate.toFixed(2)}% Output VAT Collected on Order #${order.id.slice(-6)}`,
     },
   ];
 
@@ -703,18 +713,22 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     description: `Delivered sale, revenue, VAT, and manufacturer COGS for Order #${order.id.slice(-6)}`,
     lines,
     accountingEventId: opts.accountingEventId,
-    afterPost: collectionDistributorParty
+    afterPost: collectionDistributorParty || ncmParty
       ? async (tx) => createAccountingDocument({
         documentType: "INVOICE",
-        documentNumber: `DCO-${order.id}`,
-        partyId: collectionDistributorParty.id,
+        documentNumber: collectionDistributorParty ? `DCO-${order.id}` : `NCM-COD-${order.id}`,
+        partyId: collectionDistributorParty?.id || ncmParty.id,
         side: "RECEIVABLE",
-        sourceType: "DISTRIBUTOR_COD_SALE",
+        sourceType: collectionDistributorParty ? "DISTRIBUTOR_COD_SALE" : "NCM_COD_SALE",
         sourceId: order.id,
         amount: grossAmount,
         issueDate: transactionDate,
-        idempotencyKey: `DISTRIBUTOR_COD_SALE:${order.id}`,
-        notes: `COD collected by distributor for delivered order ${order.id}.`,
+        idempotencyKey: collectionDistributorParty
+          ? `DISTRIBUTOR_COD_SALE:${order.id}`
+          : `NCM_COD_SALE:${order.id}`,
+        notes: collectionDistributorParty
+          ? `COD collected by distributor for delivered order ${order.id}.`
+          : `COD collected by NCM for delivered order ${order.id}.`,
       }, { client: tx })
       : null,
     client,
@@ -737,10 +751,12 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   const deliveryCharge = new Prisma.Decimal(String(order.deliveryCharge || 0));
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const productTaxable = productGross.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const vatRate = await resolveVatRatePercent(order.date, { client });
+  const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+  const productTaxable = productGross.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const productVat = productGross.minus(productTaxable);
   const deliveryTaxable = deliveryCharge.greaterThan(0)
-    ? deliveryCharge.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
+    ? deliveryCharge.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
     : new Prisma.Decimal(0);
   const deliveryVat = deliveryCharge.minus(deliveryTaxable);
   const totalVat = productVat.plus(deliveryVat);
@@ -1047,6 +1063,48 @@ export const postNcmSettlementAccounting = async ({ settlement, client = prisma 
   });
 };
 
+export const postNcmCarrierFeeAccrualAccounting = async ({
+  settlementId,
+  feeAmount,
+  ncmPartyId,
+  createdBy = "ADMIN",
+}, { client = prisma } = {}) => {
+  const fee = new Prisma.Decimal(String(feeAmount || 0));
+  if (!fee.isFinite() || fee.isNegative()) {
+    throw new Error("NCM carrier fee must be a non-negative amount.");
+  }
+  if (fee.isZero()) return null;
+  if (!settlementId || !ncmPartyId) {
+    throw new Error("NCM settlement and carrier party are required to accrue carrier fees.");
+  }
+  return postJournalEntry({
+    transactionDate: new Date(),
+    sourceType: "NCM_CARRIER_FEE_ACCRUAL",
+    sourceId: settlementId,
+    idempotencyKey: `NCM_CARRIER_FEE_ACCRUAL:${settlementId}`,
+    referenceNumber: `NCM-FEE-${String(settlementId).slice(-8)}`,
+    description: "Accrue NCM carrier fee deducted from COD remittance.",
+    createdBy,
+    lines: [
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: fee,
+        credit: 0,
+        description: "NCM carrier fee expense accrued at remittance.",
+        accountingPartyId: ncmPartyId,
+      },
+      {
+        mappingKey: "NCM_CARRIER_PAYABLE",
+        debit: 0,
+        credit: fee,
+        description: "NCM carrier fee payable accrued before net settlement.",
+        accountingPartyId: ncmPartyId,
+      },
+    ],
+    client,
+  });
+};
+
 /**
  * 1. Sales Invoice & Order Accounting
  * DR Accounts Receivable / Cash: Total MRP Amount
@@ -1055,15 +1113,19 @@ export const postNcmSettlementAccounting = async ({ settlement, client = prisma 
  * DR Cost of Goods Sold (COGS): Direct Product Cost
  * CR Merchandise Inventory: Direct Product Cost
  */
-export const postSalesOrderAccounting = async (order) => {
+export const postSalesOrderAccounting = async (order, opts = {}) => {
   try {
     if (!order || !order.id) return null;
     const grossAmount = Number(order.amount || 0);
     if (grossAmount <= 0) return null;
 
-    const vatRate = 0.13;
-    const taxableRevenue = Number((grossAmount / (1 + vatRate)).toFixed(2));
-    const outputVat = Number((grossAmount - taxableRevenue).toFixed(2));
+    const client = opts.client || prisma;
+    const dateVal = order.date ? new Date(Number(order.date)) : new Date();
+    const vatRate = await resolveVatRatePercent(dateVal, { client });
+    const grossDecimal = new Prisma.Decimal(String(grossAmount));
+    const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+    const taxableRevenue = grossDecimal.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+    const outputVat = grossDecimal.minus(taxableRevenue).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
 
     // Calculate Direct Product COGS from order items
     let items = [];
@@ -1078,7 +1140,7 @@ export const postSalesOrderAccounting = async (order) => {
       const pId = item.productId || item._id || item.id;
       const qty = Number(item.quantity || 1);
       if (pId) {
-        const product = await prisma.product.findUnique({ where: { id: pId }, select: { costPrice: true } });
+        const product = await client.product.findUnique({ where: { id: pId }, select: { costPrice: true } });
         const unitCost = product ? Number(product.costPrice || 0) : 0;
         totalCOGS += unitCost * qty;
       }
@@ -1108,7 +1170,7 @@ export const postSalesOrderAccounting = async (order) => {
         accountCode: "2120",
         debit: 0,
         credit: outputVat,
-        description: `13% Output VAT Collected for Order #${order.id.slice(-6)}`,
+        description: `${vatRate.toFixed(2)}% Output VAT Collected for Order #${order.id.slice(-6)}`,
       },
     ];
 
@@ -1130,8 +1192,6 @@ export const postSalesOrderAccounting = async (order) => {
       );
     }
 
-    const dateVal = order.date ? new Date(Number(order.date)) : new Date();
-
     return await postJournalEntry({
       transactionDate: dateVal,
       sourceType: "SALES_INVOICE",
@@ -1140,6 +1200,7 @@ export const postSalesOrderAccounting = async (order) => {
       referenceNumber: `ORD-${order.id.slice(-6)}`,
       description: `Sales Revenue & COGS recognition for Order #${order.id.slice(-6)} (${order.paymentMethod})`,
       lines,
+      client,
     });
   } catch (error) {
     console.error("Error in postSalesOrderAccounting:", error);
@@ -1414,12 +1475,25 @@ export const postDistributorSettlementRequestAccounting = async ({
  */
 export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) => {
   try {
+    const client = opts.client || prisma;
     const returnId = returnOrParams.returnId || returnOrParams.id;
     const customerName = returnOrParams.customerName || "Customer";
     const totalRefund = Number(returnOrParams.totalRefundAmount || returnOrParams.refundAmount || 0);
     if (totalRefund <= 0) return null;
 
-    const vat = Number(returnOrParams.vatRefunded || (totalRefund - totalRefund / 1.13).toFixed(2));
+    let vat = returnOrParams.vatRefunded;
+    if (vat === undefined || vat === null) {
+      const sourceOrder = returnOrParams.orderId
+        ? await client.order.findUnique({ where: { id: returnOrParams.orderId }, select: { date: true } })
+        : null;
+      const transactionDate = sourceOrder?.date ?? returnOrParams.returnDate ?? new Date();
+      const vatRate = await resolveVatRatePercent(transactionDate, { client });
+      const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
+      vat = new Prisma.Decimal(String(totalRefund)).minus(
+        new Prisma.Decimal(String(totalRefund)).div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      ).toNumber();
+    }
+    vat = Number(vat);
     const netReturn = Number((totalRefund - vat).toFixed(2));
     const isPayable = opts.recordAsPayable !== undefined ? opts.recordAsPayable : returnOrParams.refundMethod === "PAYABLE";
     const refundMethod = returnOrParams.refundMethod || (isPayable ? "PAYABLE" : "CASH");
@@ -1474,6 +1548,7 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
       referenceNumber: `RMA-${returnId ? returnId.slice(-6) : ""}`,
       description: `Customer Return RMA refund and revenue reversal for ${customerName}`,
       lines,
+      client,
     });
   } catch (error) {
     console.error("Error in postCustomerReturnAccounting:", error);
@@ -2051,30 +2126,36 @@ export const postNcmRemittanceAccounting = async ({
   cashAccountCode,
   destinationAccountName = "Bank Account",
   createdBy = "admin",
+  ncmPartyId = null,
 }, { client = prisma } = {}) => {
   const codDecimal = new Prisma.Decimal(codCollected || 0);
   const feeDecimal = new Prisma.Decimal(deliveryFeeActual || 0);
   const netDecimal = codDecimal.minus(feeDecimal);
 
-  if (codDecimal.lte(0)) {
+  if (!codDecimal.isFinite() || !feeDecimal.isFinite() || codDecimal.lte(0) || feeDecimal.isNegative()) {
     throw new Error("COD collected amount must be greater than zero for remittance posting.");
   }
+  if (netDecimal.isNegative()) {
+    throw new Error("Carrier fee cannot exceed NCM COD collected in a remittance posting.");
+  }
 
-  const lines = [
-    {
+  const lines = [];
+  if (netDecimal.greaterThan(0)) {
+    lines.push({
       accountCode: cashAccountCode || (isCash ? "1110" : "1120"),
       debit: netDecimal,
       credit: 0,
       description: `Net COD remittance received into ${destinationAccountName}`,
-    },
-  ];
+    });
+  }
 
   if (feeDecimal.greaterThan(0)) {
     lines.push({
-      mappingKey: "DELIVERY_EXPENSE",
+      mappingKey: "NCM_CARRIER_PAYABLE",
       debit: feeDecimal,
       credit: 0,
-      description: `NCM carrier delivery fee deducted from COD remittance`,
+      description: `Clear NCM carrier fee payable from COD remittance`,
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
     });
   }
 
@@ -2083,6 +2164,7 @@ export const postNcmRemittanceAccounting = async ({
     debit: 0,
     credit: codDecimal,
     description: `NCM COD collection settled`,
+    ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
   });
 
   return await postJournalEntry({

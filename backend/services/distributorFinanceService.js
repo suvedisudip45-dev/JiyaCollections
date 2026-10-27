@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import { recordSystemAudit } from "./auditService.js";
+import { ensureAccountingParty } from "./accountingPartyService.js";
+import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 import {
   postDistributorSettlementRequestAccounting,
   postSupplierPaymentAccounting,
@@ -151,16 +153,62 @@ export const getDistributorFinancialStatement = async ({
   // Calculate earnings and transactions
   const rateCard = await resolveActiveRateCard({ distributorId, client });
   const vatRate = Number(rateCard.vatRate ?? 13);
+  const serviceEarnings = client.distributorServiceEarning
+    ? await client.distributorServiceEarning.findMany({
+        where: {
+          distributorId,
+          serviceType: "DELIVERY",
+          ...(Object.keys(dateFilter).length ? { effectiveAt: dateFilter } : {}),
+        },
+        orderBy: { effectiveAt: "desc" },
+      })
+    : [];
+  const earningByAssignment = new Map(serviceEarnings.map((earning) => [earning.assignmentId, earning]));
 
   let grossDeliveryEarnings = 0;
   let earnedIncentives = 0;
   let adminDiscountsApplied = 0;
   let returnFeesEarned = 0;
+  let snapshottedDeliverySubtotal = 0;
+  let snapshottedVatAmount = 0;
   const itemizedTransactions = [];
 
   // Itemize deliveries
   for (const assignment of selfDeliveredAssignments) {
     const order = orderMap.get(assignment.orderId);
+    const earning = earningByAssignment.get(assignment.id);
+    if (earning) {
+      const deliveryCharge = Number(earning.deliveryCharge);
+      const bonus = Number(earning.incentiveAmount);
+      const commission = Number(earning.commissionAmount);
+      const vatAmount = Number(earning.vatAmount);
+      const netEarning = Number(earning.payableAmount);
+      grossDeliveryEarnings += deliveryCharge;
+      earnedIncentives += bonus;
+      adminDiscountsApplied += commission;
+      snapshottedDeliverySubtotal += deliveryCharge + bonus - commission;
+      snapshottedVatAmount += vatAmount;
+      itemizedTransactions.push({
+        id: `tx-del-${earning.id}`,
+        type: "DELIVERY",
+        referenceId: earning.orderId,
+        date: earning.effectiveAt,
+        description: `Self-delivery completed for Order ${earning.orderId.slice(0, 8)}`,
+        grossAmount: deliveryCharge,
+        incentiveAmount: bonus,
+        discountChargeAmount: commission,
+        netAmount: netEarning,
+        orderAmount: order ? Number(order.amount) : 0,
+        paymentMethod: order ? order.paymentMethod : "COD",
+        rateCardId: earning.rateCardId,
+        accountingDocumentId: earning.accountingDocumentId,
+        journalEntryId: earning.journalEntryId,
+        taxSnapshot: earning.snapshot,
+        isRateSnapshotted: true,
+      });
+      continue;
+    }
+
     const deliveryCharge = Number(rateCard.deliveryCharge || 0);
     const bonus = Number(rateCard.bonusRate ?? rateCard.incentiveRate ?? 0);
     const commission = (rateCard.commissionRate > 0 && rateCard.commissionRate <= 100)
@@ -184,6 +232,7 @@ export const getDistributorFinancialStatement = async ({
       netAmount: Number(netEarning.toFixed(2)),
       orderAmount: order ? Number(order.amount) : 0,
       paymentMethod: order ? order.paymentMethod : "COD",
+      isRateSnapshotted: false,
     });
   }
 
@@ -252,7 +301,8 @@ export const getDistributorFinancialStatement = async ({
   const subtotalBeforeVat = Number(
     (grossDeliveryEarnings + earnedIncentives + returnFeesEarned - adminDiscountsApplied).toFixed(2)
   );
-  const vatAmount = Number((subtotalBeforeVat * (vatRate / 100)).toFixed(2));
+  const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal);
+  const vatAmount = Number((legacyDeliverySubtotal * (vatRate / 100) + snapshottedVatAmount).toFixed(2));
   const totalWithVat = Number((subtotalBeforeVat + vatAmount).toFixed(2));
   const totalWithoutVat = subtotalBeforeVat;
 
@@ -350,42 +400,72 @@ export const submitDistributorSettlementRequest = async ({
           distributor: { select: { id: true, name: true, city: true, phone: true } },
         },
       });
-      const payable = await tx.accountPayable.create({
-        data: {
-          title: `Distributor settlement request ${created.id.slice(-8)}`,
-          payeeName: created.distributor.name,
-          category: "DISTRIBUTOR_SETTLEMENT",
-          referenceType: "DISTRIBUTOR_SETTLEMENT",
-          referenceId: created.id,
-          totalAmount: numAmount,
-          paidAmount: 0,
-          remainingBalance: numAmount,
-          status: "UNPAID",
-          priority: "MEDIUM",
-          notes: normalizedNotes || "Distributor requested settlement.",
-        },
-      });
-      await tx.distributorSettlementRequest.update({
-        where: { id: created.id },
-        data: {
-          metadata: {
-            accountPayableId: payable.id,
-            settlementBasis: "DISTRIBUTOR_SELF_DELIVERY",
+      const earningDocuments = tx.accountingDocument
+        ? await tx.accountingDocument.findMany({
+            where: {
+              party: { partyType: "DISTRIBUTOR", sourceEntityId: distributorId },
+              side: "PAYABLE",
+              sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+              status: { in: ["OPEN", "PARTIALLY_PAID"] },
+            },
+            orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
+          })
+        : [];
+      const openEarnings = earningDocuments.reduce((sum, document) => sum + Number(document.remainingAmount), 0);
+      const useSubledger = earningDocuments.length > 0;
+      if (useSubledger && numAmount > openEarnings + 0.001) {
+        throw fail(
+          "Requested settlement exceeds recorded distributor earning documents. Reconcile legacy delivery earnings before payout.",
+          409,
+          "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
+        );
+      }
+      if (useSubledger) {
+        await tx.distributorSettlementRequest.update({
+          where: { id: created.id },
+          data: {
+            metadata: {
+              settlementBasis: "ACCOUNTING_SUBLEDGER",
+              earningDocumentIds: earningDocuments.map((document) => document.id),
+            },
           },
-        },
-      });
-      await postRequestAccounting({
-        settlement: created,
-        distributorName: created.distributor.name,
-        client: tx,
-      });
+        });
+      } else {
+        const payable = await tx.accountPayable.create({
+          data: {
+            title: `Distributor settlement request ${created.id.slice(-8)}`,
+            payeeName: created.distributor.name,
+            category: "DISTRIBUTOR_SETTLEMENT",
+            referenceType: "DISTRIBUTOR_SETTLEMENT",
+            referenceId: created.id,
+            totalAmount: numAmount,
+            paidAmount: 0,
+            remainingBalance: numAmount,
+            status: "UNPAID",
+            priority: "MEDIUM",
+            notes: normalizedNotes || "Distributor requested settlement.",
+          },
+        });
+        await tx.distributorSettlementRequest.update({
+          where: { id: created.id },
+          data: {
+            metadata: {
+              accountPayableId: payable.id,
+              settlementBasis: "LEGACY_REQUEST_ACCRUAL",
+            },
+          },
+        });
+        await postRequestAccounting({
+          settlement: created,
+          distributorName: created.distributor.name,
+          client: tx,
+        });
+      }
       return {
         ...created,
-        metadata: {
-          ...(created.metadata || {}),
-          accountPayableId: payable.id,
-          settlementBasis: "DISTRIBUTOR_SELF_DELIVERY",
-        },
+        metadata: useSubledger
+          ? { settlementBasis: "ACCOUNTING_SUBLEDGER", earningDocumentIds: earningDocuments.map((document) => document.id) }
+          : { settlementBasis: "LEGACY_REQUEST_ACCRUAL" },
       };
     });
   } catch (error) {
@@ -426,6 +506,9 @@ export const executeAdminDistributorSettlement = async ({
   adminNotes = null,
   adminAccountId = null,
   postPaymentAccounting = postSupplierPaymentAccounting,
+  allocateAccountingPayment = allocatePaymentToDocuments,
+  resolveAccountingParty = ensureAccountingParty,
+  writeAudit = recordSystemAudit,
   client = prisma,
 } = {}) => {
   if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
@@ -445,6 +528,176 @@ export const executeAdminDistributorSettlement = async ({
       include: { distributor: true },
     });
     if (!targetSettlement) throw fail("Distributor settlement request not found.", 404);
+    if (targetSettlement.metadata?.settlementBasis === "ACCOUNTING_SUBLEDGER") {
+      if (!normalizedKey) {
+        throw fail("An idempotency key is required for subledger-backed distributor payouts.", 400, "IDEMPOTENCY_KEY_REQUIRED");
+      }
+      const paymentKey = normalizedKey;
+      const existingPayment = await tx.cashTransaction.findUnique({ where: { idempotencyKey: paymentKey } });
+      if (existingPayment) {
+        if (existingPayment.referenceId !== settlementId ||
+            Number(existingPayment.amount) !== settleAmount ||
+            existingPayment.fromAccountId !== financialAccountId) {
+          throw fail("This idempotency key was already used with different payment details.", 409, "IDEMPOTENCY_KEY_REUSED");
+        }
+        return {
+          success: true,
+          message: "This distributor settlement payment was already recorded.",
+          settlement: targetSettlement,
+          payable: null,
+          isReplay: true,
+        };
+      }
+      if (targetSettlement.status === "SETTLED" || targetSettlement.status === "REJECTED") {
+        throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
+      }
+      const requestOutstanding = Number(targetSettlement.amount) - Number(targetSettlement.paidAmount || 0);
+      if (settleAmount > requestOutstanding + 0.001) {
+        throw fail("Payment amount exceeds the approved distributor settlement request balance.", 409, "SETTLEMENT_AMOUNT_EXCEEDS_PAYABLE");
+      }
+
+      const party = await resolveAccountingParty({
+        partyType: "DISTRIBUTOR",
+        sourceEntityId: targetSettlement.distributorId,
+        displayName: targetSettlement.distributor.name,
+      }, { client: tx });
+      const targetDocumentIds = Array.isArray(targetSettlement.metadata.earningDocumentIds)
+        ? targetSettlement.metadata.earningDocumentIds
+        : [];
+      const targetDocuments = targetDocumentIds.length
+        ? await tx.accountingDocument.findMany({
+            where: {
+              id: { in: targetDocumentIds },
+              partyId: party.id,
+              side: "PAYABLE",
+              sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+              status: { in: ["OPEN", "PARTIALLY_PAID"] },
+            },
+          })
+        : [];
+      const availableDocuments = targetDocuments.reduce((sum, document) => sum + Number(document.remainingAmount), 0);
+      if (availableDocuments + 0.001 < settleAmount) {
+        throw fail("Recorded distributor payable documents changed or were already allocated. Refresh and reconcile before paying.", 409, "DISTRIBUTOR_PAYABLE_CHANGED");
+      }
+
+      const financialAccount = await tx.financialAccount.findUnique({
+        where: { id: financialAccountId },
+        include: { accountingAccount: { select: { accountType: true, normalBalance: true } } },
+      });
+      if (
+        !financialAccount ||
+        financialAccount.status !== "ACTIVE" ||
+        !["CASH", "BANK", "WALLET"].includes(String(financialAccount.accountType).toUpperCase()) ||
+        (financialAccount.accountingAccountId &&
+          (financialAccount.accountingAccount?.accountType !== "ASSET" ||
+            financialAccount.accountingAccount?.normalBalance !== "DEBIT"))
+      ) {
+        throw fail("Selected active treasury account was not found or is not mapped to a debit-balance asset.", 409, "INVALID_TREASURY_ACCOUNT");
+      }
+      const treasuryUpdate = await tx.financialAccount.updateMany({
+        where: {
+          id: financialAccount.id,
+          status: "ACTIVE",
+          currentBalance: { gte: settleAmount },
+        },
+        data: { currentBalance: { decrement: settleAmount } },
+      });
+      if (treasuryUpdate.count !== 1) {
+        throw fail("Treasury balance changed or is insufficient. Refresh and retry.", 409, "INSUFFICIENT_FUNDS");
+      }
+
+      await tx.cashTransaction.create({
+        data: {
+          idempotencyKey: paymentKey,
+          amount: settleAmount,
+          type: "OUTFLOW",
+          fromAccountId: financialAccount.id,
+          category: "SUPPLIER_PAYMENT",
+          partyName: targetSettlement.distributor.name,
+          referenceId: settlementId,
+          description: `Distributor settlement payout for ${targetSettlement.distributor.name}`,
+        },
+      });
+      const paymentJournal = await postPaymentAccounting({
+        payableId: settlementId,
+        payeeName: targetSettlement.distributor.name,
+        amount: settleAmount,
+        settlementAmount: settleAmount,
+        cashAccountId: financialAccount.accountingAccountId || null,
+        fromAccountType: financialAccount.accountType === "CASH" ? "CASH" : "BANK",
+        payableAccountCode: "2190",
+        accountingPartyId: party.id,
+        idempotencyKey: paymentKey,
+        referenceNumber: `DIST-PAY-${settlementId.slice(-8)}`,
+        client: tx,
+      });
+      if (!paymentJournal?.id) {
+        throw fail("Distributor payment journal could not be posted.", 500, "DISTRIBUTOR_PAYMENT_ACCOUNTING_FAILED");
+      }
+      const allocation = await allocateAccountingPayment({
+        partyId: party.id,
+        side: "PAYABLE",
+        amount: settleAmount,
+        journalEntryId: paymentJournal.id,
+        targetDocumentIds,
+        sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING"],
+        idempotencyKey: paymentKey,
+        notes: normalizedNotes || `Admin settlement payout ${settlementId}`,
+      }, { client: tx });
+      if (Number(allocation.unallocatedAmount) > 0) {
+        throw fail("Payout could not be fully allocated to distributor earning documents.", 409, "DISTRIBUTOR_PAYMENT_ALLOCATION_INCOMPLETE");
+      }
+
+      const paidToDate = Number((Number(targetSettlement.paidAmount || 0) + settleAmount).toFixed(2));
+      const settlementIsFullyPaid = paidToDate + 0.001 >= Number(targetSettlement.amount);
+      const claim = await tx.distributorSettlementRequest.updateMany({
+        where: {
+          id: settlementId,
+          status: targetSettlement.status,
+          paidAmount: targetSettlement.paidAmount,
+        },
+        data: {
+          paidAmount: paidToDate,
+          status: settlementIsFullyPaid ? "SETTLED" : "PARTIALLY_PAID",
+          adminNotes: normalizedNotes || targetSettlement.adminNotes,
+          reviewedBy: adminAccountId,
+          financialAccountId,
+          settledAt: settlementIsFullyPaid ? now : targetSettlement.settledAt,
+        },
+      });
+      if (claim.count !== 1) {
+        throw fail("Distributor settlement changed while paying. Refresh and retry.", 409, "SETTLEMENT_CONCURRENCY_CONFLICT");
+      }
+      const finalizedSettlement = await tx.distributorSettlementRequest.findUnique({
+        where: { id: settlementId },
+        include: { distributor: { select: { id: true, name: true, city: true, phone: true } } },
+      });
+      await writeAudit(
+        { actorId: adminAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "DISTRIBUTOR_SETTLEMENT_EXECUTED",
+          entityType: "DistributorSettlementRequest",
+          entityId: settlementId,
+          beforeState: { status: targetSettlement.status, paidAmount: Number(targetSettlement.paidAmount || 0) },
+          afterState: {
+            status: finalizedSettlement.status,
+            amount: settleAmount,
+            paidAmount: paidToDate,
+            distributorId: targetSettlement.distributorId,
+            financialAccountId,
+            accountingDocumentIds: allocation.allocations.map((item) => item.documentId),
+          },
+        },
+        { client: tx },
+      );
+      return {
+        success: true,
+        message: `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
+        settlement: finalizedSettlement,
+        payable: { amount: targetSettlement.amount, paidAmount: paidToDate, remainingBalance: requestOutstanding - settleAmount },
+      };
+    }
+
     const payableId = targetSettlement.metadata?.accountPayableId;
     let payable = payableId
       ? await tx.accountPayable.findUnique({ where: { id: payableId } })
@@ -607,5 +860,5 @@ export const executeAdminDistributorSettlement = async ({
       settlement: finalizedSettlement,
       payable: { ...payable, paidAmount: newPaidAmount, remainingBalance: newRemainingBalance },
     };
-  });
+  }, { isolationLevel: "Serializable" });
 };

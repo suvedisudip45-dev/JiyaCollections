@@ -592,9 +592,10 @@ transfer flow:
    - Admin and Distributor negotiate per-product delivery fee, return delivery fee, commission rate, and performance bonus/incentive rates via `POST /api/admin/distributor-rates`.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
 10. Distributor Financial Dashboard & Accounting:
-   - `GET /api/distributor/finance/statement`: Detailed financial dashboard showing itemized transactions, gross earnings, earned incentives/bonuses, admin deductions/charges, VAT breakdown (with toggle for **With VAT [13%]** or **Without VAT**), and payables/receivables balance.
-   - `POST /api/distributor/finance/ask-settlement`: Submit settlement payout request to Admin.
-   - `PATCH /api/admin/distributor-finance/settle`: Admin executes settlement payout from a financial account, creating double-entry cash transactions and updating dashboard states in real time.
+   - `GET /api/distributor/finance/statement`: Itemized self-delivery earnings, incentive/deduction/VAT display, and balances. New deliveries use immutable per-delivery `DistributorServiceEarning` snapshots; legacy assignments without snapshots remain calculated from historical operational data and require reconciliation.
+   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations.
+   - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Rate-card revisions create new versions; closing an approved card preserves history.
+   - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
 Relevant endpoints:
 
@@ -615,11 +616,16 @@ Relevant endpoints:
 | `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
 | `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |
 | `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
+| `PATCH /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Create an immutable revised rate-card version. |
+| `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
 | `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; pending requests reserve their unpaid amount. NCM deliveries are excluded. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
+| `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
+| `POST /api/finance/vat-rates` | Admin | `finance:tax_configure` | Schedule a future VAT rate; only future effective dates are accepted. |
+| `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
 | `GET /manufacturer-production/products` | Manufacturer | `manufacturer:production_manage` | Get products allowed for production requests. |
 | `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
 | `POST /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | Submit production request. |
@@ -843,7 +849,7 @@ story/template delivery records.
   - Self-delivery return QA modal with restock vs. damage write-off sorting.
 - **Distributor Financial Dashboard (`manufacturer/src/pages/DistributorFinanceDashboard.jsx`)**:
   - Minimalist KPI cards: Net Payable, Gross Earnings, Bonuses/Incentives, and Deductions; gross delivery earnings include distributor self-delivery only, never NCM carrier deliveries.
-  - Instant toggle for **"With VAT (13%)"** vs. **"Without VAT"**.
+  - Instant inclusive/exclusive compensation display toggle; the rate-card VAT setting is not proof of verified input VAT or statutory distributor tax status.
   - Interactive **"Ask for Settlement"** modal caps the request at available net settlement balance; the backend independently validates the amount and reserves it transactionally.
 - **Admin Distributor Management (`admin/src/pages/DistributorApplications.jsx`)**:
   - Separate review queues for new distributor applications and manufacturer requests to add distributor access, plus custom negotiated delivery rate cards & incentives and distributor settlement payout review & execution.

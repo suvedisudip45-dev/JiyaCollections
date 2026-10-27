@@ -5,6 +5,7 @@ import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
+import { accrueDistributorDeliveryEarning } from "./distributorServiceEarningService.js";
 import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
@@ -373,6 +374,7 @@ export const updateSelfDeliveryStatus = async ({
   notificationConfig,
   notes = null,
   actorContext = {},
+  accrueDeliveryEarning = accrueDistributorDeliveryEarning,
   client = prisma,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
@@ -492,6 +494,19 @@ export const updateSelfDeliveryStatus = async ({
           },
         });
       }
+      const distributor = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { id: true, name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found.", 404, "DISTRIBUTOR_NOT_FOUND");
+      await accrueDeliveryEarning({
+        distributorId: distributor.id,
+        distributorName: distributor.name,
+        assignmentId: assignment.id,
+        orderId: order.id,
+        effectiveAt: now,
+        client: tx,
+      });
       orderUpdateData.payment = true;
 
       const inventoryConsumption = await consumeDistributorOrderInventory({
@@ -909,7 +924,15 @@ export const processSelfDeliveryReturn = async ({
         inspectedAt: now,
       },
     });
-    await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
+    const logisticsPayable = await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
+    if (logisticsPayable) {
+      await postReturnExchangeSettlementAccounting({
+        operation: "RETURN",
+        requestId: customerReturn.id,
+        payable: logisticsPayable,
+        client: tx,
+      });
+    }
     await tx.customerReturnEvent.create({
       data: {
         customerReturnId: customerReturn.id,
@@ -973,8 +996,5 @@ export const processSelfDeliveryReturn = async ({
       totalRefundAmount,
     };
   });
-  if (client === prisma) {
-    await postReturnExchangeSettlementAccounting({ operation: "RETURN", requestId: approvedReturn.id });
-  }
   return result;
 };

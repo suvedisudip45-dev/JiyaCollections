@@ -977,7 +977,15 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       data: { ...patch, status: exchangeStatus, ...(exchangeStatus === "COMPLETED" ? { completedAt: current.completedAt || happenedAt } : {}) },
     });
     if (exchangeStatus === "COMPLETED") {
-      await createReturnExchangeSettlementPayable(tx, result, "EXCHANGE");
+      const logisticsPayable = await createReturnExchangeSettlementPayable(tx, result, "EXCHANGE");
+      if (logisticsPayable) {
+        await postReturnExchangeSettlementAccounting({
+          operation: "EXCHANGE",
+          requestId: result.id,
+          payable: logisticsPayable,
+          client: tx,
+        });
+      }
     }
     const eventKey = `EXCHANGE_NCM:${numericId}:${nextLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
     await addEvent(tx, {
@@ -1011,9 +1019,6 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
     }
     return result;
   }, { isolationLevel: "Serializable" });
-  if (updated?.status === "COMPLETED") {
-    await postReturnExchangeSettlementAccounting({ operation: "EXCHANGE", requestId: updated.id });
-  }
   return Boolean(updated);
 };
 
@@ -1103,7 +1108,15 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
 
     const updated = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
     if (nextStatus === "COMPLETED") {
-      await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+      const logisticsPayable = await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
+      if (logisticsPayable) {
+        await postReturnExchangeSettlementAccounting({
+          operation: "EXCHANGE",
+          requestId: updated.id,
+          payable: logisticsPayable,
+          client: tx,
+        });
+      }
     }
     await addEvent(tx, {
       exchangeRequestId: request.id,
@@ -1118,9 +1131,6 @@ export const recordExchangeInspection = async ({ requestId, adminId, result, not
     });
     return updated;
   }, { isolationLevel: "Serializable" });
-  if (record.status === "COMPLETED") {
-    await postReturnExchangeSettlementAccounting({ operation: "EXCHANGE", requestId: record.id });
-  }
   return record;
 };
 
