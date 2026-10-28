@@ -12,11 +12,8 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
   const { can } = usePermissions();
   const [profile, setProfile] = useState({});
   const [saving, setSaving] = useState(false);
-  const [commissionRate, setCommissionRate] = useState("");
-  const [commissionSaving, setCommissionSaving] = useState(false);
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const canEdit = can("manufacturer:admin_update");
-  const canProposeCommission = can("manufacturer:admin_commission_update");
 
   useEffect(() => {
     const branch = locationLookups?.branches?.find((entry) => (
@@ -38,7 +35,6 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
       contractStartDate: manufacturer.contractStartDate ? new Date(manufacturer.contractStartDate).toISOString().slice(0, 10) : "",
       contractExpiryDate: manufacturer.contractExpiryDate ? new Date(manufacturer.contractExpiryDate).toISOString().slice(0, 10) : "",
     });
-    setCommissionRate(String(manufacturer.proposedCommissionRate ?? manufacturer.agreedCommissionRate ?? 0));
   }, [manufacturer, locationLookups]);
 
   const update = (field, value) => setProfile((current) => ({
@@ -63,34 +59,6 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
       toast.error(error.response?.data?.message || error.message || "Unable to update manufacturer profile.");
     } finally {
       setSaving(false);
-    }
-  };
-
-  const proposeCommission = async (event) => {
-    event.preventDefault();
-    const rate = Number(commissionRate);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
-      toast.error("Commission rate must be between 0% and 100%.");
-      return;
-    }
-    setCommissionSaving(true);
-    try {
-      const response = await axios.put(
-        `${backendUrl}/api/manufacturer/admin/commission/${manufacturer.id}`,
-        {
-          proposedCommissionRate: rate,
-          adminCommissionFeedback: `Commission proposal sent at ${rate.toFixed(2)}%. Awaiting manufacturer acceptance.`,
-        },
-        { headers: { token } },
-      );
-      if (!response.data?.success) throw new Error(response.data?.message || "Unable to propose commission rate.");
-      toast.success("Commission proposal sent. The manufacturer must accept it.");
-      onUpdated();
-    } catch (error) {
-      console.error(error);
-      toast.error(error.response?.data?.message || error.message || "Unable to propose commission rate.");
-    } finally {
-      setCommissionSaving(false);
     }
   };
 
@@ -150,29 +118,8 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
         <Metric label="On-time rate" value={`${manufacturer.onTimeRate || "0.0"}%`} />
         <Metric label="Defect rate" value={`${manufacturer.defectRate || "0.0"}%`} />
         <Metric label="Contract / availability" value={`${manufacturer.contractStatus || "ACTIVE"} · ${manufacturer.isAvailable ? "Accepting work" : "Paused"}`} />
-        <Metric label="Commission" value={`${manufacturer.agreedCommissionRate ?? manufacturer.proposedCommissionRate ?? 0}% · ${manufacturer.commissionStatus || "PENDING"}`} />
         <Metric label="NCM pickup branch" value={`${manufacturer.ncmPickupBranch || "—"} · ${manufacturer.pickupBranchStatus || "UNVERIFIED"}`} />
         <Metric label="Login account" value={`${manufacturer.account?.email || manufacturer.email} · ${manufacturer.account?.status || "No linked account"}`} />
-        {canProposeCommission && (
-          <form onSubmit={proposeCommission} className="space-y-2 border-t border-slate-100 pt-3">
-            <label className="block text-xs font-semibold text-slate-600">
-              Propose commission rate (%)
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.01"
-                value={commissionRate}
-                onChange={(event) => setCommissionRate(event.target.value)}
-                className={inputClass}
-              />
-            </label>
-            <p className="text-xs text-slate-500">The rate remains pending until the manufacturer accepts it.</p>
-            <button type="submit" disabled={commissionSaving} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
-              {commissionSaving ? "Sending proposal…" : "Send commission proposal"}
-            </button>
-          </form>
-        )}
       </section>
     </div>
   );

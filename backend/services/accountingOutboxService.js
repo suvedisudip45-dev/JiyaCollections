@@ -50,7 +50,6 @@ const buildDeliverySaleSnapshot = ({ order, deliveryOrder }) => {
     manufacturerId: order.manufacturerId ? String(order.manufacturerId) : null,
     orderType: order.orderType ? String(order.orderType) : null,
     directOrderType: order.directOrderType ? String(order.directOrderType) : null,
-    agreedCommissionRate: String(order.agreedCommissionRate ?? 0),
     deliveredAt: effectiveAt,
   };
   const deliverySnapshot = deliveryOrder

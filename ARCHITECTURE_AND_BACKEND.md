@@ -248,7 +248,7 @@ Checkout accepts a single explicit reward choice (`CARD`, `LOYALTY`, or `NONE`).
 
 ### MFA / portal rules
 
-- Privileged-portal MFA is enforced through `isMfaEnforced()` and token validation across login, refresh, workspace switching, and authentication middleware. Setting `NOTIFICATIONS_ENABLED=false` bypasses login MFA and its token checks because no verification delivery is available; enable notifications and configure a delivery channel to require OTP verification.
+- Privileged-portal MFA is enabled by default and controlled by the backend `MFA_ENABLED` environment variable (`true` or `false`). When enabled, `isMfaEnforced()` and token validation require MFA across login, refresh, workspace switching, and authentication middleware. When explicitly disabled, privileged portals use password-only authentication and MFA challenge endpoints are unavailable. Notification configuration does not change the MFA policy; with MFA enabled, unavailable notification delivery prevents privileged sign-in.
 - The code supports admin two-factor challenges and portal-specific authentication flows.
 - Password-change enforcement is active for admin accounts with `mustChangePassword`.
 

@@ -435,7 +435,7 @@ test("financial statement excludes legacy per-order batch overhead but keeps car
   }), false);
 });
 
-test("delivered direct manufacturer COD sale recognizes commission expense and COD receivable", async () => {
+test("delivered direct manufacturer COD sale recognizes approved COGS and COD receivable only", async () => {
   const { client } = createComprehensiveHarness();
 
   const mockOrder = {
@@ -448,33 +448,27 @@ test("delivered direct manufacturer COD sale recognizes commission expense and C
     orderType: "DIRECT_MANUFACTURER",
     directOrderType: "PHONE_ORDER",
     manufacturerId: "mfg-001",
-    agreedCommissionRate: 10, // 10% commission on gross profit
     items: [
       {
         productId: "prod-001",
         quantity: 2,
         agreedUnitCogsVatInclusiveAtAcceptance: "3000.00", // Gross COGS = 6000
-        agreedCommissionRateAtAcceptance: "10.00",
       },
     ],
   };
 
-  // Gross profit = 10,000 (ex-VAT revenue) - 6,000 (gross COGS) = 4,000
-  // Commission = 4,000 * 10% = 400
   const journal = await postDeliveredOrderAccounting(mockOrder, { client });
 
   assert.ok(journal);
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 
   const codLine = journal.lines.find((l) => l.account.accountCode === "1170");
-  const commExpLine = journal.lines.find((l) => l.account.accountCode === "6410");
   const mfgApLines = journal.lines.filter((l) => l.account.accountCode === "2160");
 
   assert.equal(codLine.debit.toFixed(2), "11300.00");
-  assert.equal(commExpLine.debit.toFixed(2), "400.00");
-
   const totalMfgApCredit = mfgApLines.reduce((acc, l) => acc.plus(l.credit), new Prisma.Decimal(0));
-  assert.equal(totalMfgApCredit.toFixed(2), "6400.00"); // 6000 COGS + 400 Commission
+  assert.equal(totalMfgApCredit.toFixed(2), "6000.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "6410"), false);
 });
 
 test("duplicate delivery sale posting is idempotent and does not create duplicate journals", async () => {

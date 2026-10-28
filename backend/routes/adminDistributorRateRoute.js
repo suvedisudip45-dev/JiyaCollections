@@ -4,6 +4,8 @@ import {
   listDistributorRates,
   adminUpdateDistributorRateCard,
   adminExpireDistributorRateCard,
+  adminSaveDistributorBonusPlan,
+  listAdminDistributorBonusPlans,
   adminExecuteSettlement,
   listAdminDistributorSettlements,
 } from "../controllers/distributorFinanceController.js";
@@ -45,6 +47,20 @@ adminDistributorRateRouter.delete(
   requireAdminRole,
   authorize("distributor:admin_review"),
   adminExpireDistributorRateCard,
+);
+adminDistributorRateRouter.post(
+  "/bonus-plans",
+  authenticate,
+  requireAdminRole,
+  authorize("distributor:admin_review"),
+  adminSaveDistributorBonusPlan,
+);
+adminDistributorRateRouter.get(
+  "/bonus-plans",
+  authenticate,
+  requireAdminRole,
+  authorize("distributor:admin_list"),
+  listAdminDistributorBonusPlans,
 );
 
 export const adminDistributorFinanceRouter = express.Router();

@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { normalizeBalancedJournalLines } from "./accountingMoney.js";
 import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
-import { classifySaleChannel, calculateManufacturerCommission } from "./accountingRecognitionPolicy.js";
+import { classifySaleChannel, calculateLegacyManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { createAccountingDocument } from "./accountingSubledgerService.js";
 import { resolveVatRatePercent } from "./vatRateService.js";
@@ -445,7 +445,7 @@ export const postJournalEntry = async ({
  * DR COGS (5100): Approved Unit COGS * Qty
  * DR Input VAT Receivable (1150): Split if valid manufacturer tax invoice provided
  * CR Manufacturer Payable (2160): Approved COGS
- * (If direct sale): DR Manufacturer Commission Expense (6410), CR Manufacturer Payable (2160)
+ * Previously posted direct-sale commissions are preserved for historical return reversals only.
  */
 export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => {
   const client = opts.client || prisma;
@@ -517,21 +517,6 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     const net = legacyManufacturerCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     recoverableInputVat = legacyManufacturerCogs.minus(net);
     netCogs = productionLayerCogs.plus(net);
-  }
-
-  const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
-  let commissionAmount = new Prisma.Decimal(0);
-  if (isDirect && totalAgreedCogs.greaterThan(0)) {
-    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || order.agreedCommissionRate || 0;
-    if (Number(commissionRate) > 0) {
-      const comm = calculateManufacturerCommission({
-        productRevenueExVat: productTaxable.toString(),
-        agreedCogsVatInclusive: totalAgreedCogs.toString(),
-        recoverableInputVat: recoverableInputVat.toString(),
-        commissionRatePercent: commissionRate,
-      });
-      commissionAmount = new Prisma.Decimal(comm.commissionAmount);
-    }
   }
 
   const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
@@ -682,26 +667,6 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     }
   }
 
-  if (commissionAmount.greaterThan(0)) {
-    lines.push(
-      {
-        mappingKey: "MANUFACTURER_COMMISSION_EXPENSE",
-        debit: commissionAmount,
-        credit: 0,
-        description: `Manufacturer commission for direct order #${order.id.slice(-6)}`,
-        accountingPartyId: manufacturerParty?.id,
-      },
-      {
-        mappingKey: "MANUFACTURER_PAYABLE",
-        debit: 0,
-        credit: commissionAmount,
-        description: `Manufacturer commission payable for Order #${order.id.slice(-6)}`,
-        supplierId: manufacturerId,
-        accountingPartyId: manufacturerParty?.id,
-      }
-    );
-  }
-
   const transactionDate = order.deliveredAt || deliveryOrder?.deliveredAt || new Date();
 
   return await postJournalEntry({
@@ -802,9 +767,10 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
   let commissionAmount = new Prisma.Decimal(0);
   if (isDirect && totalAgreedCogs.greaterThan(0)) {
-    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || order.agreedCommissionRate || 0;
+    // Reverse commissions already posted for legacy direct orders when they are returned.
+    const commissionRate = items[0]?.agreedCommissionRateAtAcceptance || 0;
     if (Number(commissionRate) > 0) {
-      const comm = calculateManufacturerCommission({
+      const comm = calculateLegacyManufacturerCommission({
         productRevenueExVat: productTaxable.toString(),
         agreedCogsVatInclusive: totalAgreedCogs.toString(),
         recoverableInputVat: "0",

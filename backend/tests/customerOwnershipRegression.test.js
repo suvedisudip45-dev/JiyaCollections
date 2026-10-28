@@ -36,7 +36,6 @@ const createManufacturer = async ({ name, email }) => {
       city: "Kathmandu",
       isActive: true,
       isAvailable: true,
-      commissionStatus: "PENDING",
     },
   });
 };

@@ -52,8 +52,7 @@ export const accrueDistributorDeliveryEarning = async ({
     client,
   });
   const deliveryCharge = money(rateCard.deliveryCharge, "Delivery charge");
-  const incentiveRate = rateCard.bonusRate ?? rateCard.incentiveRate ?? 0;
-  const incentiveAmount = money(incentiveRate, "Delivery incentive");
+  const incentiveAmount = money(0, "Delivery incentive");
   const commissionAmount = commissionFor(rateCard.commissionRate ?? 0, deliveryCharge);
   const payableAmount = deliveryCharge.plus(incentiveAmount).minus(commissionAmount)
     .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);

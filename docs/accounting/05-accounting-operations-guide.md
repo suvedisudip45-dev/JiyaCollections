@@ -179,7 +179,7 @@ The Profit & Loss statement summarizes activity over a period and derives from p
 - returns and discounts
 - COGS
 - operating expenses
-- manufacturer commissions
+- historical manufacturer commission postings (no new accruals)
 - marketing partner CPA
 - delivery/carrier costs
 - depreciation and interest

@@ -89,7 +89,7 @@ Protected by finance permissions. Current operations include dashboard, manufact
 - `/api/returns`: customer and supplier return operations.
 - `/api/delivery`: delivery settlement and NCM delivery state operations.
 
-The admin portal has separate screens for `ChartOfAccounts`, `JournalEntries`, `GeneralLedger`, `TrialBalance`, `FinanceDashboard`, `FinancialStatements`, `TreasuryCash`, `PayablesReceivables`, `ExpenseManagement`, `CogsCalculator`, `TaxCompliance`, `AssetManagement`, `PartnershipEquity`, `DeliveryMonitor`, and `ReturnsManagement`. The manufacturer portal has a `Finance` screen that calls `/api/finance/manufacturer-summary` and displays payable, receivable, net and commission proposal values.
+The admin portal has separate screens for `ChartOfAccounts`, `JournalEntries`, `GeneralLedger`, `TrialBalance`, `FinanceDashboard`, `FinancialStatements`, `TreasuryCash`, `PayablesReceivables`, `ExpenseManagement`, `CogsCalculator`, `TaxCompliance`, `AssetManagement`, `PartnershipEquity`, `DeliveryMonitor`, and `ReturnsManagement`. The manufacturer portal has a `Finance` screen that calls `/api/finance/manufacturer-summary` and displays COGS payables, direct-sale balances, and settlement history; manufacturer commission proposals have been removed.
 
 ## Current Posting Engine Behavior
 
@@ -107,7 +107,7 @@ Current poster functions cover sales/order, customer payment, inbound shipment, 
 6. **Supplier purchase:** `postInboundShipmentAccounting` exists and the `InboundShipment` model exists, but a live route/controller call was not found in this pass. Supplier-return model/controller activity has no matching supplier-return GL poster call.
 7. **Finance movements:** various controllers update `FinancialAccount.currentBalance`, `CashTransaction`, AP/AR or asset/debt/share records. Some then post GL asynchronously; some have no posting call. The independent mutations can partially succeed.
 8. **Delivery:** NCM status transitions update delivery/order/assignment and upsert a `DeliveryFinancialSettlement`. COD/fee settlement can be requested/reconciled, but no GL poster is called from the delivery paths inspected.
-9. **Manufacturer COGS/commission:** cost proposals live per manufacturer/product, while commission rates live on Manufacturer. A calculated finance summary combines order sales, current costs, commission and status; this is not a durable AP/AR ledger.
+9. **Manufacturer COGS/direct-sale margin:** approved cost prices live per manufacturer/product. New direct manufacturer sales use approved COGS without a commission rate; existing posted commission journals remain as historical accounting records.
 10. **Marketing Partner:** campaign `cpaRate` and `MarketingPartnerSettlement` capture settlement facts/status, but no GL or party-subledger posting was found.
 
 ## User-Required Manufacturer COGS Rule
@@ -124,13 +124,13 @@ Accounting interpretation: one posted manufacturer-party payable in the company 
 - Recognize the agreed COGS/payable at NCM `DELIVERED`; if the customer product is subsequently returned to the manufacturer, reverse all linked sales/VAT/customer-settlement and manufacturer COGS/payable entries. Restock only after manufacturer receipt/inspection. The COGS basis is admin-approved agreed cost, not proposed cost, snapshotted at manufacturer acceptance.
 - Agreed COGS is VAT-inclusive at the current 13% rate. Claim input VAT only when a valid manufacturer tax invoice is recorded; otherwise treat gross cost as cost. Rates must be configurable/effective-dated rather than constants.
 - Customer-facing prices are VAT-inclusive. Recognize customer sales revenue and VAT on delivery. Preserve separate gross COD receivable and carrier-fee payable to NCM until bank settlement is confirmed.
-- Manufacturer commission is additional to COGS only for manufacturer-originated phone/shop sales, calculated as the agreed rate multiplied by gross profit: discounted product revenue excluding VAT/delivery, less approved COGS excluding recoverable input VAT. Accrue at delivery when not returned. Existing source tags are `Order.orderType=DIRECT_MANUFACTURER` and `directOrderType=PHONE_ORDER|HUB_VISIT`; storefront `ONLINE_STORE` and admin-entered social `ADMIN_DIRECT` orders are excluded.
+- **Superseded by the owner on 2026-10-28:** remove manufacturer commission proposals, rates, future calculations, and schema fields. Direct manufacturer sale margin is calculated from sales less approved COGS. Preserve previously posted commission journals and the legacy return-reversal path.
 - Include Marketing Partner CPA per verified benefit redemption and NCM delivery/COD accounting. Use NPR and a Nepali fiscal year from Shrawan 1 through Ashadh end in Asia/Kathmandu time. The current 25% corporate-tax figure remains an estimate only until accountant approval.
 - The company is the seller and collector for manufacturer-originated orders too.
-- Manufacturer acceptance requires admin-approved COGS; direct phone/shop orders also require an admin-approved commission rate. Missing approval blocks acceptance/order creation.
+- Manufacturer acceptance requires admin-approved COGS; direct sales no longer require commission approval.
 - Readiness gating applies to finance/accounting operations only; do not block catalog/product or customer order operations on accounting setup.
 
-These are owner-provided requirements, not current implementation behavior. The source code currently calculates manufacturer commission across orders, posts COGS at order creation, has no delivery-triggered manufacturer ledger posting, and permits acceptance without approved COGS/commission.
+The September commission policy above is superseded by the October 28 removal decision. Current code no longer configures or accrues new manufacturer commissions; historic journal entries remain available for financial reporting and return reversal.
 
 ## Source Documents And Authority
 

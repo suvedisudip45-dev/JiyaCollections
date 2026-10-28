@@ -417,12 +417,39 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       `),
     ]);
 
+    const earningAssignmentIds = rows
+      .filter((row) => row.transactionType === "DELIVERY")
+      .map((row) => row.sourceId);
+    const savedEarnings = earningAssignmentIds.length && prisma.distributorServiceEarning
+      ? await prisma.distributorServiceEarning.findMany({
+          where: { distributorId, assignmentId: { in: earningAssignmentIds }, serviceType: "DELIVERY" },
+        })
+      : [];
+    const savedEarningsByAssignment = new Map(savedEarnings.map((earning) => [earning.assignmentId, earning]));
     const commission = rateCard.commissionRate > 0 && rateCard.commissionRate <= 100
       ? rateCard.deliveryCharge * (rateCard.commissionRate / 100)
       : rateCard.commissionRate;
     const transactions = rows.map((row) => {
       if (row.transactionType === "DELIVERY") {
-        const bonus = rateCard.bonusRate || rateCard.incentiveRate;
+        const earning = savedEarningsByAssignment.get(row.sourceId);
+        if (earning) {
+          return {
+            id: `tx-del-${earning.id}`,
+            type: "DELIVERY",
+            referenceId: earning.orderId,
+            date: earning.effectiveAt,
+            description: `Self-delivery completed for Order ${String(earning.orderId).slice(0, 8)}`,
+            grossAmount: Number(earning.deliveryCharge),
+            incentiveAmount: Number(earning.incentiveAmount),
+            discountChargeAmount: Number(earning.commissionAmount),
+            netAmount: Number(earning.payableAmount),
+            orderAmount: Number(row.orderAmount || 0),
+            paymentMethod: row.paymentMethod,
+            isRateSnapshotted: true,
+            rateCardId: earning.rateCardId,
+          };
+        }
+        const bonus = 0;
         return {
           id: `tx-del-${row.sourceId}`,
           type: "DELIVERY",

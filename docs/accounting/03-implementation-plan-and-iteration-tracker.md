@@ -1,9 +1,11 @@
 # Accounting Implementation Plan And Iteration Tracker
 
 **Owner:** Engineering + business/accounting approver  
-**Last updated:** 2026-10-17
+**Last updated:** 2026-10-28
 **Overall status:** Treasury mapping and a limited atomic posting slice are in progress. Delivered-sale accounting now has a durable outbox implementation; its additive migration remains unapplied and rollout is gated.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
+
+Manufacturer commissions were removed on 2026-10-28; historical postings remain, but the prior commission accrual requirements below are superseded.
 
 ## Goals And Invariants
 
@@ -19,11 +21,10 @@ Hard invariants for the target design:
 - Financial reports derive from posted ledger entries/subledgers and reconcile to control accounts; discrepancies are visible and actionable.
 - Money uses a documented currency, scale, deterministic rounding and database representation; JavaScript floating-point arithmetic is not the accounting authority.
 - Manufacturer COGS/payable is recognized only under the owner-approved delivered/non-returned rule, using a locked approved cost snapshot and a manufacturer party key.
-- Manufacturer commission applies only to manufacturer-originated phone/shop orders (`DIRECT_MANUFACTURER`), in addition to COGS, using discounted product revenue ex-VAT/delivery less approved COGS ex-recoverable VAT as gross profit. Exclude `ONLINE_STORE` and admin-entered `ADMIN_DIRECT` social orders; accrue only after delivered/non-returned.
 - Approved cost is snapshotted at manufacturer acceptance. Input VAT is claimable only with a valid manufacturer tax invoice; customer prices are VAT-inclusive. Post-delivery return to manufacturer reverses linked sales/VAT/customer settlement and COGS/payable; restock after receipt/inspection.
 - Marketing CPA accrues per verified benefit redemption. Corporate tax remains estimate-only until accountant approval.
 - Company is seller and collector for manufacturer-originated direct orders as well as storefront/admin orders.
-- Block manufacturer acceptance unless every order line has approved agreed COGS; direct phone/shop sales additionally require an approved commission rate.
+- Block manufacturer acceptance unless every order line has approved agreed COGS; no commission approval is required.
 - Delivery COD receivable and NCM carrier-fee payable remain gross and open until bank settlement confirmation.
 - Accounting readiness gates finance/accounting operations only; product and customer order flows stay available.
 - No external webhook, retry, duplicate command, or concurrent request can create duplicate financial effects.

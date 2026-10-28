@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
+import { accrueClosedDistributorBonuses, getClosedDistributorBonusPreview } from "./distributorBonusService.js";
 import { recordSystemAudit } from "./auditService.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
@@ -149,6 +150,7 @@ export const getDistributorFinancialStatement = async ({
     },
     orderBy: { requestedAt: "desc" },
   });
+  const bonusPreview = await getClosedDistributorBonusPreview({ distributorId, client });
 
   // Calculate earnings and transactions
   const rateCard = await resolveActiveRateCard({ distributorId, client });
@@ -171,6 +173,7 @@ export const getDistributorFinancialStatement = async ({
   let returnFeesEarned = 0;
   let snapshottedDeliverySubtotal = 0;
   let snapshottedVatAmount = 0;
+  let earnedBonuses = 0;
   const itemizedTransactions = [];
 
   // Itemize deliveries
@@ -201,6 +204,8 @@ export const getDistributorFinancialStatement = async ({
         orderAmount: order ? Number(order.amount) : 0,
         paymentMethod: order ? order.paymentMethod : "COD",
         rateCardId: earning.rateCardId,
+        earningId: earning.id,
+        assignmentId: earning.assignmentId,
         accountingDocumentId: earning.accountingDocumentId,
         journalEntryId: earning.journalEntryId,
         taxSnapshot: earning.snapshot,
@@ -210,7 +215,7 @@ export const getDistributorFinancialStatement = async ({
     }
 
     const deliveryCharge = Number(rateCard.deliveryCharge || 0);
-    const bonus = Number(rateCard.bonusRate ?? rateCard.incentiveRate ?? 0);
+    const bonus = 0;
     const commission = (rateCard.commissionRate > 0 && rateCard.commissionRate <= 100)
       ? (deliveryCharge * (rateCard.commissionRate / 100))
       : Number(rateCard.commissionRate || 0);
@@ -233,6 +238,32 @@ export const getDistributorFinancialStatement = async ({
       orderAmount: order ? Number(order.amount) : 0,
       paymentMethod: order ? order.paymentMethod : "COD",
       isRateSnapshotted: false,
+      assignmentId: assignment.id,
+    });
+  }
+
+  for (const bonus of bonusPreview.periods) {
+    const bonusDate = new Date(bonus.periodEnd);
+    if ((dateFilter.gte && bonusDate < dateFilter.gte) || (dateFilter.lte && bonusDate > dateFilter.lte)) continue;
+    const amount = Number(bonus.bonusAmount);
+    earnedBonuses += amount;
+    itemizedTransactions.push({
+      id: `tx-bonus-${bonus.earningId || bonus.period}`,
+      type: "BONUS",
+      referenceId: bonus.period,
+      date: bonus.periodEnd,
+      description: `Monthly delivery target bonus · ${bonus.period}`,
+      eligibleDeliveryCount: bonus.eligibleDeliveryCount,
+      earnedTiers: bonus.earnedTiers,
+      tiers: bonus.tiers,
+      grossAmount: amount,
+      incentiveAmount: 0,
+      bonusAmount: amount,
+      discountChargeAmount: 0,
+      netAmount: amount,
+      status: bonus.accrued ? "ACCRUED" : "ELIGIBLE_PENDING_ACCRUAL",
+      earningId: bonus.earningId,
+      accountingDocumentId: bonus.accountingDocumentId,
     });
   }
 
@@ -283,6 +314,7 @@ export const getDistributorFinancialStatement = async ({
             : "Settlement Payout Requested (Pending)",
       grossAmount: -paidAmount,
       incentiveAmount: 0,
+      bonusAmount: 0,
       discountChargeAmount: 0,
       netAmount: -paidAmount,
       status: s.status,
@@ -291,6 +323,7 @@ export const getDistributorFinancialStatement = async ({
       outstandingAmount: remainingAmount,
       notes: s.notes || s.adminNotes || null,
       financialAccountId: s.financialAccountId || null,
+      statementSnapshot: parseJSON(s.metadata, {}).statementSnapshot || null,
     });
   }
 
@@ -299,7 +332,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Compute subtotal before VAT
   const subtotalBeforeVat = Number(
-    (grossDeliveryEarnings + earnedIncentives + returnFeesEarned - adminDiscountsApplied).toFixed(2)
+    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned - adminDiscountsApplied).toFixed(2)
   );
   const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal);
   const vatAmount = Number((legacyDeliverySubtotal * (vatRate / 100) + snapshottedVatAmount).toFixed(2));
@@ -318,6 +351,7 @@ export const getDistributorFinancialStatement = async ({
     summary: {
       grossDeliveryEarnings: Number(grossDeliveryEarnings.toFixed(2)),
       earnedIncentives: Number(earnedIncentives.toFixed(2)),
+      earnedBonuses: Number(earnedBonuses.toFixed(2)),
       returnFeesEarned: Number(returnFeesEarned.toFixed(2)),
       adminDiscountsApplied: Number(adminDiscountsApplied.toFixed(2)),
       subtotalBeforeVat,
@@ -333,6 +367,7 @@ export const getDistributorFinancialStatement = async ({
       payables: grossOutstandingPayableBalance,
     },
     transactions: itemizedTransactions,
+    bonusProgram: bonusPreview,
     settlementRequests,
   };
 };
@@ -372,6 +407,16 @@ export const submitDistributorSettlementRequest = async ({
         return { ...existing, isReplay: true };
       }
 
+      const distributor = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { id: true, name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found.", 404);
+      await accrueClosedDistributorBonuses({
+        distributorId,
+        distributorName: distributor.name,
+        client: tx,
+      });
       const statement = await getDistributorFinancialStatement({ distributorId, withVat: true, client: tx });
       const availableBalance = statement.summary.netPayableBalance;
       if (numAmount > availableBalance) {
@@ -388,6 +433,7 @@ export const submitDistributorSettlementRequest = async ({
           amount: numAmount,
           grossEarnings: statement.summary.subtotalBeforeVat,
           incentives: statement.summary.earnedIncentives,
+          bonuses: statement.summary.earnedBonuses,
           discountsApplied: statement.summary.adminDiscountsApplied,
           vatAmount: statement.summary.vatAmount,
           netPayable: numAmount,
@@ -400,12 +446,13 @@ export const submitDistributorSettlementRequest = async ({
           distributor: { select: { id: true, name: true, city: true, phone: true } },
         },
       });
+      
       const earningDocuments = tx.accountingDocument
         ? await tx.accountingDocument.findMany({
             where: {
               party: { partyType: "DISTRIBUTOR", sourceEntityId: distributorId },
               side: "PAYABLE",
-              sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+              sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
               status: { in: ["OPEN", "PARTIALLY_PAID"] },
             },
             orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
@@ -420,6 +467,34 @@ export const submitDistributorSettlementRequest = async ({
           "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
         );
       }
+      const openSourceIds = new Set(earningDocuments.map((document) => document.sourceId));
+      const settlementLineItems = statement.transactions
+        .filter((item) => ["DELIVERY", "RETURN", "BONUS"].includes(item.type))
+        .filter((item) => item.type === "RETURN" || !item.earningId || openSourceIds.has(item.earningId));
+      const statementSnapshot = {
+        createdAt: new Date().toISOString(),
+        requestedAmount: numAmount,
+        availableBalance: statement.summary.netPayableBalance,
+        summary: statement.summary,
+        lineItems: settlementLineItems
+          .map((item) => ({
+            type: item.type,
+            referenceId: item.referenceId,
+            date: item.date,
+            description: item.description,
+            quantity: item.type === "DELIVERY" ? 1 : undefined,
+            deliveryCharge: item.type === "DELIVERY" ? item.grossAmount : 0,
+            incentiveAmount: item.incentiveAmount || 0,
+            bonusAmount: item.bonusAmount || 0,
+            returnCharge: item.type === "RETURN" ? item.grossAmount : 0,
+            commissionDeduction: item.discountChargeAmount || 0,
+            netAmount: item.netAmount,
+            eligibleDeliveryCount: item.eligibleDeliveryCount,
+            tiers: item.earnedTiers || undefined,
+            rateCardId: item.rateCardId || null,
+            isRateSnapshotted: item.isRateSnapshotted ?? false,
+          })),
+      };
       if (useSubledger) {
         await tx.distributorSettlementRequest.update({
           where: { id: created.id },
@@ -427,6 +502,7 @@ export const submitDistributorSettlementRequest = async ({
             metadata: {
               settlementBasis: "ACCOUNTING_SUBLEDGER",
               earningDocumentIds: earningDocuments.map((document) => document.id),
+              statementSnapshot,
             },
           },
         });
@@ -452,6 +528,7 @@ export const submitDistributorSettlementRequest = async ({
             metadata: {
               accountPayableId: payable.id,
               settlementBasis: "LEGACY_REQUEST_ACCRUAL",
+              statementSnapshot,
             },
           },
         });
@@ -464,8 +541,12 @@ export const submitDistributorSettlementRequest = async ({
       return {
         ...created,
         metadata: useSubledger
-          ? { settlementBasis: "ACCOUNTING_SUBLEDGER", earningDocumentIds: earningDocuments.map((document) => document.id) }
-          : { settlementBasis: "LEGACY_REQUEST_ACCRUAL" },
+          ? {
+              settlementBasis: "ACCOUNTING_SUBLEDGER",
+              earningDocumentIds: earningDocuments.map((document) => document.id),
+              statementSnapshot,
+            }
+          : { settlementBasis: "LEGACY_REQUEST_ACCRUAL", statementSnapshot },
       };
     });
   } catch (error) {
@@ -570,7 +651,7 @@ export const executeAdminDistributorSettlement = async ({
               id: { in: targetDocumentIds },
               partyId: party.id,
               side: "PAYABLE",
-              sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+              sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
               status: { in: ["OPEN", "PARTIALLY_PAID"] },
             },
           })
@@ -640,7 +721,7 @@ export const executeAdminDistributorSettlement = async ({
         amount: settleAmount,
         journalEntryId: paymentJournal.id,
         targetDocumentIds,
-        sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING"],
+        sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"],
         idempotencyKey: paymentKey,
         notes: normalizedNotes || `Admin settlement payout ${settlementId}`,
       }, { client: tx });

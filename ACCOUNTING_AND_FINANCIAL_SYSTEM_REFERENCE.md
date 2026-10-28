@@ -180,7 +180,8 @@ Manufacturer production settlement summaries in `backend/services/manufacturerSe
 Manufacturer payable categories represented in the reviewed flows include:
 
 - Approved production value for accepted good units.
-- Certain legacy/direct order COGS and manufacturer commissions.
+- Certain legacy/direct order COGS and manufacturer commission postings from
+  before manufacturer commissions were removed.
 - Per-unit packaging/delivery overhead when its production-layer allocation is expensed at order delivery.
 - Manufacturer-paid manual/local StockTransfer freight. Dispatch debits delivery expense (6430) and credits manufacturer payable (2160) when the carrier service is performed; settlement later clears the payable against cash. This is separate from product COGS.
 
@@ -230,7 +231,7 @@ The NCM bill currently represents the fee netted from a remittance batch, not a 
 
 ## 8. Returns, exchanges and refunds
 
-The delivery return poster reverses relevant sale revenue and VAT using the original order date's effective VAT rate and handles return-related settlement, manufacturer payable/commission/overhead and inventory/COGS reversal where applicable. Customer return approval snapshots the approved charge, non-refundable original delivery fee, refund and VAT portion, and the original effective VAT rate. Distributor-paid customer refunds create party-level distributor payables; the company payout later clears that obligation instead of paying the customer a second time. The older `postCustomerReturnAccounting` path separately posts return/allowance 4500, reverses output VAT, credits cash/bank or refund payable, and can restore inventory/reverse COGS when a restocked cost is provided.
+The delivery return poster reverses relevant sale revenue and VAT using the original order date's effective VAT rate and handles return-related settlement, manufacturer payable/overhead and inventory/COGS reversal where applicable. It retains commission reversal handling only for direct-sale commission journals posted before that feature was removed. New manufacturer direct sales accrue approved COGS only. Customer return approval snapshots the approved charge, non-refundable original delivery fee, refund and VAT portion, and the original effective VAT rate. Distributor-paid customer refunds create party-level distributor payables; the company payout later clears that obligation instead of paying the customer a second time. The older `postCustomerReturnAccounting` path separately posts return/allowance 4500, reverses output VAT, credits cash/bank or refund payable, and can restore inventory/reverse COGS when a restocked cost is provided.
 
 These are separate paths. A return request, exchange request, physical stock receipt and customer refund are not necessarily the same event. Confirm the workflow's final/confirmed transition and stock evidence before assuming revenue, cash, payable and COGS were all reversed.
 
@@ -240,7 +241,7 @@ These are separate paths. A return request, exchange request, physical stock rec
 
 `backend/controllers/expenseController.js` provides expense categories and paid/payable expense recording. An immediately paid expense checks treasury solvency, updates a `FinancialAccount`, writes a `CashTransaction` and creates an `OperatingExpense`; a payable expense creates an `AccountPayable` and an `OperatingExpense`. Both invoke GL expense posting asynchronously. The finance controller also has a separate `record-operating-expense` endpoint that can split the paid and payable portions.
 
-Expense VAT is treated as embedded 13% VAT when `isVatBill` is true unless a VAT amount is explicitly provided. The expense dashboard recognizes marketing as an operating expense category; manufacturer commission, partner CPA, delivery/carrier costs, software, salaries, rent and other categories have separate GL mappings.
+Expense VAT is treated as embedded 13% VAT when `isVatBill` is true unless a VAT amount is explicitly provided. The expense dashboard recognizes marketing as an operating expense category; historical manufacturer commission entries remain mapped to account 6410 for financial-statement audit history, while new manufacturer commissions are no longer generated. Partner CPA, delivery/carrier costs, software, salaries, rent and other categories have separate GL mappings.
 
 ### Direct/miscellaneous income
 
@@ -250,7 +251,7 @@ The expense controller supports direct income categories such as direct sales, s
 
 ### Marketing and partner costs
 
-Marketing can be recorded through operating expenses and mapped to marketing expense 6400. Manufacturer commission is separately mapped to 6410; partner CPA and delivery/carrier expenses have dedicated mappings. Depending on entry point, a partner obligation may be a partner payable or an operating expense. Confirm which pathway created it before interpreting the balance.
+Marketing can be recorded through operating expenses and mapped to marketing expense 6400. Historical manufacturer commission postings remain mapped to 6410; partner CPA and delivery/carrier expenses have dedicated mappings. Depending on entry point, a partner obligation may be a partner payable or an operating expense. Confirm which pathway created it before interpreting the balance.
 
 ## 10. Treasury, receivables and payables
 

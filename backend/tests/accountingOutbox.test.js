@@ -26,7 +26,6 @@ const makeOrder = () => ({
   manufacturerId: "manufacturer-1",
   orderType: "DIRECT_MANUFACTURER",
   directOrderType: "PHONE_ORDER",
-  agreedCommissionRate: 5,
   address: { phone: "not-part-of-accounting-snapshot" },
 });
 
@@ -42,7 +41,6 @@ const makeEvent = () => {
     manufacturerId: "manufacturer-1",
     orderType: "DIRECT_MANUFACTURER",
     directOrderType: "PHONE_ORDER",
-    agreedCommissionRate: "5",
     deliveredAt: "2026-10-16T10:00:00.000Z",
   };
   const payload = {

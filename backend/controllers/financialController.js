@@ -234,13 +234,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
             email: true,
             phone: true,
             city: true,
-            agreedCommissionRate: true,
-            proposedCommissionRate: true,
-            commissionStatus: true,
-            commissionLastProposedBy: true,
-            commissionHistory: true,
-            commissionFinalizedAt: true,
-            commissionLockUntil: true,
           },
         }),
         prisma.manufacturerInventory.findMany({
@@ -277,15 +270,10 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         productCostMap[product.id] = Number(product.costPrice || 0);
       });
 
-      const commissionRate = Number(
-        manufacturer?.agreedCommissionRate ?? manufacturer?.proposedCommissionRate ?? 12
-      );
-
       let totalSales = 0;
       let totalCogs = 0;
       let totalPayable = 0;
       let totalReceivable = 0;
-      let totalCommission = 0;
       let totalDelivered = 0;
       let totalReturned = 0;
       let itemsSold = 0;
@@ -312,9 +300,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         const isReturned = statusText.includes("return") || statusText.includes("cancel");
         const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
 
-        const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
-        const orderCommission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
-        const manufacturerReceivable = Number((orderCost + orderCommission).toFixed(2));
+        const manufacturerReceivable = orderCost;
         const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
         const payable = req.auth?.role === "ADMIN" ? manufacturerReceivable : manufacturerPayable;
         const receivable = req.auth?.role === "ADMIN" ? manufacturerPayable : manufacturerReceivable;
@@ -323,7 +309,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         totalCogs += orderCost;
         totalPayable += payable;
         totalReceivable += receivable;
-        totalCommission += orderCommission;
         itemsSold += orderQuantity;
 
         if (isDelivered) {
@@ -350,7 +335,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
           cogs: orderCost,
           payable,
           receivable,
-          commission: orderCommission,
           netPosition: receivable - payable,
         };
       });
@@ -399,13 +383,11 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         netPayable,
         netReceivable,
         netSettlementDue: netPayable > 0 ? netPayable : -netReceivable,
-        totalCommission: Number(totalCommission.toFixed(2)),
         itemsSold,
         itemsDelivered,
         itemsReturned,
         deliveredOrders: totalDelivered,
         returnedOrders: totalReturned,
-        agreedCommissionRate: commissionRate,
       };
 
       return res.json({
@@ -448,8 +430,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
           email: true,
           phone: true,
           city: true,
-          agreedCommissionRate: true,
-          proposedCommissionRate: true,
           isActive: true,
         },
         orderBy: { name: "asc" },
@@ -541,10 +521,8 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       }
     });
 
-    const mfgMap = {};
     const mfgDetailsMap = {};
     manufacturers.forEach((m) => {
-      mfgMap[m.id] = Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12);
       mfgDetailsMap[m.id] = m;
     });
 
@@ -567,7 +545,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         email: m.email,
         phone: m.phone,
         city: m.city,
-        agreedCommissionRate: mfgMap[m.id] || 12,
         totalOrders: 0,
         totalSales: 0,
         totalCogs: 0,
@@ -575,7 +552,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         paidAmount: Number((mfgPaidMap[m.id] || 0).toFixed(2)),
         remainingPayable: 0,
         receivable: 0,
-        totalCommission: 0,
         itemsSold: 0,
         itemsDelivered: 0,
         itemsReturned: 0,
@@ -589,7 +565,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
     let totalCogs = 0;
     let totalPayable = 0;
     let totalReceivable = 0;
-    let totalCommission = 0;
     let totalDelivered = 0;
     let totalReturned = 0;
     let itemsSold = 0;
@@ -601,8 +576,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       const orderQuantity = items.reduce((sum, item) => sum + Number(item.quantity || 1), 0);
       const orderSales = Number(order.amount || 0);
       const orderMfgId = order.manufacturerId || items[0]?.manufacturerId;
-      const commissionRate = orderMfgId ? (mfgMap[orderMfgId] ?? 12) : 12;
-
       let orderCost = 0;
       items.forEach((item) => {
         const qty = Number(item.quantity || 1);
@@ -621,9 +594,7 @@ export const getManufacturerFinancialSummary = async (req, res) => {
 
       if (!orderMfgId || !mfgGroups[orderMfgId]) return null;
 
-      const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
-      const orderCommission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
-      const manufacturerReceivable = Number((orderCost + orderCommission).toFixed(2));
+      const manufacturerReceivable = orderCost;
       const manufacturerPayable = isDirect ? Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2))) : 0;
       const payable = manufacturerReceivable;
       const receivable = manufacturerPayable;
@@ -632,7 +603,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
       totalCogs += orderCost;
       totalPayable += payable;
       totalReceivable += receivable;
-      totalCommission += orderCommission;
       itemsSold += orderQuantity;
 
       if (isDelivered) {
@@ -659,7 +629,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         cogs: orderCost,
         payable,
         receivable,
-        commission: orderCommission,
         netPosition: receivable - payable,
       };
 
@@ -671,7 +640,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         grp.totalCogs += orderCost;
         grp.payable += payable;
         grp.receivable += receivable;
-        grp.totalCommission += orderCommission;
         grp.itemsSold += orderQuantity;
         if (isDelivered) {
           grp.itemsDelivered += orderQuantity;
@@ -708,7 +676,6 @@ export const getManufacturerFinancialSummary = async (req, res) => {
         receivable: Number(mfg.receivable.toFixed(2)),
         netPayable: Math.max(0, Number((remainingPayable - mfg.receivable).toFixed(2))),
         netReceivable: Math.max(0, Number((mfg.receivable - remainingPayable).toFixed(2))),
-        totalCommission: Number(mfg.totalCommission.toFixed(2)),
       };
     });
 
@@ -731,13 +698,11 @@ export const getManufacturerFinancialSummary = async (req, res) => {
           receivable: Number(totalReceivable.toFixed(2)),
           netPayable: Math.max(0, Number((remainingSummaryPayable - totalReceivable).toFixed(2))),
           netReceivable: Math.max(0, Number((totalReceivable - remainingSummaryPayable).toFixed(2))),
-          totalCommission: Number(totalCommission.toFixed(2)),
           itemsSold,
           itemsDelivered,
           itemsReturned,
           deliveredOrders: totalDelivered,
           returnedOrders: totalReturned,
-          agreedCommissionRate: 12,
         },
         manufacturers: manufacturersList,
         orders: orderBreakdown,
@@ -2970,7 +2935,7 @@ export const getPayablesAndReceivables = async (req, res) => {
       }),
       prisma.manufacturer.findMany({
         where: { isActive: true },
-        select: { id: true, name: true, email: true, phone: true, city: true, agreedCommissionRate: true },
+        select: { id: true, name: true, email: true, phone: true, city: true },
       }),
       prisma.order.findMany({
         where: {
@@ -3077,8 +3042,6 @@ export const getPayablesAndReceivables = async (req, res) => {
 
       if (!orderMfgId) return;
 
-      const mfg = manufacturers.find((m) => m.id === orderMfgId);
-      const commissionRate = Number(mfg?.agreedCommissionRate ?? 12);
       const isDirect = order.orderType === "DIRECT_MANUFACTURER" && ["PHONE_ORDER", "HUB_VISIT"].includes(order.directOrderType);
 
       let orderCost = 0;
@@ -3092,9 +3055,7 @@ export const getPayablesAndReceivables = async (req, res) => {
       });
       orderCost = Number(orderCost.toFixed(2));
 
-      const grossProfit = isDirect ? Math.max(0, orderSales - orderCost) : 0;
-      const commission = Number((grossProfit * (commissionRate / 100)).toFixed(2));
-      const manufacturerReceivable = Number((orderCost + commission).toFixed(2));
+      const manufacturerReceivable = orderCost;
       mfgCogsMap[orderMfgId] = (mfgCogsMap[orderMfgId] || 0) + manufacturerReceivable;
       if (isDirect) {
         const manufacturerPayable = Math.max(0, Number((orderSales - manufacturerReceivable).toFixed(2)));
@@ -3102,7 +3063,7 @@ export const getPayablesAndReceivables = async (req, res) => {
       }
     });
 
-    // Merge stored payables and direct-sale COGS-plus-commission payables.
+    // Merge stored payables and direct-sale COGS payables.
     const payables = [...storedPayables];
 
     manufacturers.forEach((m) => {
@@ -3121,7 +3082,7 @@ export const getPayablesAndReceivables = async (req, res) => {
           totalAmount: totalCogs,
           paidAmount: totalPaid,
           remainingBalance: remainingPayable,
-          notes: `Platform orders are payable at COGS; direct orders at COGS plus commission.`,
+          notes: "Manufacturer orders are payable at approved COGS.",
           status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
         };
       } else if (totalCogs > 0 || totalPaid > 0) {
@@ -3139,7 +3100,7 @@ export const getPayablesAndReceivables = async (req, res) => {
           invoiceNumber: `COGS-${m.id.slice(0, 6).toUpperCase()}`,
           status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
           priority: "HIGH",
-          notes: `Platform orders are payable at COGS; direct orders at COGS plus commission.`,
+          notes: "Manufacturer orders are payable at approved COGS.",
           settlementHistory: [],
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -3198,7 +3159,7 @@ export const getPayablesAndReceivables = async (req, res) => {
           totalAmount: directDue,
           receivedAmount,
           remainingBalance,
-          notes: `Direct manufacturer sales less COGS and commission, payable to the platform.`,
+          notes: "Direct manufacturer sales less approved COGS, payable to the platform.",
           status: remainingBalance === 0 && directDue > 0 ? "SETTLED" : receivedAmount > 0 ? "PARTIALLY_PAID" : "UNPAID",
         };
       } else if (directDue > 0) {
@@ -3215,7 +3176,7 @@ export const getPayablesAndReceivables = async (req, res) => {
             dueDate: null,
             invoiceNumber: `DIR-${m.id.slice(0, 6).toUpperCase()}`,
             status: "UNPAID",
-            notes: `Direct manufacturer sales less COGS and commission, payable to the platform.`,
+            notes: "Direct manufacturer sales less approved COGS, payable to the platform.",
             collectionHistory: [],
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -3432,8 +3393,6 @@ export const payManufacturer = async (req, res) => {
       if (price !== null && price !== undefined) inventoryMap[inv.productId] = Number(price);
     });
 
-    const commissionRate = Number(manufacturer.agreedCommissionRate ?? manufacturer.proposedCommissionRate ?? 12);
-
     let totalCogs = 0;
     let totalDirectReceivable = 0;
 
@@ -3456,9 +3415,7 @@ export const payManufacturer = async (req, res) => {
       const isDirect = String(order.orderType || "").toUpperCase() === "DIRECT_MANUFACTURER" || ["PHONE_ORDER", "HUB_VISIT"].includes(String(order.directOrderType || "").toUpperCase());
 
       if (isDirect) {
-        const grossProfit = Math.max(0, orderSales - orderCost);
-        const comm = Number((grossProfit * (commissionRate / 100)).toFixed(2));
-        const receivable = Math.max(0, Number((orderSales - orderCost - comm).toFixed(2)));
+        const receivable = Math.max(0, Number((orderSales - orderCost).toFixed(2)));
         totalDirectReceivable += receivable;
       } else {
         totalCogs += orderCost;

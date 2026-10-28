@@ -3,6 +3,7 @@ import test from "node:test";
 import "dotenv/config";
 import { generateAccessToken } from "../services/tokenService.js";
 import { createAuthenticate } from "../middleware/unifiedAuth.js";
+import { isMfaEnabled, isMfaEnforced } from "../security/mfaPolicy.js";
 
 const invoke = async ({ role, mfaVerified = false, authMethods = [], env = { NOTIFICATIONS_ENABLED: "false" } }) => {
   const accountId = `account-${role.toLowerCase()}`;
@@ -62,4 +63,21 @@ test("verified privileged access passes and CUSTOMER access remains unchanged", 
   assert.equal(marketing.nextCalled, true);
   assert.equal(customer.nextCalled, true);
   assert.equal(customer.req.auth.mfaVerified, false);
+});
+
+test("MFA_ENABLED=false permits password-only privileged sessions and disables MFA enforcement", async () => {
+  for (const role of ["ADMIN", "MARKETING_PARTNER", "MANUFACTURER", "DISTRIBUTOR"]) {
+    const result = await invoke({ role, env: { MFA_ENABLED: "false" } });
+    assert.equal(result.nextCalled, true);
+    assert.equal(result.req.auth.mfaVerified, false);
+  }
+  assert.equal(isMfaEnforced("ADMIN", { MFA_ENABLED: "false" }), false);
+  assert.equal(isMfaEnforced("ADMIN", { MFA_ENABLED: "true" }), true);
+});
+
+test("MFA is enabled by default and rejects invalid environment values", () => {
+  assert.equal(isMfaEnabled({}), true);
+  assert.equal(isMfaEnabled({ MFA_ENABLED: " TRUE " }), true);
+  assert.equal(isMfaEnabled({ MFA_ENABLED: "false" }), false);
+  assert.throws(() => isMfaEnabled({ MFA_ENABLED: "yes" }), /MFA_ENABLED must be set to true or false/);
 });

@@ -153,6 +153,13 @@ export const createDistributorDirectOrder = async (req, res) => {
     if (!Number.isFinite(requestedDiscount) || requestedDiscount < 0 || requestedDiscount > subtotal) {
       return res.status(400).json({ success: false, message: "Discount must be between zero and the order subtotal." });
     }
+    if (requestedDiscount > 0) {
+      return res.status(403).json({
+        success: false,
+        message: "Manual distributor discounts are disabled. Product prices and promotions are controlled by Admin.",
+        code: "DISTRIBUTOR_DISCOUNT_NOT_ALLOWED",
+      });
+    }
 
     let linkedUser = null;
     let loyaltyRewardApplied = null;

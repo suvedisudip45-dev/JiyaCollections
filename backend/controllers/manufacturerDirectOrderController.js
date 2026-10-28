@@ -145,9 +145,6 @@ export const createDirectOrder = async (req, res) => {
       items: frozenItems,
       inventoryRows: mInventories,
       acceptedAt,
-      directSale: true,
-      commissionStatus: manufacturer.commissionStatus,
-      agreedCommissionRate: manufacturer.agreedCommissionRate,
     });
 
     // ─── Loyalty Integration ──────────────────────────────────────────────

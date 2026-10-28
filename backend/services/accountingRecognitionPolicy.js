@@ -34,29 +34,10 @@ export const classifySaleChannel = (order = {}) => {
   return "UNKNOWN";
 };
 
-export const isDeliveredAndNotReturnedToManufacturer = ({
-  order = {},
-  deliveryState,
-  returnedToManufacturer = false,
-}) => {
-  if (returnedToManufacturer) return false;
-
-  const deliveredStatuses = [
-    normalize(deliveryState),
-    normalize(order.fulfillmentStatus),
-    normalize(order.status),
-  ];
-  return deliveredStatuses.includes("DELIVERED");
-};
-
-export const isManufacturerCommissionEligible = ({ order, deliveryState, returnedToManufacturer }) =>
-  classifySaleChannel(order) === "MANUFACTURER_DIRECT" &&
-  isDeliveredAndNotReturnedToManufacturer({ order, deliveryState, returnedToManufacturer });
-
 export const isLegacyPerOrderDeliveryExpenseEntry = ({ accountCode, sourceType } = {}) =>
   accountCode === "6430" && ["DELIVERY_SALE", "DELIVERY_RETURN"].includes(sourceType);
 
-export const calculateManufacturerCommission = ({
+export const calculateLegacyManufacturerCommission = ({
   productRevenueExVat,
   agreedCogsVatInclusive,
   recoverableInputVat = 0,

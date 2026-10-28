@@ -29,7 +29,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/self-deliveries": ["delivery:admin_list"],
   "/ncm-tools": ["delivery:admin_list"],
   "/manufacturers": ["manufacturer:admin_list"],
-  "/manufacturers/:manufacturerId": ["manufacturer:admin_detail", "manufacturer:admin_update", "manufacturer:admin_commission_update"],
+  "/manufacturers/:manufacturerId": ["manufacturer:admin_detail", "manufacturer:admin_update"],
   "/location-pricing": ["manufacturer:admin_update", "product:update"],
   "/manufacturer-inventory": ["inventory:admin_read_all", "inventory:admin_low_stock"],
   "/manufacturer-production": ["manufacturer:production_admin"],

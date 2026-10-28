@@ -3,7 +3,7 @@ import { prisma } from "../config/db.js";
 import { loadNotificationConfig } from "../notifications/config.js";
 import { createNotificationInTransaction } from "../notifications/notificationService.js";
 import { encryptNotificationText } from "../utils/secureNotificationPayload.js";
-import { normalizePortal, requiresMfa } from "../security/mfaPolicy.js";
+import { isMfaEnforced, normalizePortal } from "../security/mfaPolicy.js";
 import { createLoginTokenPair, logAuthEvent } from "./authService.js";
 
 const failure = (message = "Invalid or expired verification code.", statusCode = 401, code = "ADMIN_2FA_INVALID") => {
@@ -137,7 +137,7 @@ export const createPortalTwoFactorChallenge = async ({
 } = {}) => {
   const config = loadAdminTwoFactorConfig(env);
   const targetPortal = normalizePortal(portal);
-  if (!requiresMfa(targetPortal)) {
+  if (!isMfaEnforced(targetPortal, env)) {
     throw failure("Verification is unavailable for this portal.", 400, "PORTAL_2FA_PORTAL_INVALID");
   }
   const account = await client.authAccount.findUnique({
@@ -240,7 +240,7 @@ export const sendPortalTwoFactorCode = async ({ challengeId, method }, {
     if (
       !challenge ||
       challenge.status !== "PENDING" ||
-      !requiresMfa(challenge.targetPortal) ||
+      !isMfaEnforced(challenge.targetPortal, env) ||
       (expectedPortal && challenge.targetPortal !== expectedPortal) ||
       !isExpectedPurpose(challenge) ||
       challenge.method ||
@@ -331,7 +331,7 @@ export const resendPortalTwoFactorCode = async ({ challengeId }, {
     if (
       !challenge ||
       challenge.status !== "PENDING" ||
-      !requiresMfa(challenge.targetPortal) ||
+      !isMfaEnforced(challenge.targetPortal, env) ||
       !isExpectedPurpose(challenge) ||
       !challenge.method ||
       challenge.account.role !== challenge.targetPortal ||
@@ -442,7 +442,7 @@ export const verifyPortalTwoFactorCode = async ({ challengeId, otp }, {
   if (
     !challenge ||
     challenge.status !== "PENDING" ||
-    !requiresMfa(challenge.targetPortal) ||
+    !isMfaEnforced(challenge.targetPortal, env) ||
     (expectedPortal && challenge.targetPortal !== expectedPortal) ||
     !isExpectedPurpose(challenge) ||
     !challenge.method ||

@@ -41,9 +41,7 @@ const DistributorApplications = ({ token }) => {
     deliveryCharge: 100,
     returnCharge: 50,
     commissionRate: 0,
-    bonusRate: 0,
-    incentiveRate: 0,
-    vatRate: 0,
+    vatRate: 13,
     vatInclusive: false,
   });
 
@@ -400,7 +398,7 @@ const DistributorApplications = ({ token }) => {
             onClick={() => setActiveTab("rates")}
             className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "rates" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
           >
-            Rate Cards & Incentives
+            Delivery Rate Cards & Target Bonus Plans
           </button>
           <button
             onClick={() => setActiveTab("settlements")}
@@ -689,14 +687,14 @@ const DistributorApplications = ({ token }) => {
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
-              <h2 className="text-base font-bold text-slate-900">Configured Rate Cards & Incentives</h2>
+              <h2 className="text-base font-bold text-slate-900">Configured Delivery Rate Cards</h2>
               <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
                 <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-600">
                     <tr>
                       <th className="px-4 py-3">Distributor</th>
                       <th className="px-4 py-3">Delivery / Return</th>
-                      <th className="px-4 py-3">Commission / Incentive</th>
+                      <th className="px-4 py-3">Commission deduction</th>
                       <th className="px-4 py-3">Effective Period</th>
                       <th className="px-4 py-3">Status / VAT</th>
                       <th className="px-4 py-3 text-right">Action</th>
@@ -715,7 +713,7 @@ const DistributorApplications = ({ token }) => {
                             Rs {Number(rate.deliveryCharge).toFixed(2)} / Rs {Number(rate.returnCharge).toFixed(2)}
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-600">
-                            {Number(rate.commissionRate).toFixed(2)}% / Rs {Number(rate.bonusRate).toFixed(2)}
+                            {Number(rate.commissionRate).toFixed(2)}%
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-600">
                             {rate.effectiveFrom ? new Date(rate.effectiveFrom).toLocaleDateString() : "—"} – {rate.effectiveUntil ? new Date(rate.effectiveUntil).toLocaleDateString() : "Open"}
@@ -731,10 +729,8 @@ const DistributorApplications = ({ token }) => {
                                   deliveryCharge: Number(rate.deliveryCharge),
                                   returnCharge: Number(rate.returnCharge),
                                   commissionRate: Number(rate.commissionRate),
-                                  bonusRate: Number(rate.bonusRate),
-                                  incentiveRate: Number(rate.incentiveRate),
-                                  vatRate: 0,
-                                  vatInclusive: false,
+                                  vatRate: Number(rate.vatRate ?? 13),
+                                  vatInclusive: Boolean(rate.vatInclusive),
                                 });
                               }}
                               className="text-xs font-semibold text-blue-600 hover:text-blue-800"
@@ -821,19 +817,9 @@ const DistributorApplications = ({ token }) => {
                       className="w-full rounded-lg border border-slate-300 p-2 text-sm"
                     />
                   </div>
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Delivery incentive (NPR)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={rateForm.bonusRate}
-                      onChange={(e) => setRateForm({ ...rateForm, bonusRate: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
                 </div>
 
+                <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">This card controls fixed delivery and return charges only. Per-delivery incentives are disabled. Configure monthly target tiers from the distributor profile.</p>
                 <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">No recoverable input VAT is claimed on distributor service payments unless a verified eligible tax invoice is supported by the accounting workflow.</p>
 
                 <button
@@ -857,7 +843,7 @@ const DistributorApplications = ({ token }) => {
                 <tr>
                   <th className="px-4 py-3">Distributor</th>
                   <th className="px-4 py-3">Gross Earnings</th>
-                  <th className="px-4 py-3">Incentives / Charges</th>
+                  <th className="px-4 py-3">Incentives / Target bonus / Charges</th>
                   <th className="px-4 py-3">VAT</th>
                   <th className="px-4 py-3">Net Payable</th>
                   <th className="px-4 py-3">Status</th>
@@ -875,10 +861,33 @@ const DistributorApplications = ({ token }) => {
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         <div>{req.distributor?.name || req.distributorId}</div>
                         <div className="text-xs text-slate-500">{new Date(req.createdAt).toLocaleDateString()}</div>
+                        {req.metadata?.statementSnapshot?.lineItems?.length > 0 && (
+                          <details className="mt-2 text-xs">
+                            <summary className="cursor-pointer font-semibold text-indigo-700">View unit-level settlement log</summary>
+                            <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-slate-200">
+                              <table className="w-full text-left text-[10px]">
+                                <thead className="sticky top-0 bg-slate-50"><tr><th className="p-2">Delivery / period</th><th className="p-2 text-right">Charge</th><th className="p-2 text-right">Incentive</th><th className="p-2 text-right">Bonus</th><th className="p-2 text-right">Deduction</th><th className="p-2 text-right">Net</th></tr></thead>
+                                <tbody>{req.metadata.statementSnapshot.lineItems.map((line, index) => (
+                                  <tr key={`${line.referenceId}-${index}`} className="border-t border-slate-100">
+                                    <td className="p-2">{line.type === "BONUS" ? `${line.referenceId} · ${line.eligibleDeliveryCount} deliveries` : `${line.type} · ${line.referenceId}`}</td>
+                                    <td className="p-2 text-right">Rs {Number(line.deliveryCharge || line.returnCharge || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-right">Rs {Number(line.incentiveAmount || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-right">Rs {Number(line.bonusAmount || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-right">Rs {Number(line.commissionDeduction || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-right font-semibold">Rs {Number(line.netAmount || 0).toFixed(2)}</td>
+                                  </tr>
+                                ))}</tbody>
+                              </table>
+                            </div>
+                          </details>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-900 font-medium">Rs {req.grossEarnings?.toLocaleString()}</td>
                       <td className="px-4 py-3 text-xs text-slate-600">
-                        +Rs {req.incentives} / -Rs {req.chargesApplied}
+                        <div>+Rs {req.incentives} legacy incentive</div>
+                        <div>+Rs {Number(req.bonuses || req.metadata?.statementSnapshot?.summary?.earnedBonuses || 0).toFixed(2)} target bonus</div>
+                        <div>-Rs {req.chargesApplied} deductions</div>
+                        <div className="text-slate-500">{req.metadata?.statementSnapshot?.lineItems?.filter((line) => line.type === "DELIVERY").length ?? "—"} delivery units</div>
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-600">Rs {req.vatAmount}</td>
                       <td className="px-4 py-3 text-emerald-700 font-bold">Rs {req.netPayable?.toLocaleString()}</td>

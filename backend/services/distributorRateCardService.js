@@ -68,8 +68,10 @@ export const recordDistributorRateCard = async ({
   const numDeliveryCharge = nonNegativeRateValue(deliveryCharge, "Delivery charge");
   const numReturnCharge = nonNegativeRateValue(returnCharge, "Return charge");
   const numCommissionRate = nonNegativeRateValue(commissionRate, "Commission rate", 100);
-  const numBonusRate = nonNegativeRateValue(bonusRate, "Delivery incentive");
-  const numIncentiveRate = nonNegativeRateValue(incentiveRate, "Incentive rate");
+  nonNegativeRateValue(bonusRate, "Legacy delivery incentive");
+  nonNegativeRateValue(incentiveRate, "Legacy incentive rate");
+  const numBonusRate = DEFAULT_BONUS_RATE;
+  const numIncentiveRate = DEFAULT_INCENTIVE_RATE;
   const numVatRate = nonNegativeRateValue(vatRate !== undefined ? vatRate : DEFAULT_VAT_RATE, "VAT rate", 100);
   let startsAt = effectiveFrom ? new Date(effectiveFrom) : new Date();
   if (!Number.isFinite(startsAt.getTime())) {
@@ -232,8 +234,8 @@ export const resolveActiveRateCard = async ({
         deliveryCharge: Number(productRate.deliveryCharge),
         returnCharge: Number(productRate.returnCharge),
         commissionRate: Number(productRate.commissionRate || 0),
-        bonusRate: Number(productRate.bonusRate || 0),
-        incentiveRate: Number(productRate.incentiveRate || 0),
+        bonusRate: DEFAULT_BONUS_RATE,
+        incentiveRate: DEFAULT_INCENTIVE_RATE,
         vatRate: Number(productRate.vatRate ?? DEFAULT_VAT_RATE),
         vatInclusive: Boolean(productRate.vatInclusive),
         rateCardId: productRate.id,
@@ -259,8 +261,8 @@ export const resolveActiveRateCard = async ({
       deliveryCharge: Number(generalRate.deliveryCharge),
       returnCharge: Number(generalRate.returnCharge),
       commissionRate: Number(generalRate.commissionRate || 0),
-      bonusRate: Number(generalRate.bonusRate || 0),
-      incentiveRate: Number(generalRate.incentiveRate || 0),
+      bonusRate: DEFAULT_BONUS_RATE,
+      incentiveRate: DEFAULT_INCENTIVE_RATE,
       vatRate: Number(generalRate.vatRate ?? DEFAULT_VAT_RATE),
       vatInclusive: Boolean(generalRate.vatInclusive),
       rateCardId: generalRate.id,

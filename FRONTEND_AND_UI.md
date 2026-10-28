@@ -206,10 +206,10 @@ The application exposes modules such as:
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
 - `/reviews`, `/story-letter-library`, `/shipping`
 
-In Manufacturer Management, admins can edit pickup status and commission in
-the profile and Pickup Config views. Pickup status changes can be saved at any
-time. Commission edits send a proposal that remains pending until the
-manufacturer accepts it; admin edits do not directly change the agreed rate.
+In Manufacturer Management, admins can update manufacturer profile, pickup,
+contract, quality, and availability details. The manufacturer finance view
+shows approved COGS, direct-sale balances, and settlement history; it has no
+commission proposal or rate editor.
 - `/platform-features` (requires `platform:features_manage`)
 - `/access-control/users`, `/access-control/roles`, `/access-control/permissions`
 - `/audit-history`
@@ -242,8 +242,8 @@ Journal entries, general ledger, trial balance, financial statements, and accoun
 - Manufacturer request rows expose the existing pickup contact, pickup address, NCM branch, and active manufacturer province/district locations for review. Approval provisions those business and pickup details in the distributor profile; distributors can later edit their copied business/contact/location and pickup details from the Distributor workspace's Pickup Profile page.
 - Distributor sign-up uses the manufacturer registration fields for business/contact credentials, province/district, NCM branch and covered area, address, pickup/return details, and contract dates. Admins can edit those stored registration details from each application row; service-district coverage remains editable separately.
 - `/distributors` is a searchable, server-paginated directory; searches require at least two characters and results are fetched only after submit. Rows include contact/location, account status, assignment count, and latest assignment. “View details” opens `/distributors/:distributorId`, a dedicated page with independent Profile, Finance, Inventory, Stock transfers, Orders & delivery, Returns, Exchanges, and Login history sections. Each section loads only when selected and uses paginated history APIs.
-- The profile section edits distributor contact/address/pickup fields through the existing audited profile endpoint and provides an approved general rate-card editor for delivery/return charge, commission, incentive, and VAT values. Linked manufacturer accounts are shown separately with a link to `/manufacturers/:manufacturerId`; their operational records are not merged.
-- Inventory shows on-hand/reserved/available quantities plus total retail/cost estimates based on current product prices, labelled as estimates rather than historical cost-layer valuation. Finance separates balances from paginated transaction and settlement-request histories. Delivery history displays assignment status, self-delivery/NCM type, COD, and recent delivery events.
+- The profile section edits distributor contact/address/pickup fields through the existing audited profile endpoint and provides an approved general rate-card editor for delivery/return charges, commission deduction, and VAT. A separate admin editor configures additive monthly completed-delivery bonus tiers; per-delivery incentives are disabled for new earnings. Linked manufacturer accounts are shown separately with a link to `/manufacturers/:manufacturerId`; their operational records are not merged.
+- Inventory shows on-hand/reserved/available quantities plus total retail/cost estimates based on current product prices, labelled as estimates rather than historical cost-layer valuation. Finance separates balances from paginated transaction and settlement-request histories, exposes monthly target progress and itemized settlement snapshots, and shows delivery units with their locked per-unit rates. Delivery history displays assignment status, self-delivery/NCM type, COD, and recent delivery events.
 - `/manufacturers` retains the existing searchable directory and opens `/manufacturers/:manufacturerId` for dedicated manufacturer details. Profile, factory ledger inventory, production, distributor transfers, finance, accounting transactions, and payable requests are separate permission-filtered sections; history is paginated and loaded per section. The profile editor reuses the existing update API for business/contact/pickup and contract-date fields, synchronizes linked login email changes, and leaves contract/account status controls to their existing workflow.
 - Distributor Management includes a Service-area coverage tab for assigning active distributors province/district coverage. Allocation prefers stocked exact-district hubs, then stocked same-province hubs, then review-ranked nationwide hubs. The customer Orders page lets customers rate the assigned hub after delivery; order allocation still requires every ordered variant and quantity to be available in distributor-ledger stock.
 - Distributor Hub Orders retains delivery-queued, courier-booked, and delivered assignments so the distributor can open their details, including saved packaging specifications. After queue handoff or carrier booking, the assignment detail is view-only and backend status updates reject fulfillment edits.
@@ -267,7 +267,7 @@ Turning a flag off does not delete loyalty or personalized-letter history. Its r
 | `/orders/:id` | Distributor customer-order fulfillment workflow |
 | `/distributor/deliveries` | Self-delivery tracking and parcel slip printing |
 | `/ncm` | NCM booking/tracking and parcel slip printing |
-| `/direct-orders` | Distributor direct hub orders (distributor workspace only) |
+| `/direct-orders` | Distributor direct hub orders at admin catalog prices; manual distributor discounts are disabled (distributor workspace only) |
 | `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
 | `/distributor/demand` | Factory stock requests, inbound carrier/local transfer tracking, and receipt QA |
 | `/collaborations` | Collaboration items |

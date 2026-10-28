@@ -1,7 +1,7 @@
 # Accounting Design 04: Target Domain Model And Posting Rules
 
-**Status:** Owner-approved business policy translated into a provisional technical design. No Prisma schema or production accounting flow is changed in this document.  
-**Policy decisions:** Confirmed by the owner on 2026-09-28.  
+**Status:** Provisional technical design; the commission policy was superseded by the 2026-10-28 removal decision.  
+**Policy decisions:** Confirmed by the owner on 2026-09-28; manufacturer commission policy superseded on 2026-10-28.  
 **Review gate:** Tax account classifications, fiscal-calendar conversion and final statutory reporting require qualified accountant review.
 
 ## Design Principles
@@ -25,10 +25,7 @@
 | Cost snapshot | Lock the agreed unit cost at manufacturer acceptance; no retroactive edits |
 | Manufacturer return | After confirmed receipt, reverse linked sales/VAT/customer settlement and manufacturer COGS/payable; restock only after inspection |
 | Input VAT | Split from gross COGS only when a valid manufacturer tax invoice is recorded; otherwise gross cost is non-recoverable |
-| Manufacturer commission | Additional to COGS only for `DIRECT_MANUFACTURER` + `PHONE_ORDER` or `HUB_VISIT`; exclude `ONLINE_STORE` and `ADMIN_DIRECT` social orders |
-| Commission basis | `max(0, discounted product revenue ex-VAT/delivery - approved COGS ex-recoverable input VAT) * approved rate` |
-| Commission timing | Delivery, only if the goods are not subsequently returned |
-| Direct sale terms | Both approved COGS and `commissionStatus=APPROVED` are required at acceptance; missing approval blocks acceptance/order creation |
+| Direct manufacturer sale margin | Platform receivable is direct-sale product revenue less approved COGS; no manufacturer commission rate or accrual |
 | Marketing CPA | Accrue per verified benefit redemption; settlement approval controls payout, not recognition |
 | NCM settlement | Keep COD receivable and carrier-fee payable gross until bank settlement is confirmed |
 | Tax rates | Effective-dated/configurable; current VAT rate is 13%, not a permanent constant |
@@ -36,7 +33,7 @@
 | Currency/calendar | NPR; Nepali FY Shrawan 1 through Ashadh end, Asia/Kathmandu timezone |
 | Readiness | Gate accounting/finance operations only; do not gate catalog or customer order operations |
 
-These are requirements, not current runtime behavior. The current system posts COGS at order creation and has no delivery-triggered manufacturer ledger posting.
+The 2026-09-28 commission rows in earlier revisions of this design are superseded: manufacturer commission proposals, rates, new accruals, and schema fields have been removed. Historical journals remain unchanged and legacy reversals are retained.
 
 ## Target Logical Model
 
@@ -44,7 +41,7 @@ These are requirements, not current runtime behavior. The current system posts C
 Source order / delivery / return / redemption / payment
   └── AccountingEvent (immutable source key, version, effective date, payload hash)
         ├── AccountingOrderSnapshot (acceptance-time approved terms)
-        │     └── AccountingOrderSnapshotLine (approved unit COGS, quantity, commission terms)
+        │     └── AccountingOrderSnapshotLine (approved unit COGS, quantity)
         └── JournalEntry (unique event key, period, status, totals, reversal link)
               └── JournalLine (account, debit, credit, party, source dimensions)
 
@@ -61,10 +58,10 @@ AccountingReconciliationRun ── GL/control account/subledger result
 | Entity | Responsibility and constraints |
 | --- | --- |
 | `AccountingParty` | Stable party type (`CUSTOMER`, `MANUFACTURER`, `MARKETING_PARTNER`, `CARRIER`, `VENDOR`, `PAYMENT_PROVIDER`, `OTHER`), source-entity reference, status and display-name snapshots. Unique by party type + source ID. A party can have both AR and AP documents. |
-| `AccountingOrderSnapshot` | One immutable acceptance-time snapshot per order/assignment version: manufacturer, source channel, accepted time, approved commission rate/status, currency and tax configuration reference. Unique order + version. |
+| `AccountingOrderSnapshot` | One immutable acceptance-time snapshot per order/assignment version: manufacturer, source channel, accepted time, approved COGS, currency and tax configuration reference. Unique order + version. |
 | `AccountingOrderSnapshotLine` | Product/variant, accepted quantity, VAT-inclusive agreed unit COGS, approval reference and stable line identity. No proposed/global cost fallback. |
 | `AccountingEvent` | Durable outbox event with unique idempotency key, source type/ID/version, effective timestamp, payload/hash, `PENDING/PROCESSING/POSTED/FAILED/BLOCKED`, attempts and error metadata. Retry must not mutate its source payload. |
-| COA account mapping | Existing hierarchical accounts plus configurable semantic mappings for sales, VAT, COGS, manufacturer AP, commission, NCM COD/fees, cash/bank clearing, CPA and reversals. Never rely on database IDs. |
+| COA account mapping | Existing hierarchical accounts plus configurable semantic mappings for sales, VAT, COGS, manufacturer AP, NCM COD/fees, cash/bank clearing, CPA and reversals. Never rely on database IDs. Historical account 6410 entries remain for audit. |
 | `AccountingPeriod` | UTC start/end instants derived from verified BS calendar rules, BS label, timezone and `OPEN/SOFT_CLOSED/CLOSED/LOCKED` state. Closed/locked periods reject normal posting. |
 | `JournalEntry` | Immutable posted journal linked to event, unique idempotency key, currency, period, reversal relation, creator/approver, timestamps and balanced decimal totals. Drafts do not affect reports. |
 | `JournalLine` | Decimal debit/credit, account, optional party/document/order/product/delivery dimensions; exactly one positive side. |
@@ -86,7 +83,6 @@ Exact account codes are configurable mappings and require accountant approval. T
 | Delivered company sale | Customer/channel receivable or actual cash/clearing for VAT-inclusive total | Product and delivery revenue ex-VAT; output VAT payable | Determine tender from actual receipts, not only `Order.payment=true` |
 | Delivered manufacturer COGS, valid invoice | COGS ex-recoverable input VAT; input VAT receivable | Manufacturer AP for VAT-inclusive approved COGS | No inventory credit: manufacturer owns stock until delivery |
 | Delivered manufacturer COGS, no valid invoice | COGS for gross approved COGS | Manufacturer AP for gross approved COGS | No unsupported input VAT claim |
-| Eligible manufacturer commission | Manufacturer commission expense (account mapping subject to accountant) | Manufacturer AP | Direct manufacturer phone/shop only; approved rate snapshot and gross-profit formula |
 | Confirmed post-delivery return | Sales return/contra revenue; output VAT reversal; manufacturer AP reversal; customer refund/receivable clearing | Cash/refund payable/customer balance and COGS/input VAT reversal as applicable | Link to original delivery journals; never edit/delete the originals |
 | Verified Marketing Partner redemption | Marketing CPA expense | Marketing Partner AP | One accrual per verified redemption; settlement approval controls payout |
 | NCM bank remittance | Bank | NCM COD receivable | Clear only on verified bank settlement |
@@ -94,9 +90,9 @@ Exact account codes are configurable mappings and require accountant approval. T
 
 ## Recognition And Event Contracts
 
-1. **Manufacturer acceptance:** inside the acceptance transaction, load the assigned manufacturer’s inventory and terms. Require every ordered product to have `priceStatus=APPROVED` and positive `agreedCostPrice`; for `DIRECT_MANUFACTURER`, require `commissionStatus=APPROVED` and an agreed rate. Snapshot terms. If any requirement fails, return conflict and do not accept.
-2. **Delivery:** NCM `DELIVERED` is an idempotent source event. Consume only the accepted snapshot, never current product/inventory prices. Create sale/VAT/COGS/AP/eligible commission postings once.
-3. **Return before delivery:** do not post sale/COGS/commission.
+1. **Manufacturer acceptance:** inside the acceptance transaction, load the assigned manufacturer’s inventory and terms. Require every ordered product to have `priceStatus=APPROVED` and positive `agreedCostPrice`. Snapshot approved COGS. If any requirement fails, return conflict and do not accept.
+2. **Delivery:** NCM `DELIVERED` is an idempotent source event. Consume only the accepted snapshot, never current product/inventory prices. Create sale/VAT/COGS/AP postings once.
+3. **Return before delivery:** do not post sale/COGS.
 4. **Return after delivery:** `RETURN_REQUESTED` alone is not physical receipt. Reverse only after manufacturer confirms receipt/inspection; link all reversals to delivery postings.
 5. **Marketing CPA:** verify card-benefit redemption and snapshot partner/campaign terms; accrue one payable per eligible redemption.
 6. **NCM settlement:** status callbacks are evidence, not proof of bank receipt. A verified statement/manual approved receipt clears balances.

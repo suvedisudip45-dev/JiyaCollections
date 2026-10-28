@@ -40,8 +40,9 @@ endpoints and `distributor:admin_*` permissions; remittance verification also
 requires `finance:receivable_collect`. Every detail endpoint requires the
 `ADMIN` role. The distributor
 profile editor reuses the existing audited application-profile update flow,
-while delivery, return, commission, incentive, and VAT values reuse the
-approved distributor rate-card workflow.
+while delivery, return, commission, and VAT values reuse the approved
+distributor rate-card workflow. Monthly target bonuses are configured
+separately and apply to completed distributor deliveries after the month closes.
 
 Manufacturer and distributor profiles remain independent when they share an
 `AuthAccount`; the distributor page links to the existing manufacturer detail
@@ -203,11 +204,11 @@ inventory changes continue to use their separately protected operations.
   account email/phone and stored location, NCM, pickup, and contract fields in
 one audited transaction; changed contact values are marked unverified, and
 service-area districts remain managed separately.
-- Manufacturer registration and admin management support contracts, availability,
-  pickup branch details, commission proposals, and quality/performance data.
-  In Manufacturer Management, admins can change pickup status at any time and
-  propose a commission rate. A proposed rate remains pending until the
-  manufacturer accepts it; admins do not directly set the agreed rate.
+- Manufacturer registration and admin management support contracts,
+  availability, pickup branch details, and quality/performance data. Admins
+  can change pickup status at any time. Manufacturer settlements use approved
+  COGS and recorded production/logistics payables; no future manufacturer
+  commission rates are configured or accrued.
 - A manufacturer can apply for distributor access through
   `POST /api/manufacturer/apply-distributor`. The application remains attached
   to the manufacturer profile until an admin reviews it through
@@ -280,7 +281,7 @@ and foreign-key delete behavior.
 | `Permission` | `id`, unique `code`, `description`, `isActive`. |
 | `RolePermissionMapping` | Unique `(roleId, permissionId)`. |
 | `AuthAccountRoleMapping` | Unique `(accountId, roleId)`, plus `isActive`. |
-| `Manufacturer` | `id`, optional unique `accountId`, `name`, unique `email`, phone/city/address; pickup branch/contact fields; `isActive`, `isAvailable`; commission proposal/agreement/status/history; contract status/document/dates; rating and fulfillment counters. |
+| `Manufacturer` | `id`, optional unique `accountId`, `name`, unique `email`, phone/city/address; pickup branch/contact fields; `isActive`, `isAvailable`; contract status/document/dates; rating and fulfillment counters. |
 | `Distributor` | `id`, optional unique `accountId`, `name`, phone/address/city; `status`, `isActive`, application/approval timestamps and `approvedBy`. |
 | `Product` | Product identity and storefront fields, price/cost, categories, JSON variants/sizes/colors, publication/deletion flags, plus relations to inventory SKUs and production requests. |
 | `InventorySku` | Unique SKU variant per `(productId, sizeKey, colorKey)`, with display `size`, `color`, optional unique `skuCode`, and active flag. |
@@ -589,11 +590,12 @@ transfer flow:
      NCM status/detail endpoints. The webhook is acknowledged only after the
      event and status update are persisted.
 9. Negotiated Charge & Rate Card Engine:
-   - Admin and Distributor negotiate per-product delivery fee, return delivery fee, commission rate, and performance bonus/incentive rates via `POST /api/admin/distributor-rates`.
+   - Admin controls distributor delivery and return service charges through `POST /api/admin/distributor-rates`. New delivery earnings do not include a per-delivery incentive; previously posted earning snapshots remain unchanged.
+   - Admin configures additive monthly completed-self-delivery bonus tiers through `POST /api/admin/distributor-rates/bonus-plans`. Only full Kathmandu-time calendar months covered by the plan qualify. Each reached tier adds its configured amount, and closed periods are accrued idempotently when a distributor requests settlement.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
 10. Distributor Financial Dashboard & Accounting:
-   - `GET /api/distributor/finance/statement`: Itemized self-delivery earnings, incentive/deduction/VAT display, and balances. New deliveries use immutable per-delivery `DistributorServiceEarning` snapshots; legacy assignments without snapshots remain calculated from historical operational data and require reconciliation.
-   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations.
+   - `GET /api/distributor/finance/statement`: Itemized self-delivery charges, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. New deliveries use immutable per-delivery `DistributorServiceEarning` snapshots.
+   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations. The request stores a statement snapshot with delivery-level charges and monthly bonus qualification details.
    - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Rate-card revisions create new versions; closing an approved card preserves history.
    - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
@@ -614,13 +616,15 @@ Relevant endpoints:
 | `POST /api/returns/exchange/distributor/:id/process` | Distributor | `distributor:delivery_return` | Receive and inspect the approved return, dispatch reserved replacement inventory, or confirm replacement delivery. |
 | `POST /api/delivery/admin/assignment/:id/ncm` | Admin | `assignment:admin_list` | Enter/validate package details and request NCM delivery for an assigned order. |
 | `POST /webhooks/webhook/ncm` | NCM | Webhook secret verification when configured | Persist and apply NCM carrier status updates before acknowledging the webhook. |
-| `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Negotiate and record delivery charges, return fees, commissions, and bonus rates. |
+| `POST /api/admin/distributor-rates` | Admin | `distributor:admin_review` | Set effective-dated delivery/return charges, commission deduction, and VAT terms; no new per-delivery incentive is recorded. |
 | `GET /api/admin/distributor-rates` | Admin | `distributor:admin_list` | List negotiated rate cards. |
+| `POST /api/admin/distributor-rates/bonus-plans` | Admin | `distributor:admin_review` | Create a monthly completed-self-delivery target plan with incremental bonus tiers. |
+| `GET /api/admin/distributor-rates/bonus-plans` | Admin | `distributor:admin_list` | List monthly target bonus plans, optionally filtered by distributor. |
 | `PATCH /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Create an immutable revised rate-card version. |
 | `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
-| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; pending requests reserve their unpaid amount. NCM deliveries are excluded. |
+| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; closed-period target bonuses are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
@@ -651,8 +655,9 @@ Relevant endpoints:
 
 Manufacturer profile and administration APIs are mounted at `/api/manufacturer`.
 They include `/register`, `/profile`, `/availability`, `/stats`,
-`/pickup-profile`, `/commission`, `/list`, and admin operations for registration,
-profile updates, ratings, contracts, commission and NCM branch synchronization.
+`/pickup-profile`, `/list`, and admin operations for registration, profile
+updates, ratings, contracts, and NCM branch synchronization. Manufacturer
+commission endpoints and rate fields have been removed.
 Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
 
 ## 6. How admin controls loss, damage, gifts, cards, and letters
@@ -781,7 +786,7 @@ story/template delivery records.
 
 1. Review distributor applications and only activate legitimate businesses.
 2. Maintain manufacturer accounts, contracts, active/availability status,
-   pickup details and agreed pricing/commission terms.
+   pickup details, and approved product COGS.
 3. Review production requests and control approved cost/minimum quantities.
 4. Review distributor transfer requests against current factory availability;
    approve only quantities that can be fulfilled and leave an auditable note.

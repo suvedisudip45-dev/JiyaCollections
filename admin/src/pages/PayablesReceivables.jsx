@@ -481,7 +481,7 @@ const PayablesReceivables = ({ token }) => {
             </div>
             <h2 className="text-base font-black text-slate-900 mt-1">Manufacturer Payables &amp; Direct Sales</h2>
             <p className="text-xs text-slate-500">
-              Direct phone and hub-visit sales only. Manufacturer receivables match admin payables (COGS + commission); direct sale value is due to the platform.
+              Direct phone and hub-visit sales only. Manufacturer payables are approved COGS; direct-sale value less COGS is due to the platform.
             </p>
           </div>
 
@@ -521,7 +521,7 @@ const PayablesReceivables = ({ token }) => {
               <span className="text-xs">📦</span>
             </div>
             <p className="mt-2 text-2xl font-black text-red-700">{fmt(mfgData.payable||0)}</p>
-              <p className="mt-1 text-[10px] text-red-600">Platform COGS; direct-sale COGS + commission</p>
+              <p className="mt-1 text-[10px] text-red-600">Approved COGS and prior posted balances</p>
           </div>
 
           <div className="bg-emerald-50/70 border border-emerald-200 rounded-2xl p-4">
@@ -530,7 +530,7 @@ const PayablesReceivables = ({ token }) => {
               <span className="text-xs">💰</span>
             </div>
             <p className="mt-2 text-2xl font-black text-emerald-700">{fmt(mfgData.receivable||0)}</p>
-              <p className="mt-1 text-[10px] text-emerald-600">Sales less manufacturer COGS and commission</p>
+              <p className="mt-1 text-[10px] text-emerald-600">Direct sales less approved COGS</p>
           </div>
 
           <div className={`rounded-2xl p-4 border ${(mfgData.netPayable||0) > 0 ? "bg-amber-50/70 border-amber-200" : "bg-blue-50/70 border-blue-200"}`}>
@@ -555,7 +555,7 @@ const PayablesReceivables = ({ token }) => {
               {mfgData.itemsSold||0} <span className="text-xs font-normal text-slate-500">sold ({mfgData.itemsDelivered||0} delivered)</span>
             </p>
             <p className="mt-1 text-[10px] text-slate-500">
-              Direct Sales: {fmt(mfgData.totalSales||0)} • Comm: {fmt(mfgData.totalCommission||0)}
+              Direct Sales: {fmt(mfgData.totalSales||0)}
             </p>
           </div>
         </div>
@@ -590,11 +590,10 @@ const PayablesReceivables = ({ token }) => {
                 <tr>
                   <th className="px-3 py-2.5">Manufacturer</th>
                   <th className="px-3 py-2.5">Location / Phone</th>
-                  <th className="px-3 py-2.5">Commission</th>
                   <th className="px-3 py-2.5 text-center">Orders</th>
                   <th className="px-3 py-2.5">Direct Sales</th>
                   <th className="px-3 py-2.5">Total COGS</th>
-                  <th className="px-3 py-2.5">Payable (COGS + Commission)</th>
+                  <th className="px-3 py-2.5">Posted Payable</th>
                   <th className="px-3 py-2.5">Receivable (Direct Margin)</th>
                   <th className="px-3 py-2.5">Net Position</th>
                   <th className="px-3 py-2.5 text-right">Action</th>
@@ -603,7 +602,7 @@ const PayablesReceivables = ({ token }) => {
               <tbody className="divide-y divide-slate-100">
                 {mfgList.length === 0 ? (
                   <tr>
-                    <td colSpan="10" className="px-3 py-8 text-center text-slate-400">
+                    <td colSpan="9" className="px-3 py-8 text-center text-slate-400">
                       No manufacturers registered in the database.
                     </td>
                   </tr>
@@ -619,9 +618,6 @@ const PayablesReceivables = ({ token }) => {
                         <td className="px-3 py-2.5 text-slate-600">
                           <div>{m.city || "Nepal"}</div>
                           <div className="text-[10px] text-slate-400">{m.phone || "—"}</div>
-                        </td>
-                        <td className="px-3 py-2.5 font-semibold text-slate-700">
-                          {m.agreedCommissionRate || 12}%
                         </td>
                         <td className="px-3 py-2.5 text-center font-bold text-slate-800">
                           {m.totalOrders}
@@ -663,7 +659,7 @@ const PayablesReceivables = ({ token }) => {
                                     manufacturerId: m.id,
                                     amount: String(m.remainingPayable !== undefined ? m.remainingPayable : m.payable),
                                     fromAccountId: accounts[0]?.id || "",
-                                    notes: `COGS and commission settlement for ${m.name}`,
+                                    notes: `Approved COGS settlement for ${m.name}`,
                                     partial: false,
                                   });
                                 }}
@@ -719,13 +715,12 @@ const PayablesReceivables = ({ token }) => {
                     <th className="px-3 py-2.5">Approved COGS</th>
                     <th className="px-3 py-2.5">Payable to Manufacturer</th>
                     <th className="px-3 py-2.5">Receivable from Manufacturer</th>
-                    <th className="px-3 py-2.5">Commission</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {mfgOrders.length === 0 ? (
                     <tr>
-                      <td colSpan="10" className="px-3 py-8 text-center text-slate-400">
+                      <td colSpan="9" className="px-3 py-8 text-center text-slate-400">
                         No order activity found in this period for the selected manufacturer(s).
                       </td>
                     </tr>
@@ -769,9 +764,6 @@ const PayablesReceivables = ({ token }) => {
                         </td>
                         <td className="px-3 py-2 text-emerald-700 font-bold bg-emerald-50/30">
                           {o.receivable > 0 ? fmt(o.receivable) : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-slate-600">
-                          {o.commission > 0 ? fmt(o.commission) : "—"}
                         </td>
                       </tr>
                     ))

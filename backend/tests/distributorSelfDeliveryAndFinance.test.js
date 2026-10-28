@@ -620,12 +620,12 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
 
   assert.equal(saved.deliveryCharge, 120);
   assert.equal(saved.returnCharge, 60);
-  assert.equal(saved.bonusRate, 25);
+  assert.equal(saved.bonusRate, 0);
 
   const resolved = await resolveActiveRateCard({ distributorId: "dist-1" });
   assert.equal(resolved.deliveryCharge, 120);
   assert.equal(resolved.returnCharge, 60);
-  assert.equal(resolved.bonusRate, 25);
+  assert.equal(resolved.bonusRate, 0);
   assert.equal(resolved.commissionRate, 10);
   assert.equal(resolved.vatRate, 13);
 });
@@ -652,7 +652,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     deliveryCharge: 100,
     returnCharge: 50,
     commissionRate: 10, // Rs. 10 commission per delivery
-    bonusRate: 20, // Rs. 20 bonus per delivery
+    bonusRate: 20, // Legacy field is ignored for new delivery earnings.
     vatRate: 13,
     status: "APPROVED",
   };
@@ -674,6 +674,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     { id: "o-4", amount: 3000, paymentMethod: "COD" },
   ]);
   stubMethod(t, prisma.distributorServiceEarning, "findMany", async () => []);
+  stubMethod(t, prisma.distributorBonusPlan, "findMany", async () => []);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => settlements);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
 
@@ -685,25 +686,25 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
 
   // Calculations:
   // Deliveries: 2 * 100 = 200 gross
-  // Incentives/Bonus: 2 * 20 = 40
+  // Per-delivery incentives are disabled for new earnings.
   // Returns: 1 * 50 = 50
   // Admin Commission/Discount: 2 * 10 = 20
-  // Subtotal before VAT = 200 + 40 + 50 - 20 = 270
-  // 13% VAT = 270 * 0.13 = 35.10
-  // Total With VAT = 305.10
+  // Subtotal before VAT = 200 + 50 - 20 = 230
+  // 13% VAT = 230 * 0.13 = 29.90
+  // Total With VAT = 259.90
   // Settled Paid = 100
-  // Net Payable = 305.10 - 100 paid - 20 pending = 185.10
+  // Net Payable = 259.90 - 100 paid - 20 pending = 139.90
   assert.equal(statementWithVat.summary.grossDeliveryEarnings, 200);
-  assert.equal(statementWithVat.summary.earnedIncentives, 40);
+  assert.equal(statementWithVat.summary.earnedIncentives, 0);
   assert.equal(statementWithVat.summary.returnFeesEarned, 50);
   assert.equal(statementWithVat.summary.adminDiscountsApplied, 20);
-  assert.equal(statementWithVat.summary.subtotalBeforeVat, 270);
-  assert.equal(statementWithVat.summary.vatAmount, 35.10);
-  assert.equal(statementWithVat.summary.totalWithVat, 305.10);
-  assert.equal(statementWithVat.summary.totalWithoutVat, 270);
+  assert.equal(statementWithVat.summary.subtotalBeforeVat, 230);
+  assert.equal(statementWithVat.summary.vatAmount, 29.90);
+  assert.equal(statementWithVat.summary.totalWithVat, 259.90);
+  assert.equal(statementWithVat.summary.totalWithoutVat, 230);
   assert.equal(statementWithVat.summary.totalSettledPaid, 100);
-  assert.equal(statementWithVat.summary.netPayableBalance, 185.10);
-  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 205.10);
+  assert.equal(statementWithVat.summary.netPayableBalance, 139.90);
+  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 159.90);
   assert.equal(statementWithVat.summary.pendingSettlementAmount, 20);
   assert.equal(statementWithVat.vatMode, "WITH_VAT");
   assert.equal(statementWithVat.transactions.length, 5); // 2 self-deliveries + 1 return + 2 settlements
@@ -714,7 +715,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     withVat: false,
   });
   assert.equal(statementWithoutVat.vatMode, "WITHOUT_VAT");
-  assert.equal(statementWithoutVat.summary.netPayableBalance, 150); // 270 - 100 paid - 20 pending
+  assert.equal(statementWithoutVat.summary.netPayableBalance, 110); // 230 - 100 paid - 20 pending
 });
 
 test("7. submitDistributorSettlementRequest creates pending request and guards against exceeding balance", async (t) => {
@@ -736,6 +737,7 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   stubMethod(t, prisma.deliveryOrder, "findMany", async () => []);
   stubMethod(t, prisma.order, "findMany", async () => [{ id: "o-1", amount: 1000 }]);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => []);
+  stubMethod(t, prisma.distributorBonusPlan, "findMany", async () => []);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
   let createdRequest = null;
   stubMethod(t, prisma.distributorSettlementRequest, "findFirst", async ({ where }) =>
@@ -751,6 +753,7 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
     deliveryOrder: { findMany: async () => [] },
     order: { findMany: async () => [{ id: "o-1", amount: 1000 }] },
     distributorDeliveryChargeNegotiation: { findFirst: async () => mockRateCard },
+    distributorBonusPlan: { findMany: async () => [] },
     distributorSettlementRequest: {
       findFirst: async ({ where }) =>
         createdRequest?.idempotencyKey === where.idempotencyKey ? createdRequest : null,
@@ -920,31 +923,48 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     },
   });
 
-  test("Admin payout allocates an immutable earning document and clears distributor payable 2190", async () => {
+  test("Admin payout allocates delivery and target bonus documents against distributor payable 2190", async () => {
     let settlement = {
       id: "set-subledger-1",
       distributorId: "dist-1",
-      amount: 100,
+      amount: 120,
       paidAmount: 0,
       status: "PENDING",
-      metadata: { settlementBasis: "ACCOUNTING_SUBLEDGER", earningDocumentIds: ["earning-doc-1"] },
+      metadata: {
+        settlementBasis: "ACCOUNTING_SUBLEDGER",
+        earningDocumentIds: ["earning-doc-1", "bonus-doc-1"],
+      },
       distributor: { id: "dist-1", name: "Kathmandu Hub" },
     };
-    const document = {
-      id: "earning-doc-1",
-      partyId: "party-1",
-      side: "PAYABLE",
-      sourceType: "DISTRIBUTOR_SERVICE_EARNING",
-      originalAmount: "100.00",
-      allocatedAmount: "0.00",
-      remainingAmount: "100.00",
-      status: "OPEN",
-      issueDate: new Date("2026-10-27T00:00:00.000Z"),
-    };
+    const documents = [
+      {
+        id: "earning-doc-1",
+        partyId: "party-1",
+        side: "PAYABLE",
+        sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+        originalAmount: "100.00",
+        allocatedAmount: "0.00",
+        remainingAmount: "100.00",
+        status: "OPEN",
+        issueDate: new Date("2026-10-27T00:00:00.000Z"),
+      },
+      {
+        id: "bonus-doc-1",
+        partyId: "party-1",
+        side: "PAYABLE",
+        sourceType: "DISTRIBUTOR_TARGET_BONUS",
+        originalAmount: "40.00",
+        allocatedAmount: "0.00",
+        remainingAmount: "40.00",
+        status: "OPEN",
+        issueDate: new Date("2026-10-28T00:00:00.000Z"),
+      },
+    ];
     let balance = 500;
     const cashTransactions = new Map();
     const allocations = new Map();
     let paymentJournalArguments;
+    let requestedSourceTypes;
     const tx = {
       distributorSettlementRequest: {
         findUnique: async () => settlement,
@@ -955,8 +975,12 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
       },
       accountingParty: { upsert: async () => ({ id: "party-1" }) },
       accountingDocument: {
-        findMany: async () => [document],
-        updateMany: async ({ data }) => {
+        findMany: async ({ where }) => {
+          requestedSourceTypes = where.sourceType.in;
+          return documents.filter((document) => where.sourceType.in.includes(document.sourceType));
+        },
+        updateMany: async ({ where, data }) => {
+          const document = documents.find((item) => item.id === where.id);
           Object.assign(document, data);
           return { count: 1 };
         },
@@ -998,7 +1022,7 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
 
     const result = await executeAdminDistributorSettlement({
       settlementId: settlement.id,
-      amount: 60,
+      amount: 120,
       financialAccountId: "fa-1",
       idempotencyKey: "settlement-subledger-payment-1",
       adminAccountId: "admin-1",
@@ -1012,13 +1036,16 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     });
 
     assert.equal(result.success, true);
-    assert.equal(result.settlement.status, "PARTIALLY_PAID");
-    assert.equal(document.remainingAmount.toString(), "40");
-    assert.equal(document.status, "PARTIALLY_PAID");
-    assert.equal(balance, 440);
+    assert.equal(result.settlement.status, "SETTLED");
+    assert.deepEqual(requestedSourceTypes, ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"]);
+    assert.equal(documents[0].remainingAmount.toString(), "0");
+    assert.equal(documents[0].status, "PAID");
+    assert.equal(documents[1].remainingAmount.toString(), "20");
+    assert.equal(documents[1].status, "PARTIALLY_PAID");
+    assert.equal(balance, 380);
     assert.equal(paymentJournalArguments.payableAccountCode, "2190");
     assert.equal(paymentJournalArguments.accountingPartyId, "party-1");
-    assert.equal(allocations.size, 1);
+    assert.equal(allocations.size, 2);
   });
 
   assert.equal(res.success, true);

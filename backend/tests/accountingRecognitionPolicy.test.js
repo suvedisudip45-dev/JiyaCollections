@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  calculateManufacturerCommission,
+  calculateLegacyManufacturerCommission,
   classifySaleChannel,
-  isDeliveredAndNotReturnedToManufacturer,
-  isManufacturerCommissionEligible,
 } from "../services/accountingRecognitionPolicy.js";
 
-test("manufacturer commission is limited to manufacturer-originated phone and hub sales", () => {
+test("legacy sale-channel classification identifies manufacturer direct orders", () => {
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "PHONE_ORDER" }), "MANUFACTURER_DIRECT");
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "HUB_VISIT" }), "MANUFACTURER_DIRECT");
   assert.equal(classifySaleChannel({ orderType: "DIRECT_DISTRIBUTOR", directOrderType: "PHONE_ORDER" }), "DISTRIBUTOR_DIRECT");
@@ -17,28 +15,8 @@ test("manufacturer commission is limited to manufacturer-originated phone and hu
   assert.equal(classifySaleChannel({ orderType: "DIRECT_MANUFACTURER", directOrderType: "UNKNOWN" }), "UNKNOWN");
 });
 
-test("distributor direct sales do not qualify for manufacturer commission", () => {
-  assert.equal(isManufacturerCommissionEligible({
-    order: { orderType: "DIRECT_DISTRIBUTOR", directOrderType: "HUB_VISIT", status: "Delivered" },
-  }), false);
-});
-
-test("COGS recognition requires delivery and no confirmed manufacturer return", () => {
-  assert.equal(isDeliveredAndNotReturnedToManufacturer({ order: { status: "Delivered" } }), true);
-  assert.equal(isDeliveredAndNotReturnedToManufacturer({ deliveryState: "DELIVERED" }), true);
-  assert.equal(isDeliveredAndNotReturnedToManufacturer({ deliveryState: "IN_TRANSIT" }), false);
-  assert.equal(isDeliveredAndNotReturnedToManufacturer({
-    order: { status: "Delivered" },
-    deliveryState: "RETURN_REQUESTED",
-  }), true);
-  assert.equal(isDeliveredAndNotReturnedToManufacturer({
-    order: { status: "Delivered" },
-    returnedToManufacturer: true,
-  }), false);
-});
-
-test("manufacturer commission uses decimal gross profit and rounds half up to paisa", () => {
-  assert.deepEqual(calculateManufacturerCommission({
+test("legacy manufacturer commission reversals use decimal gross profit and paisa rounding", () => {
+  assert.deepEqual(calculateLegacyManufacturerCommission({
     productRevenueExVat: "1000.01",
     agreedCogsVatInclusive: "565.01",
     recoverableInputVat: "65.00",
@@ -49,8 +27,8 @@ test("manufacturer commission uses decimal gross profit and rounds half up to pa
   });
 });
 
-test("manufacturer commission treats unverified VAT as non-recoverable cost", () => {
-  assert.deepEqual(calculateManufacturerCommission({
+test("legacy manufacturer commission reversal treats unverified VAT as non-recoverable cost", () => {
+  assert.deepEqual(calculateLegacyManufacturerCommission({
     productRevenueExVat: "1000.00",
     agreedCogsVatInclusive: "565.00",
     recoverableInputVat: "0",
@@ -61,8 +39,8 @@ test("manufacturer commission treats unverified VAT as non-recoverable cost", ()
   });
 });
 
-test("manufacturer commission is zero when gross profit is negative", () => {
-  assert.deepEqual(calculateManufacturerCommission({
+test("legacy manufacturer commission reversal is zero when gross profit is negative", () => {
+  assert.deepEqual(calculateLegacyManufacturerCommission({
     productRevenueExVat: "400",
     agreedCogsVatInclusive: "500",
     recoverableInputVat: "0",
@@ -73,14 +51,14 @@ test("manufacturer commission is zero when gross profit is negative", () => {
   });
 });
 
-test("manufacturer commission rejects invalid monetary inputs", () => {
-  assert.throws(() => calculateManufacturerCommission({
+test("legacy manufacturer commission reversal rejects invalid monetary inputs", () => {
+  assert.throws(() => calculateLegacyManufacturerCommission({
     productRevenueExVat: "100",
     agreedCogsVatInclusive: "10",
     recoverableInputVat: "11",
     commissionRatePercent: "10",
   }), /cannot exceed/);
-  assert.throws(() => calculateManufacturerCommission({
+  assert.throws(() => calculateLegacyManufacturerCommission({
     productRevenueExVat: "-1",
     agreedCogsVatInclusive: "10",
     commissionRatePercent: "10",

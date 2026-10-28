@@ -57,9 +57,13 @@ The password reset timestamp enforces a rolling seven-day interval, while the mo
 | --- | --- | --- |
 | `User` | `name`, `email`, `phone`, `addresses`, `cartData`, `loyaltyTier` | Customer profile and shopping state |
 | `Admin` | `accountId`, `name`, `email`, `phone`, `role` | Admin account profile |
-| `Manufacturer` | `name`, `city`, `qualityRating`, `pickupBranch`, `commissionStatus`, `contractStatus` | manufacturing network partner |
+| `Manufacturer` | `name`, `city`, `qualityRating`, `pickupBranch`, `contractStatus` | manufacturing network partner |
 | `Distributor` | `name`, linked account email/phone, `province`, `district`, NCM branch/covered-area and pickup details, contract dates, `status`, `qualityRating`, `ratingCount` | distributor application and operational hub profile with customer-review aggregate |
 | `MarketingPartner` | `code`, `name`, `status`, `email`, `passwordHash` | partner for marketing card campaigns |
+
+Migration `20261028064000_remove_manufacturer_commission` drops manufacturer
+commission proposal/agreement columns and removes their RBAC permissions.
+Previously posted accounting journals are retained for audit history.
 
 ### 3.3 Catalog and merchandising
 
@@ -234,7 +238,7 @@ For posted accounting, accepted production layers are traced to distributor stoc
 
 `AccountingEvent` also serves as the durable delivered-sale outbox for NCM and distributor self-delivery. The delivery transaction stores a versioned source snapshot and payload hash; `nextAttemptAt` and `claimedAt` support scheduled retries and stale-claim recovery. The worker links the journal to the source event and commits journal creation plus the `POSTED` event state atomically. The additive migration `20261017000000_delivery_accounting_outbox_schedule` must be applied and Prisma Client regenerated before deploying this worker; it has not yet been applied.
 
-Completed self-delivery creates an immutable `DistributorServiceEarning` with delivery/incentive/commission/tax snapshots plus linked journal and payable `AccountingDocument` references. Admin payouts allocate against these documents and clear control 2190. Old `DistributorSettlementRequest` and `AccountPayable` data remain a legacy reconciliation path; do not generate duplicate expense accruals for deliveries already represented by an earning snapshot.
+Completed self-delivery creates an immutable `DistributorServiceEarning` with delivery charge, zero new per-delivery incentive, commission/tax snapshots, and linked journal/payable `AccountingDocument` references. Historical incentive values in old earning snapshots are preserved. Admin-configured `DistributorBonusPlan` records define additive monthly completed-self-delivery tiers; eligible closed periods create idempotent `DistributorBonusEarning` records with delivery-count/tier snapshots and linked journal/payable documents. Distributor settlement requests snapshot gross earnings, legacy incentives, target bonuses, deductions, VAT, and itemized delivery/bonus lines; their `bonuses` column keeps the target-bonus total separate. Admin payouts allocate against earning documents and clear control 2190. Old `DistributorSettlementRequest` and `AccountPayable` data remain a legacy reconciliation path; do not generate duplicate expense accruals for deliveries already represented by an earning snapshot.
 
 NCM-delivered COD records receivable `AccountingDocument` rows by source order against control 1170. A confirmed NCM batch accrues the carrier fee to 6430/2180, creates its payable document, then allocates gross COD and fee payable against the remittance journal in one transaction. Distributor-collected COD uses party documents against 1190; distributor-paid refunds and delivery compensation use payable documents against 2190. `AccountingHealth` compares these source-specific open balances to their respective GL controls. It intentionally reports partial coverage while historical and other-party documents remain unreconciled.
 
@@ -254,7 +258,7 @@ Migrations `20261027150000_distributor_service_earnings` and `20261027160000_eff
 
 An order stores its gift catalog reference and the exact inventory batch reserved for it, using `assignedDistributorGiftInventoryId` for distributor hub orders while retaining the legacy manufacturer reference for historical orders. Loyalty gift allowances are represented by `CustomerLevel.giftAmount` and `giftDescription`; eligible rewards are snapshotted into `Order.rewardApplied`. At the distributor final checklist, the backend verifies eligibility, distributor ownership, accepted stock, and gift value, then reserves the selected batch atomically. `giftStatus` progresses through `NONE`, `PENDING_PACKING`, `RESERVED`, and `DELIVERED`, or to `RETURNED` / `LOST` when a protected return decision is recorded. Delivered stock is deducted through the NCM delivery transaction.
 
-Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Order.distributorId`. Their product quantities are deducted transactionally from the distributor's ledger-backed stock; these orders do not use `ManufacturerInventory` or manufacturer assignment records.
+Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Order.distributorId`. Their product quantities are deducted transactionally from the distributor's ledger-backed stock; these orders do not use `ManufacturerInventory` or manufacturer assignment records. Product prices come from the admin-controlled catalog, and manual distributor discounts are rejected; only eligible customer loyalty rewards may apply automatically.
 
 ## 4. Data Dictionary: Key Enumerations and Status Values
 

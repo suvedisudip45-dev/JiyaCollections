@@ -9,6 +9,7 @@ import {
 } from "../services/distributorRateCardService.js";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
+import { getDistributorBonusPlans, saveDistributorBonusPlan } from "../services/distributorBonusService.js";
 import {
   getDistributorCashPosition,
   listDistributorRemittances,
@@ -418,6 +419,42 @@ export const adminRecordDistributorRates = async (req, res) => {
       message: error.message || "Failed to record distributor rates.",
       code: error.code || "RATE_CARD_ERROR",
     });
+  }
+};
+
+export const adminSaveDistributorBonusPlan = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const plan = await saveDistributorBonusPlan({
+      distributorId: req.body?.distributorId,
+      tiers: req.body?.tiers,
+      effectiveFrom: req.body?.effectiveFrom || new Date(),
+      notes: req.body?.notes,
+      createdBy: actorId,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(201).json({ success: true, message: "Monthly delivery bonus plan saved.", plan });
+  } catch (error) {
+    console.error("adminSaveDistributorBonusPlan error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to save distributor bonus plan.",
+      code: error.code || "DISTRIBUTOR_BONUS_PLAN_ERROR",
+    });
+  }
+};
+
+export const listAdminDistributorBonusPlans = async (req, res) => {
+  try {
+    const plans = await getDistributorBonusPlans({ distributorId: req.query.distributorId || null });
+    return res.status(200).json({ success: true, plans });
+  } catch (error) {
+    console.error("listAdminDistributorBonusPlans error:", error);
+    return res.status(500).json({ success: false, message: error.message || "Failed to list distributor bonus plans." });
   }
 };
 

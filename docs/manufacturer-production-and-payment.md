@@ -85,5 +85,5 @@ Verified: focused service/accounting tests, Prisma validation/client generation,
 
 - Rewriting general customer checkout, assignment, direct-sale, delivery, returns, or treasury workflows.
 - Retroactively creating manufacturing requests or payables for old on-hand inventory.
-- Changing manufacturer commissions, customer selling prices, tax treatment, or delivery provider behavior.
+- Changing customer selling prices, tax treatment, or delivery provider behavior. Manufacturer commissions have since been removed; historical postings are retained.
 - Replacing the generic payable/treasury settlement system.

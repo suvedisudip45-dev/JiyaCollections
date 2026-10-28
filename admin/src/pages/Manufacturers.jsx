@@ -7,18 +7,13 @@ import {
   Plus,
   Star,
   FileCheck,
-  Upload,
   Calendar,
   Search,
-  CheckCircle2,
   X,
-  FileText,
   MapPin,
   Phone,
-  Mail,
-  Percent,
 } from "lucide-react";
-import { backendUrl, currency } from "../App";
+import { backendUrl } from "../App";
 import { getDistrictsForProvince, useLocationLookups } from "../utils/locationLookups";
 import Pagination from "../components/Pagination";
 
@@ -40,7 +35,6 @@ const defaultFormData = {
   pickupWindow: "",
   returnInstructions: "",
   pickupBranchStatus: "UNVERIFIED",
-  commissionRate: 12,
   contractStart: new Date().toISOString().split("T")[0],
   contractEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
 };
@@ -94,7 +88,7 @@ const Manufacturers = ({ token }) => {
         setManufacturers(res.data.manufacturers || []);
         setPagination(res.data.pagination || null);
       }
-    } catch (err) {
+    } catch {
       toast.error("Failed to load manufacturers");
     } finally {
       setLoading(false);
@@ -155,6 +149,7 @@ const Manufacturers = ({ token }) => {
           setFormData((prev) => ({ ...prev, street: "" }));
         }
       } catch (error) {
+        console.error("Failed to load covered areas", error);
         setCoveredAreas([]);
       }
     };
@@ -236,35 +231,6 @@ const Manufacturers = ({ token }) => {
     }
   };
 
-  const handleCommissionDecision = async (manufacturerId, nextStatus, rateOverride) => {
-    try {
-      const proposedRate = Number(rateOverride ?? 12);
-      const payload = {
-        agreedCommissionRate: nextStatus === "APPROVED" ? proposedRate : undefined,
-        commissionStatus: nextStatus,
-        adminCommissionFeedback:
-          nextStatus === "APPROVED"
-            ? `Commission approved at ${proposedRate.toFixed(2)}%.`
-            : "Commission rejected by admin.",
-      };
-
-      const res = await axios.put(
-        `${backendUrl}/api/manufacturer/admin/commission/${manufacturerId}`,
-        payload,
-        { headers: { token } }
-      );
-
-      if (res.data.success) {
-        toast.success(`Commission ${nextStatus.toLowerCase()} successfully`);
-        fetchManufacturers();
-      } else {
-        throw new Error(res.data.message || "Failed to update commission agreement");
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Failed to update commission agreement");
-    }
-  };
-
   const handleCreateSubmit = async (e) => {
       e.preventDefault();
       if (!formData.businessName.trim()) {
@@ -275,14 +241,6 @@ const Manufacturers = ({ token }) => {
       if (!formData.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
         toast.error("Please enter a valid email address.");
         return;
-      }
-
-      if (formData.commissionRate !== undefined && formData.commissionRate !== null && formData.commissionRate !== "") {
-        const numRate = Number(formData.commissionRate);
-        if (isNaN(numRate) || numRate < 0 || numRate > 100) {
-          toast.error("Commission rate must be between 0% and 100%.");
-          return;
-        }
       }
 
       if (!formData.province || !formData.district || !formData.city) {
@@ -301,9 +259,8 @@ const Manufacturers = ({ token }) => {
           ? formData.pickupAddress
           : [formData.street, formData.landmark, formData.city].filter(Boolean).join(", ");
 
-        const { commissionRate, ...manufacturerForm } = formData;
         const payload = {
-          ...manufacturerForm,
+          ...formData,
           name: formData.businessName,
           city: formData.city,
           ncmPickupBranch: formData.city || formData.ncmPickupBranch,
@@ -313,34 +270,17 @@ const Manufacturers = ({ token }) => {
         };
 
         if (editingManufacturerId) {
-          const previousCommissionRate = Number(
-            selectedMfg?.commissionStatus === "PENDING"
-              ? selectedMfg.proposedCommissionRate ?? selectedMfg.agreedCommissionRate ?? 12
-              : selectedMfg?.agreedCommissionRate ?? selectedMfg?.proposedCommissionRate ?? 12
-          );
-          const commissionChanged = Number(commissionRate) !== previousCommissionRate;
-          if (commissionChanged) {
-            payload.proposedCommissionRate = Number(commissionRate);
-            payload.adminCommissionFeedback = `Commission proposal sent at ${Number(commissionRate).toFixed(2)}%. Awaiting manufacturer acceptance.`;
-          }
           const res = await axios.put(
             `${backendUrl}/api/manufacturer/admin/update/${editingManufacturerId}`,
             payload,
             { headers: { token } }
           );
           if (res.data.success) {
-            toast.success(
-              commissionChanged
-                ? "Manufacturer settings updated; commission proposal is awaiting manufacturer acceptance."
-                : "Manufacturer settings updated successfully."
-            );
+            toast.success("Manufacturer settings updated successfully.");
           } else {
             throw new Error(res.data.message || "Failed to update manufacturer settings");
           }
         } else {
-          payload.proposedCommissionRate = Number(commissionRate ?? 12);
-          payload.commissionStatus = "PENDING";
-          payload.commissionLastProposedBy = "ADMIN";
           const res = await axios.post(
             `${backendUrl}/api/manufacturer/admin/register`,
             payload,
@@ -577,7 +517,6 @@ const Manufacturers = ({ token }) => {
                   <th className="px-4 py-3">Availability</th>
                   <th className="px-4 py-3">Quality</th>
                   <th className="px-4 py-3">Agreement</th>
-                  <th className="px-4 py-3">Commission</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -597,7 +536,6 @@ const Manufacturers = ({ token }) => {
                       </td>
                       <td className="px-4 py-3">{Number(m.qualityRating || 5).toFixed(1)} / 5</td>
                       <td className="px-4 py-3">{m.contractStatus || "ACTIVE"}</td>
-                      <td className="px-4 py-3">{m.commissionStatus || "PENDING"}</td>
                       <td className="px-4 py-3 text-right">
                         {m.contractStatus === "PENDING" && (
                           <>
@@ -627,7 +565,7 @@ const Manufacturers = ({ token }) => {
                     </tr>
                     {manufacturerId === m.id && (
                       <tr>
-                        <td colSpan={7} className="bg-slate-50/70 p-4">
+                        <td colSpan={6} className="bg-slate-50/70 p-4">
                           <div className="mx-auto max-w-3xl">
                             <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between space-y-4">
                 {/* Card Header */}
@@ -694,20 +632,6 @@ const Manufacturers = ({ token }) => {
                       </span>
                     </div>
 
-                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                      <span className="text-slate-400">Commission:</span>
-                      <span className="font-bold text-slate-800">
-                        Proposed {Number(m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12).toFixed(2)}% · Agreed {Number(m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12).toFixed(2)}%
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-between py-1 border-b border-slate-100">
-                      <span className="text-slate-400">Commission Status:</span>
-                      <span className={`font-bold ${m.commissionStatus === "APPROVED" ? "text-emerald-600" : m.commissionStatus === "REJECTED" ? "text-rose-600" : "text-amber-600"}`}>
-                        {m.commissionStatus || "PENDING"}
-                      </span>
-                    </div>
-
                     <div className="flex items-center justify-between py-1">
                       <span className="text-slate-400">Payout Model:</span>
                       <span className="font-bold text-emerald-600">100% Agreed COGS</span>
@@ -770,25 +694,6 @@ const Manufacturers = ({ token }) => {
                   </div>
                 )}
 
-                {((m.proposedCommissionRate !== null && m.proposedCommissionRate !== undefined) || (m.agreedCommissionRate !== null && m.agreedCommissionRate !== undefined)) &&
-                  (m.commissionStatus === "PENDING" || !m.commissionStatus) &&
-                  m.commissionLastProposedBy !== "ADMIN" && (
-                    <div className="pt-2 border-t border-slate-100 grid grid-cols-2 gap-2">
-                      <button
-                        onClick={() => handleCommissionDecision(m.id, "APPROVED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
-                        className="px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-semibold text-xs border border-emerald-200 cursor-pointer"
-                      >
-                        Approve Rate
-                      </button>
-                      <button
-                        onClick={() => handleCommissionDecision(m.id, "REJECTED", m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12)}
-                        className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs border border-rose-200 cursor-pointer"
-                      >
-                        Reject Rate
-                      </button>
-                    </div>
-                  )}
-
                 <div className="pt-2 border-t border-slate-100">
                   <button
                     onClick={() => {
@@ -813,11 +718,6 @@ const Manufacturers = ({ token }) => {
                         pickupWindow: m.pickupWindow || "",
                         returnInstructions: m.returnInstructions || "",
                         pickupBranchStatus: m.pickupBranchStatus || "UNVERIFIED",
-                        commissionRate: Number(
-                          m.commissionStatus === "PENDING"
-                            ? m.proposedCommissionRate ?? m.agreedCommissionRate ?? 12
-                            : m.agreedCommissionRate ?? m.proposedCommissionRate ?? 12
-                        ),
                         contractStart: m.contractStartDate
                           ? new Date(m.contractStartDate).toISOString().split("T")[0]
                           : m.contractStart
@@ -906,24 +806,6 @@ const Manufacturers = ({ token }) => {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-semibold text-slate-700 mb-1">Commission Rate (%)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        max="100"
-                        step="0.01"
-                        value={formData.commissionRate}
-                        onChange={(e) => setFormData({ ...formData, commissionRate: Number(e.target.value || 0) })}
-                        className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
-                      />
-                      {editingManufacturerId && (
-                        <p className="mt-1 text-xs text-slate-500">
-                          Saving sends a proposal; the rate takes effect only after the manufacturer accepts it.
-                        </p>
-                      )}
-                    </div>
-
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
                         Login Email <span className="text-rose-500">*</span>

@@ -1681,15 +1681,6 @@ model Manufacturer {
   ratingCount              Int                       @default(0) // Total customer reviews applied
   isActive                 Boolean                   @default(true)
   isAvailable              Boolean                   @default(true) // manufacturer can toggle
-  proposedCommissionRate   Float? // Current commission proposal under negotiation
-  agreedCommissionRate     Float? // Final agreed commission % once both parties accept
-  commissionStatus         String                    @default("PENDING") // PENDING | APPROVED | REJECTED
-  commissionLastProposedBy String?                   @default("ADMIN") // ADMIN | MANUFACTURER | null
-  commissionFinalizedAt    DateTime?
-  commissionLockUntil      DateTime? // Prevents changes for one month after final approval
-  commissionHistory        Json?                     @default("[]") // admin-only audit trail of finalized rates
-  commissionNote           String?                   @db.Text
-  adminCommissionFeedback  String?                   @db.Text
   // Contract fields
   contractStatus           String                    @default("ACTIVE") // ACTIVE | SUSPENDED | TERMINATED
   distributorApplicationStatus String @default("NONE") // NONE | REQUESTED | APPROVED | REJECTED
@@ -1766,6 +1757,8 @@ model Distributor {
   settlementOffsets            DistributorSettlementOffset[]
   deliveryOtpChallenges        DeliveryOtpChallenge[]
   serviceEarnings              DistributorServiceEarning[]
+  bonusPlans                   DistributorBonusPlan[]
+  bonusEarnings                DistributorBonusEarning[]
   inventoryDiscrepancies InventoryDiscrepancy[]
   marketingCards         MarketingCard[]             @relation("MarketingCardDistributor")
   marketingCardAssignments MarketingCardAssignment[]
@@ -1953,6 +1946,45 @@ model DistributorServiceEarning {
   @@index([assignmentId, serviceType])
 }
 
+model DistributorBonusPlan {
+  id             String      @id @default(uuid())
+  distributorId  String
+  periodType     String      @default("MONTHLY") @db.VarChar(16)
+  metric         String      @default("DELIVERED_ORDERS") @db.VarChar(32)
+  tiers          Json
+  status         String      @default("ACTIVE") @db.VarChar(16)
+  effectiveFrom  DateTime
+  effectiveUntil DateTime?
+  notes          String?     @db.Text
+  createdBy      String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  distributor    Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+  earnings       DistributorBonusEarning[]
+
+  @@index([distributorId, status, effectiveFrom])
+}
+
+model DistributorBonusEarning {
+  id                    String      @id @default(uuid())
+  distributorId         String
+  planId                String
+  periodStart           DateTime
+  periodEnd             DateTime
+  eligibleDeliveryCount Int
+  bonusAmount           Decimal     @db.Decimal(20, 2)
+  idempotencyKey        String      @unique @db.VarChar(191)
+  snapshot              Json
+  accountingDocumentId  String?     @unique @db.VarChar(191)
+  journalEntryId        String?     @db.VarChar(191)
+  createdAt             DateTime    @default(now())
+  distributor           Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  plan                  DistributorBonusPlan @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@unique([distributorId, periodStart])
+  @@index([distributorId, periodEnd])
+}
+
 model DistributorSettlementRequest {
   id                  String   @id @default(uuid())
   distributorId       String
@@ -1960,6 +1992,7 @@ model DistributorSettlementRequest {
   paidAmount          Decimal  @default(0) @db.Decimal(20, 2)
   grossEarnings       Decimal  @default(0) @db.Decimal(20, 2)
   incentives          Decimal  @default(0) @db.Decimal(20, 2)
+  bonuses             Decimal  @default(0) @db.Decimal(20, 2)
   discountsApplied    Decimal  @default(0) @db.Decimal(20, 2)
   chargesApplied      Decimal  @default(0) @db.Decimal(20, 2)
   vatAmount           Decimal  @default(0) @db.Decimal(20, 2)

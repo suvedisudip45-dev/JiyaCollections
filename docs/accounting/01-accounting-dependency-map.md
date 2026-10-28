@@ -3,6 +3,8 @@
 **Snapshot:** 2026-09-28  
 **Status:** Source-level map; no business/runtime code changed.
 
+This is a historical discovery snapshot. Its manufacturer-commission findings describe the system at that date and are superseded by the 2026-10-28 removal decision documented in `00-current-architecture.md`.
+
 ## System Context
 
 ```text

@@ -114,27 +114,27 @@ The owner says there is currently no database data, but that has not been indepe
 
 Before retiring old tables/endpoints, verify all current UI/API callers. The existing `accountingEngine.test.js` writes to the configured DB and is not a safe default smoke test; future accounting tests should use isolated test databases/transactional fixtures or mocked clients.
 
-## Owner-Confirmed Policy Decisions (2026-09-28)
+## Historical Owner-Confirmed Policy Decisions (2026-09-28)
 
 - **Inventory ownership:** manufacturer owns supplied stock on consignment until sale/delivery.
 - **Manufacturer COGS trigger:** recognize admin-approved agreed COGS at NCM `DELIVERED`; reverse/adjust with a linked event if the item is subsequently returned to the manufacturer.
 - **Cost tax flag:** agreed COGS is VAT-inclusive at the current 13% rate; rates are configurable/effective-dated.
 - **Revenue/VAT event:** recognize on delivery; rates are configurable/effective-dated.
-- **Manufacturer commission:** additional to COGS only for manufacturer-originated phone/shop sales, and calculated as commission rate times gross profit. Exclude customer storefront sales and admin-entered social orders. Current source tags are `DIRECT_MANUFACTURER` + `PHONE_ORDER|HUB_VISIT`; excluded tags include `ONLINE_STORE` and `ADMIN_DIRECT`.
+- **Manufacturer commission:** this policy was superseded on 2026-10-28, when manufacturer commission configuration, new calculations, and schema fields were removed. Historical journals and return reversals are retained.
 - **NCM accounting:** include COD receivable and carrier-fee payable gross; keep them outstanding until bank settlement is confirmed.
 - **Marketing/NCM scope:** include Marketing Partner CPA and NCM accounting.
 - **Currency/calendar:** NPR; Nepali fiscal year from Shrawan 1 to Ashadh end, Asia/Kathmandu.
 - **Readiness:** gate accounting/finance actions only; never gate product/catalog or customer order operations on accounting readiness.
 
-These decisions are recorded as requirements, not claims about existing code. The current code does not yet implement these triggers or exclusions.
+These decisions describe the 2026-09-28 discovery and are not all current requirements. The commission decision was superseded as noted above; see `00-current-architecture.md` for current policy.
 
 ## Owner-Confirmed Policies (2026-09-28)
 
 Commission formula, approved-cost snapshot timing, input-VAT invoice evidence, VAT-inclusive customer prices, post-delivery reversal scope, CPA recognition per verified redemption, NPR/Nepali FY, finance-only readiness gate, and the estimate-only corporate-tax treatment are recorded in `00-current-architecture.md` and `03-implementation-plan-and-iteration-tracker.md`.
 
-## Owner-Confirmed Acceptance Gate
+## Historical Owner-Confirmed Acceptance Gate
 
-The owner confirmed that manufacturer acceptance must be blocked unless every assigned line has an admin-approved agreed COGS. Direct manufacturer phone/shop orders also require an admin-approved commission rate. Proposed/global/default values must never be substituted. This is not true in the current business flow; the minimal acceptance/create-order hook is defined in `04-target-accounting-domain-model.md`.
+The owner confirmed that manufacturer acceptance must be blocked unless every assigned line has an admin-approved agreed COGS. Direct manufacturer sales no longer require commission approval following the 2026-10-28 removal decision. Proposed/global/default values must never be substituted.
 
 ## Design/Professional Review Items (Not Owner-Policy Blockers)
 

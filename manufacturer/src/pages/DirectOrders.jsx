@@ -48,7 +48,6 @@ const DirectOrders = () => {
   const [city, setCity] = useState(distributor?.city || "Kathmandu");
   const [paymentMethod, setPaymentMethod] = useState("CASH"); // "CASH", "QR_PAYMENT", "COD", "CARD"
   const [isPaid, setIsPaid] = useState(true);
-  const [discountAmount, setDiscountAmount] = useState("");
   const [orderNotes, setOrderNotes] = useState("");
 
   // Cart / Line Items in Direct Order Form
@@ -190,8 +189,7 @@ const DirectOrders = () => {
   };
 
   const subtotal = cartItems.reduce((sum, item) => sum + item.lineTotal, 0);
-  const discountVal = Math.min(subtotal, Math.max(0, parseFloat(discountAmount) || 0));
-  const totalAmount = Math.max(0, subtotal - discountVal);
+  const totalAmount = subtotal;
 
   const handleCreateDirectOrder = async (e) => {
     e.preventDefault();
@@ -219,7 +217,6 @@ const DirectOrders = () => {
         city: city.trim() || distributor?.city || "Kathmandu",
         paymentMethod,
         isPaid: orderType === "HUB_VISIT" ? isPaid : paymentMethod !== "COD",
-        discountAmount: discountVal,
         notes: orderNotes.trim(),
         items: cartItems.map((c) => ({
           productId: c.productId,
@@ -773,7 +770,7 @@ const DirectOrders = () => {
                 )}
               </div>
 
-              {/* Payment & Discount */}
+              {/* Payment and price summary */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -791,27 +788,14 @@ const DirectOrders = () => {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Discount Amount ({currency})
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="0"
-                    value={discountAmount}
-                    onChange={(e) => setDiscountAmount(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex flex-col justify-center">
+                <div className="sm:col-span-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex flex-col justify-center">
                   <span className="text-[10px] uppercase font-bold text-emerald-800 tracking-wider">
                     Total Payable
                   </span>
                   <span className="text-lg font-black text-emerald-900">
                     {currency}{totalAmount}
                   </span>
+                  <span className="text-[10px] text-emerald-800">Prices follow the admin catalog. Eligible customer loyalty discounts are applied automatically.</span>
                 </div>
               </div>
 

@@ -14,7 +14,7 @@ The repository separates factory production and replenishment from customer-faci
 | Backend ORM / DB | Prisma 5.22.0, MySQL via `DATABASE_URL` |
 | Frontend | React 18.3.1 + Vite 5, React Router 6/7, Tailwind CSS 3 |
 | Manufacturer portal | React 19.2.8 + Vite 8 + Tailwind |
-| API auth | JWT access/refresh tokens; custom RBAC enforcement; MFA required for privileged portal flows |
+| API auth | JWT access/refresh tokens; custom RBAC enforcement; privileged-portal MFA controlled by backend `MFA_ENABLED` (enabled by default) |
 | Storage | Cloudinary integration for product/media/contract uploads |
 | Payments | Stripe, Razorpay |
 | Email / SMS / notifications | SMTP + Sparrow SMS primitives and a notification worker, but production enablement is still gated |
@@ -58,7 +58,7 @@ The repository separates factory production and replenishment from customer-faci
 
 - Notification worker exists as a separate subsystem. Portal MFA and password recovery enqueue SMS through it; most business flows do not automatically send SMS/email, and inbound SMS processing is not implemented.
 - SMS password recovery is available only in `development` and `test`; it remains unavailable in staging, production, and unspecified environments while its code remains the fixed `111111` by explicit development instruction. Before enabling recovery elsewhere, implement and verify random per-challenge OTPs. The marketing portal's signup, password-reset, and email-verification flows remain outside this implementation.
-- Privileged portal MFA enforcement does not depend on notification enablement. If notifications or a delivery method are unavailable, privileged login cannot complete; configure and verify the notification worker before enabling those portals in production.
+- Privileged portal MFA is controlled by backend `MFA_ENABLED` (defaults to `true`) and does not depend on notification enablement. If MFA is enabled but notifications or a delivery method are unavailable, privileged login cannot complete; configure and verify the notification worker before enabling those portals in production.
 - Accounting remains partially implemented; see the accounting audit for unresolved posting, report-snapshot, Treasury, tender, and subledger gaps. The delivered-sale outbox covers delivery posting only and does not close those wider gaps.
 - Delivered-sale outbox deployment requires applying `20261017000000_delivery_accounting_outbox_schedule` and regenerating Prisma Client first; migration and isolated-database concurrency verification are pending.
 - Distributor COD/refund deployment additionally requires applying `20261027100000_distributor_cod_and_return_cash` and regenerating Prisma Client. No migration was applied to the configured database; verify migration and concurrent remittance/refund/payout behavior on an isolated database first.

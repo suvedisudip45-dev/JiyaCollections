@@ -13,8 +13,11 @@ const numericValue = (value, fallback = 0) => (value === null || value === undef
 const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
   const [profile, setProfile] = useState({});
   const [rate, setRate] = useState({});
+  const [bonusPlans, setBonusPlans] = useState([]);
+  const [bonusTiers, setBonusTiers] = useState([{ targetCount: "", bonusAmount: "" }]);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingRate, setSavingRate] = useState(false);
+  const [savingBonusPlan, setSavingBonusPlan] = useState(false);
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { can } = usePermissions();
   const canEdit = can("distributor:admin_review");
@@ -41,12 +44,33 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       deliveryCharge: numericValue(generalRate.deliveryCharge),
       returnCharge: numericValue(generalRate.returnCharge),
       commissionRate: numericValue(generalRate.commissionRate),
-      bonusRate: numericValue(generalRate.bonusRate),
-      incentiveRate: numericValue(generalRate.incentiveRate),
       vatRate: numericValue(generalRate.vatRate, 13),
       vatInclusive: Boolean(generalRate.vatInclusive),
     });
   }, [distributor, locationLookups]);
+
+  useEffect(() => {
+    let active = true;
+    axios.get(`${backendUrl}/api/admin/distributor-rates/bonus-plans`, {
+      headers: { token },
+      params: { distributorId: distributor.id },
+    }).then((response) => {
+      if (!active) return;
+      const plans = response.data?.plans || [];
+      setBonusPlans(plans);
+      const plan = plans.find((item) => item.status === "ACTIVE" && !item.effectiveUntil);
+      if (plan && Array.isArray(plan.tiers)) {
+        setBonusTiers(plan.tiers.map((tier) => ({
+          targetCount: String(tier.targetCount),
+          bonusAmount: String(tier.bonusAmount),
+        })));
+      }
+    }).catch((error) => {
+      console.error("Failed to load distributor bonus plans", error);
+      toast.error(error.response?.data?.message || "Unable to load distributor bonus plans.");
+    });
+    return () => { active = false; };
+  }, [distributor.id, token]);
 
   const updateField = (field, value) => setProfile((current) => {
     if (field === "province") {
@@ -114,6 +138,36 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
   };
 
   const setRateValue = (field, value) => setRate((current) => ({ ...current, [field]: Number(value) }));
+  const saveBonusPlan = async (event) => {
+    event.preventDefault();
+    const tiers = bonusTiers
+      .filter((tier) => tier.targetCount !== "" || tier.bonusAmount !== "")
+      .map((tier) => ({ targetCount: Number(tier.targetCount), bonusAmount: Number(tier.bonusAmount) }));
+    if (!tiers.length || tiers.some((tier) => !Number.isInteger(tier.targetCount) || tier.targetCount < 1 || !Number.isFinite(tier.bonusAmount) || tier.bonusAmount <= 0)) {
+      toast.error("Every bonus tier needs a whole-delivery target and a positive bonus amount.");
+      return;
+    }
+    setSavingBonusPlan(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/admin/distributor-rates/bonus-plans`,
+        { distributorId: distributor.id, tiers, notes: "Monthly completed-delivery target bonus." },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to save the bonus plan.");
+      setBonusPlans((current) => [response.data.plan, ...current.map((plan) => (
+        plan.status === "ACTIVE" && !plan.effectiveUntil
+          ? { ...plan, effectiveUntil: response.data.plan.effectiveFrom }
+          : plan
+      ))]);
+      toast.success("Monthly delivery bonus plan saved.");
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Unable to save the bonus plan.");
+    } finally {
+      setSavingBonusPlan(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -173,16 +227,46 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       <form onSubmit={saveRate} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div><h2 className="font-bold text-slate-900">General rate card</h2><p className="mt-1 text-xs text-slate-500">Saving records an approved general rate using the existing rate-card workflow.</p></div>
         {[
-          ["deliveryCharge", `Delivery charge (${currency})`], ["returnCharge", `Return charge (${currency})`], ["commissionRate", "Commission rate (stored value)"], ["bonusRate", "Bonus rate (stored value)"], ["incentiveRate", "Incentive rate (stored value)"], ["vatRate", "VAT rate (%)"],
+          ["deliveryCharge", `Delivery charge (${currency})`], ["returnCharge", `Return service charge (${currency})`], ["commissionRate", "Commission deduction (%)"], ["vatRate", "VAT rate (%)"],
         ].map(([field, label]) => (
           <label key={field} className="block text-xs font-semibold text-slate-600">{label}
             <input type="number" min="0" step="0.01" value={rate[field] ?? 0} onChange={(event) => setRateValue(field, event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} />
           </label>
         ))}
         <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><input type="checkbox" checked={Boolean(rate.vatInclusive)} onChange={(event) => setRate((current) => ({ ...current, vatInclusive: event.target.checked }))} disabled={!canEdit} /> VAT inclusive</label>
+        <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">Delivery and return charges are fixed per completed service. No per-delivery incentive is added. Configure monthly target bonuses separately below.</p>
         {canEdit && <button type="submit" disabled={savingRate} className="w-full rounded-lg bg-indigo-700 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50">{savingRate ? "Saving…" : "Save approved rates"}</button>}
       </form>
       </div>
+      <form onSubmit={saveBonusPlan} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div>
+          <h2 className="font-bold text-slate-900">Monthly completed-delivery bonus</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-500">Each tier adds its bonus once the distributor reaches that many completed self-deliveries in a Kathmandu-time calendar month. Terms take effect now, apply only to full future months, and are locked into the eventual settlement record.</p>
+        </div>
+        <div className="space-y-2">
+          {bonusTiers.map((tier, index) => (
+            <div key={index} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
+              <label className="text-xs font-semibold text-slate-600">Monthly delivery target
+                <input type="number" min="1" step="1" value={tier.targetCount} onChange={(event) => setBonusTiers((current) => current.map((item, row) => row === index ? { ...item, targetCount: event.target.value } : item))} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} />
+              </label>
+              <label className="text-xs font-semibold text-slate-600">Additional bonus ({currency})
+                <input type="number" min="0.01" step="0.01" value={tier.bonusAmount} onChange={(event) => setBonusTiers((current) => current.map((item, row) => row === index ? { ...item, bonusAmount: event.target.value } : item))} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} />
+              </label>
+              {canEdit && <button type="button" onClick={() => setBonusTiers((current) => current.filter((_, row) => row !== index))} disabled={bonusTiers.length === 1} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-600 disabled:opacity-40">Remove</button>}
+            </div>
+          ))}
+        </div>
+        {canEdit && <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => setBonusTiers((current) => [...current, { targetCount: "", bonusAmount: "" }])} disabled={bonusTiers.length >= 10} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:opacity-40">Add tier</button>
+          <button type="submit" disabled={savingBonusPlan || !bonusTiers.length} className="rounded-lg bg-emerald-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{savingBonusPlan ? "Saving…" : "Save future bonus plan"}</button>
+        </div>}
+        <div className="space-y-1 border-t border-slate-100 pt-3">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Plan history</p>
+          {bonusPlans.length ? bonusPlans.map((plan) => (
+            <p key={plan.id} className="text-xs text-slate-600">{new Date(plan.effectiveFrom).toLocaleDateString()} · {plan.status} · {(plan.tiers || []).map((item) => `${item.targetCount} deliveries = ${currency}${Number(item.bonusAmount).toFixed(2)}`).join(" + ")}</p>
+          )) : <p className="text-xs text-slate-500">No target bonus plan configured.</p>}
+        </div>
+      </form>
     </div>
   );
 };
