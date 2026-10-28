@@ -4,7 +4,8 @@ import {
   allocateProductionLayersForOrderItem,
   calculateProductionUnitCost,
   calculateFullyLoadedUnitCogs,
-  validateProductionRequestInput,
+  normalizeProductionRequestLines,
+  validateManufacturerProductionQuote,
 } from "../services/manufacturerProductionService.js";
 
 test("VAT-exclusive manufacturer unit cost separates net cost and verified input VAT", () => {
@@ -69,6 +70,39 @@ test("VAT-applicable manufacturer production requires a supplier invoice referen
   }), /invoice reference/);
 });
 
+test("manufacturer quote validates per-piece pricing and batch expenses without changing admin quantities", () => {
+  const quote = validateManufacturerProductionQuote({
+    unitCogs: "125.50",
+    otherCost: "250",
+    vatTreatment: "EXEMPT",
+    manufacturerNote: "Quote for the assigned production order.",
+  });
+
+  assert.equal(quote.unitCogs.toFixed(2), "125.50");
+  assert.equal(quote.otherCost.toFixed(2), "250.00");
+  assert.equal(quote.manufacturerNote, "Quote for the assigned production order.");
+  assert.throws(() => validateManufacturerProductionQuote({
+    unitCogs: "0",
+    otherCost: "0",
+  }), /positive per-piece price/);
+  assert.throws(() => validateManufacturerProductionQuote({
+    unitCogs: "100",
+    otherCost: "-1",
+  }), /non-negative batch expense/);
+});
+
+test("admin-assigned size/color quantities normalize independently from manufacturer quote terms", () => {
+  const assignedLines = normalizeProductionRequestLines([
+    { size: "M", color: "Navy", quantity: 12 },
+    { size: "L", color: "Navy", quantity: "8" },
+  ]);
+  assert.equal(assignedLines.totalQuantity, 20);
+  assert.deepEqual(assignedLines.lines, [
+    { size: "M", color: "Navy", quantity: 12 },
+    { size: "L", color: "Navy", quantity: 8 },
+  ]);
+});
+
 test("batch other cost is allocated across actual good production units", () => {
   const unitCogs = calculateFullyLoadedUnitCogs({
     unitCogs: "10",
@@ -79,35 +113,14 @@ test("batch other cost is allocated across actual good production units", () => 
   assert.equal(unitCogs.mul(3).toFixed(2), "31.00");
 });
 
-test("production pricing keeps batch other cost separate and MOQ does not constrain requested quantity", () => {
-  const normalized = validateProductionRequestInput({
-    lines: [{ size: "S", color: "Black", quantity: 20 }],
-    unitCogs: "200",
-    minimumOrderQuantity: "50",
-    otherCost: "150",
-  });
-
-  assert.equal(normalized.totalQuantity, 20);
-  assert.equal(normalized.unitCogs.toFixed(2), "200.00");
-  assert.equal(normalized.minimumOrderQuantity, 50);
-  assert.equal(normalized.otherCost.toFixed(2), "150.00");
-});
-
-test("production request validation rejects duplicate variants and non-positive COGS", () => {
-  assert.throws(() => validateProductionRequestInput({
-    lines: [
-      { size: "M", color: "Blue", quantity: 2 },
-      { size: "m", color: "blue", quantity: 1 },
-    ],
-    unitCogs: "10",
-    minimumOrderQuantity: 1,
-  }), /unique/);
-
-  assert.throws(() => validateProductionRequestInput({
-    lines: [{ size: "M", color: "Blue", quantity: 2 }],
-    unitCogs: "0",
-    minimumOrderQuantity: 1,
-  }), /greater than zero/);
+test("admin production quantity validation rejects duplicate variants and non-positive quantities", () => {
+  assert.throws(() => normalizeProductionRequestLines([
+    { size: "M", color: "Blue", quantity: 2 },
+    { size: "m", color: "blue", quantity: 1 },
+  ]), /unique/);
+  assert.throws(() => normalizeProductionRequestLines([
+    { size: "M", color: "Blue", quantity: 0 },
+  ]), /positive whole number/);
 });
 
 test("production allocation reserves FIFO layers and leaves unlayered quantity as legacy stock", async () => {

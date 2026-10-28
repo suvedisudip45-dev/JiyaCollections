@@ -268,7 +268,7 @@ const OrderAssignments = ({ token }) => {
                       <p className="text-[11px] text-slate-500">{getPendingAgeLabel(order)}</p>
                     )}
                   </div>
-                  {canRetryAllocation && (
+                  {canRetryAllocation && order.allocationFailed && (
                     <button
                       type="button"
                       onClick={() => retryAllocation(order.id)}

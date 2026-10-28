@@ -44,7 +44,7 @@ Factory output and stock in transit are not storefront stock. In this flow, only
 | [`frontend/`](./frontend/) | Customer browsing/search, product pages, cart and wishlist, location-aware checkout, customer orders, cancellation, returns/exchanges, reviews, loyalty and marketing-card experiences. |
 | [`admin/`](./admin/) | Catalog and order administration, order assignment, delivery monitoring, manufacturer/distributor management, production approvals, bulk stock-transfer review and NCM reconciliation, inventory/audit, finance/accounting/tax, returns, access control, marketing and gifts. |
 | [`manufacturer/`](./manufacturer/) | Manufacturer production and factory operations; manufacturer-to-distributor replenishment and local/NCM shipment booking. For accounts with both roles, the portal also has a distinct distributor workspace for hub inventory, assigned customer orders, direct hub orders, receipts and self-delivery. |
-| [`marketing/`](./marketing/) | Marketing-partner accounts, campaigns, cards, QR validation, redemptions, reports, collaborations and profile/settings. |
+| [`marketing/`](./marketing/) | Marketing-partner accounts, campaigns, cards, QR validation, redemptions, reports, and profile/settings. |
 
 The portal route and feature descriptions are also maintained in [Frontend and UI Reference](./FRONTEND_AND_UI.md), and the end-to-end manufacturer/distributor operating guide is [here](./DISTRIBUTOR_MANUFACTURER_ADMIN_GUIDE.md).
 

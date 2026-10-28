@@ -3,7 +3,7 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
-import { accrueCollaborationSalesForOrder, createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
+import { accrueCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
 import { allocateProductionLayersForOrderItem, transitionOrderProductionAllocations } from "../services/manufacturerProductionService.js";
 
@@ -65,7 +65,7 @@ export const createDirectOrder = async (req, res) => {
     // Verify and prepare items from manufacturer's inventory
     const productIds = items.map((i) => i.productId || i._id).filter(Boolean);
     const dbProducts = await prisma.product.findMany({
-      where: { id: { in: productIds } },
+      where: { id: { in: productIds }, collaborationLink: null },
     });
 
     const mInventories = await prisma.manufacturerInventory.findMany({
@@ -272,7 +272,6 @@ export const createDirectOrder = async (req, res) => {
           toState: "CONSUMED",
         });
       }
-      await createCollaborationSalesForOrder({ order: createdOrder, items: acceptedItems, client: tx });
       const finalizedOrder = { ...createdOrder, items: acceptedItems };
       if (isWalkIn) await postDeliveredOrderAccounting({ order: finalizedOrder, client: tx });
       return finalizedOrder;

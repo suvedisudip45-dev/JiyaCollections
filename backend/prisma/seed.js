@@ -60,8 +60,6 @@ const permissionDefinitions = [
   ["customer:profile_read", "Read the customer profile."], ["customer:profile_update", "Update the customer profile."], ["customer:password_change", "Change the customer password."], ["customer:address_manage", "Manage customer addresses."], ["customer:cart_read", "Read the customer cart."], ["customer:cart_write", "Update the customer cart."], ["customer:order_place", "Place customer orders."], ["customer:order_read", "Read customer orders."], ["customer:review_write", "Write customer reviews."], ["customer:review_read", "Read customer review status."], ["customer:review_interact", "Interact with reviews."], ["customer:review_delete", "Delete customer reviews."], ["customer:loyalty_read", "Read customer loyalty status."],
   ["manufacturer:loyalty_lookup", "Look up loyalty customers for manufacturers."], ["manufacturer:hub_customers_read", "Read manufacturer hub customers."], ["manufacturer:hub_gift_record", "Record manufacturer hub gifts."], ["manufacturer:hub_gifts_read", "Read manufacturer hub gifts."],
   ["partner:campaign_manage", "Manage partner campaigns."], ["partner:card_manage", "Manage partner cards."], ["partner:profile_manage", "Manage the partner profile."],
-  ["partner:collaboration_read", "Read the partner's collaboration products, sales, and invoices."], ["partner:collaboration_terms_manage", "Propose, counter, or accept collaboration product terms."],
-  ["collaboration:admin_manage", "Manage collaboration product assignments and agreements."], ["collaboration:admin_reports_read", "Read collaboration sales and partner fee reports."],
 ];
 
 const rolePermissionCodes = {
@@ -71,7 +69,6 @@ const rolePermissionCodes = {
     "manufacturer:assignment_accept",
     "manufacturer:assignment_reject",
     "manufacturer:assignment_status_update",
-    "manufacturer:collaboration_read",
     "manufacturer:inventory_update",
     "manufacturer:direct_order_create",
     "manufacturer:direct_order_read",

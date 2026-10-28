@@ -5,7 +5,6 @@ import Home from "./pages/Home";
 import Collection from "./pages/Collection";
 import ComboBundle from "./pages/ComboBundle";
 import ComboBundleDirectory from "./components/ComboBundleDirectory";
-import CollaborationDirectory from "./components/CollaborationDirectory";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
 import Product from "./pages/Product";
@@ -53,7 +52,6 @@ const App = () => {
         <Route path="/collection" element={<Navigate to="/shop" replace />} />
         <Route path="/combo-bundles" element={<ComboBundleDirectory />} />
         <Route path="/combo-bundles/:slug" element={<ComboBundle />} />
-        <Route path="/collaborations" element={<CollaborationDirectory />} />
         <Route path="/about" element={<About />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/product/:productId" element={<Product />} />

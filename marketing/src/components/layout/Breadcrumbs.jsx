@@ -8,7 +8,6 @@ const LABELS = {
   redemptions: "Redemptions",
   "qr-validator": "QR Validator",
   reports: "Reports",
-  collaborations: "Collaborations",
   profile: "Profile",
   settings: "Settings",
 };

@@ -2799,7 +2799,7 @@ model ManufacturerProductionRequest {
   manufacturerId             String
   productId                  String
   productName                String
-  status                     String   @default("PENDING_REVIEW") // PENDING_REVIEW | PENDING_PRE_CHECK | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
+  status                     String   @default("PENDING_MANUFACTURER_QUOTE") // PENDING_MANUFACTURER_QUOTE | PENDING_ADMIN_APPROVAL | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
   proposedUnitCogs            Decimal? @db.Decimal(20, 2)
   minimumOrderQuantity        Int
   proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Batch-total production other cost for costTermsVersion 2

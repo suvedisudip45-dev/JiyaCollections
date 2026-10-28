@@ -1,6 +1,7 @@
 /* eslint-disable no-unused-vars */
 import React, { useContext } from "react";
 import { ShopContext } from "../context/ShopContext";
+import { roundOrderTotal } from "../utils/orderAmount";
 import Title from "./Title";
 
 /**
@@ -48,7 +49,7 @@ const CartTotal = ({
     : delivery_fee;
 
   const numericShipping = resolvedFee !== undefined ? resolvedFee : 0;
-  const grandTotal = Math.max(0, subtotal === 0 ? 0 : subtotal + numericShipping - loyaltyDiscount - cardDiscount);
+  const grandTotal = roundOrderTotal(Math.max(0, subtotal === 0 ? 0 : subtotal + numericShipping - loyaltyDiscount - cardDiscount));
 
   return (
     <div className="w-full rounded-sm border border-[var(--line)] bg-white p-5 sm:p-6">

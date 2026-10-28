@@ -303,19 +303,10 @@ const updateProduct = async (req, res) => {
 
     const existingProduct = await prisma.product.findUnique({
       where: { id },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true, pendingTermsVersion: true } } },
+      include: { collaborationLink: { select: { id: true } } },
     });
     if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
-    }
-    if ((published === "true" || published === true) && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
-      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
-    }
-    const hasCollaborationPriceTerms = Boolean(existingProduct.collaborationLink?.activeTermsVersion || existingProduct.collaborationLink?.pendingTermsVersion);
-    const collaborationPriceChanged = (price !== undefined && Number(price) !== Number(existingProduct.price))
-      || (discount !== undefined && Number(discount) !== Number(existingProduct.discount));
-    if (hasCollaborationPriceTerms && collaborationPriceChanged) {
-      return res.status(409).json({ success: false, message: "Propose a new collaboration terms version to change the agreed retail price or discount." });
     }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
@@ -478,7 +469,9 @@ const updateProduct = async (req, res) => {
       ...(colors !== undefined && { colors: typeof colors === "string" ? JSON.parse(colors) : colors }),
       ...(colorImages !== undefined && { colorImages: parsedColorImages.map(({ color, image }) => ({ color, image })) }),
       variants: parsedVariants,
-      ...(published !== undefined && { published: published === "true" || published === true }),
+      ...(existingProduct.collaborationLink
+        ? { published: false }
+        : published !== undefined && { published: published === "true" || published === true }),
     };
 
     await prisma.product.update({
@@ -514,18 +507,15 @@ const togglePublish = async (req, res) => {
     const { id } = req.body;
     const existingProduct = await prisma.product.findUnique({
       where: { id },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+      include: { collaborationLink: { select: { id: true } } },
     });
     if (!existingProduct || existingProduct.deletedAt) {
       return res.json({ success: false, message: "Product not found" });
     }
-    if (!existingProduct.published && existingProduct.collaborationLink && (existingProduct.collaborationLink.listingStatus !== "ACTIVE" || !existingProduct.collaborationLink.activeTermsVersion)) {
-      return res.status(409).json({ success: false, message: "Finalize and activate the collaboration agreement before publishing this product." });
-    }
 
     const updatedProduct = await prisma.product.update({
       where: { id },
-      data: { published: !existingProduct.published },
+      data: { published: existingProduct.collaborationLink ? false : !existingProduct.published },
     });
 
     const statusText = updatedProduct.published ? "Published" : "Unpublished";
@@ -570,10 +560,7 @@ const getSubcategoryBestsellers = async (req, res) => {
       published: true,
       bestseller: true,
       deletedAt: null,
-      OR: [
-        { collaborationLink: null },
-        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
-      ],
+      collaborationLink: null,
     };
     if (category) {
       whereCondition.category = { contains: category.replace(/"/g, "") };
@@ -627,10 +614,7 @@ const listProducts = async (req, res) => {
     const whereCondition = isAdmin ? { deletedAt: null } : {
       published: true,
       deletedAt: null,
-      OR: [
-        { collaborationLink: null },
-        { collaborationLink: { is: { listingStatus: "ACTIVE", activeTermsVersion: { not: null } } } },
-      ],
+      collaborationLink: null,
     };
     if (requestedCategory) {
       const categoryValue = requestedCategoryValue.replace(/"/g, "");
@@ -775,10 +759,10 @@ const singleProduct = async (req, res) => {
 
     const rawProduct = await prisma.product.findUnique({
       where: { id: productId },
-      include: { collaborationLink: { select: { listingStatus: true, activeTermsVersion: true } } },
+      include: { collaborationLink: { select: { id: true } } },
     });
     const isAdmin = req.auth?.role === "ADMIN";
-    if (!rawProduct || rawProduct.deletedAt || (!isAdmin && (!rawProduct.published || (rawProduct.collaborationLink && (rawProduct.collaborationLink.listingStatus !== "ACTIVE" || !rawProduct.collaborationLink.activeTermsVersion))))) {
+    if (!rawProduct || rawProduct.deletedAt || (!isAdmin && (!rawProduct.published || rawProduct.collaborationLink))) {
       return res.json({ success: false, message: "Product not found" });
     }
 

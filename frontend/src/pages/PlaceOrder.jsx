@@ -3,6 +3,7 @@ import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import Title from "../components/Title";
 import CartTotal from "../components/CartTotal";
+import { roundOrderTotal } from "../utils/orderAmount";
 import { ShopContext } from "../context/ShopContext";
 import { getSharedComboBundleVariants } from "../utils/comboBundleVariants";
 import { clearAuthTokens } from "../auth/tokenStorage";
@@ -808,7 +809,7 @@ const PlaceOrder = () => {
           },
         }),
         deliveryFee: dynamicDeliveryFee,
-        amount: orderSubtotal + dynamicDeliveryFee - loyaltyDiscountAmount - cardRewardDiscountAmount,
+        amount: roundOrderTotal(orderSubtotal + dynamicDeliveryFee - loyaltyDiscountAmount - cardRewardDiscountAmount),
         rewardChoice: rewardChoice || "NONE",
         ...(rewardChoice === "CARD" && { marketingCardId: selectedCardReward.cardId }),
       };

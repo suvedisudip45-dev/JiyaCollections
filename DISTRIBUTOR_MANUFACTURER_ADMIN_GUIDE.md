@@ -518,16 +518,20 @@ availability checks and approval workflow are unchanged.
 This flow is related to manufacturer inventory but is not the distributor bulk
 transfer flow:
 
-1. Admin creates a production order through
-   `POST /api/manufacturer/production/create`, including product, fabric type,
-   GSM, requested size/color quantities, target completion date, and batches
-   whose planned quantities add up to the requested quantity.
-2. Manufacturer records the required fabric, sample-quality, and color-shade
-   pre-checks through `PATCH /api/manufacturer/production/:id/pre-check`, and
-   sets MOQ and average unit price through
-   `PATCH /api/manufacturer/production/:id/moq-pricing`.
-3. Production can start only after the pre-check passes and pricing terms are
-   present, using `POST /api/manufacturer/production/:id/start`.
+1. Admin selects an active manufacturer, product, size/color SKU quantities,
+   fabric type/GSM, target completion date, and batch plan in the Admin
+   Manufacturer Production screen. The order is created through
+   `POST /api/manufacturer/production/create` and waits for a manufacturer quote.
+2. The assigned manufacturer submits a per-piece price, other production
+   expenses for the order, VAT terms, and an optional note through
+   `PATCH /api/manufacturer/production/:id/quote`. The Admin reviews and may
+   adjust the quoted terms before approving or rejecting the quote through
+   `POST /api/manufacturer-production/admin/requests/:id/review`.
+3. Only an Admin-approved order can pass the required fabric, sample-quality,
+   and color-shade pre-production checks through
+   `PATCH /api/manufacturer/production/:id/pre-check`. Production can start
+   only after both Admin approval and a passed pre-check, using
+   `POST /api/manufacturer/production/:id/start`.
 4. Manufacturer submits stitching, quality, color, and size/color actual-count
    checks through `PATCH /api/manufacturer/production/:id/post-check`.
    Completion records actual and damaged quantities transactionally; only
@@ -630,16 +634,15 @@ Relevant endpoints:
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
 | `POST /api/finance/vat-rates` | Admin | `finance:tax_configure` | Schedule a future VAT rate; only future effective dates are accepted. |
 | `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
-| `GET /manufacturer-production/products` | Manufacturer | `manufacturer:production_manage` | Get products allowed for production requests. |
 | `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
-| `POST /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | Submit production request. |
 | `POST /manufacturer-production/requests/:id/start` | Manufacturer | `manufacturer:production_manage` | Start approved request. |
 | `POST /manufacturer-production/requests/:id/complete` | Manufacturer | `manufacturer:production_manage` | Submit post-production checklist and complete production. |
 | `GET /manufacturer-production/admin/requests` | Admin | `manufacturer:production_admin` | Review queue. |
+| `GET /manufacturer-production/admin/options` | Admin | `manufacturer:production_admin` | Paginated active manufacturers and published products/SKUs for creating production orders (`type=manufacturers` or `type=products`). |
 | `POST /manufacturer-production/admin/requests/:id/review` | Admin | `manufacturer:production_admin` | Approve/reject and set terms. |
 | `POST /manufacturer/production/create` | Admin | `manufacturer:production_admin` | Create a specification- and batch-backed production order. |
 | `PATCH /manufacturer/production/:id/pre-check` | Manufacturer | `manufacturer:production_manage` | Record pre-production gates. |
-| `PATCH /manufacturer/production/:id/moq-pricing` | Manufacturer | `manufacturer:production_manage` | Set MOQ and average unit price. |
+| `PATCH /manufacturer/production/:id/quote` | Manufacturer | `manufacturer:production_manage` | Submit per-piece price, order-level production expenses, VAT terms, and note for Admin approval. |
 | `POST /manufacturer/production/:id/start` | Manufacturer | `manufacturer:production_manage` | Start after checklist and terms gates pass. |
 | `PATCH /manufacturer/production/:id/post-check` | Manufacturer | `manufacturer:production_manage` | QA actual counts and receive good units into inventory. |
 | `GET /manufacturer/finance/dashboard` | Manufacturer | `manufacturer:finance_dashboard` | Read production value, logistics reimbursements, outstanding and paid settlements. |

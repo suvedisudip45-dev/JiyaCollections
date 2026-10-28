@@ -84,7 +84,17 @@ export const summarizeManufacturerProductionDashboard = ({
   let failedQaBatches = 0;
   let activeBatches = 0;
   for (const request of productionRequests) {
-    if (["PENDING_REVIEW", "PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "PRE_CHECK_PASSED", "APPROVED", "IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status)) {
+    if ([
+      "PENDING_REVIEW",
+      "PENDING_MANUFACTURER_QUOTE",
+      "PENDING_ADMIN_APPROVAL",
+      "PENDING_PRE_CHECK",
+      "PRE_CHECK_FAILED",
+      "PRE_CHECK_PASSED",
+      "APPROVED",
+      "IN_PRODUCTION",
+      "POST_CHECK_FAILED",
+    ].includes(request.status)) {
       activeBatches += 1;
     }
     for (const line of request.lines || []) {

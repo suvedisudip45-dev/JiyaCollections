@@ -22,11 +22,11 @@ import {
   calculateComboBundlePrice,
   getSharedComboBundleVariants,
 } from "../services/comboBundleRules.js";
-import { createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { getAddressProvince } from "../services/deliveryLocationService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
 import { containsSqlInjection, sanitizeText } from "../middleware/sanitize.js";
+import { roundOrderTotal } from "../utils/orderAmount.js";
 
 const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 const roundOrderAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -556,7 +556,10 @@ const placeOrder = async (req, res) => {
       const initialMemberProducts = comboBundleRecord.products.map((entry) => entry.product).filter(Boolean);
       await Promise.all(initialMemberProducts.map((product) => syncProductStock(product.id)));
       const currentProducts = await prisma.product.findMany({
-        where: { id: { in: initialMemberProducts.map((product) => product.id) } },
+        where: {
+          id: { in: initialMemberProducts.map((product) => product.id) },
+          collaborationLink: null,
+        },
       });
       const currentProductsById = new Map(currentProducts.map((product) => [product.id, product]));
       comboBundleRecord.products = comboBundleRecord.products.map((entry) => ({
@@ -602,7 +605,7 @@ const placeOrder = async (req, res) => {
     const productIds = items.map((i) => i._id || i.id || i.productId).filter(Boolean);
     const [dbProducts, manufacturerInventory] = await Promise.all([
       prisma.product.findMany({
-        where: { id: { in: productIds } },
+        where: { id: { in: productIds }, collaborationLink: null },
       }),
       prisma.manufacturerInventory.findMany({
         where: { productId: { in: productIds } },
@@ -822,7 +825,7 @@ const placeOrder = async (req, res) => {
 
     // Price-lock: Backend authoritative fee is locked into order amount and deliveryFee
     const resolvedFee = expectedFee;
-    const finalAmount = Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount - cardDiscount);
+    const finalAmount = roundOrderTotal(Math.max(0, itemsTotal + resolvedFee - loyaltyDiscount - cardDiscount));
 
     const orderData = {
       userId,
@@ -863,6 +866,26 @@ const placeOrder = async (req, res) => {
     const checkoutGroupId = packages.length > 1 ? randomUUID() : null;
     const packageLoyaltyDiscounts = allocateMoneyAcrossShipments(loyaltyDiscount, packages);
     const packageCardDiscounts = allocateMoneyAcrossShipments(cardDiscount, packages);
+    const packageAmounts = packages.map((shipment, index) => {
+      const shipmentSubtotal = shipment.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0);
+      const shipmentFee = index === 0 ? resolvedFee : 0;
+      return roundOrderAmount(
+        shipmentSubtotal + shipmentFee - packageLoyaltyDiscounts[index] - packageCardDiscounts[index]
+      );
+    });
+    const packageRoundingAdjustment = roundOrderAmount(
+      finalAmount - packageAmounts.reduce((total, amount) => total + amount, 0)
+    );
+    if (packageRoundingAdjustment >= 0) {
+      packageAmounts[0] = roundOrderAmount(packageAmounts[0] + packageRoundingAdjustment);
+    } else {
+      let amountToDeduct = Math.abs(packageRoundingAdjustment);
+      for (let index = 0; index < packageAmounts.length && amountToDeduct > 0; index += 1) {
+        const deduction = Math.min(packageAmounts[index], amountToDeduct);
+        packageAmounts[index] = roundOrderAmount(packageAmounts[index] - deduction);
+        amountToDeduct = roundOrderAmount(amountToDeduct - deduction);
+      }
+    }
     const packageOrders = await prisma.$transaction(async (tx) => {
       if (selectedRedemptionId) {
         const redeemed = await tx.marketingBenefitRedemption.updateMany({
@@ -878,7 +901,6 @@ const placeOrder = async (req, res) => {
       }
       const createdOrders = [];
       for (const [index, shipment] of packages.entries()) {
-        const shipmentSubtotal = shipment.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0);
         const shipmentFee = index === 0 ? resolvedFee : 0;
         const shipmentLoyaltyDiscount = packageLoyaltyDiscounts[index];
         const shipmentCardDiscount = packageCardDiscounts[index];
@@ -907,9 +929,7 @@ const placeOrder = async (req, res) => {
           data: {
             ...orderData,
             items: shipment.items,
-            amount: Math.max(0, roundOrderAmount(
-              shipmentSubtotal + shipmentFee - shipmentLoyaltyDiscount - shipmentCardDiscount
-            )),
+            amount: Math.max(0, packageAmounts[index]),
             deliveryFee: shipmentFee,
             loyaltyDiscount: shipmentLoyaltyDiscount,
             rewardApplied: shipmentReward ? JSON.stringify(shipmentReward) : "{}",
@@ -917,7 +937,6 @@ const placeOrder = async (req, res) => {
             checkoutGroupId,
           },
         });
-        await createCollaborationSalesForOrder({ order, items: shipment.items, client: tx });
         createdOrders.push(order);
       }
       return createdOrders;
@@ -1488,7 +1507,7 @@ const adminCreateOrder = async (req, res) => {
     // Extract product IDs and query current DB records to freeze price snapshots
     const productIds = items.map((i) => i._id || i.id || i.productId).filter(Boolean);
     const dbProducts = await prisma.product.findMany({
-      where: { id: { in: productIds } },
+      where: { id: { in: productIds }, collaborationLink: null },
     });
 
     // Validate stock before proceeding
@@ -1694,7 +1713,6 @@ const adminCreateOrder = async (req, res) => {
         }),
         },
       });
-      await createCollaborationSalesForOrder({ order, items: frozenItemsSnapshot, client: tx });
       return order;
     });
 

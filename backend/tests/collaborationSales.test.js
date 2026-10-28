@@ -5,70 +5,7 @@ import {
   accrueCollaborationSalesForOrder,
   applyCollaborationReturnAdjustments,
   calculateCollaborationFeeAmounts,
-  createCollaborationSalesForOrder,
 } from "../services/collaborationSalesService.js";
-
-const acceptedTerms = {
-  status: "ACCEPTED",
-  fixedFeePerUnit: "25.00",
-  vatTreatment: "VAT_EXCLUSIVE",
-};
-
-const collaborationLink = {
-  id: "collaboration-1",
-  productId: "product-1",
-  partnerId: "partner-1",
-  activeTermsVersion: 2,
-};
-
-test("order collaboration sale snapshots freeze accepted partner terms and remain pending until delivery", async () => {
-  let createdRows = [];
-  const client = {
-    collaborationProduct: { findMany: async () => [collaborationLink] },
-    collaborationTermsVersion: { findUnique: async () => acceptedTerms },
-    collaborationSale: { createMany: async ({ data, skipDuplicates }) => {
-      createdRows = data;
-      assert.equal(skipDuplicates, true);
-      return { count: data.length };
-    } },
-  };
-
-  const count = await createCollaborationSalesForOrder({
-    order: { id: "order-1", status: "Order Placed", fulfillmentStatus: "PENDING_ASSIGNMENT" },
-    items: [{ productId: "product-1", quantity: 2, size: "M", color: "White", purchasedUnitPrice: 1800, originalUnitPrice: 2000 }],
-    client,
-  });
-
-  assert.equal(count, 1);
-  assert.equal(createdRows[0].termsVersion, 2);
-  assert.equal(Number(createdRows[0].partnerFeePerUnit), 25);
-  assert.equal(createdRows[0].unitSellingPrice.toString(), "1800");
-  assert.equal(createdRows[0].unitDiscount.toString(), "200");
-  assert.equal(createdRows[0].color, "White");
-  assert.equal(createdRows[0].status, "PENDING_DELIVERY");
-});
-
-test("directly delivered collaboration orders accrue immediately", async () => {
-  let createdRows = [];
-  const client = {
-    collaborationProduct: { findMany: async () => [collaborationLink] },
-    collaborationTermsVersion: { findUnique: async () => ({ ...acceptedTerms, vatTreatment: "EXEMPT" }) },
-    collaborationSale: { createMany: async ({ data }) => {
-      createdRows = data;
-      return { count: data.length };
-    } },
-  };
-
-  await createCollaborationSalesForOrder({
-    order: { id: "order-delivered", status: "Delivered", fulfillmentStatus: "delivered" },
-    items: [{ productId: "product-1", quantity: 1, purchasedUnitPrice: 900 }],
-    client,
-  });
-
-  assert.equal(createdRows[0].status, "ACCRUED");
-  assert.ok(createdRows[0].deliveredAt instanceof Date);
-  assert.ok(createdRows[0].accruedAt instanceof Date);
-});
 
 test("delivery accrual only updates pending sale rows", async () => {
   let update;

@@ -21,6 +21,9 @@ const normalizeStatus = (status) => {
 };
 
 const parseBooleanInput = (value) => value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
+const withoutCollaborationProducts = {
+  products: { none: { product: { collaborationLink: { isNot: null } } } },
+};
 
 const parseProductIds = (payload) => {
   if (Array.isArray(payload)) return payload.map((entry) => String(entry?.productId || entry?.id || entry || "")).filter(Boolean);
@@ -74,7 +77,7 @@ const parseJsonList = (value) => {
 const validateProductCategory = async (category, productIds, client = prisma) => {
   if (productIds.length === 0) return;
   const products = await client.product.findMany({
-    where: { id: { in: productIds } },
+    where: { id: { in: productIds }, collaborationLink: null },
     select: { id: true, name: true, category: true },
   });
   const productById = new Map(products.map((product) => [product.id, product]));
@@ -394,6 +397,7 @@ const listComboBundles = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
     const where = {
+      ...withoutCollaborationProducts,
       ...(req.query.categoryId ? { categoryId: String(req.query.categoryId) } : {}),
       ...(req.query.status ? { status: String(req.query.status).toUpperCase() } : {}),
     };
@@ -431,6 +435,7 @@ const getComboBundle = async (req, res) => {
     const identifier = id || slug;
     const comboBundleReference = await prisma.comboBundle.findFirst({
       where: {
+        ...withoutCollaborationProducts,
         ...(identifier ? { OR: [{ id: identifier }, { slug: identifier }] } : {}),
         ...(req.query.categoryId ? { categoryId: String(req.query.categoryId) } : {}),
         ...(req.query.status ? { status: String(req.query.status).toUpperCase() } : {}),
@@ -447,6 +452,7 @@ const getComboBundle = async (req, res) => {
     const comboBundle = await prisma.comboBundle.findFirst({
       where: {
         id: comboBundleReference.id,
+        ...withoutCollaborationProducts,
         ...(req.query.categoryId ? { categoryId: String(req.query.categoryId) } : {}),
         ...(req.query.status ? { status: String(req.query.status).toUpperCase() } : {}),
       },

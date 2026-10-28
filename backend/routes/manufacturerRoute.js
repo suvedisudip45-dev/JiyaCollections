@@ -22,7 +22,7 @@ import { dispatchStockTransferRequest } from "../controllers/stockTransferContro
 import {
   completeProduction,
   createAdminProductionRequest,
-  setProductionMoqPricing,
+  submitManufacturerProductionQuote,
   startProduction,
   submitPreProductionChecklist,
 } from "../controllers/manufacturerProductionController.js";
@@ -35,6 +35,16 @@ import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLim
 
 const manufacturerRouter = express.Router();
 const upload = multer({ dest: "uploads/" });
+const requireAdminRole = (req, res, next) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      code: "ADMIN_ROLE_REQUIRED",
+      message: "Only administrators can create manufacturer production orders.",
+    });
+  }
+  return next();
+};
 
 // Public
 manufacturerRouter.post("/login", loginRateLimitForPortal("MANUFACTURER"), resetLoginRateLimitOnSuccess, loginManufacturer);
@@ -65,6 +75,7 @@ manufacturerRouter.post(
 manufacturerRouter.post(
   "/production/create",
   authenticate,
+  requireAdminRole,
   authorize("manufacturer:production_admin"),
   createAdminProductionRequest,
 );
@@ -76,11 +87,11 @@ manufacturerRouter.patch(
   submitPreProductionChecklist,
 );
 manufacturerRouter.patch(
-  "/production/:id/moq-pricing",
+  "/production/:id/quote",
   authenticate,
   authorize("manufacturer:production_manage"),
   setManufacturerContext,
-  setProductionMoqPricing,
+  submitManufacturerProductionQuote,
 );
 manufacturerRouter.post(
   "/production/:id/start",

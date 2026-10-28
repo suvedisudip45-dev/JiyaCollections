@@ -6,12 +6,13 @@ import { postJournalEntry } from "../services/accountingPostingEngine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
-import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
+import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   calculateProductionUnitCost,
   calculateFullyLoadedUnitCogs,
   normalizeProductionVatTerms,
-  validateProductionRequestInput,
+  normalizeProductionRequestLines,
+  validateManufacturerProductionQuote,
 } from "../services/manufacturerProductionService.js";
 import {
   validateAdminProductionPlan,
@@ -105,45 +106,6 @@ const validRequestLines = (product, lines) => {
   }
 };
 
-export const getProductionProducts = async (req, res) => {
-  try {
-    const pagination = getPagination(req.query);
-    const productWhere = { published: true, deletedAt: null };
-    const [products, total] = await Promise.all([
-      prisma.product.findMany({
-        where: productWhere,
-        orderBy: [{ updatedAt: "desc" }, { name: "asc" }],
-        skip: pagination.skip,
-        take: pagination.limit,
-        select: { id: true, name: true, image: true, sizes: true, colors: true, variants: true },
-      }),
-      prisma.product.count({ where: productWhere }),
-    ]);
-    const requests = await prisma.manufacturerProductionRequest.findMany({
-      where: { manufacturerId: req.manufacturerId, status: { in: ["PENDING_REVIEW", "APPROVED", "IN_PRODUCTION"] } },
-      select: { id: true, productId: true, status: true },
-    });
-    const activeByProduct = new Map();
-    for (const request of requests) {
-      const current = activeByProduct.get(request.productId) || [];
-      current.push(request);
-      activeByProduct.set(request.productId, current);
-    }
-    return res.json({
-      success: true,
-      products: products.map((product) => ({
-        ...product,
-        variants: getProductVariants(product),
-        activeProductionRequests: activeByProduct.get(product.id) || [],
-      })),
-      pagination: getPaginationMeta({ ...pagination, total }),
-    });
-  } catch (error) {
-    console.error("getProductionProducts error:", error);
-    return res.status(500).json({ success: false, message: "Unable to load products available for production requests." });
-  }
-};
-
 export const listProductionRequests = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
@@ -178,6 +140,45 @@ export const listProductionRequests = async (req, res) => {
   }
 };
 
+export const getAdminProductionOptions = async (req, res) => {
+  try {
+    const optionType = String(req.query.type || "").trim().toLowerCase();
+    if (!["manufacturers", "products"].includes(optionType)) {
+      return res.status(400).json({ success: false, message: "Choose manufacturers or products." });
+    }
+    const pagination = getPagination(req.query);
+    if (optionType === "manufacturers") {
+      const where = { isActive: true, contractStatus: "ACTIVE" };
+      const [manufacturers, total] = await prisma.$transaction([
+        prisma.manufacturer.findMany({
+          where,
+          select: { id: true, name: true },
+          orderBy: { name: "asc" },
+          skip: pagination.skip,
+          take: pagination.limit,
+        }),
+        prisma.manufacturer.count({ where }),
+      ]);
+      return res.json(paginatedResponse("manufacturers", manufacturers, pagination, total));
+    }
+    const where = { published: true, deletedAt: null };
+    const [products, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where,
+        select: { id: true, name: true, sizes: true, colors: true, variants: true },
+        orderBy: { name: "asc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.product.count({ where }),
+    ]);
+    return res.json(paginatedResponse("products", products, pagination, total));
+  } catch (error) {
+    console.error("getAdminProductionOptions error:", error);
+    return res.status(500).json({ success: false, message: "Unable to load production order options." });
+  }
+};
+
 export const createAdminProductionRequest = async (req, res) => {
   try {
     const manufacturerId = String(req.body.manufacturerId || "").trim();
@@ -196,12 +197,7 @@ export const createAdminProductionRequest = async (req, res) => {
       select: { id: true, name: true, sizes: true, colors: true, variants: true },
     });
     if (!product) return res.status(404).json({ success: false, message: "Published product not found." });
-    const normalized = validateProductionRequestInput({
-      lines: req.body.lines,
-      unitCogs: 1,
-      minimumOrderQuantity: 1,
-      otherCost: 0,
-    });
+    const normalized = normalizeProductionRequestLines(req.body.lines);
     validRequestLines(product, normalized.lines);
     const plan = validateAdminProductionPlan(req.body);
     if (plan.batchQuantity !== normalized.totalQuantity) {
@@ -216,7 +212,7 @@ export const createAdminProductionRequest = async (req, res) => {
           manufacturerId,
           productId,
           productName: product.name,
-          status: "PENDING_PRE_CHECK",
+          status: "PENDING_MANUFACTURER_QUOTE",
           proposedUnitCogs: null,
           minimumOrderQuantity: normalized.totalQuantity,
           proposedDeliveryCost: 0,
@@ -252,7 +248,7 @@ export const createAdminProductionRequest = async (req, res) => {
       }, { client: tx });
       return created;
     }, { isolationLevel: "Serializable" });
-    return res.status(201).json({ success: true, message: "Production order created; manufacturer pre-production approval is required.", request });
+    return res.status(201).json({ success: true, message: "Production order sent to the manufacturer for a cost quote.", request });
   } catch (error) {
     console.error("createAdminProductionRequest error:", error);
     return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to create production order." });
@@ -302,147 +298,51 @@ export const submitPreProductionChecklist = async (req, res) => {
   }
 };
 
-export const setProductionMoqPricing = async (req, res) => {
+export const submitManufacturerProductionQuote = async (req, res) => {
   try {
     const { id } = req.params;
-    const unitCogs = new Prisma.Decimal(String(req.body.averagePricePerUnit ?? req.body.unitCogs ?? ""));
-    const moq = Number(req.body.moq ?? req.body.minimumOrderQuantity);
-    if (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !Number.isInteger(moq) || moq < 1 || moq > 2147483647) {
-      return res.status(400).json({ success: false, message: "Provide a positive average unit price and positive whole-number MOQ." });
-    }
+    const quote = validateManufacturerProductionQuote(req.body);
     const request = await prisma.manufacturerProductionRequest.findFirst({
       where: { id, manufacturerId: req.manufacturerId },
       include: { lines: true },
     });
     if (!request) return res.status(404).json({ success: false, message: "Production request not found." });
-    if (!["PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "PRE_CHECK_PASSED"].includes(request.status)) {
-      return res.status(409).json({ success: false, message: "MOQ and pricing can only be set before production starts." });
+    if (request.status !== "PENDING_MANUFACTURER_QUOTE") {
+      return res.status(409).json({ success: false, message: "A quote can only be submitted for a production order awaiting manufacturer pricing." });
     }
-    const plannedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
-    if (moq > plannedQuantity) {
-      return res.status(400).json({ success: false, message: "MOQ cannot exceed the quantity requested by the admin." });
-    }
-    const vatTerms = normalizeProductionVatTerms({
-      vatTreatment: request.approvedVatTreatment,
-      vatRate: request.approvedVatRate,
-      vatInvoiceReference: request.approvedVatInvoiceReference,
-    });
     const updated = await prisma.$transaction(async (tx) => {
       const claimed = await tx.manufacturerProductionRequest.updateMany({
-        where: { id, manufacturerId: req.manufacturerId, status: request.status },
+        where: { id, manufacturerId: req.manufacturerId, status: "PENDING_MANUFACTURER_QUOTE" },
         data: {
-          proposedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
-          approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
-          approvedMinimumOrderQuantity: moq,
-          minimumOrderQuantity: moq,
-          approvedDeliveryCost: request.approvedDeliveryCost ?? request.proposedDeliveryCost ?? new Prisma.Decimal(0),
-          vatTreatment: vatTerms.vatTreatment,
-          vatRate: vatTerms.vatRate,
-          vatInvoiceReference: vatTerms.vatInvoiceReference,
-          approvedVatTreatment: vatTerms.vatTreatment,
-          approvedVatRate: vatTerms.vatRate,
-          approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
+          status: "PENDING_ADMIN_APPROVAL",
+          proposedUnitCogs: quote.unitCogs,
+          proposedDeliveryCost: quote.otherCost,
+          vatTreatment: quote.vatTreatment,
+          vatRate: quote.vatRate,
+          vatInvoiceReference: quote.vatInvoiceReference,
+          manufacturerNote: quote.manufacturerNote,
         },
       });
-      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while pricing was being recorded."), { statusCode: 409 });
+      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while the quote was being submitted."), { statusCode: 409 });
       await recordSystemAudit(actorContext(req), {
-        action: "MANUFACTURER_PRODUCTION_TERMS_SET",
+        action: "MANUFACTURER_PRODUCTION_QUOTED",
         entityType: "ManufacturerProductionRequest",
         entityId: id,
         afterState: {
-          averagePricePerUnit: unitCogs.toFixed(2),
-          moq,
-          vatTreatment: vatTerms.vatTreatment,
-          vatRate: vatTerms.vatRate.toFixed(2),
-          vatInvoiceReference: vatTerms.vatInvoiceReference,
+          averagePricePerUnit: quote.unitCogs.toFixed(2),
+          otherCost: quote.otherCost.toFixed(2),
+          vatTreatment: quote.vatTreatment,
+          vatRate: quote.vatRate.toFixed(2),
+          vatInvoiceReference: quote.vatInvoiceReference,
+          manufacturerNote: quote.manufacturerNote,
         },
       }, { client: tx });
       return tx.manufacturerProductionRequest.findUnique({ where: { id }, include: { lines: true } });
     }, { isolationLevel: "Serializable" });
-    return res.json({ success: true, message: "Manufacturer MOQ and average unit price saved.", request: updated });
+    return res.json({ success: true, message: "Production quote submitted for admin approval.", request: updated });
   } catch (error) {
-    console.error("setProductionMoqPricing error:", error);
+    console.error("submitManufacturerProductionQuote error:", error);
     return res.status(error.statusCode || 400).json({ success: false, message: error.message });
-  }
-};
-
-export const createProductionRequest = async (req, res) => {
-  try {
-    const manufacturerId = req.manufacturerId;
-    if (!manufacturerId) return res.status(403).json({ success: false, message: "Manufacturer context is required." });
-    const {
-      productId,
-      lines,
-      unitCogs,
-      minimumOrderQuantity,
-      otherCost,
-      deliveryCost,
-      manufacturerNote,
-      vatTreatment,
-      vatRate,
-      vatInvoiceReference,
-    } = req.body;
-    if (!productId) return res.status(400).json({ success: false, message: "Select a product for production." });
-    const usesBatchOtherCost = otherCost !== undefined;
-    const normalized = validateProductionRequestInput({
-      lines,
-      unitCogs,
-      minimumOrderQuantity,
-      otherCost: usesBatchOtherCost ? otherCost : deliveryCost,
-      vatTreatment,
-      vatRate,
-      vatInvoiceReference,
-    });
-    const note = String(manufacturerNote || "").trim();
-    if (note.length > 2000) return res.status(400).json({ success: false, message: "Production note cannot exceed 2000 characters." });
-    const product = await prisma.product.findFirst({
-      where: { id: String(productId), published: true, deletedAt: null },
-      select: { id: true, name: true, sizes: true, colors: true, variants: true },
-    });
-    if (!product) return res.status(404).json({ success: false, message: "Published product not found." });
-    validRequestLines(product, normalized.lines);
-
-    const request = await prisma.$transaction(async (tx) => {
-      const created = await tx.manufacturerProductionRequest.create({
-        data: {
-          manufacturerId,
-          productId: product.id,
-          productName: product.name,
-          proposedUnitCogs: normalized.unitCogs,
-          minimumOrderQuantity: normalized.minimumOrderQuantity,
-          proposedDeliveryCost: normalized.otherCost,
-          vatTreatment: normalized.vatTreatment,
-          vatRate: normalized.vatRate,
-          vatInvoiceReference: normalized.vatInvoiceReference,
-          costTermsVersion: usesBatchOtherCost ? 2 : 1,
-          manufacturerNote: note || null,
-          requestedBy: req.auth?.accountId || null,
-          lines: { create: normalized.lines },
-        },
-        include: { lines: true, product: { select: { id: true, name: true } } },
-      });
-      await recordSystemAudit(actorContext(req), {
-        action: "MANUFACTURER_PRODUCTION_REQUESTED",
-        entityType: "ManufacturerProductionRequest",
-        entityId: created.id,
-        afterState: {
-          productId: product.id,
-          totalQuantity: normalized.totalQuantity,
-          proposedUnitCogs: normalized.unitCogs.toFixed(2),
-          minimumOrderQuantity: normalized.minimumOrderQuantity,
-          proposedOtherCost: normalized.otherCost.toFixed(2),
-          vatTreatment: normalized.vatTreatment,
-          vatRate: normalized.vatRate.toFixed(2),
-          vatInvoiceReference: normalized.vatInvoiceReference,
-        },
-      }, { client: tx });
-      return created;
-    }, { isolationLevel: "Serializable" });
-
-    return res.status(201).json({ success: true, message: "Production request submitted for admin review.", request });
-  } catch (error) {
-    console.error("createProductionRequest error:", error);
-    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to submit production request." });
   }
 };
 
@@ -460,41 +360,54 @@ export const reviewProductionRequest = async (req, res) => {
         include: { lines: true, manufacturer: { select: { name: true } }, product: { select: { id: true, name: true } } },
       });
       if (!request) throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
-      if (request.status !== "PENDING_REVIEW") throw Object.assign(new Error("Only pending production requests can be reviewed."), { statusCode: 409 });
+      if (!["PENDING_ADMIN_APPROVAL", "PENDING_REVIEW"].includes(request.status)) {
+        throw Object.assign(new Error("Only manufacturer production quotes awaiting admin approval can be reviewed."), { statusCode: 409 });
+      }
+      if (decision === "APPROVE" && !request.proposedUnitCogs) {
+        throw Object.assign(new Error("The manufacturer must submit a per-piece production quote before approval."), { statusCode: 409 });
+      }
 
-      const unitCogs = new Prisma.Decimal(String(req.body.approvedUnitCogs ?? request.proposedUnitCogs));
-      const otherCost = new Prisma.Decimal(String(
-        req.body.approvedOtherCost ?? req.body.approvedDeliveryCost ?? request.proposedDeliveryCost
-      ));
-      const moq = Number(req.body.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity);
-      const vatTerms = normalizeProductionVatTerms({
+      const isApproval = decision === "APPROVE";
+      const unitCogs = isApproval
+        ? new Prisma.Decimal(String(req.body.approvedUnitCogs ?? request.proposedUnitCogs))
+        : null;
+      const otherCost = isApproval
+        ? new Prisma.Decimal(String(
+          req.body.approvedOtherCost ?? req.body.approvedDeliveryCost ?? request.proposedDeliveryCost
+        ))
+        : null;
+      const requestedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
+      const vatTerms = isApproval ? normalizeProductionVatTerms({
         vatTreatment: req.body.approvedVatTreatment ?? request.vatTreatment,
         vatRate: req.body.approvedVatRate ?? request.vatRate,
         vatInvoiceReference: req.body.approvedVatInvoiceReference ?? request.vatInvoiceReference,
-      });
-      const vatInvoiceVerified = vatTerms.vatTreatment !== "EXEMPT" &&
+      }) : null;
+      const vatInvoiceVerified = isApproval && vatTerms.vatTreatment !== "EXEMPT" &&
         req.body.approvedVatInvoiceVerified === true;
-      if (decision === "APPROVE" && (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !otherCost.isFinite() || otherCost.isNegative() || !Number.isInteger(moq) || moq < 1 || moq > 2147483647)) {
-        throw Object.assign(new Error("Approved unit COGS, batch other cost, and MOQ are invalid."), { statusCode: 400 });
-      }
-      const plannedQuantity = request.lines.reduce((total, line) => total + line.quantity, 0);
-      const inventoryUnitCogs = request.costTermsVersion >= 2 && plannedQuantity > 0
-        ? calculateFullyLoadedUnitCogs({
-          unitCogs: calculateProductionUnitCost({
+      const plannedQuantity = requestedQuantity;
+      let inventoryUnitCogs = null;
+      if (isApproval) {
+        if (!unitCogs.isFinite() || !unitCogs.greaterThan(0) || !otherCost.isFinite() || otherCost.isNegative()) {
+          throw Object.assign(new Error("Approved per-piece COGS and batch other cost are invalid."), { statusCode: 400 });
+        }
+        inventoryUnitCogs = request.costTermsVersion >= 2 && plannedQuantity > 0
+          ? calculateFullyLoadedUnitCogs({
+            unitCogs: calculateProductionUnitCost({
+              unitAmount: unitCogs,
+              ...vatTerms,
+              vatInvoiceVerified,
+            }).capitalizedAmount,
+            batchOtherCost: otherCost,
+            goodQuantity: plannedQuantity,
+          })
+          : calculateProductionUnitCost({
             unitAmount: unitCogs,
             ...vatTerms,
             vatInvoiceVerified,
-          }).capitalizedAmount,
-          batchOtherCost: otherCost,
-          goodQuantity: plannedQuantity,
-        })
-        : calculateProductionUnitCost({
-          unitAmount: unitCogs,
-          ...vatTerms,
-          vatInvoiceVerified,
-        }).capitalizedAmount.toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
+          }).capitalizedAmount.toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
+      }
       const claimed = await tx.manufacturerProductionRequest.updateMany({
-        where: { id, status: "PENDING_REVIEW" },
+        where: { id, status: request.status },
         data: {
           status: decision === "APPROVE" ? "APPROVED" : "REJECTED",
           adminNote: adminNote || null,
@@ -502,7 +415,7 @@ export const reviewProductionRequest = async (req, res) => {
           reviewedAt: new Date(),
           ...(decision === "APPROVE" ? {
             approvedUnitCogs: unitCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
-            approvedMinimumOrderQuantity: moq,
+            approvedMinimumOrderQuantity: requestedQuantity,
             approvedDeliveryCost: otherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
             approvedVatTreatment: vatTerms.vatTreatment,
             approvedVatRate: vatTerms.vatRate,
@@ -511,7 +424,7 @@ export const reviewProductionRequest = async (req, res) => {
           } : {}),
         },
       });
-      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed while it was being reviewed. Refresh and retry."), { statusCode: 409 });
+      if (claimed.count !== 1) throw Object.assign(new Error("Production quote changed while it was being reviewed. Refresh and retry."), { statusCode: 409 });
 
       if (decision === "APPROVE") {
         await tx.manufacturerInventory.upsert({
@@ -547,7 +460,7 @@ export const reviewProductionRequest = async (req, res) => {
           status: decision === "APPROVE" ? "APPROVED" : "REJECTED",
           ...(decision === "APPROVE" ? {
             approvedUnitCogs: unitCogs.toFixed(2),
-            approvedMinimumOrderQuantity: moq,
+            approvedMinimumOrderQuantity: requestedQuantity,
             approvedOtherCost: otherCost.toFixed(2),
             approvedVatTreatment: vatTerms.vatTreatment,
             approvedVatRate: vatTerms.vatRate.toFixed(2),
@@ -585,7 +498,7 @@ export const startProduction = async (req, res) => {
       return res.status(exists ? 409 : 404).json({
         success: false,
         message: exists
-          ? "Production requires a passed pre-production checklist and saved MOQ/pricing."
+          ? "Production requires Admin-approved terms and a passed pre-production checklist."
           : "Production request not found.",
       });
     }

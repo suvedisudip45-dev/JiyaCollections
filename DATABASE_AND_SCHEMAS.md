@@ -25,6 +25,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
 | Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
+| Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, webhook handling |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
@@ -77,6 +78,12 @@ Previously posted accounting journals are retained for audit history.
 | `Review` | `productId`, `userId`, `rating`, `comment`, `verified` | product reviews |
 | `DistributorReview` | `orderId`, `userId`, `distributorId`, `rating`, `comment` | one verified hub review per delivered customer order; updates the distributor's aggregate rating |
 | `SpecialOffer` | `title`, `startDate`, `endDate`, `discount`, `productIds` | time-bound offers |
+
+Migration `20261028094400_disable_marketing_collaborations` marks all
+collaboration listings as ended, unpublishes their products, inactivates combo
+bundles containing those products, and deactivates collaboration permissions.
+It preserves the related rows and posted accounting history; no new
+collaboration activity is accepted by the application.
 
 ### 3.4 Orders, fulfillment, and delivery
 
@@ -141,13 +148,13 @@ limited to known local NCM order IDs.
 | Model | Core fields | Notes |
 | --- | --- | --- |
 | `ManufacturerInventory` | `manufacturerId`, `productId`, `quantity`, `reservedQty`, `variantsStock`, `agreedCostPrice` | warehouse stock by manufacturer |
-| `ManufacturerProductionRequest` | proposed/approved unit COGS, batch other cost, VAT treatment/rate, supplier VAT invoice reference and Admin verification, planned/actual quantities | Admin-approved production terms retain supplier tax evidence; `EXEMPT`, `VAT_INCLUSIVE`, or `VAT_EXCLUSIVE` are supported |
+| `ManufacturerProductionRequest` | Admin-assigned manufacturer, product/SKU quantities, fabric/GSM, target date and batch plan; manufacturer proposed/approved unit COGS and batch other cost, VAT treatment/rate and invoice verification; pre/post-production QA | Workflow moves from `PENDING_MANUFACTURER_QUOTE` to `PENDING_ADMIN_APPROVAL`, then `APPROVED` before manufacturer pre-check/start. Admin approval records whether the supplier VAT invoice was verified; `EXEMPT`, `VAT_INCLUSIVE`, or `VAT_EXCLUSIVE` are supported. |
 | `ManufacturerInventoryCostLayer` | produced/available/reserved/consumed quantities, capitalized unit COGS, unit VAT, VAT treatment/rate, invoice-verification state | Verified input VAT is posted at production receipt; unverified VAT remains in capitalized inventory cost |
 | `ManufacturerInventoryMovement` | `manufacturerId`, `productId`, `variantLabel`, `previousQty`, `newQty`, signed `changeQty`, `movementType`, `reason`, `note`, `actorId`, `createdAt` | immutable, per-variant manufacturer stock adjustment history |
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
-Apply `backend/prisma/migrations/20261017120000_manufacturer_production_vat/migration.sql` before deploying the production VAT changes. Existing production records migrate as exempt, and existing cost layers receive zero VAT by default.
+Apply `backend/prisma/migrations/20261017120000_manufacturer_production_vat/migration.sql` before deploying the production VAT changes. Existing production records migrate as exempt, and existing cost layers receive zero VAT by default. The `20261028092400_admin_manufacturer_production_quotes` migration changes the default request state to manufacturer quote, matching the admin-issued quote/approval workflow; existing request states are preserved.
 Apply `backend/prisma/migrations/20261017130000_reconcile_manufacturer_freight_settlements/migration.sql` to persist the portion of each local shipment's freight charge settled through approved manufacturer logistics payments.
 
 Factory receipts from production remain in manufacturer-owned factory locations and are not available to customer checkout. Stock becomes storefront-eligible only when a distributor confirms receipt into an active distributor location. Product-level and variant-level stock fields mirror the sum of unreserved active distributor ledger balances; `InventoryBalance` and its ledger entries remain authoritative.

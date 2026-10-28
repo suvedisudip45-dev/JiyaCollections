@@ -46,7 +46,6 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/gift-promotions": ["loyalty:level_manage"],
   "/categories": ["category:create", "category:delete", "subcategory:create", "subcategory:update", "color:create"],
   "/combo-bundles": ["combo_bundle:create", "combo_bundle:update", "combo_bundle:delete"],
-  "/collaborations": ["collaboration:admin_manage", "collaboration:admin_reports_read"],
   "/reviews": ["review:admin_list"],
   "/story-letter-library": ["storyletter:admin_manage"],
   "/shipping": ["shipping:config_update"],
@@ -58,7 +57,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
 };
 
 export const ADMIN_SECTION_PERMISSIONS = {
-  catalog: ["product:create", "product:update", "product:delete", "category:create", "category:delete", "combo_bundle:create", "combo_bundle:update", "combo_bundle:delete", "collaboration:admin_manage", "collaboration:admin_reports_read", "subcategory:create", "color:create", "offer:list", "offer:create", "offer:update"],
+  catalog: ["product:create", "product:update", "product:delete", "category:create", "category:delete", "combo_bundle:create", "combo_bundle:update", "combo_bundle:delete", "subcategory:create", "color:create", "offer:list", "offer:create", "offer:update"],
   sales: ["order:list_admin", "order:admin_create", "product:sales_analytics_read"],
   supply: ["assignment:admin_list", "delivery:admin_list", "manufacturer:admin_list", "manufacturer:admin_detail", "manufacturer:production_admin", "distributor:admin_list", "inventory:admin_read_all", "inventory:admin_low_stock", "transfer:admin_read"],
   marketing: ["marketing_card:admin_manage", "marketing_card:own_store_manage", "marketing_card:custom_assign"],

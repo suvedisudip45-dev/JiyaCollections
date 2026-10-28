@@ -71,7 +71,6 @@ The storefront app is bootstrapped through `frontend/src/App.jsx` and includes r
 | `/shop` | Product collection |
 | `/combo-bundles` | Bundle directory |
 | `/combo-bundles/:slug` | Single bundle view |
-| `/collaborations` | Collaboration directory |
 | `/product/:productId` | Product detail |
 | `/cart` | Cart overview |
 | `/login` | Auth entry |
@@ -120,7 +119,7 @@ The component tree includes:
 
 ### Checkout pricing and NCM status handling
 
-The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order.
+The storefront checkout is designed around server-authoritative pricing rather than local product-price assumptions. `ShopContext`, `Product.jsx`, `Cart.jsx`, and `PlaceOrder.jsx` fetch or verify current location-aware pricing using the customer’s saved address or selected province/district, and they reject stale or invalid quote state before creating an order. Customer order totals round to the nearest 0 or 5 rupees: final digits 0–3 round down, 4–7 round to 5, and 8–9 round up to the next ten. The backend applies this rule to the saved total, including split-shipment orders.
 
 The storefront shell uses shared responsive page and section gutters with a 1440px content cap. Major home sections, category product data, and footer content align to those gutters; category grids, policy highlights, the newsletter form, and footer columns reflow for narrow screens.
 
@@ -203,7 +202,7 @@ The application exposes modules such as:
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/product-analytics`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
-- `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`, `/collaborations`
+- `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`
 - `/reviews`, `/story-letter-library`, `/shipping`
 
 In Manufacturer Management, admins can update manufacturer profile, pickup,
@@ -270,7 +269,6 @@ Turning a flag off does not delete loyalty or personalized-letter history. Its r
 | `/direct-orders` | Distributor direct hub orders at admin catalog prices; manual distributor discounts are disabled (distributor workspace only) |
 | `/inventory` | Distributor ledger-backed hub stock (distributor workspace only) |
 | `/distributor/demand` | Factory stock requests, inbound carrier/local transfer tracking, and receipt QA |
-| `/collaborations` | Collaboration items |
 | `/pickup-profile` | NCM pickup settings |
 | `/performance` | Production/performance metrics |
 | `/finance` | Manufacturer finance data; distributor delivery earnings plus COD receivable, remittance evidence/status, and separate refund payable |
@@ -311,7 +309,6 @@ The marketing portal is built around a protected dashboard layout and includes t
 | `/redemptions` | Redemption processing |
 | `/qr-validator` | QR validation |
 | `/reports` | Campaign reporting |
-| `/collaborations` | Collaboration module |
 | `/profile` | Partner profile |
 | `/settings` | Settings |
 
@@ -346,8 +343,8 @@ This portal is clearly structured around the backend `marketing-cards` router an
 3. Orders, inventory, and pickup configuration are managed via manufacturer-specific pages.
 4. The orders page shows a manufacturer-scoped queue of incoming customer returns with pickup state and NCM charge payer.
 5. The production pre-check sends `fabricPassed`, `qualitySamplePassed`, and `colorShadeMatched` boolean fields; the API also accepts the prior UI field aliases for compatibility.
-6. An approved production request exposes the pre-check; a passed pre-check exposes Start Production; and an in-production request exposes post-production QA and stock intake. The post-check submits one actual count per requested size/color variant using the backend checklist contract.
-   The manufacturer production form also records exempt/inclusive/exclusive VAT, rate, and supplier invoice reference. Manufacturer and Admin production screens show unit goods cost before VAT, VAT per unit, total goods cost including VAT, batch other production charges, and whether invoice verification makes VAT recoverable or leaves it in inventory cost. Distributor delivery freight is shown separately on the stock-transfer dispatch and shipment screens; it is not included in production batch charges. Admin review can verify the supplier invoice; only verified VAT becomes input VAT receivable, otherwise it remains in inventory cost. The Admin VAT reconciliation displays posted journal totals rather than recalculating credits from estimated COGS.
+6. Admin creates each production order by selecting the manufacturer, product SKUs and quantities, fabric/GSM, target date, and batch plan. The manufacturer portal only shows assigned orders and lets the manufacturer submit per-piece pricing, order-level production expenses, VAT terms, and a note; the quote must be approved by Admin before the manufacturer can complete the pre-check and start production. A passed pre-check exposes Start Production; an in-production request exposes post-production QA and stock intake. The post-check submits one actual count per requested size/color variant using the backend checklist contract.
+   Manufacturer and Admin production screens show quoted/approved unit goods cost before VAT, VAT per unit, total goods cost including VAT, order-level other production charges, and whether Admin invoice verification makes VAT recoverable or leaves it in inventory cost. Distributor delivery freight is shown separately on the stock-transfer dispatch and shipment screens; it is not included in production batch charges. Only verified VAT becomes input VAT receivable, otherwise it remains in inventory cost. The Admin VAT reconciliation displays posted journal totals rather than recalculating credits from estimated COGS.
 7. The manufacturer dashboard shows factory products/SKUs and available factory units separately from inspected production and damaged counts. Factory stock does not show as available to customers; that happens only after the distributor receives the transfer.
 8. The **Distributor Demands** page only shows admin-approved distributor requests; its sidebar badge refreshes periodically and announces newly approved demands. Manufacturers must save passing checks for availability, quality, color, size, and packaging before delivery controls unlock. They can choose NCM or local freight, while a transfer between the same account's manufacturer/distributor profiles automatically uses direct own-store delivery with NPR 0 freight.
 

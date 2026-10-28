@@ -1,9 +1,8 @@
 import express from "express";
 import {
   completeProduction,
-  createProductionRequest,
+  getAdminProductionOptions,
   getManufacturerProductionDashboard,
-  getProductionProducts,
   listProductionRequests,
   reviewProductionRequest,
   startProduction,
@@ -23,13 +22,12 @@ const requireAdminRole = (req, res, next) => {
 };
 
 router.get("/dashboard", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, getManufacturerProductionDashboard);
-router.get("/products", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, getProductionProducts);
 router.get("/requests", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, listProductionRequests);
-router.post("/requests", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, createProductionRequest);
 router.post("/requests/:id/start", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, startProduction);
 router.post("/requests/:id/complete", authenticate, authorize("manufacturer:production_manage"), setManufacturerContext, completeProduction);
 
 router.get("/admin/requests", authenticate, requireAdminRole, authorizeAny("manufacturer:production_admin", "manufacturer:admin_production_read"), listProductionRequests);
+router.get("/admin/options", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), getAdminProductionOptions);
 router.post("/admin/requests/:id/review", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), reviewProductionRequest);
 
 export default router;

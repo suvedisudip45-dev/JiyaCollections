@@ -27,7 +27,6 @@ All storefront routes are rendered inside the shared shell unless a route redire
 | `/product/:productId` | Product detail | Image gallery, variant/color/size/stock selection, location-specific price quote, add-to-cart, wishlist, sticky mobile purchase bar, image lightbox/zoom, size guide, description/details/reviews tabs, related products. |
 | `/combo-bundles` | Combo directory | Browse combo bundle cards; category/category ID can be passed through query parameters. |
 | `/combo-bundles/:slug` | Combo detail | Bundle information, included product/variant selection, quantity and proceed-to-checkout action. |
-| `/collaborations` | Collaboration directory | Public active collaboration products/brands, partner presentation and product links. |
 | `/about` | Journal/About | Static brand/story editorial content. |
 | `/contact` | Contact | Contact and inquiry content/form. |
 | `/cart` | Cart | Variant-specific product rows, selected quantity, current stock, location price where applicable, line totals, cart total and Continue Shopping/Checkout actions. Guest and signed-in carts use the shared context. |
@@ -42,8 +41,8 @@ All storefront routes are rendered inside the shared shell unless a route redire
 ### Navigation topology
 
 - **Desktop:** announcement strip above the main navbar. Brand/logo plus “Kathmandu / Nepal” on the left; category navigation across center; search, account, wishlist, bag/count and mobile menu controls on the right.
-- **Desktop category menus:** category hover/focus dropdown with category landing link, subcategory links, combo-bundle entry, and collaboration entry.
-- **Mobile:** hamburger opens a right-side drawer up to 390px wide over a dark backdrop. Header row has close, account/login and bag links; category names become tabs with subcategory/bundle/collaboration links, followed by Unisex, Best sellers, Contact, Wishlist and a large “Explore the edit” image CTA. Search, bag and menu remain in the compact header; account and wishlist icons move into navigation on narrow screens. Desktop category links are hidden. Drawer closes through explicit close, backdrop or navigation.
+- **Desktop category menus:** category hover/focus dropdown with category landing link, subcategory links, and combo-bundle entry.
+- **Mobile:** hamburger opens a right-side drawer up to 390px wide over a dark backdrop. Header row has close, account/login and bag links; category names become tabs with subcategory and bundle links, followed by Unisex, Best sellers, Contact, Wishlist and a large “Explore the edit” image CTA. Search, bag and menu remain in the compact header; account and wishlist icons move into navigation on narrow screens. Desktop category links are hidden. Drawer closes through explicit close, backdrop or navigation.
 - **Account menu:** anonymous account icon navigates to Login; signed-in hover menu offers Profile, Orders, feature-gated Marketing Cards, and Logout.
 - **Search:** clicking the navbar search button opens a separate search strip and navigates to `/shop` if needed. Search filters currently loaded results client-side; it is not a global backend search endpoint.
 - **Breadcrumbs:** rendered above route content by the shell.
@@ -424,13 +423,12 @@ For split shipment, `allocation` may contain `status` and `shipments[]` keyed by
 
 Returns/exchange list and write endpoints are authenticated/permission-gated on the backend. Admin acceptance and actual return/exchange fulfillment are not customer-front-end requests; they are handled in admin/distributor/NCM workflows.
 
-### Combos, collaborations, branches and external location service
+### Combos, branches and external location service
 
 | UI | API | Response |
 |---|---|---|
 | Combo bundle directory | `GET /api/combo-bundles` (may include category filters) | UI expects successful `comboBundles` list and bundle product detail fields. |
 | Bundle detail/checkout | `GET /api/combo-bundles/:id?categoryId=...&status=ACTIVE` | `{ success, comboBundle }`; bundle has `products[]` with linked product records, selling/calculated price and status. |
-| Collaboration directory | `GET /api/collaborations/public/products` | UI renders public active products/partner context from the returned public listing. |
 | NCM branch list | `GET /api/manufacturer/branches?province=...&district=...` | UI reads `branches[]`. |
 | NCM coverage for selected branch | `GET /api/manufacturer/branches?branch=...&district=...&province=...` | UI reads `coveredAreas[]`. |
 | Map place search | OpenStreetMap Nominatim `GET https://nominatim.openstreetmap.org/search?...&countrycodes=np&limit=6&addressdetails=1` | Search results are bounded to Nepal and displayed in the checkout map modal. Local Nepal city matches are included. |

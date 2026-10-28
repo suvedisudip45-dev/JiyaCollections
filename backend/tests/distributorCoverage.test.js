@@ -101,17 +101,29 @@ test("coverage updates replace the district list and audit the change transactio
 
 test("admin pending-order listing returns parsed order details for allocation retry", async (t) => {
   const queryResults = [
-    [{
-      id: "order-1",
-      items: JSON.stringify([{ productId: "product-1", quantity: 1 }]),
-      address: JSON.stringify({ province: "Bagmati Province", district: "Kathmandu" }),
-      amount: 100,
-      status: "Order Placed",
-      orderType: "ONLINE_STORE",
-      fulfillmentStatus: "PENDING_ASSIGNMENT",
-      date: 1n,
-    }],
-    1,
+    [
+      {
+        id: "order-1",
+        items: JSON.stringify([{ productId: "product-1", quantity: 1 }]),
+        address: JSON.stringify({ province: "Bagmati Province", district: "Kathmandu" }),
+        amount: 100,
+        status: "Order Placed",
+        orderType: "ONLINE_STORE",
+        fulfillmentStatus: "PENDING_ASSIGNMENT",
+        date: 1n,
+      },
+      {
+        id: "order-2",
+        items: JSON.stringify([]),
+        address: JSON.stringify({}),
+        amount: 100,
+        status: "Order Placed",
+        orderType: "ADMIN_DIRECT",
+        fulfillmentStatus: "PENDING_ASSIGNMENT",
+        date: 2n,
+      },
+    ],
+    2,
   ];
   stubMethod(t, prisma.order, "findMany", async (args) => {
     assert.equal(args.where.assignmentId, null);
@@ -142,4 +154,6 @@ test("admin pending-order listing returns parsed order details for allocation re
   assert.deepEqual(response.body.orders[0].items, [{ productId: "product-1", quantity: 1 }]);
   assert.deepEqual(response.body.orders[0].address, { province: "Bagmati Province", district: "Kathmandu" });
   assert.equal(response.body.orders[0].date, 1);
+  assert.equal(response.body.orders[0].allocationFailed, true);
+  assert.equal(response.body.orders[1].allocationFailed, false);
 });

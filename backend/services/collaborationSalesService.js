@@ -8,66 +8,6 @@ const toDecimal = (value) => new Prisma.Decimal(String(value || 0));
 const roundMoney = (value) => toDecimal(value).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 const normalize = (value) => String(value || "").trim().toLowerCase();
 
-export const createCollaborationSalesForOrder = async ({ order, items = [], client = prisma }) => {
-  if (!order?.id || !items.length) return 0;
-  const productIds = [...new Set(items.map((item) => item.productId || item._id || item.id).filter(Boolean))];
-  const links = await client.collaborationProduct.findMany({
-    where: {
-      productId: { in: productIds },
-      listingStatus: "ACTIVE",
-      activeTermsVersion: { not: null },
-    },
-    select: { id: true, productId: true, partnerId: true, activeTermsVersion: true },
-  });
-  if (links.length === 0) return 0;
-
-  const linkByProductId = new Map(links.map((link) => [link.productId, link]));
-  const delivered = String(order.status || "").toLowerCase().includes("deliver")
-    || String(order.fulfillmentStatus || "").toLowerCase() === "delivered";
-  const timestamp = delivered ? new Date() : null;
-  const data = [];
-
-  for (const [orderItemIndex, item] of items.entries()) {
-    const productId = item.productId || item._id || item.id;
-    const collaboration = linkByProductId.get(productId);
-    if (!collaboration) continue;
-    const terms = await client.collaborationTermsVersion.findUnique({
-      where: {
-        collaborationProductId_version: {
-          collaborationProductId: collaboration.id,
-          version: collaboration.activeTermsVersion,
-        },
-      },
-    });
-    if (!terms || terms.status !== "ACCEPTED") {
-      throw new Error(`Active terms are missing for collaboration product ${productId}.`);
-    }
-    const unitSellingPrice = Number(item.purchasedUnitPrice ?? item.price ?? 0);
-    const originalUnitPrice = Number(item.originalUnitPrice ?? unitSellingPrice);
-    data.push({
-      orderId: order.id,
-      orderItemIndex,
-      productId,
-      collaborationProductId: collaboration.id,
-      partnerId: collaboration.partnerId,
-      termsVersion: collaboration.activeTermsVersion,
-      quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
-      size: String(item.size || "").trim(),
-      color: String(item.color || "").trim(),
-      unitSellingPrice: roundMoney(unitSellingPrice),
-      unitDiscount: roundMoney(Math.max(0, originalUnitPrice - unitSellingPrice)),
-      partnerFeePerUnit: terms.fixedFeePerUnit,
-      vatTreatment: terms.vatTreatment,
-      status: delivered ? "ACCRUED" : "PENDING_DELIVERY",
-      ...(delivered ? { deliveredAt: timestamp, accruedAt: timestamp } : {}),
-    });
-  }
-
-  if (!data.length) return 0;
-  const result = await client.collaborationSale.createMany({ data, skipDuplicates: true });
-  return result.count;
-};
-
 export const accrueCollaborationSalesForOrder = async ({ orderId, deliveredAt = new Date(), client = prisma }) => {
   if (!orderId) return 0;
   const result = await client.collaborationSale.updateMany({

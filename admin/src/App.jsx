@@ -12,7 +12,6 @@ import List from "./pages/List";
 import Orders, { AdminOrderDetail } from "./pages/Orders";
 import Categories from "./pages/Categories";
 import ComboBundles from "./pages/ComboBundles";
-import Collaborations from "./pages/Collaborations";
 import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
 import PlatformFeatureSettings from "./pages/PlatformFeatureSettings";
@@ -247,7 +246,6 @@ const App = () => {
                   <Route path="/gift-promotions" element={withPermission("/gift-promotions", <GiftPromotions token={token} />)} />
                   <Route path="/categories" element={withPermission("/categories", <Categories token={token} />)} />
                   <Route path="/combo-bundles" element={withPermission("/combo-bundles", <ComboBundles token={token} />)} />
-                  <Route path="/collaborations" element={withPermission("/collaborations", <Collaborations token={token} />)} />
                   <Route path="/reviews" element={withPermission("/reviews", <Reviews token={token} />)} />
                   <Route path="/story-letter-library" element={withPermission("/story-letter-library", <StoryLetterLibrary token={token} />)} />
                   <Route path="/shipping" element={withPermission("/shipping", <ShippingSettings token={token} />)} />

@@ -828,6 +828,9 @@ const getUnassignedOrders = async (req, res) => {
       items: parseJSON(order.items, []),
       address: parseJSON(order.address, {}),
       date: Number(order.date),
+      allocationFailed:
+        String(order.orderType || "").toUpperCase() === "ONLINE_STORE" &&
+        String(order.fulfillmentStatus || "").toUpperCase() === "PENDING_ASSIGNMENT",
     }));
     return res.json(paginatedResponse("orders", serializedOrders, pagination, total));
   } catch (error) {

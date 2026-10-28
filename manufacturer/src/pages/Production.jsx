@@ -1,17 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { CheckCircle2, Factory, PackagePlus, RefreshCw, ShieldCheck, Layers, Play } from "lucide-react";
+import { CheckCircle2, Factory, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { toast } from "react-toastify";
 import { useManufacturer } from "../context/ManufacturerContext";
 import { PreProductionChecklistModal, PostProductionChecklistModal } from "../components/ProductionChecklistModal";
 
-const parseVariants = (product) => {
-  if (Array.isArray(product.variants) && product.variants.length) return product.variants;
-  return [{ size: "Standard", color: "Standard" }];
-};
-
 const statusStyle = {
-  PENDING_REVIEW: "bg-amber-50 text-amber-800 border-amber-200",
+  PENDING_MANUFACTURER_QUOTE: "bg-amber-50 text-amber-800 border-amber-200",
+  PENDING_ADMIN_APPROVAL: "bg-orange-50 text-orange-800 border-orange-200",
   APPROVED: "bg-blue-50 text-blue-800 border-blue-200",
   PRE_CHECK_PASSED: "bg-emerald-50 text-emerald-800 border-emerald-200",
   PRE_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
@@ -19,6 +15,15 @@ const statusStyle = {
   POST_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
   COMPLETED: "bg-emerald-50 text-emerald-800 border-emerald-200",
   REJECTED: "bg-rose-50 text-rose-800 border-rose-200",
+};
+
+const emptyQuote = {
+  unitCogs: "",
+  otherCost: "0",
+  vatTreatment: "EXEMPT",
+  vatRate: "13",
+  vatInvoiceReference: "",
+  manufacturerNote: "",
 };
 
 const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) => {
@@ -44,44 +49,20 @@ const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) =
 
 const Production = () => {
   const { token, backendUrl, currency } = useManufacturer();
-  const [products, setProducts] = useState([]);
-  const [requests, setRequests] = useState([]);
-  const [productId, setProductId] = useState("");
-  const [lines, setLines] = useState([]);
-  const [unitCogs, setUnitCogs] = useState("");
-  const [minimumOrderQuantity, setMinimumOrderQuantity] = useState("");
-  const [otherCost, setOtherCost] = useState("0");
-  const [vatTreatment, setVatTreatment] = useState("EXEMPT");
-  const [vatRate, setVatRate] = useState("13");
-  const [vatInvoiceReference, setVatInvoiceReference] = useState("");
-  const [manufacturerNote, setManufacturerNote] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-
-  // Quality Checklist Modals
+  const [requests, setRequests] = useState(null);
+  const [quotes, setQuotes] = useState({});
+  const [savingId, setSavingId] = useState("");
   const [preCheckRequest, setPreCheckRequest] = useState(null);
   const [postCheckRequest, setPostCheckRequest] = useState(null);
 
-  const selectedProduct = useMemo(
-    () => products.find((product) => product.id === productId),
-    [products, productId]
-  );
-  const draftUnitCost = getUnitCostBreakdown(unitCogs, vatTreatment, vatRate);
-
   const loadData = useCallback(async () => {
     if (!token) return;
-    setLoading(true);
     try {
-      const [productResponse, requestResponse] = await Promise.all([
-        axios.get(`${backendUrl}/api/manufacturer-production/products`, { headers: { token }, params: { limit: 50 } }),
-        axios.get(`${backendUrl}/api/manufacturer-production/requests?limit=50`, { headers: { token } }),
-      ]);
-      setProducts(productResponse.data.products || []);
-      setRequests(requestResponse.data.requests || []);
+      const response = await axios.get(`${backendUrl}/api/manufacturer-production/requests?limit=50`, { headers: { token } });
+      setRequests(response.data.requests || []);
     } catch (error) {
-      toast.error(error.response?.data?.message || "Unable to load production requests.");
-    } finally {
-      setLoading(false);
+      toast.error(error.response?.data?.message || "Unable to load production orders.");
+      setRequests([]);
     }
   }, [backendUrl, token]);
 
@@ -89,79 +70,46 @@ const Production = () => {
     loadData();
   }, [loadData]);
 
-  useEffect(() => {
-    if (!selectedProduct) {
-      setLines([]);
-      return;
-    }
-    setLines(
-      parseVariants(selectedProduct).map((variant) => ({
-        size: variant.size || "Standard",
-        color: variant.color || "Standard",
-        quantity: "",
-      }))
-    );
-  }, [selectedProduct]);
-
-  const updateQuantity = (index, quantity) => {
-    setLines((current) =>
-      current.map((line, lineIndex) => (lineIndex === index ? { ...line, quantity } : line))
-    );
+  const updateQuote = (requestId, field, value) => {
+    setQuotes((current) => ({
+      ...current,
+      [requestId]: { ...emptyQuote, ...current[requestId], [field]: value },
+    }));
   };
 
-  const submitRequest = async (event) => {
+  const submitQuote = async (event, request) => {
     event.preventDefault();
-    if (!productId) {
-      toast.error("Choose a product.");
-      return;
-    }
-    setSubmitting(true);
+    const quote = { ...emptyQuote, ...quotes[request.id] };
+    setSavingId(request.id);
     try {
-      const response = await axios.post(
-        `${backendUrl}/api/manufacturer-production/requests`,
-        {
-          productId,
-          lines: lines
-            .filter((line) => Number(line.quantity) > 0)
-            .map((line) => ({ ...line, quantity: Number(line.quantity) })),
-          unitCogs,
-          minimumOrderQuantity,
-          otherCost,
-          vatTreatment,
-          vatRate,
-          vatInvoiceReference,
-          manufacturerNote,
-        },
+      const response = await axios.patch(
+        `${backendUrl}/api/manufacturer/production/${request.id}/quote`,
+        quote,
         { headers: { token } }
       );
-      toast.success(response.data.message || "Production request submitted.");
-      setUnitCogs("");
-      setMinimumOrderQuantity("");
-      setOtherCost("0");
-      setVatTreatment("EXEMPT");
-      setVatRate("13");
-      setVatInvoiceReference("");
-      setManufacturerNote("");
-      setProductId("");
+      toast.success(response.data.message || "Production quote sent to Admin for approval.");
       await loadData();
     } catch (error) {
-      toast.error(error.response?.data?.message || "Unable to submit production request.");
+      toast.error(error.response?.data?.message || "Unable to submit production quote.");
     } finally {
-      setSubmitting(false);
+      setSavingId("");
     }
   };
 
   const startProduction = async (request) => {
+    setSavingId(request.id);
     try {
       const response = await axios.post(
         `${backendUrl}/api/manufacturer-production/requests/${request.id}/start`,
         {},
         { headers: { token } }
       );
-      toast.success(response.data.message || "Production started successfully!");
+      toast.success(response.data.message || "Production started successfully.");
       await loadData();
     } catch (error) {
       toast.error(error.response?.data?.message || "Unable to start production.");
+    } finally {
+      setSavingId("");
     }
   };
 
@@ -169,263 +117,157 @@ const Production = () => {
     <div className="space-y-6">
       <header className="flex items-center justify-between gap-3 border-b border-[#dedbd3] pb-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-[#171717] flex items-center gap-2">
-            <Factory className="h-6 w-6 text-[#171717]" /> Production &amp; Manufacturing
+          <h1 className="flex items-center gap-2 text-xl font-bold text-[#171717] sm:text-2xl">
+            <Factory className="h-6 w-6" /> Production &amp; Manufacturing
           </h1>
           <p className="mt-1 text-xs text-[#575757]">
-            Request batch production terms, conduct QA checklists, and receive finished stock.
+            Admin assigns each production order. Submit your quote, wait for Admin approval, then complete the pre-production checks before starting.
           </p>
         </div>
         <button
           onClick={loadData}
-          className="rounded-xl border border-[#dedbd3] bg-[#ffffff] p-2 text-[#575757] hover:text-[#171717]"
+          className="rounded-xl border border-[#dedbd3] bg-white p-2 text-[#575757] hover:text-[#171717]"
           aria-label="Refresh"
         >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+          <RefreshCw className="h-4 w-4" />
         </button>
       </header>
 
-      {/* New production request form */}
-      <form onSubmit={submitRequest} className="rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-6 shadow-xs space-y-5">
-        <div className="flex items-center gap-2 text-sm font-bold text-[#171717]">
-          <PackagePlus className="h-4 w-4 text-[#171717]" /> New Production Batch Request
-        </div>
-        <div className="grid gap-4 md:grid-cols-3">
-          <label className="text-xs font-semibold text-[#171717] md:col-span-3">
-            Catalog Product
-            <select
-              value={productId}
-              onChange={(event) => setProductId(event.target.value)}
-              required
-              className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-[#ffffff] px-3 py-2.5 text-xs text-[#171717] focus:outline-none focus:border-[#171717]"
-            >
-              <option value="">-- Select Product --</option>
-              {products.map((product) => (
-                <option key={product.id} value={product.id}>
-                  {product.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {[
-            ["Per-piece product COGS (Rs)", unitCogs, setUnitCogs, "Standard cost across variants"],
-            ["MOQ (Minimum Order Quantity)", minimumOrderQuantity, setMinimumOrderQuantity, "Batch production minimum"],
-            ["Batch other cost (Rs)", otherCost, setOtherCost, "Total production cost for this batch; allocated across good units"],
-          ].map(([label, value, setValue, hint]) => (
-            <label key={label} className="text-xs font-semibold text-[#171717]">
-              {label}
-              <input
-                type="number"
-                min={label.includes("MOQ") ? "1" : "0"}
-                step={label.includes("MOQ") ? "1" : "0.01"}
-                required
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-[#dedbd3] px-3 py-2.5 text-xs text-[#171717] focus:outline-none focus:border-[#171717]"
-              />
-              <span className="mt-1 block text-[10px] font-normal text-[#575757]">{hint}</span>
-            </label>
-          ))}
-        </div>
-
-        <div className="grid gap-4 rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-4 md:grid-cols-3">
-          <label className="text-xs font-semibold text-[#171717]">
-            Product COGS VAT treatment
-            <select
-              value={vatTreatment}
-              onChange={(event) => setVatTreatment(event.target.value)}
-              className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
-            >
-              <option value="EXEMPT">No VAT / exempt</option>
-              <option value="VAT_INCLUSIVE">VAT inclusive</option>
-              <option value="VAT_EXCLUSIVE">VAT exclusive</option>
-            </select>
-            <span className="mt-1 block text-[10px] font-normal text-[#575757]">
-              Recoverable input VAT is recorded only after Admin verifies the supplier invoice.
-            </span>
-          </label>
-          {vatTreatment !== "EXEMPT" && (
-            <>
-              <label className="text-xs font-semibold text-[#171717]">
-                VAT rate (%)
-                <input
-                  type="number"
-                  min="0.01"
-                  max="100"
-                  step="0.01"
-                  required
-                  value={vatRate}
-                  onChange={(event) => setVatRate(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
-                />
-              </label>
-              <label className="text-xs font-semibold text-[#171717]">
-                Supplier VAT invoice reference
-                <input
-                  type="text"
-                  maxLength={120}
-                  required
-                  value={vatInvoiceReference}
-                  onChange={(event) => setVatInvoiceReference(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[#dedbd3] bg-white px-3 py-2.5 text-xs"
-                />
-              </label>
-            </>
-          )}
-        </div>
-        <div className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-xs text-sky-950">
-          <h3 className="font-bold">Estimated batch cost breakdown</h3>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <p>Goods cost before VAT <strong className="block">{currency}{draftUnitCost.net} / unit</strong></p>
-            <p>Supplier VAT <strong className="block">{currency}{draftUnitCost.vat} / unit</strong></p>
-            <p>Goods total incl. VAT <strong className="block">{currency}{draftUnitCost.gross} / unit</strong></p>
-            <p>Batch other production charges <strong className="block">{currency}{Number(otherCost || 0).toFixed(2)} / batch</strong></p>
-          </div>
-          <p className="mt-2 text-[10px]">
-            Supplier VAT is not yet verified; it will remain in inventory cost until Admin verifies the VAT invoice. Delivery to the distributor is a separate shipment cost, entered when the transfer is dispatched.
-          </p>
-        </div>
-
-        {lines.length > 0 && (
-          <div className="space-y-2 pt-2">
-            <p className="text-xs font-bold uppercase tracking-wider text-[#575757]">
-              Target Quantities by Variant
-            </p>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {lines.map((line, index) => (
-                <label
-                  key={`${line.size}-${line.color}`}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-[#dedbd3] p-3 text-xs bg-[#f8f7f4]"
-                >
-                  <span className="font-semibold text-[#171717]">
-                    {line.size}
-                    {line.color !== "Standard" ? ` / ${line.color}` : ""}
-                  </span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={line.quantity}
-                    onChange={(event) => updateQuantity(index, event.target.value)}
-                    placeholder="Qty"
-                    className="w-20 rounded-lg border border-[#dedbd3] bg-[#ffffff] px-2 py-1.5 text-center text-xs font-bold focus:outline-none focus:border-[#171717]"
-                  />
-                </label>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <label className="block text-xs font-semibold text-[#171717]">
-          Manufacturer Note / Fabric Specifications
-          <textarea
-            value={manufacturerNote}
-            onChange={(event) => setManufacturerNote(event.target.value)}
-            maxLength={2000}
-            rows={2}
-            placeholder="e.g., 100% organic cotton, 220 GSM combed knit"
-            className="mt-1 w-full rounded-xl border border-[#dedbd3] px-3 py-2 text-xs focus:outline-none focus:border-[#171717] resize-none"
-          />
-        </label>
-
-        <button
-          disabled={submitting || !selectedProduct}
-          className="rounded-xl bg-[#171717] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#262626] transition-colors disabled:opacity-50"
-        >
-          {submitting ? "Submitting..." : "Submit Batch Request for Admin Approval"}
-        </button>
-      </form>
-
-      {/* Production Requests Queue */}
-      <section className="rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-6 shadow-xs">
+      <section className="rounded-2xl border border-[#dedbd3] bg-white p-5 shadow-xs">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-bold text-[#171717]">Production Request Queue</h2>
-          <span className="text-xs text-[#575757]">{requests.length} batch(es)</span>
+          <h2 className="text-sm font-bold text-[#171717]">Admin-assigned production orders</h2>
+          <span className="text-xs text-[#575757]">{requests?.length ?? 0} order(s)</span>
         </div>
-
-        {requests.length === 0 ? (
+        {requests === null ? (
           <p className="rounded-xl bg-[#f8f7f4] p-6 text-center text-xs text-[#575757]">
-            No production requests submitted yet.
+            Loading assigned production orders...
+          </p>
+        ) : requests.length === 0 ? (
+          <p className="rounded-xl bg-[#f8f7f4] p-6 text-center text-xs text-[#575757]">
+            No production orders have been assigned.
           </p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-4">
             {requests.map((request) => {
-              const quantity = (request.lines || []).reduce(
-                (total, line) => total + Number(line.requestedQuantity || line.quantity || 0),
-                0
+              const quantity = (request.lines || []).reduce((total, line) => total + Number(line.quantity || 0), 0);
+              const quote = { ...emptyQuote, ...quotes[request.id] };
+              const approved = [
+                "APPROVED",
+                "PRE_CHECK_PASSED",
+                "PRE_CHECK_FAILED",
+                "IN_PRODUCTION",
+                "POST_CHECK_FAILED",
+                "COMPLETED",
+              ].includes(request.status);
+              const unitAmount = approved ? request.approvedUnitCogs : request.proposedUnitCogs;
+              const vatTreatment = approved
+                ? (request.approvedVatTreatment || "EXEMPT")
+                : (request.vatTreatment || "EXEMPT");
+              const vatRate = approved ? request.approvedVatRate : request.vatRate;
+              const costBreakdown = getUnitCostBreakdown(
+                unitAmount,
+                vatTreatment,
+                vatRate,
+                approved && request.approvedVatInvoiceVerified === true,
               );
+
               return (
-                <article key={request.id} className="rounded-xl border border-[#dedbd3] p-4 space-y-3 hover:border-[#171717]/40 transition-colors">
+                <article key={request.id} className="space-y-3 rounded-xl border border-[#dedbd3] p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-bold text-xs text-[#171717]">{request.product?.name || request.productName}</h3>
-                      <p className="mt-0.5 text-[11px] text-[#575757]">
-                        {quantity} units · MOQ {request.approvedMinimumOrderQuantity ?? request.minimumOrderQuantity}
+                      <h3 className="text-xs font-bold text-[#171717]">{request.product?.name || request.productName}</h3>
+                      <p className="mt-1 text-[11px] text-[#575757]">
+                        Admin requested {quantity} units · Target {request.targetCompletionDate
+                          ? new Date(request.targetCompletionDate).toLocaleDateString()
+                          : "not specified"}
                       </p>
                     </div>
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold border uppercase ${
-                        statusStyle[request.status] || "bg-[#f8f7f4] text-[#171717] border-[#dedbd3]"
-                      }`}
-                    >
+                    <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold ${statusStyle[request.status] || "border-[#dedbd3] bg-[#f8f7f4] text-[#171717]"}`}>
                       {request.status.replaceAll("_", " ")}
                     </span>
                   </div>
 
-                  {(() => {
-                    const unitAmount = request.approvedUnitCogs ?? request.proposedUnitCogs;
-                    const vatTreatmentForRequest = request.approvedVatTreatment || request.vatTreatment || "EXEMPT";
-                    const breakdown = getUnitCostBreakdown(
-                      unitAmount,
-                      vatTreatmentForRequest,
-                      request.approvedVatRate ?? request.vatRate,
-                      request.approvedVatInvoiceVerified === true,
-                    );
-                    return (
-                      <div className="grid gap-2 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] p-3 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
-                        <p>Goods cost before VAT <strong className="block">{currency}{breakdown.net} / unit</strong></p>
-                        <p>Supplier VAT ({vatTreatmentForRequest === "EXEMPT" ? "exempt" : `${request.approvedVatRate ?? request.vatRate}%`}) <strong className="block">{currency}{breakdown.vat} / unit</strong></p>
-                        <p>Goods total incl. VAT <strong className="block">{currency}{breakdown.gross} / unit</strong></p>
-                        <p>Other production charges <strong className="block">{currency}{Number(request.approvedDeliveryCost ?? request.proposedDeliveryCost ?? 0).toFixed(2)} {request.costTermsVersion >= 2 ? "/ batch" : "/ unit (legacy)"}</strong></p>
-                        <p className="sm:col-span-2">Inventory unit cost <strong>{currency}{breakdown.inventoryCost}</strong> · {request.approvedVatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."}</p>
-                        <p className="sm:col-span-2">Delivery to distributor <strong>separate shipment cost</strong> · recorded at transfer dispatch, not included above.</p>
+                  <div className="grid gap-2 rounded-lg bg-[#f8f7f4] p-3 text-[11px] sm:grid-cols-2">
+                    <p>Fabric: <strong>{request.fabricType || "Not specified"}</strong></p>
+                    <p>GSM: <strong>{request.gsm ?? "Not specified"}</strong></p>
+                    {Array.isArray(request.batchPlan) && <p className="sm:col-span-2">Batch plan: <strong>{request.batchPlan.map((batch) => `${batch.batchNumber}: ${batch.plannedQuantity}`).join(" · ")}</strong></p>}
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {(request.lines || []).map((line) => (
+                      <span key={`${line.size}-${line.color}`} className="rounded-lg bg-[#f8f7f4] px-2.5 py-1.5 text-xs text-[#575757]">
+                        {line.size}{line.color !== "Standard" ? ` / ${line.color}` : ""}: {line.quantity}
+                      </span>
+                    ))}
+                  </div>
+
+                  {request.adminNote && <p className="text-[11px] text-[#575757]">Admin instructions: {request.adminNote}</p>}
+
+                  {request.status === "PENDING_MANUFACTURER_QUOTE" && (
+                    <form onSubmit={(event) => submitQuote(event, request)} className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                      <div>
+                        <h4 className="text-xs font-bold text-amber-950">Submit your production quote</h4>
+                        <p className="mt-1 text-[10px] text-amber-900">Admin controls the ordered SKUs and quantities. Your quote must be approved before production can begin.</p>
                       </div>
-                    );
-                  })()}
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <label className="text-xs font-semibold text-[#171717]">Price per piece ({currency})
+                          <input required type="number" min="0.01" step="0.01" value={quote.unitCogs} onChange={(event) => updateQuote(request.id, "unitCogs", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
+                        </label>
+                        <label className="text-xs font-semibold text-[#171717]">Other production expenses for this order ({currency})
+                          <input required type="number" min="0" step="0.01" value={quote.otherCost} onChange={(event) => updateQuote(request.id, "otherCost", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
+                        </label>
+                        <label className="text-xs font-semibold text-[#171717]">VAT treatment
+                          <select value={quote.vatTreatment} onChange={(event) => updateQuote(request.id, "vatTreatment", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
+                            <option value="EXEMPT">No VAT / exempt</option>
+                            <option value="VAT_INCLUSIVE">VAT inclusive</option>
+                            <option value="VAT_EXCLUSIVE">VAT exclusive</option>
+                          </select>
+                        </label>
+                        {quote.vatTreatment !== "EXEMPT" && <>
+                          <label className="text-xs font-semibold text-[#171717]">VAT rate (%)
+                            <input required type="number" min="0.01" max="100" step="0.01" value={quote.vatRate} onChange={(event) => updateQuote(request.id, "vatRate", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
+                          </label>
+                          <label className="text-xs font-semibold text-[#171717]">VAT invoice reference
+                            <input required maxLength={120} value={quote.vatInvoiceReference} onChange={(event) => updateQuote(request.id, "vatInvoiceReference", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
+                          </label>
+                        </>}
+                      </div>
+                      <label className="block text-xs font-semibold text-[#171717]">Quote notes (optional)
+                        <textarea maxLength={2000} rows={2} value={quote.manufacturerNote} onChange={(event) => updateQuote(request.id, "manufacturerNote", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
+                      </label>
+                      <button disabled={savingId === request.id} className="rounded-xl bg-[#171717] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                        {savingId === request.id ? "Submitting quote..." : "Submit quote for Admin approval"}
+                      </button>
+                    </form>
+                  )}
 
-                  <p className="text-[11px] text-[#575757]">
-                    {(request.lines || [])
-                      .map((line) => `${line.size}${line.color !== "Standard" ? ` / ${line.color}` : ""}: ${line.requestedQuantity || line.quantity}`)
-                      .join(" • ")}
-                  </p>
+                  {request.status === "PENDING_ADMIN_APPROVAL" && (
+                    <p className="rounded-xl border border-orange-200 bg-orange-50 p-3 text-xs text-orange-900">Your quote has been sent to Admin. Wait for approval before starting production.</p>
+                  )}
 
-                  {/* Step Actions */}
+                  {unitAmount != null && (
+                    <div className="grid gap-2 rounded-lg border border-[#dedbd3] bg-white p-3 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+                      <p>{approved ? "Approved" : "Quoted"} price per piece <strong className="block">{currency}{costBreakdown.gross}</strong></p>
+                      <p>{approved ? "Approved" : "Quoted"} other production expenses <strong className="block">{currency}{Number(approved ? request.approvedDeliveryCost || 0 : request.proposedDeliveryCost || 0).toFixed(2)} / order</strong></p>
+                      <p>Inventory unit cost <strong className="block">{currency}{costBreakdown.inventoryCost}</strong></p>
+                      <p>VAT invoice {(approved && request.approvedVatInvoiceVerified) ? <strong>verified</strong> : <strong>not verified</strong>}</p>
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     {["APPROVED", "PRE_CHECK_FAILED"].includes(request.status) && (
-                      <button
-                        onClick={() => setPreCheckRequest(request)}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] hover:bg-[#dedbd3]/50 text-xs font-bold text-[#171717] transition-colors"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                      <button onClick={() => setPreCheckRequest(request)} className="flex items-center gap-1 rounded-lg border border-[#dedbd3] bg-[#f8f7f4] px-3 py-1.5 text-xs font-bold text-[#171717]">
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
                         {request.status === "PRE_CHECK_FAILED" ? "Retry Pre-Production Check" : "Pre-Production Check"}
                       </button>
                     )}
-
                     {request.status === "PRE_CHECK_PASSED" && (
-                      <button
-                        onClick={() => startProduction(request)}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#171717] hover:bg-[#262626] text-xs font-bold text-white transition-colors"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                        Start Production
+                      <button disabled={savingId === request.id} onClick={() => startProduction(request)} className="flex items-center gap-1 rounded-lg bg-[#171717] px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">
+                        <Play className="h-3.5 w-3.5" /> Start Production
                       </button>
                     )}
-
                     {["IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status) && (
-                      <button
-                        onClick={() => setPostCheckRequest(request)}
-                        className="flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 px-3.5 py-1.5 text-xs font-bold text-white transition-colors"
-                      >
+                      <button onClick={() => setPostCheckRequest(request)} className="flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-1.5 text-xs font-bold text-white">
                         <CheckCircle2 className="h-3.5 w-3.5" />
                         {request.status === "POST_CHECK_FAILED" ? "Retry QA & Receive Stock" : "Complete QA & Receive Stock"}
                       </button>
@@ -438,7 +280,6 @@ const Production = () => {
         )}
       </section>
 
-      {/* Pre-Check Quality Modal */}
       {preCheckRequest && (
         <PreProductionChecklistModal
           request={preCheckRequest}
@@ -447,8 +288,6 @@ const Production = () => {
           onSuccess={loadData}
         />
       )}
-
-      {/* Post-Check Quality & Stock Modal */}
       {postCheckRequest && (
         <PostProductionChecklistModal
           request={postCheckRequest}

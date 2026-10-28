@@ -74,6 +74,13 @@ The backend mounts the following major route groups in `backend/server.js`:
 
 Newly initialized databases seed loyalty, marketing cards, and customer letters as disabled by default. Their admin-controlled feature flags do not affect core production, stock transfer, customer order, or delivery operations.
 
+Marketing collaborations have been decommissioned: the `/api/collaborations`
+router is no longer mounted, partner/admin/manufacturer collaboration
+permissions are inactive, and collaboration-linked products and bundles are
+unpublished/inactive. Existing collaboration tables and posted accounting
+records are retained for history; delivery accrual and return adjustment logic
+continues to reconcile already-recorded collaboration sales.
+
 ### Key route examples from the actual code
 
 - `POST /api/auth/login`
@@ -281,7 +288,7 @@ The admin financial dashboard calculates product COGS from accepted per-order co
 
 The posted Profit & Loss statement recognizes COGS when a distributor-fulfilled order is delivered, not when production is approved or completed. Distributor receipt ledger movements retain the production cost-layer ID from the stock-transfer shipment allocation; self-delivery fulfillment and NCM delivery consume those received layer quantities, persist the consumed cost snapshot on the order for audit/history, pass the exact unit COGS and overhead into the delivery journal, and post the delivery sale and inventory relief in the same transaction. The self-delivery path must pass the full order and transaction client to the accounting poster. Transfers received before this provenance tracking was deployed remain uncosted in the ledger and are not backfilled with guessed production layers.
 
-Manufacturer production terms capture VAT treatment as exempt, inclusive, or exclusive plus rate and supplier invoice reference. Admin approval records whether the invoice was verified. Production receipt capitalizes unverified VAT into inventory; verified VAT is posted once to input VAT receivable, while manufacturer payable reflects the gross supplier amount. The Admin tax report and finance dashboard both use posted-journal VAT totals; operational cost estimates are not treated as VAT claims.
+Admin selects the manufacturer, product SKUs and quantities, fabric/GSM, target date, and batch plan when creating a production order. The manufacturer submits per-piece pricing and batch expenses as a quote; the order stays out of production until an admin approves the quoted terms. The manufacturer then completes the required pre-production checks before starting, followed by post-production QA before stock receipt. Production quote terms capture VAT treatment as exempt, inclusive, or exclusive plus rate and supplier invoice reference. Admin approval records whether the invoice was verified. Production receipt capitalizes unverified VAT into inventory; verified VAT is posted once to input VAT receivable, while manufacturer payable reflects the gross supplier amount. The Admin tax report and finance dashboard both use posted-journal VAT totals; operational cost estimates are not treated as VAT claims.
 
 Future output VAT rates are managed as append-only `VatRateVersion` records by `finance:tax_configure`. Only future timestamps can be scheduled, only the latest scheduled version can be cancelled, and rate resolution uses the transaction's source date. Delivered-sales and full-delivery-return journals use that effective rate; customer-return approvals snapshot the rate and VAT reversal so a later change cannot alter an approved refund. Before the first version effective for a transaction date, the legacy `TaxConfiguration.vatRate` value (or 13% fallback) remains in force. Pre-version historical treatment still requires reconciliation.
 

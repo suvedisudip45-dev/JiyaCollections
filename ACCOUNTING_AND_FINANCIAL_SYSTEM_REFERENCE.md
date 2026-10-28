@@ -47,7 +47,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Equity | Current-year profit/loss / drawings | 3400 / 3500 | Equity accounts |
 | Revenue | Product sales | 4100 | Product revenue, excluding VAT |
 | Revenue | Delivery revenue | 4200 | Customer delivery charge, excluding VAT |
-| Revenue | Collaboration fee | 4300 | Partner/collaboration revenue |
+| Revenue | Collaboration fee | 4300 | Legacy account retained for historical collaboration postings; new collaboration activity is disabled |
 | Contra-revenue | Returns / discounts | 4500 / 4600 | Sales returns and discounts |
 | Cost | COGS | 5100 | Product cost recognized on sale |
 | Cost | Inbound freight / packaging / damage | 5200 / 5300 / 5500 | Cost and inventory-loss accounts |

@@ -4,7 +4,6 @@ import { Link, useLocation } from "react-router-dom";
 const LABELS = {
   shop: "Shop",
   "combo-bundles": "Combo Bundles",
-  collaborations: "Collaborations",
   about: "About",
   contact: "Contact",
   product: "Product",

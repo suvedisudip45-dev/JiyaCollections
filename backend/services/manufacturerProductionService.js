@@ -70,47 +70,39 @@ export const calculateProductionUnitCost = ({
   };
 };
 
-export const calculateFullyLoadedUnitCogs = ({ unitCogs, batchOtherCost, goodQuantity }) => {
-  const baseCogs = new Prisma.Decimal(String(unitCogs));
-  const otherCost = new Prisma.Decimal(String(batchOtherCost ?? 0));
-  if (!baseCogs.isFinite() || baseCogs.isNegative() || !otherCost.isFinite() || otherCost.isNegative()) {
-    throw new Error("Production unit COGS and batch other cost must be valid non-negative amounts.");
-  }
-  if (!Number.isInteger(goodQuantity) || goodQuantity < 0) {
-    throw new Error("Good production quantity must be a non-negative whole number.");
-  }
-  if (goodQuantity === 0) return baseCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  return baseCogs.add(otherCost.div(goodQuantity))
-    .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
-};
-
-export const validateProductionRequestInput = ({
-  lines,
+export const validateManufacturerProductionQuote = ({
   unitCogs,
-  minimumOrderQuantity,
+  averagePricePerUnit,
   otherCost,
-  deliveryCost,
   vatTreatment,
   vatRate,
   vatInvoiceReference,
-}) => {
-  const cogs = new Prisma.Decimal(String(unitCogs));
-  const moq = Number(minimumOrderQuantity);
-  const batchOtherCost = new Prisma.Decimal(String(otherCost ?? deliveryCost ?? 0));
+  manufacturerNote,
+} = {}) => {
+  const price = new Prisma.Decimal(String(averagePricePerUnit ?? unitCogs ?? ""));
+  const batchOtherCost = new Prisma.Decimal(String(otherCost ?? ""));
+  if (!price.isFinite() || !price.greaterThan(0) ||
+      !batchOtherCost.isFinite() || batchOtherCost.isNegative()) {
+    throw new Error("Provide a positive per-piece price and a non-negative batch expense.");
+  }
   const vatTerms = normalizeProductionVatTerms({ vatTreatment, vatRate, vatInvoiceReference });
-  if (!cogs.isFinite() || !cogs.greaterThan(0)) {
-    throw new Error("Per-piece COGS must be a valid amount greater than zero.");
+  calculateProductionUnitCost({ unitAmount: price, ...vatTerms });
+  const note = String(manufacturerNote || "").trim();
+  if (note.length > 2000) {
+    throw new Error("Manufacturer note cannot exceed 2000 characters.");
   }
-  if (!Number.isInteger(moq) || moq < 1 || moq > 2147483647) {
-    throw new Error("MOQ must be a positive whole number.");
-  }
-  if (!batchOtherCost.isFinite() || batchOtherCost.isNegative()) {
-    throw new Error("Batch other cost must be a valid non-negative amount.");
-  }
+  return {
+    unitCogs: price.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    otherCost: batchOtherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+    ...vatTerms,
+    manufacturerNote: note || null,
+  };
+};
+
+export const normalizeProductionRequestLines = (lines) => {
   if (!Array.isArray(lines) || lines.length === 0 || lines.length > 100) {
     throw new Error("Provide production quantities for at least one size and color.");
   }
-
   const unique = new Set();
   const normalizedLines = lines.map((line) => {
     const size = String(line?.size || "Standard").trim();
@@ -124,18 +116,23 @@ export const validateProductionRequestInput = ({
     unique.add(key);
     return { size, color, quantity };
   });
-
   const totalQuantity = normalizedLines.reduce((total, line) => total + line.quantity, 0);
   if (totalQuantity > 2147483647) throw new Error("Total production quantity cannot exceed 2147483647 units.");
+  return { lines: normalizedLines, totalQuantity };
+};
 
-  return {
-    lines: normalizedLines,
-    unitCogs: cogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
-    minimumOrderQuantity: moq,
-    otherCost: batchOtherCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
-    ...vatTerms,
-    totalQuantity,
-  };
+export const calculateFullyLoadedUnitCogs = ({ unitCogs, batchOtherCost, goodQuantity }) => {
+  const baseCogs = new Prisma.Decimal(String(unitCogs));
+  const otherCost = new Prisma.Decimal(String(batchOtherCost ?? 0));
+  if (!baseCogs.isFinite() || baseCogs.isNegative() || !otherCost.isFinite() || otherCost.isNegative()) {
+    throw new Error("Production unit COGS and batch other cost must be valid non-negative amounts.");
+  }
+  if (!Number.isInteger(goodQuantity) || goodQuantity < 0) {
+    throw new Error("Good production quantity must be a non-negative whole number.");
+  }
+  if (goodQuantity === 0) return baseCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  return baseCogs.add(otherCost.div(goodQuantity))
+    .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
 };
 
 export const allocateProductionLayersForOrderItem = async ({

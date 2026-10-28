@@ -1,6 +1,6 @@
 import { prisma } from "../config/db.js";
 import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
-import { accrueCollaborationSalesForOrder, createCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
+import { accrueCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
@@ -93,7 +93,7 @@ export const createDistributorDirectOrder = async (req, res) => {
     const lines = normalizeOrderLines(items);
     const productIds = [...new Set(lines.map((line) => line.productId))];
     const products = await prisma.product.findMany({
-      where: { id: { in: productIds }, published: true },
+      where: { id: { in: productIds }, published: true, collaborationLink: null },
       select: { id: true, name: true, image: true, category: true, subCategory: true, price: true },
     });
     if (products.length !== productIds.length) {
@@ -290,7 +290,6 @@ export const createDistributorDirectOrder = async (req, res) => {
       });
       const finalized = { ...created, items: frozenItems, assignmentId: assignment.id };
       await tx.order.update({ where: { id: created.id }, data: { assignmentId: assignment.id } });
-      await createCollaborationSalesForOrder({ order: created, items: frozenItems, client: tx });
       if (isWalkIn) {
         await postDeliveredOrderAccounting({ order: finalized, client: tx });
         await accrueCollaborationSalesForOrder({ orderId: created.id, deliveredAt: acceptedAt, client: tx });
