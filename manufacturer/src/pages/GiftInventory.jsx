@@ -15,6 +15,7 @@ const GiftInventory = () => {
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [respondingId, setRespondingId] = useState("");
+  const [receiptCounts, setReceiptCounts] = useState({});
 
   const fetchInventory = useCallback(async () => {
     if (!token) return;
@@ -35,7 +36,10 @@ const GiftInventory = () => {
   const respond = async (item, decision) => {
     setRespondingId(item.id);
     try {
-      const response = await axios.post(`${backendUrl}/api/distributor/gifts/${item.id}/respond`, { decision }, { headers: { token } });
+      const response = await axios.post(`${backendUrl}/api/distributor/gifts/${item.id}/respond`, {
+        decision,
+        ...(decision === "ACCEPTED" ? { receivedQuantity: Number(receiptCounts[item.id] ?? item.quantityAvailable) } : {}),
+      }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Unable to update gift stock.");
       toast.success(decision === "ACCEPTED" ? "Gift stock accepted." : "Gift stock rejected.");
       await fetchInventory();
@@ -69,7 +73,7 @@ const GiftInventory = () => {
           const pending = item.status === "PENDING_ACCEPTANCE";
           return <article key={item.id} className="grid gap-3 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-5">
             <div className="flex min-w-0 items-start gap-3"><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700"><Gift className="h-5 w-5" /></span><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate text-sm font-bold text-slate-900">{item.gift?.name || "Gift item"}</h3><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusStyles[item.status] || "bg-slate-100 text-slate-700"}`}>{String(item.status || "").replaceAll("_", " ")}</span></div><p className="mt-1 text-xs text-slate-500">{item.gift?.sku || "No SKU"} · {currency}{Number(item.gift?.priceValue || 0).toLocaleString()}</p><div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600"><span>Available <strong className="text-slate-900">{item.quantityAvailable}</strong></span><span>Reserved <strong className="text-slate-900">{item.quantityReserved}</strong></span></div>{item.notes && <p className="mt-1 max-w-xl text-xs text-slate-500">{item.notes}</p>}</div></div>
-            {pending && <div className="flex gap-2 sm:justify-end"><button type="button" onClick={() => respond(item, "ACCEPTED")} disabled={respondingId === item.id} className="inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50 sm:flex-none"><Check className="h-4 w-4" /> Accept</button><button type="button" onClick={() => respond(item, "REJECTED")} disabled={respondingId === item.id} className="inline-flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-3 text-xs font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-800 disabled:opacity-50 sm:flex-none"><X className="h-4 w-4" /> Reject</button></div>}
+            {pending && <div className="flex flex-col gap-2 sm:items-end"><label className="text-[11px] font-semibold text-slate-600">Quantity received<input type="number" min="0" max={item.quantityAvailable} step="1" value={receiptCounts[item.id] ?? item.quantityAvailable} onChange={(event) => setReceiptCounts((current) => ({ ...current, [item.id]: event.target.value }))} className="ml-2 w-20 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-900" /></label><div className="flex gap-2"><button type="button" onClick={() => respond(item, "ACCEPTED")} disabled={respondingId === item.id || !Number.isSafeInteger(Number(receiptCounts[item.id] ?? item.quantityAvailable)) || Number(receiptCounts[item.id] ?? item.quantityAvailable) < 0 || Number(receiptCounts[item.id] ?? item.quantityAvailable) > item.quantityAvailable} className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50"><Check className="h-4 w-4" /> Confirm receipt</button><button type="button" onClick={() => respond(item, "REJECTED")} disabled={respondingId === item.id} className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-3 text-xs font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-800 disabled:opacity-50"><X className="h-4 w-4" /> Reject</button></div></div>}
             {!pending && item.status === "ACCEPTED" && <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800"><PackageCheck className="h-4 w-4" /> Ready for allocation</span>}
           </article>;
         })}</div> : <div className="px-5 py-14 text-center"><Gift className="mx-auto h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-semibold text-slate-700">No gift stock assigned yet</p><p className="mt-1 text-xs text-slate-500">New stock assignments will appear here for your review.</p></div>}

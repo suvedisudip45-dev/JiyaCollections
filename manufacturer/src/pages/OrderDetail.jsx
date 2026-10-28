@@ -605,13 +605,10 @@ const OrderDetail = () => {
   };
 
   const handleChecklistConfirm = async (confirmedChecklist) => {
-    const { giftInventoryId, ...checklistData } = confirmedChecklist;
-    if (giftInventoryId) checklistData.catalogGiftIncluded = true;
-    setChecklist(checklistData);
+    setChecklist(confirmedChecklist);
     setChecklistModalOpen(false);
     await handleStatusChange("checklist_complete", {
-      giftInventoryId,
-      packagingChecklist: checklistData,
+      packagingChecklist: confirmedChecklist,
     });
   };
 

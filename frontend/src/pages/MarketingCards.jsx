@@ -39,7 +39,8 @@ const MarketingCards = () => {
   const [qrToken, setQrToken] = useState("");
   const [scannedOfferResult, setScannedOfferResult] = useState(null); // { hasBenefit, benefit, partner, message }
   const canClaimScannedReward = Boolean(
-    scannedOfferResult?.campaign?.isOwnStore && scannedOfferResult?.benefit?.benefitType === "DISCOUNT"
+    scannedOfferResult?.campaign?.isOwnStore &&
+    ["DISCOUNT", "VOUCHER"].includes(scannedOfferResult?.benefit?.benefitType)
   );
   const [sponsorAdOpen, setSponsorAdOpen] = useState(false);
   const [isScratchRevealed, setIsScratchRevealed] = useState(false);
@@ -506,6 +507,8 @@ const MarketingCards = () => {
                   <p className="mt-1 text-sm font-bold text-amber-800">
                     {scannedOfferResult.benefit.benefitType === "DISCOUNT"
                       ? `${scannedOfferResult.benefit.value}% Discount Offer`
+                      : scannedOfferResult.benefit.benefitType === "VOUCHER"
+                      ? `Rs ${scannedOfferResult.benefit.value} Voucher`
                       : scannedOfferResult.benefit.value
                       ? `Value: Rs ${scannedOfferResult.benefit.value}`
                       : scannedOfferResult.benefit.benefitType}

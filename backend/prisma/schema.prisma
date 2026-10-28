@@ -404,7 +404,8 @@ model User {
   letterDeliveries            LetterDelivery[]             @relation("CustomerLetterDeliveryCustomer")
   marketingCardLinks          MarketingCardCustomer[]      @relation("MarketingCardCustomerUser")
   marketingBenefitRedemptions MarketingBenefitRedemption[]
-  orderExchangeRequests       OrderExchangeRequest[]
+  giftRewardEntitlements        GiftRewardEntitlement[]
+  orderExchangeRequests         OrderExchangeRequest[]
   distributorReviews          DistributorReview[]
 }
 
@@ -669,6 +670,7 @@ model Order {
   assignedGift                GiftCatalog?        @relation("GiftCatalogOrder", fields: [assignedGiftId], references: [id], onDelete: SetNull)
   assignedGiftInventory       ManufacturerGiftInventory? @relation("GiftInventoryOrders", fields: [assignedGiftInventoryId], references: [id], onDelete: SetNull)
   assignedDistributorGiftInventory DistributorGiftInventory? @relation("DistributorGiftInventoryOrders", fields: [assignedDistributorGiftInventoryId], references: [id], onDelete: SetNull)
+  giftRewardEntitlement        GiftRewardEntitlement?
   distributor                 Distributor?         @relation("DistributorDirectOrders", fields: [distributorId], references: [id], onDelete: SetNull)
 
   @@index([fulfillmentStatus])
@@ -821,6 +823,7 @@ model GiftCatalog {
   distributorInventory DistributorGiftInventory[]
   distributorMovements DistributorGiftMovementLog[]
   assignedOrders Order[]               @relation("GiftCatalogOrder")
+  rewardEntitlements GiftRewardEntitlement[]
 
   @@index([isActive, category])
 }
@@ -864,8 +867,10 @@ model DistributorGiftInventory {
   id                String    @id @default(uuid())
   distributorId     String
   giftId            String
+  quantitySent      Int       @default(0)
   quantityAvailable Int       @default(0)
   quantityReserved  Int       @default(0)
+  receivedQuantity  Int?
   status            String    @default("PENDING_ACCEPTANCE") // PENDING_ACCEPTANCE | ACCEPTED | REJECTED
   notes             String?   @db.Text
   createdAt         DateTime  @default(now())
@@ -873,6 +878,7 @@ model DistributorGiftInventory {
   distributor       Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
   gift              GiftCatalog @relation(fields: [giftId], references: [id], onDelete: Cascade)
   assignedOrders    Order[]    @relation("DistributorGiftInventoryOrders")
+  rewardEntitlements GiftRewardEntitlement[]
 
   @@index([distributorId, status])
   @@index([giftId, status])
@@ -892,6 +898,33 @@ model DistributorGiftMovementLog {
 
   @@index([distributorId, createdAt])
   @@index([giftId, createdAt])
+}
+
+model GiftRewardEntitlement {
+  id                       String    @id @default(uuid())
+  customerId               String
+  sourceType               String    @db.VarChar(32) // CARD | LOYALTY | ORDER_VALUE
+  sourceKey                String    @unique @db.VarChar(191)
+  rewardValue              Float
+  status                   String    @default("PENDING") @db.VarChar(24) // PENDING | RESERVED | ASSIGNED | FULFILLED | CANCELLED
+  checkoutGroupId          String?   @db.VarChar(191)
+  marketingBenefitRedemptionId String? @unique
+  orderId                  String?   @unique
+  giftId                   String?
+  distributorGiftInventoryId String?
+  createdAt                DateTime  @default(now())
+  assignedAt               DateTime?
+  fulfilledAt              DateTime?
+  customer                 User      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  order                    Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  marketingBenefitRedemption MarketingBenefitRedemption? @relation(fields: [marketingBenefitRedemptionId], references: [id], onDelete: SetNull)
+  gift                     GiftCatalog? @relation(fields: [giftId], references: [id], onDelete: SetNull)
+  distributorGiftInventory DistributorGiftInventory? @relation(fields: [distributorGiftInventoryId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, status, createdAt])
+  @@index([checkoutGroupId, status])
+  @@index([giftId])
+  @@index([distributorGiftInventoryId])
 }
 
 model CustomerLetterImage {
@@ -2556,6 +2589,7 @@ model MarketingBenefitRedemption {
   card       MarketingCard    @relation(fields: [cardId], references: [id], onDelete: Restrict)
   benefit    MarketingBenefit @relation(fields: [benefitId], references: [id], onDelete: Restrict)
   customer   User             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  giftRewardEntitlement GiftRewardEntitlement?
 
   @@unique([cardId, benefitId])
   @@index([customerId, status])

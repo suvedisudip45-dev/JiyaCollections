@@ -145,6 +145,7 @@ const TABS = [
 const MarketingCards = ({ token }) => {
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const [tab, setTab] = useState("overview");
+  const [setupStep, setSetupStep] = useState(1);
 
   // Core data
   const [partners, setPartners] = useState([]);
@@ -726,13 +727,53 @@ const MarketingCards = ({ token }) => {
       {/* ══ SETUP TAB ════════════════════════════════════════════════════════ */}
       {!loading && tab === "setup" && (
         <div className="space-y-6">
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-black text-slate-900">Set up marketing cards</h2>
+                <p className="mt-1 text-xs text-slate-500">Follow the steps in order. You can return to any step without losing your current campaign setup.</p>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                Step {setupStep} of 3
+              </span>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              {[
+                { number: 1, title: "Campaign", description: "Name, audience, offers" },
+                { number: 2, title: "Generate", description: "Create and print cards" },
+                { number: 3, title: "Distribute", description: "Assign card batches" },
+              ].map((step) => (
+                <button
+                  key={step.number}
+                  type="button"
+                  onClick={() => setSetupStep(step.number)}
+                  aria-current={setupStep === step.number ? "step" : undefined}
+                  className={`flex items-center gap-3 rounded-xl border p-3 text-left transition-colors ${
+                    setupStep === step.number
+                      ? "border-emerald-500 bg-emerald-50"
+                      : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                    setupStep === step.number ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-600"
+                  }`}>{step.number}</span>
+                  <span>
+                    <span className="block text-xs font-bold text-slate-900">{step.title}</span>
+                    <span className="mt-0.5 block text-[10px] text-slate-500">{step.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+
           <div className="grid gap-6 lg:grid-cols-12">
-            {/* Left column: Generate + Assign */}
-            <div className="lg:col-span-4 space-y-6">
+            {/* Step 2: Generate cards */}
+            <div className={setupStep === 2 ? "lg:col-span-6 lg:col-start-4" : "hidden"}>
               {/* Generate Inventory */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">3. Generate Inventory &amp; Print QR</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Generates batch with randomly shuffled prize cards.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 2 · Generate</p>
+                <h2 className="mt-1 text-sm font-black text-slate-900">Create card batch &amp; print QR codes</h2>
+                <p className="mt-1 text-xs text-slate-500">Choose a saved campaign and batch size. Prize cards are shuffled automatically.</p>
                 <div className="mt-4 space-y-3">
                   <div>
                     <label className="text-[11px] font-bold uppercase text-slate-500">Select Campaign</label>
@@ -741,6 +782,14 @@ const MarketingCards = ({ token }) => {
                       {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.marketingPartner?.name || "Aama Own Store"})</option>)}
                     </select>
                   </div>
+                  {campaigns.length === 0 && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      Create a campaign before generating cards.{" "}
+                      <button type="button" onClick={() => setSetupStep(1)} className="font-bold underline">
+                        Go to Campaign
+                      </button>
+                    </div>
+                  )}
                   {selectedCampaignForBatch && (
                     <div className="rounded-xl bg-slate-50 p-3 border border-slate-200 text-xs space-y-1.5">
                       <p className="font-bold text-slate-800">Distribution for this campaign:</p>
@@ -780,11 +829,15 @@ const MarketingCards = ({ token }) => {
                   </button>
                 </div>
               </section>
+            </div>
 
+            {/* Step 3: Distribute generated card batches */}
+            <div className={setupStep === 3 ? "grid gap-6 lg:col-span-12 lg:grid-cols-2" : "hidden"}>
               {/* 4. Assign Own Store cards publicly, to a partner, or to a custom organization */}
               <section className="rounded-2xl border border-[#e6c5ba] bg-[#f8f7f4] p-5 shadow-sm">
-                <h2 className="text-sm font-black text-[#171717]">4. Assign Own Store Cards</h2>
-                <p className="mt-0.5 text-xs text-slate-600">Track cards as public, assigned to a Marketing Partner, or assigned to a custom organization. All Own Store cards can be scanned by any signed-in customer. Distributor stock distribution remains separate.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[#bd4c34]">Step 3 · Customer access</p>
+                <h2 className="mt-1 text-sm font-black text-[#171717]">Assign Own Store cards</h2>
+                <p className="mt-1 text-xs text-slate-600">Make cards public or assign them to a partner or organization. This tracks access; distributor stock is managed separately.</p>
                 <div className="mt-4 space-y-3">
                   <select
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -873,8 +926,9 @@ const MarketingCards = ({ token }) => {
 
               {/* 5. Assign to Distributor */}
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 className="text-sm font-black text-slate-900">5. Assign Cards to Distributor</h2>
-                <p className="mt-0.5 text-xs text-slate-500">Allocate generated cards to distributor hubs.</p>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 3 · Physical distribution</p>
+                <h2 className="mt-1 text-sm font-black text-slate-900">Send cards to a distributor</h2>
+                <p className="mt-1 text-xs text-slate-500">Assign generated physical cards to a distributor hub for receipt and customer handoff.</p>
                 <div className="mt-4 space-y-3">
                   <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}>
                     <option value="">Select campaign</option>
@@ -890,12 +944,13 @@ const MarketingCards = ({ token }) => {
               </section>
             </div>
 
-            {/* Right column: Campaign builder */}
-            <div className="lg:col-span-8">
+            {/* Step 1: Campaign builder */}
+            <div className={setupStep === 1 ? "lg:col-span-12" : "hidden"}>
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                   <div>
-                    <h2 className="text-sm font-black text-slate-900">2. Create Campaign &amp; Configure Custom Offers</h2>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 1 · Campaign</p>
+                    <h2 className="mt-1 text-sm font-black text-slate-900">Create campaign &amp; configure offers</h2>
                     <p className="mt-0.5 text-xs text-slate-500">Define discount tiers, gifts, and random distribution probabilities.</p>
                   </div>
                   <button type="button" onClick={loadExampleStrategy} className="rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100">
@@ -1087,6 +1142,16 @@ const MarketingCards = ({ token }) => {
                     </div>
                   </div>
 
+                  <details className="group rounded-xl border border-slate-200 bg-white">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4">
+                      <span>
+                        <span className="block text-xs font-bold text-slate-800">Advanced settings</span>
+                        <span className="mt-0.5 block text-[11px] text-slate-500">Campaign dates and optional customer promo media</span>
+                      </span>
+                      <span className="text-xs font-bold text-emerald-700 group-open:hidden">Show</span>
+                      <span className="hidden text-xs font-bold text-emerald-700 group-open:inline">Hide</span>
+                    </summary>
+                    <div className="space-y-4 border-t border-slate-100 p-4">
                   {/* Campaign dates */}
                   <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 space-y-3">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Campaign &amp; Card Dates</p>
@@ -1224,6 +1289,8 @@ const MarketingCards = ({ token }) => {
                       )}
                     </div>
                   </div>
+                    </div>
+                  </details>
 
                   {/* Submit campaign */}
                   <button disabled={working || adMediaUploading}
@@ -1267,7 +1334,13 @@ const MarketingCards = ({ token }) => {
                         ? "/api/marketing-cards/admin/own-store/campaigns"
                         : "/api/marketing-cards/admin/campaigns";
                       const r = await submit(endpoint, payload, `Campaign created with ${formattedBenefits.length} offer(s).`);
-                      if (r) setCampaign(createInitialCampaign());
+                      if (r) {
+                        if (r.campaign?.id) {
+                          setBatch((current) => ({ ...current, campaignId: r.campaign.id }));
+                        }
+                        setCampaign(createInitialCampaign());
+                        setSetupStep(2);
+                      }
                     }}
                     className="w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800 disabled:opacity-50">
                     Create Campaign with Configured Offers
@@ -1275,6 +1348,24 @@ const MarketingCards = ({ token }) => {
                 </div>
               </section>
             </div>
+          </div>
+
+          <div className="flex justify-between gap-3">
+            {setupStep > 1 ? (
+              <button type="button" onClick={() => setSetupStep((step) => step - 1)} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">
+                Back
+              </button>
+            ) : <span />}
+            {setupStep < 3 && (
+              <button
+                type="button"
+                onClick={() => setSetupStep((step) => step + 1)}
+                disabled={setupStep === 2 && campaigns.length === 0}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {setupStep === 1 ? "Continue to Generate" : "Continue to Distribute"}
+              </button>
+            )}
           </div>
         </div>
       )}

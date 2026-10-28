@@ -29,6 +29,7 @@ import {
   Layers,
   Sparkles,
   Star,
+  Gift,
 } from "lucide-react";
 
 const toCustomerDisplayItems = (items = []) => {
@@ -770,7 +771,7 @@ const Orders = () => {
                       <tr key={order.id} className="align-top hover:bg-slate-50/70">
                         <td className="whitespace-nowrap px-4 py-4 font-mono font-bold text-slate-900">#{order.id.slice(0, 8).toUpperCase()}</td>
                         <td className="whitespace-nowrap px-4 py-4 text-slate-600">{new Date(order.dateNum).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td>
-                        <td className="max-w-56 px-4 py-4"><p className="line-clamp-2 font-semibold text-slate-800">{productNames[0] || "Order items"}</p>{productNames.length > 1 && <p className="mt-1 text-[10px] text-slate-500">+{productNames.length - 1} more product{productNames.length === 2 ? "" : "s"}</p>}</td>
+                        <td className="max-w-56 px-4 py-4"><p className="line-clamp-2 font-semibold text-slate-800">{productNames[0] || "Order items"}</p>{productNames.length > 1 && <p className="mt-1 text-[10px] text-slate-500">+{productNames.length - 1} more product{productNames.length === 2 ? "" : "s"}</p>}{order.assignedGift && <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><Gift className="h-3 w-3" /> Gift included: {order.assignedGift.name}</p>}</td>
                         <td className="whitespace-nowrap px-4 py-4"><span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${statusBadge.bg}`}><span className={`h-1.5 w-1.5 rounded-full ${statusBadge.dot}`} />{statusBadge.label}</span></td>
                         <td className="whitespace-nowrap px-4 py-4 text-right font-bold text-slate-900">{currency}{Number(order.amount || 0).toLocaleString()}</td>
                         <td className="whitespace-nowrap px-4 py-4"><span className={`font-semibold ${order.payment ? "text-emerald-700" : "text-amber-700"}`}>{paymentLabel}</span><span className="mt-0.5 block text-[10px] text-slate-500">{order.paymentMethod || "Payment"}</span></td>
@@ -1341,6 +1342,16 @@ const Orders = () => {
                   <p className="text-slate-600">{invoiceOrder.address?.country || "Nepal"}</p>
                 </div>
               </div>
+
+              {invoiceOrder.assignedGift && (
+                <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
+                  <Gift className="h-5 w-5 shrink-0 text-emerald-700" />
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Gift included with this shipment</p>
+                    <p className="mt-0.5 font-bold">{invoiceOrder.assignedGift.name}</p>
+                  </div>
+                </div>
+              )}
 
               {/* Itemized Table */}
               <div>

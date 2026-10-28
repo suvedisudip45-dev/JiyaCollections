@@ -240,7 +240,12 @@ export const customerListRewards = async (req, res) => {
 export const customerClaimReward = async (req, res) => {
   try {
     const reward = await claimCustomerReward({ customerId: req.userId, cardId: req.body.cardId });
-    return res.json({ success: true, reward, message: reward.alreadyClaimed ? "This reward is already claimed and ready to use." : "Reward claimed and ready to apply at checkout." });
+    const message = reward.benefitType === "GIFT"
+      ? "Gift reward saved. It will be attached to your next eligible order."
+      : reward.alreadyClaimed
+        ? "This reward is already claimed and ready to use."
+        : "Reward claimed and ready to apply at checkout.";
+    return res.json({ success: true, reward, message });
   } catch (error) { return sendError(res, error); }
 };
 

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { prisma } from "../config/db.js";
+import { createPendingGiftEntitlement } from "./giftService.js";
 
 const hashToken = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
 
@@ -260,7 +261,7 @@ export const listCustomerCards = async (customerId) => {
   return links.map(safeCard);
 };
 
-export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$transaction(async (tx) => {
+export const claimCustomerReward = async ({ customerId, cardId, client = prisma }) => client.$transaction(async (tx) => {
   if (!cardId) throw new Error("A card ID is required.");
 
   const card = await tx.marketingCard.findUnique({
@@ -286,8 +287,18 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
     error.code = "MARKETING_CARD_REWARD_INVALID";
     throw error;
   }
-  if (card.benefit.benefitType !== "DISCOUNT") {
-    const error = new Error("Only discount rewards can be claimed for online checkout.");
+  if (!["DISCOUNT", "GIFT", "VOUCHER"].includes(card.benefit.benefitType)) {
+    const error = new Error("Only discount, gift, and voucher rewards can be claimed online.");
+    error.code = "MARKETING_CARD_REWARD_INVALID";
+    throw error;
+  }
+  const benefitValue = Number(card.benefit.value);
+  if (
+    !Number.isFinite(benefitValue) ||
+    benefitValue <= 0 ||
+    (card.benefit.benefitType === "DISCOUNT" && benefitValue > 100)
+  ) {
+    const error = new Error("This card reward has an invalid value.");
     error.code = "MARKETING_CARD_REWARD_INVALID";
     throw error;
   }
@@ -305,6 +316,7 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
     return {
       cardId: card.id,
       benefitId: card.benefit.id,
+      benefitType: card.benefit.benefitType,
       status: "CLAIMED",
       claimedAt: existing.claimedAt,
       alreadyClaimed: true,
@@ -327,6 +339,16 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
       redeemedAt: null,
     },
   });
+  if (card.benefit.benefitType === "GIFT") {
+    await createPendingGiftEntitlement({
+      client: tx,
+      customerId,
+      sourceType: "CARD",
+      sourceKey: `MARKETING_BENEFIT_REDEMPTION:${redemption.id}`,
+      rewardValue: card.benefit.value,
+      marketingBenefitRedemptionId: redemption.id,
+    });
+  }
   if (link.status !== "ACTIVE" || !link.activatedAt) {
     await tx.marketingCardCustomer.update({
       where: { id: link.id },
@@ -345,6 +367,7 @@ export const claimCustomerReward = async ({ customerId, cardId }) => prisma.$tra
   return {
     cardId: card.id,
     benefitId: card.benefit.id,
+    benefitType: card.benefit.benefitType,
     status: "CLAIMED",
     claimedAt,
     alreadyClaimed: false,

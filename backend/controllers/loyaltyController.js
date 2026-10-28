@@ -68,8 +68,8 @@ const DEFAULT_LEVELS = [
     minOrders: 8,
     rewardType: "COMBO",
     rewardValue: 250,
-    rewardTitle: "Free Delivery + Rs. 250 Off + Gift up to Rs. 500",
-    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus a physical hub gift up to Rs. 500.",
+    rewardTitle: "Free Delivery + Rs. 250 Off + Rs. 500 Gift",
+    rewardDescription: "Free shipping, Rs. 250 discount on next 3 orders, plus a physical gift valued at Rs. 500 when assigned distributor stock is available.",
     rewardOrderLimit: 3,
     freeShipping: true,
     discountAmount: 250,
@@ -239,7 +239,7 @@ export const calculateUserLoyalty = async (userId) => {
   const customPerk = (currentLevel.customPerk || "").trim();
 
   // Has any active perk configured?
-  const hasPerks = isFreeShipping || discountAmount > 0 || giftAmount > 0 || giftDescription || letterIncluded || customPerk;
+  const hasPerks = isFreeShipping || discountAmount > 0 || giftAmount > 0 || letterIncluded || customPerk;
 
   const rewardOrderLimit = Number(currentLevel.rewardOrderLimit || 3);
   const loyaltyRewardOrderCount = eligibleOrders.filter((order) => {
@@ -259,7 +259,7 @@ export const calculateUserLoyalty = async (userId) => {
   const perkTags = [];
   if (isFreeShipping) perkTags.push("Free Delivery");
   if (discountAmount > 0) perkTags.push(`Rs. ${discountAmount} Off`);
-  if (giftAmount > 0 || giftDescription) perkTags.push(giftAmount > 0 ? `${giftDescription || "Loyalty gift"} up to Rs. ${giftAmount}` : giftDescription);
+  if (giftAmount > 0) perkTags.push(`${giftDescription || "Loyalty gift"} valued at Rs. ${giftAmount}`);
   if (letterIncluded) perkTags.push("Handwritten Letter");
   if (customPerk) perkTags.push(customPerk);
 
@@ -339,10 +339,10 @@ export const createOrUpdateLevel = async (req, res) => {
 
     const isFreeShipping = Boolean(freeShipping);
     const discAmt = Math.max(0, Number(discountAmount !== undefined ? discountAmount : (rewardValue || 0)));
-    const giftAmt = Math.max(0, Number(giftAmount || 0));
+    const giftAmt = Number(giftAmount || 0);
     const giftDesc = (giftDescription || "").trim();
-    if ((giftAmt > 0) !== Boolean(giftDesc)) {
-      return res.status(400).json({ success: false, message: "Set both a loyalty gift description and its maximum value, or leave both empty." });
+    if (!Number.isFinite(giftAmt) || giftAmt < 0 || (giftAmt === 0 && giftDesc)) {
+      return res.status(400).json({ success: false, message: "Set a valid positive exact gift value for a loyalty gift, or leave the gift fields empty." });
     }
     const isLetter = Boolean(letterIncluded);
     const cPerk = (customPerk || "").trim();
@@ -353,7 +353,7 @@ export const createOrUpdateLevel = async (req, res) => {
       const parts = [];
       if (isFreeShipping) parts.push("Free Delivery");
       if (discAmt > 0) parts.push(`Rs. ${discAmt} Off`);
-      if (giftAmt > 0 || giftDesc) parts.push(giftAmt > 0 ? `${giftDesc || "Gift"} up to Rs. ${giftAmt}` : giftDesc);
+      if (giftAmt > 0) parts.push(`${giftDesc || "Loyalty gift"} valued at Rs. ${giftAmt}`);
       if (isLetter) parts.push("Handwritten Letter");
       if (cPerk) parts.push(cPerk);
       title = parts.length > 0 ? parts.join(" + ") : "Entry Level";

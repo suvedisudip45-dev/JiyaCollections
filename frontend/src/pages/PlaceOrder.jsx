@@ -223,10 +223,18 @@ const PlaceOrder = () => {
   const [rewardChoice, setRewardChoice] = useState("");
   const [rewardsInitialized, setRewardsInitialized] = useState(false);
 
-  const checkoutCardRewards = claimedCardRewards.filter((reward) => reward.benefit?.benefitType === "DISCOUNT");
+  const checkoutCardRewards = claimedCardRewards.filter((reward) => (
+    ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
+  ));
   const selectedCardReward = checkoutCardRewards.find((reward) => reward.cardId === selectedCardRewardId) || null;
+  const selectedCardRewardValue = Number(selectedCardReward?.benefit?.value);
   const cardRewardDiscountAmount = rewardChoice === "CARD" && selectedCardReward
-    ? Math.min(orderSubtotal, Math.round(orderSubtotal * Number(selectedCardReward.benefit.value) / 100))
+    && Number.isFinite(selectedCardRewardValue) && selectedCardRewardValue > 0
+    ? selectedCardReward.benefit.benefitType === "VOUCHER"
+      ? Math.min(orderSubtotal, selectedCardRewardValue)
+      : selectedCardRewardValue <= 100
+        ? Math.min(orderSubtotal, Math.round(orderSubtotal * selectedCardRewardValue / 100))
+        : 0
     : 0;
 
   // Fetch logged-in user profile & saved addresses & loyalty status
@@ -299,7 +307,7 @@ const PlaceOrder = () => {
         const rewards = rewardsRes.data.rewards || [];
         setClaimedCardRewards(rewards);
         setSelectedCardRewardId((currentId) => currentId || rewards.find(
-          (reward) => reward.benefit?.benefitType === "DISCOUNT"
+          (reward) => ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
         )?.cardId || "");
       }
     } catch (err) {
@@ -352,10 +360,11 @@ const PlaceOrder = () => {
 
   useEffect(() => {
     if (!rewardsInitialized || rewardChoice) return;
-    const hasCardReward = claimedCardRewards.some((reward) => reward.benefit?.benefitType === "DISCOUNT");
-    const hasLoyaltyReward = Boolean(loyaltyData?.activeReward?.isEligible);
-    setRewardChoice(hasCardReward ? "CARD" : hasLoyaltyReward ? "LOYALTY" : "NONE");
-  }, [claimedCardRewards, loyaltyData, rewardChoice, rewardsInitialized]);
+    const hasCardReward = claimedCardRewards.some((reward) => (
+      ["DISCOUNT", "VOUCHER"].includes(reward.benefit?.benefitType)
+    ));
+    setRewardChoice(hasCardReward ? "CARD" : "NONE");
+  }, [claimedCardRewards, rewardChoice, rewardsInitialized]);
 
   useEffect(() => {
     if (hasComboBundle || cartPricingItems.length === 0) {
@@ -535,10 +544,10 @@ const PlaceOrder = () => {
         discLabel = `${lvl.name} · Free Delivery (${usageText})`;
       }
 
-      if (act.giftAmount > 0 || act.giftDescription || act.letterIncluded || act.customPerk) {
+      if (act.letterIncluded || act.customPerk) {
         giftInfo = {
-          amount: Number(act.giftAmount || 0),
-          description: act.giftDescription || "",
+          amount: 0,
+          description: "",
           letterIncluded: Boolean(act.letterIncluded),
           customPerk: act.customPerk || "",
         };
@@ -1178,7 +1187,11 @@ const PlaceOrder = () => {
                           <span className="min-w-0 flex-1">
                             <span className="block text-xs font-bold text-gray-900">Marketing Card Reward</span>
                             <span className="mt-0.5 block text-[11px] text-gray-600">
-                              {selectedCardReward?.benefit?.name || "Select a claimed reward"} · {selectedCardReward?.benefit?.value}% off
+                              {selectedCardReward?.benefit?.name || "Select a claimed reward"} · {
+                                selectedCardReward?.benefit?.benefitType === "VOUCHER"
+                                  ? `Rs ${selectedCardReward.benefit.value} off`
+                                  : `${selectedCardReward?.benefit?.value}% off`
+                              }
                             </span>
                           </span>
                           {rewardChoice === "CARD" && <span className="text-xs font-bold text-orange-700">Selected</span>}
@@ -1196,7 +1209,11 @@ const PlaceOrder = () => {
                           >
                             {checkoutCardRewards.map((reward) => (
                               <option key={reward.cardId} value={reward.cardId}>
-                                {reward.benefit.name} — {reward.benefit.value}% off
+                                {reward.benefit.name} — {
+                                  reward.benefit.benefitType === "VOUCHER"
+                                    ? `Rs ${reward.benefit.value} off`
+                                    : `${reward.benefit.value}% off`
+                                }
                               </option>
                             ))}
                           </select>
@@ -1218,6 +1235,11 @@ const PlaceOrder = () => {
                           <span className="mt-0.5 block text-[11px] text-gray-600">
                             {loyaltyData.activeReward.title} · {loyaltyData.currentLevel?.name}
                           </span>
+                          {Number(loyaltyData.activeReward.giftAmount) > 0 && (
+                            <span className="mt-1 block text-[11px] text-gray-600">
+                              Includes a gift valued exactly Rs. {loyaltyData.activeReward.giftAmount}. If assigned distributors cannot fulfill it, the order proceeds and the gift is carried forward.
+                            </span>
+                          )}
                         </span>
                         {rewardChoice === "LOYALTY" && <span className="text-xs font-bold text-amber-700">Selected</span>}
                       </label>
@@ -1287,19 +1309,6 @@ const PlaceOrder = () => {
                           <span className="text-rose-600 ml-1">— deducted from your total</span>
                         </div>
                         <span className="font-black text-rose-700 text-sm">- Rs. {Math.min(orderSubtotal, Number(loyaltyData.activeReward.discountAmount))}</span>
-                      </div>
-                    )}
-
-                    {/* Gift Voucher / Item Perk */}
-                    {(Number(loyaltyData.activeReward.giftAmount) > 0 || loyaltyData.activeReward.giftDescription) && (
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px] font-bold flex-shrink-0">+</span>
-                        <div className="flex-1">
-                          <span className="font-bold text-indigo-800">Special Gift Included</span>
-                        </div>
-                        {Number(loyaltyData.activeReward.giftAmount) > 0 && (
-                          <span className="font-black text-indigo-700 text-sm">Rs. {loyaltyData.activeReward.giftAmount}</span>
-                        )}
                       </div>
                     )}
 

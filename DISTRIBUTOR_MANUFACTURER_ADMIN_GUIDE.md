@@ -702,22 +702,46 @@ Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
 
 ### Gifts
 
-Admins manage gift catalog and loyalty tiers, and allocate gift inventory to a
-distributor. Distributor allocations start `PENDING_ACCEPTANCE`; the
-distributor accepts or rejects. Gift units can be selected for an eligible
-distributor hub order from that distributor's accepted stock, reserved when
-packed, deducted on delivery, and restocked or recorded lost when returned.
-Manufacturer gift records are retained for history, but new hub allocations and
-orders are distributor-scoped.
+Admins create, edit, and archive gift catalog items; configure exact-value
+order-value rules; and allocate catalog stock to active distributors.
+Distributor allocations start `PENDING_ACCEPTANCE`; acceptance requires the
+distributor to enter the quantity actually received, which becomes the
+available count. Only acknowledged, accepted stock can be selected.
+
+At `letter_ready`, the backend automatically selects one physical gift for the
+entire checkout group. The reward value must match exactly to the cent, and
+selection is limited to accepted stock at distributors already assigned to the
+group. It prefers a distributor in the customer's district, then province,
+then another assigned distributor, randomizing equivalent candidates. If no
+matching stock exists, the entitlement remains pending for a later order. The
+packing checklist confirms the selected gift; reservation, delivery deduction,
+return/restock, and loss are recorded in the distributor movement log.
+
+Own Store card gifts become eligible only after customers scan and claim them.
+When a customer selects a loyalty reward with a gift, checkout creates a
+same-value gift entitlement and tries to fulfill it from accepted inventory at
+the assigned distributors. Any gift category may match, but the catalog value
+must match exactly. If none of the assigned distributors can fulfill it, the
+order proceeds normally; after every shipment is packed, the gift returns to
+the pending queue for a later checkout. Order-value rules do not attach
+physical gifts.
+Admins can replace an assigned gift only before packing, using accepted stock
+of exactly the same value at the same distributor. Catalog value edits are
+blocked while that gift is attached to an unfulfilled order. Manufacturer gift
+records are retained for history, but new gift allocation and customer-order
+fulfillment are distributor-scoped.
 
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /admin/gifts/catalog`, `POST /admin/gifts/catalog`, `DELETE /admin/gifts/catalog/:id` | Admin | `loyalty:level_manage` | Maintain catalog. |
 | `GET/POST /admin/gifts/tiers` | Admin | `loyalty:level_manage` | Maintain loyalty tier rules. |
 | `POST /admin/gifts/assign-distributor` | Admin | `loyalty:level_manage` | Allocate gifts to distributor inventory. |
+| `GET /admin/gifts/stock` | Admin | `loyalty:level_manage` | Review sent, acknowledged, available, and reserved counts. |
+| `GET /admin/gifts/orders` | Admin | `loyalty:level_manage` | Review eligible un-packed gift assignments. |
+| `GET /admin/gifts/orders/:orderId/options`, `PUT /admin/gifts/orders/:orderId/gift` | Admin | `loyalty:level_manage` | Replace an assigned gift with same-value accepted stock before packing. |
 | `GET /distributor/gifts/inbound` | Distributor | `distributor:hub_gifts_read` | View allocations awaiting/recorded by distributor. |
-| `POST /distributor/gifts/:id/respond` | Distributor | `distributor:hub_gift_record` | Accept or reject allocation. |
-| `GET /distributor/gifts/order-options/:orderId` | Distributor | `distributor:assignment_status_update` | See eligible gift options for an own order. |
+| `POST /distributor/gifts/:id/respond` | Distributor | `distributor:hub_gift_record` | Accept with counted received quantity or reject allocation. |
+| `GET /distributor/gifts/order-options/:orderId` | Distributor | `distributor:assignment_status_update` | Read gift eligibility and assignment state for an own order. |
 | `POST /admin/gifts/returned/:orderId` | Admin | `returns:admin_review` | Record returned gift outcome. |
 | `POST /distributor/gifts/returned/:orderId` | Distributor | `distributor:delivery_return` | Record gift return/loss in the distributor workflow. |
 

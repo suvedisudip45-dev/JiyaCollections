@@ -25,8 +25,10 @@ import {
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { getAddressProvince } from "../services/deliveryLocationService.js";
 import { campaignMatchesOrder } from "../services/marketingCardService.js";
+import { calculateMarketingCardDiscount } from "../services/marketingCardReward.js";
 import { containsSqlInjection, sanitizeText } from "../middleware/sanitize.js";
 import { roundOrderTotal } from "../utils/orderAmount.js";
+import { bindGiftRewardsToCheckout, createPendingGiftEntitlement } from "../services/giftService.js";
 
 const normalizeOrderVariant = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 const roundOrderAmount = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -221,6 +223,13 @@ const buildOrderListItem = (order) => {
     date: Number(order.date || 0),
     loyaltyDiscount: Number(order.loyaltyDiscount || 0),
     rewardApplied: parsedReward,
+    assignedGift: order.assignedGift ? {
+      id: order.assignedGift.id,
+      name: order.assignedGift.name,
+      sku: order.assignedGift.sku,
+      priceValue: Number(order.assignedGift.priceValue || 0),
+    } : null,
+    giftStatus: order.giftStatus || "NONE",
     fulfillmentStatus: order.fulfillmentStatus,
     checkoutGroupId: order.checkoutGroupId || null,
     assignmentId: order.assignmentId,
@@ -767,7 +776,7 @@ const placeOrder = async (req, res) => {
         redemption.card.physicalStatus === "CANCELLED" ||
         !redemption.card.customerLinks.length ||
         benefit?.status !== "ACTIVE" ||
-        benefit.benefitType !== "DISCOUNT" ||
+        !["DISCOUNT", "VOUCHER"].includes(benefit.benefitType) ||
         (benefit.startsAt && benefit.startsAt > now) ||
         (benefit.expiresAt && benefit.expiresAt < now) ||
         (campaign.cardExpiresAt && campaign.cardExpiresAt < now) ||
@@ -776,23 +785,24 @@ const placeOrder = async (req, res) => {
       ) {
         return res.status(409).json({ success: false, message: "This Own Store reward is no longer eligible for this order." });
       }
-      const discountPercentage = Number(benefit.value);
-      if (!Number.isFinite(discountPercentage) || discountPercentage <= 0 || discountPercentage > 100) {
+      cardDiscount = calculateMarketingCardDiscount(benefit.benefitType, benefit.value, itemsTotal);
+      if (cardDiscount === null) {
         return res.status(409).json({ success: false, message: "This card reward has an invalid discount configuration." });
       }
-      cardDiscount = Math.min(itemsTotal, Math.round(itemsTotal * discountPercentage / 100));
       selectedRedemptionId = redemption.id;
       rewardApplied = {
         source: "MARKETING_CARD",
+        benefitType: benefit.benefitType,
         cardId: redemption.card.id,
         cardCode: redemption.card.cardCode,
         campaignId: campaign.id,
         benefitId: benefit.id,
         benefitName: benefit.name,
-        discountPercentage,
+        ...(benefit.benefitType === "DISCOUNT" ? { discountPercentage: Number(benefit.value) } : {}),
+        ...(benefit.benefitType === "VOUCHER" ? { voucherValue: Number(benefit.value) } : {}),
         discountAmount: cardDiscount,
       };
-    } else if ((rewardChoice !== "NONE" || !rewardChoice) && platformFeatures.loyaltyEnabled) {
+    } else if (rewardChoice === "LOYALTY" && platformFeatures.loyaltyEnabled) {
       try {
         const loyaltyStatus = await calculateUserLoyalty(userId);
         if (loyaltyStatus?.activeReward?.isEligible) {
@@ -803,7 +813,7 @@ const placeOrder = async (req, res) => {
             source: "LOYALTY",
             freeShipping: Boolean(act.freeShipping),
             discountAmount: loyaltyDiscount,
-            giftAmount: act.giftAmount || 0,
+            giftAmount: Number(act.giftAmount || 0),
             giftDescription: act.giftDescription || "",
             letterIncluded: Boolean(act.letterIncluded),
             customPerk: act.customPerk || "",
@@ -939,6 +949,24 @@ const placeOrder = async (req, res) => {
         });
         createdOrders.push(order);
       }
+      let preferredGiftEntitlementId;
+      if (rewardApplied?.source === "LOYALTY" && Number(rewardApplied.giftAmount) > 0) {
+        const entitlement = await createPendingGiftEntitlement({
+          client: tx,
+          customerId: userId,
+          sourceType: "LOYALTY",
+          sourceKey: `LOYALTY_ORDER:${checkoutGroupId || createdOrders[0].id}`,
+          rewardValue: rewardApplied.giftAmount,
+        });
+        preferredGiftEntitlementId = entitlement.id;
+      }
+      await bindGiftRewardsToCheckout({
+        client: tx,
+        customerId: userId,
+        checkoutGroupId,
+        orderId: createdOrders[0].id,
+        preferredEntitlementId: preferredGiftEntitlementId,
+      });
       return createdOrders;
     });
 
@@ -1158,6 +1186,7 @@ const allOrders = async (req, res) => {
         where,
         orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         include: {
+          assignedGift: true,
           deliveryOrder: {
             select: {
               id: true,

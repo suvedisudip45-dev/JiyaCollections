@@ -2,13 +2,26 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   calculateOrderGiftEligibility,
+  autoAssignGiftForCheckout,
+  bindGiftRewardsToCheckout,
   createGiftSkuFromName,
+  createPendingGiftEntitlement,
+  getDistributorGiftInventory,
   getDistributorGiftOptions,
+  isExactGiftValue,
   getManufacturerGiftOptions,
   normalizeGiftCategory,
+  onOrderReturned,
+  reconcileNonCardGiftAssignment,
+  releaseGiftRewardOnOrderCancellation,
+  releaseUnfulfilledGiftForPackedCheckout,
+  replaceAdminOrderGift,
+  respondToDistributorGiftAllocation,
+  saveGiftCatalog,
 } from "../services/giftService.js";
+import { claimCustomerReward } from "../services/marketingCardCustomerService.js";
 
-test("order value promotions provide the configured maximum gift value", () => {
+test("order value promotions require an exact configured gift value", () => {
   const order = { amount: 6500, rewardApplied: "{}" };
   const rules = [
     { triggerType: "ORDER_VALUE", minSpendThreshold: 5000, giftTargetValue: 300, isActive: true },
@@ -19,6 +32,7 @@ test("order value promotions provide the configured maximum gift value", () => {
   assert.deepEqual(calculateOrderGiftEligibility(order, rules), {
     eligible: true,
     budget: 450,
+    requiredValue: 450,
     reasons: ["ORDER_VALUE"],
     loyaltyGiftValue: 0,
     orderValueGiftValue: 450,
@@ -34,6 +48,7 @@ test("an active loyalty tier reward automatically qualifies the order", () => {
 
   assert.equal(calculateOrderGiftEligibility(order).eligible, true);
   assert.equal(calculateOrderGiftEligibility(order).budget, 350);
+  assert.equal(calculateOrderGiftEligibility(order).requiredValue, 350);
   assert.deepEqual(calculateOrderGiftEligibility(order).reasons, ["LOYALTY_TIER"]);
 });
 
@@ -62,19 +77,41 @@ test("gift SKU is derived from its name and categories are constrained", () => {
   assert.throws(() => normalizeGiftCategory("unknown"), /category must be/i);
 });
 
+test("catalog value cannot change while the gift is assigned to an unfulfilled order", async () => {
+  const client = {
+    giftCatalog: {
+      findUnique: async ({ where }) => where.id
+        ? { id: "gift-1", priceValue: 400 }
+        : { id: "gift-1" },
+      update: async () => { throw new Error("Unexpected catalog update."); },
+    },
+    order: { count: async () => 1 },
+  };
+
+  await assert.rejects(
+    saveGiftCatalog({ id: "gift-1", name: "Gift", priceValue: 500, category: "GENERAL" }, client),
+    /cannot change while it is assigned to an unfulfilled order/
+  );
+});
+
 test("manufacturer gift options are limited to the order's own hub and eligible value", async () => {
   let inventoryQuery;
   const client = {
     order: {
       findUnique: async () => ({
         id: "order-1",
+        userId: "customer-1",
         manufacturerId: "hub-1",
+        checkoutGroupId: "checkout-1",
         amount: 4000,
         rewardApplied: { giftAmount: 250, giftDescription: "Loyalty gift" },
         assignedGift: null,
       }),
+      findFirst: async () => null,
     },
-    loyaltyTierConfig: { findMany: async () => [] },
+    giftRewardEntitlement: {
+      findFirst: async () => ({ id: "card-entitlement", rewardValue: 250 }),
+    },
     manufacturerGiftInventory: {
       findMany: async (query) => {
         inventoryQuery = query;
@@ -82,7 +119,7 @@ test("manufacturer gift options are limited to the order's own hub and eligible 
           id: "stock-1",
           giftId: "gift-1",
           quantityAvailable: 2,
-          gift: { id: "gift-1", name: "Cotton Tote", sku: "GFT-COTTON-TOTE", category: "GENERAL", priceValue: 200 },
+          gift: { id: "gift-1", name: "Cotton Tote", sku: "GFT-COTTON-TOTE", category: "GENERAL", priceValue: 250 },
         }];
       },
     },
@@ -98,7 +135,7 @@ test("manufacturer gift options are limited to the order's own hub and eligible 
   assert.equal(inventoryQuery.where.manufacturerId, "hub-1");
   assert.equal(inventoryQuery.where.status, "ACCEPTED");
   assert.deepEqual(inventoryQuery.where.quantityAvailable, { gt: 0 });
-  assert.equal(inventoryQuery.where.gift.priceValue.lte, 250);
+  assert.deepEqual(inventoryQuery.where.gift.priceValue, { equals: 250, gt: 0 });
 });
 
 test("manufacturer gift options reject orders owned by another hub", async () => {
@@ -118,14 +155,19 @@ test("distributor gift options use only accepted stock owned by the order's dist
     order: {
       findUnique: async () => ({
         id: "order-1",
+        userId: "customer-1",
         distributorId: "distributor-1",
+        checkoutGroupId: "checkout-1",
         amount: 4000,
         rewardApplied: { giftAmount: 250, giftDescription: "Loyalty gift" },
         assignedGift: null,
       }),
+      findFirst: async () => null,
     },
     orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
-    loyaltyTierConfig: { findMany: async () => [] },
+    giftRewardEntitlement: {
+      findFirst: async () => ({ id: "card-entitlement", rewardValue: 250 }),
+    },
     distributorGiftInventory: {
       findMany: async (query) => {
         inventoryQuery = query;
@@ -133,7 +175,7 @@ test("distributor gift options use only accepted stock owned by the order's dist
           id: "stock-1",
           giftId: "gift-1",
           quantityAvailable: 2,
-          gift: { id: "gift-1", name: "Cotton Tote", sku: "GFT-COTTON-TOTE", category: "GENERAL", priceValue: 200 },
+          gift: { id: "gift-1", name: "Cotton Tote", sku: "GFT-COTTON-TOTE", category: "GENERAL", priceValue: 250 },
         }];
       },
     },
@@ -145,7 +187,7 @@ test("distributor gift options use only accepted stock owned by the order's dist
   assert.equal(inventoryQuery.where.distributorId, "distributor-1");
   assert.equal(inventoryQuery.where.status, "ACCEPTED");
   assert.deepEqual(inventoryQuery.where.quantityAvailable, { gt: 0 });
-  assert.equal(inventoryQuery.where.gift.priceValue.lte, 250);
+  assert.deepEqual(inventoryQuery.where.gift.priceValue, { equals: 250, gt: 0 });
   assert.equal(result.options[0].inventoryId, "stock-1");
 });
 
@@ -167,14 +209,19 @@ test("distributor gift options accept an auto-allocated order owned through its 
     order: {
       findUnique: async () => ({
         id: "order-1",
+        userId: "customer-1",
         distributorId: null,
+        checkoutGroupId: "checkout-1",
         amount: 4000,
         rewardApplied: { giftAmount: 250, giftDescription: "Loyalty gift" },
         assignedGift: null,
       }),
+      findFirst: async () => null,
     },
     orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
-    loyaltyTierConfig: { findMany: async () => [] },
+    giftRewardEntitlement: {
+      findFirst: async () => ({ id: "card-entitlement", rewardValue: 250 }),
+    },
     distributorGiftInventory: {
       findMany: async (query) => {
         inventoryQuery = query;
@@ -191,4 +238,785 @@ test("distributor gift options accept an auto-allocated order owned through its 
 
   assert.equal(result.eligible, true);
   assert.equal(inventoryQuery.where.distributorId, "distributor-1");
+});
+
+test("split-shipment gift eligibility uses its reserved card reward value", async () => {
+  let inventoryQuery;
+  const client = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        userId: "customer-1",
+        checkoutGroupId: "checkout-1",
+        distributorId: null,
+        amount: 3000,
+        rewardApplied: {},
+        assignedGift: null,
+      }),
+      findFirst: async () => null,
+    },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
+    giftRewardEntitlement: {
+      findFirst: async () => ({ id: "card-entitlement", rewardValue: 300 }),
+    },
+    distributorGiftInventory: {
+      findMany: async (query) => { inventoryQuery = query; return []; },
+    },
+  };
+
+  const result = await getDistributorGiftOptions({ orderId: "order-1", distributorId: "distributor-1", client });
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.eligibility.requiredValue, 300);
+  assert.deepEqual(inventoryQuery.where.gift.priceValue, { equals: 300, gt: 0 });
+});
+
+test("gift values are compared to currency precision instead of an under-budget cap", () => {
+  assert.equal(isExactGiftValue(500, 500.004), true);
+  assert.equal(isExactGiftValue(495, 500), false);
+  assert.equal(isExactGiftValue(505, 500), false);
+});
+
+test("loyalty gift entitlement is created with the configured exact value", async () => {
+  let upsertQuery;
+  const client = {
+    giftRewardEntitlement: {
+      upsert: async (query) => {
+        upsertQuery = query;
+        return { id: "loyalty-entitlement", ...query.create };
+      },
+    },
+  };
+
+  const entitlement = await createPendingGiftEntitlement({
+    client,
+    customerId: "customer-1",
+    sourceType: "LOYALTY",
+    sourceKey: "LOYALTY_ORDER:order-1",
+    rewardValue: 500,
+  });
+
+  assert.equal(entitlement.id, "loyalty-entitlement");
+  assert.equal(upsertQuery.create.rewardValue, 500);
+  assert.equal(upsertQuery.create.sourceType, "LOYALTY");
+  assert.equal(upsertQuery.where.sourceKey, "LOYALTY_ORDER:order-1");
+});
+
+test("checkout reserves a pending card or loyalty gift entitlement", async () => {
+  const calls = [];
+  const client = {
+    giftRewardEntitlement: {
+      findFirst: async (query) => {
+        calls.push(["pending", query]);
+        return { id: "old-card-reward", sourceType: "CARD", status: "PENDING" };
+      },
+      updateMany: async (query) => {
+        calls.push(["reserve", query]);
+        return { count: 1 };
+      },
+    },
+  };
+
+  const reservedId = await bindGiftRewardsToCheckout({
+    client,
+    customerId: "customer-1",
+    checkoutGroupId: "checkout-1",
+    orderId: "order-1",
+    orderAmount: 3000,
+    rewardApplied: { giftAmount: 500, giftDescription: "Gold reward" },
+  });
+
+  assert.equal(reservedId, "old-card-reward");
+  assert.deepEqual(calls.find(([type]) => type === "pending")[1].where, {
+    customerId: "customer-1",
+    sourceType: { in: ["CARD", "LOYALTY"] },
+    status: "PENDING",
+    checkoutGroupId: null,
+  });
+  assert.equal(calls.find(([type]) => type === "pending")[1].where.status, "PENDING");
+  assert.equal(calls.find(([type]) => type === "reserve")[1].data.checkoutGroupId, "checkout-1");
+});
+
+test("checkout reserves a selected loyalty reward before older queued gifts", async () => {
+  const calls = [];
+  const client = {
+    giftRewardEntitlement: {
+      findFirst: async (query) => {
+        calls.push(["pending", query]);
+        if (query.where.id === "current-loyalty-entitlement") {
+          return { id: "current-loyalty-entitlement", sourceType: "LOYALTY", status: "PENDING" };
+        }
+        return { id: "older-card-entitlement", sourceType: "CARD", status: "PENDING" };
+      },
+      updateMany: async (query) => {
+        calls.push(["reserve", query]);
+        return { count: 1 };
+      },
+    },
+  };
+
+  const reservedId = await bindGiftRewardsToCheckout({
+    client,
+    customerId: "customer-1",
+    orderId: "order-1",
+    preferredEntitlementId: "current-loyalty-entitlement",
+  });
+
+  assert.equal(reservedId, "current-loyalty-entitlement");
+  assert.equal(calls.filter(([type]) => type === "pending").length, 1);
+  assert.equal(calls.find(([type]) => type === "reserve")[1].where.sourceType.in.includes("LOYALTY"), true);
+});
+
+test("checkout does not reserve a gift when no pending entitlement exists", async () => {
+  let reservationLookup;
+  const client = {
+    giftRewardEntitlement: {
+      findFirst: async ({ where }) => {
+        reservationLookup = where;
+        return null;
+      },
+    },
+  };
+
+  const result = await bindGiftRewardsToCheckout({
+    client,
+    customerId: "customer-1",
+    orderId: "order-1",
+    rewardApplied: { giftAmount: 200, giftDescription: "Loyalty gift" },
+    orderAmount: 9000,
+    orderValueRules: [{ minSpendThreshold: 1000, giftTargetValue: 200, isActive: true }],
+  });
+
+  assert.equal(result, null);
+  assert.deepEqual(reservationLookup.sourceType, { in: ["CARD", "LOYALTY"] });
+});
+
+test("automatic gift allocation chooses an exact-value gift from the best assigned geography once per group", async () => {
+  const mutations = [];
+  let entitlementQuery;
+  const groupOrders = [
+    { id: "order-local", userId: "customer-1", address: { district: "Kathmandu", province: "Bagmati" }, amount: 1500, rewardApplied: {}, fulfillmentStatus: "quality_check", assignedGiftId: null },
+    { id: "order-province", userId: "customer-1", address: {}, amount: 1500, rewardApplied: {}, fulfillmentStatus: "quality_check", assignedGiftId: null },
+  ];
+  const client = {
+    order: {
+      findUnique: async () => ({ ...groupOrders[0], checkoutGroupId: "checkout-1" }),
+      findMany: async () => groupOrders,
+      updateMany: async (query) => { mutations.push(["order", query]); return { count: 1 }; },
+    },
+    loyaltyTierConfig: { findMany: async () => [] },
+    giftRewardEntitlement: {
+      findFirst: async (query) => {
+        entitlementQuery = query;
+        const entitlement = { id: "entitlement-1", sourceType: "LOYALTY", rewardValue: 500, status: "RESERVED" };
+        return Object.fromEntries(Object.keys(query.select).map((field) => [field, entitlement[field]]));
+      },
+      updateMany: async (query) => { mutations.push(["entitlement", query]); return { count: 1 }; },
+    },
+    orderAssignment: {
+      findMany: async () => [
+        { orderId: "order-local", distributorId: "local-distributor", status: "quality_check" },
+        { orderId: "order-province", distributorId: "province-distributor", status: "quality_check" },
+      ],
+    },
+    distributorGiftInventory: {
+      findMany: async (query) => {
+        assert.deepEqual(query.where.distributorId.in, ["local-distributor", "province-distributor"]);
+        assert.deepEqual(query.where.gift, { isActive: true, priceValue: { equals: 500 } });
+        return [
+          { id: "stock-local", distributorId: "local-distributor", giftId: "gift-local", quantityAvailable: 1, gift: { id: "gift-local", name: "Local gift", priceValue: 500, category: "OTHER", isActive: true }, distributor: { district: "Kathmandu", province: "Bagmati" } },
+          { id: "stock-province", distributorId: "province-distributor", giftId: "gift-province", quantityAvailable: 1, gift: { id: "gift-province", name: "Province gift", priceValue: 500, category: "PARTNER_PRODUCT", isActive: true }, distributor: { district: "Lalitpur", province: "Bagmati" } },
+        ];
+      },
+      updateMany: async (query) => { mutations.push(["stock", query]); return { count: 1 }; },
+    },
+    distributorGiftMovementLog: { create: async (query) => { mutations.push(["movement", query]); return {}; } },
+  };
+
+  const result = await autoAssignGiftForCheckout({ orderId: "order-local", client });
+
+  assert.equal(result.assigned, true);
+  assert.equal(result.orderId, "order-local");
+  assert.equal(result.distributorId, "local-distributor");
+  assert.deepEqual(Object.keys(entitlementQuery.select).sort(), ["id", "rewardValue", "sourceType", "status"]);
+  assert.equal(mutations.filter(([type]) => type === "order").length, 1);
+  assert.equal(mutations.find(([type]) => type === "entitlement")[1].data.orderId, "order-local");
+});
+
+test("automatic gift allocation keeps the entitlement pending when assigned hubs have no matching stock", async () => {
+  const mutations = [];
+  const client = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        userId: "customer-1",
+        checkoutGroupId: "checkout-1",
+        address: { district: "Kathmandu", province: "Bagmati" },
+      }),
+      findMany: async () => [{
+        id: "order-1",
+        userId: "customer-1",
+        address: { district: "Kathmandu", province: "Bagmati" },
+        fulfillmentStatus: "quality_check",
+        assignedGiftId: null,
+      }],
+      updateMany: async () => { mutations.push("order"); return { count: 1 }; },
+    },
+    loyaltyTierConfig: { findMany: async () => [] },
+    giftRewardEntitlement: {
+      findFirst: async () => ({ id: "entitlement-1", sourceType: "LOYALTY", rewardValue: 500, status: "RESERVED", checkoutGroupId: "checkout-1" }),
+      updateMany: async () => { mutations.push("entitlement"); return { count: 1 }; },
+    },
+    orderAssignment: { findMany: async () => [{ orderId: "order-1", distributorId: "district-distributor", status: "quality_check" }] },
+    distributorGiftInventory: { findMany: async () => [] },
+  };
+
+  const result = await autoAssignGiftForCheckout({ orderId: "order-1", client });
+
+  assert.deepEqual(result, { assigned: false, reason: "no assigned distributor has an exact-value gift in stock" });
+  assert.deepEqual(mutations, []);
+});
+
+test("automatic gift allocation never assigns a second gift to the same checkout group", async () => {
+  let stockLookups = 0;
+  const client = {
+    order: {
+      findUnique: async () => ({ id: "order-2", checkoutGroupId: "checkout-1" }),
+      findMany: async () => [{ id: "order-1", assignedGiftId: "gift-1" }, { id: "order-2", assignedGiftId: null }],
+    },
+    distributorGiftInventory: { findMany: async () => { stockLookups += 1; return []; } },
+  };
+
+  const result = await autoAssignGiftForCheckout({ orderId: "order-2", client });
+
+  assert.deepEqual(result, { assigned: false, reason: "checkout already has a gift" });
+  assert.equal(stockLookups, 0);
+});
+
+test("automatic gift allocation ignores unsupported order-value entitlements", async () => {
+  let stockLookups = 0;
+  const client = {
+    order: {
+      findUnique: async () => ({ id: "order-1", userId: "customer-1", checkoutGroupId: "checkout-1" }),
+      findMany: async () => [{ id: "order-1", assignedGiftId: null }],
+    },
+    giftRewardEntitlement: {
+      findFirst: async ({ where }) => {
+      assert.deepEqual(where.sourceType.in, ["CARD", "LOYALTY"]);
+      return { id: "value-rule-entitlement", sourceType: "ORDER_VALUE", status: "RESERVED" };
+      },
+    },
+    distributorGiftInventory: {
+      findMany: async () => {
+        stockLookups += 1;
+        return [];
+      },
+    },
+  };
+
+  const result = await autoAssignGiftForCheckout({ orderId: "order-1", client });
+
+  assert.deepEqual(result, { assigned: false, reason: "no reserved gift reward" });
+  assert.equal(stockLookups, 0);
+});
+
+test("legacy non-card gift assignment releases distributor reserve and clears checklist gift", async () => {
+  const calls = [];
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        assignedGiftId: "gift-1",
+        assignedDistributorGiftInventoryId: "stock-1",
+        assignedGiftInventoryId: null,
+        giftStatus: "PENDING_PACKING",
+        fulfillmentStatus: "letter_ready",
+        manufacturerId: null,
+      }),
+      updateMany: async (query) => {
+        calls.push(["order", query]);
+        return { count: 1 };
+      },
+    },
+    giftRewardEntitlement: {
+      findUnique: async () => ({
+        id: "entitlement-1",
+        sourceType: "ORDER_VALUE",
+        marketingBenefitRedemptionId: null,
+        status: "ASSIGNED",
+      }),
+      updateMany: async (query) => {
+        calls.push(["entitlement", query]);
+        return { count: 1 };
+      },
+    },
+    distributorGiftInventory: {
+      findUnique: async () => ({ id: "stock-1", distributorId: "distributor-1" }),
+      updateMany: async (query) => {
+        calls.push(["stock", query]);
+        return { count: 1 };
+      },
+    },
+    distributorGiftMovementLog: {
+      create: async (query) => {
+        calls.push(["movement", query]);
+        return query;
+      },
+    },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await reconcileNonCardGiftAssignment("order-1", client);
+
+  assert.equal(result.reconciled, true);
+  assert.deepEqual(calls.find(([type]) => type === "stock")[1].data, {
+    quantityReserved: { decrement: 1 },
+    quantityAvailable: { increment: 1 },
+  });
+  assert.equal(calls.find(([type]) => type === "order")[1].data.assignedGiftId, null);
+  assert.equal(calls.find(([type]) => type === "order")[1].data.giftStatus, "NONE");
+  assert.equal(calls.find(([type]) => type === "entitlement")[1].data.status, "CANCELLED");
+  assert.equal(calls.find(([type]) => type === "movement")[1].data.movementType, "RESTOCKED");
+});
+
+test("legacy gift reconciliation preserves valid scanned-card assignments", async () => {
+  let stockTouched = false;
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        assignedGiftId: "gift-1",
+        giftStatus: "PENDING_PACKING",
+        fulfillmentStatus: "letter_ready",
+      }),
+    },
+    giftRewardEntitlement: {
+      findUnique: async () => ({
+        id: "entitlement-1",
+        sourceType: "CARD",
+        marketingBenefitRedemptionId: "redemption-1",
+        status: "ASSIGNED",
+      }),
+    },
+    distributorGiftInventory: {
+      updateMany: async () => { stockTouched = true; return { count: 1 }; },
+    },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await reconcileNonCardGiftAssignment("order-1", client);
+
+  assert.deepEqual(result, { reconciled: false, reason: "valid claimed-card gift" });
+  assert.equal(stockTouched, false);
+});
+
+test("legacy gift reconciliation preserves assigned loyalty gifts", async () => {
+  let stockTouched = false;
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        assignedGiftId: "gift-1",
+        giftStatus: "PENDING_PACKING",
+        fulfillmentStatus: "letter_ready",
+      }),
+    },
+    giftRewardEntitlement: {
+      findUnique: async () => ({
+        id: "entitlement-1",
+        sourceType: "LOYALTY",
+        status: "ASSIGNED",
+      }),
+    },
+    distributorGiftInventory: {
+      updateMany: async () => { stockTouched = true; return { count: 1 }; },
+    },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await reconcileNonCardGiftAssignment("order-1", client);
+
+  assert.deepEqual(result, { reconciled: false, reason: "valid loyalty gift" });
+  assert.equal(stockTouched, false);
+});
+
+test("distributor inventory refresh releases stale unclaimed gift reservations before showing counts", async () => {
+  const calls = [];
+  let staleAssignmentExists = true;
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        assignedGiftId: "gift-1",
+        assignedDistributorGiftInventoryId: "stock-1",
+        giftStatus: staleAssignmentExists ? "PENDING_PACKING" : "NONE",
+        fulfillmentStatus: "letter_ready",
+      }),
+      updateMany: async (query) => {
+        staleAssignmentExists = false;
+        calls.push(["order", query]);
+        return { count: 1 };
+      },
+    },
+    giftRewardEntitlement: {
+      findUnique: async () => ({
+        id: "entitlement-1",
+        sourceType: "ORDER_VALUE",
+        marketingBenefitRedemptionId: null,
+        status: "ASSIGNED",
+      }),
+      updateMany: async (query) => { calls.push(["entitlement", query]); return { count: 1 }; },
+    },
+    distributorGiftInventory: {
+      findUnique: async () => ({ id: "stock-1", distributorId: "distributor-1" }),
+      updateMany: async (query) => {
+        calls.push(["stock", query]);
+        return { count: 1 };
+      },
+    },
+    distributorGiftMovementLog: { create: async () => ({}) },
+  };
+  const client = {
+    $transaction: async (callback) => callback(tx),
+    order: {
+      findMany: async () => staleAssignmentExists ? [{ id: "order-1" }] : [],
+    },
+    distributorGiftInventory: {
+      findMany: async () => [{ id: "stock-1", quantityAvailable: 4, quantityReserved: 0 }],
+    },
+  };
+
+  const inventory = await getDistributorGiftInventory("distributor-1", client);
+
+  assert.equal(inventory[0].quantityAvailable, 4);
+  assert.equal(calls.find(([type]) => type === "stock")[1].data.quantityAvailable.increment, 1);
+  assert.equal(calls.find(([type]) => type === "order")[1].data.assignedGiftId, null);
+});
+
+test("distributor receipt records the counted quantity and rejects counts above dispatch", async () => {
+  let stockUpdate;
+  let movement;
+  const tx = {
+    distributorGiftInventory: {
+      findFirst: async () => ({ id: "stock-1", giftId: "gift-1", quantityAvailable: 5, quantitySent: 5, status: "PENDING_ACCEPTANCE" }),
+      updateMany: async ({ data }) => { stockUpdate = data; return { count: 1 }; },
+      findUnique: async () => ({ id: "stock-1", ...stockUpdate }),
+    },
+    distributorGiftMovementLog: { create: async ({ data }) => { movement = data; return data; } },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  await respondToDistributorGiftAllocation({
+    inventoryId: "stock-1",
+    distributorId: "distributor-1",
+    decision: "ACCEPTED",
+    receivedQuantity: 3,
+    client,
+  });
+  assert.equal(stockUpdate.quantityAvailable, 3);
+  assert.equal(stockUpdate.receivedQuantity, 3);
+  assert.equal(movement.movementType, "RECEIVED");
+  assert.equal(movement.quantity, 3);
+
+  await assert.rejects(
+    respondToDistributorGiftAllocation({
+      inventoryId: "stock-1",
+      distributorId: "distributor-1",
+      decision: "ACCEPTED",
+      receivedQuantity: 6,
+      client,
+    }),
+    /cannot exceed the number of gifts sent/
+  );
+});
+
+test("unfulfilled rewards return to pending only after every checkout shipment is packed", async () => {
+  let entitlementUpdate;
+  const entitlement = { id: "entitlement-1", status: "RESERVED", checkoutGroupId: "checkout-1" };
+  const client = {
+    order: {
+      findUnique: async () => ({ id: "order-1", checkoutGroupId: "checkout-1" }),
+      findMany: async () => [{ fulfillmentStatus: "packed" }, { fulfillmentStatus: "delivered" }],
+    },
+    giftRewardEntitlement: {
+      findMany: async () => [{ id: "entitlement-1", sourceType: "LOYALTY" }],
+      updateMany: async ({ data, where }) => {
+        entitlementUpdate = { data, where };
+        Object.assign(entitlement, data);
+        return { count: 1 };
+      },
+      findFirst: async () => entitlement.status === "PENDING" ? entitlement : null,
+    },
+  };
+
+  assert.equal(await releaseUnfulfilledGiftForPackedCheckout({ orderId: "order-1", client }), true);
+  assert.equal(entitlementUpdate.data.status, "PENDING");
+  assert.equal(entitlementUpdate.data.checkoutGroupId, null);
+  const laterCheckoutReservation = await bindGiftRewardsToCheckout({
+    client,
+    customerId: "customer-1",
+    orderId: "later-order",
+  });
+  assert.equal(laterCheckoutReservation, "entitlement-1");
+  assert.equal(entitlement.status, "RESERVED");
+  assert.equal(entitlement.checkoutGroupId, "later-order");
+});
+
+test("order cancellation restores reserved distributor gift stock and releases the reward", async () => {
+  const events = [];
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        userId: "customer-1",
+        checkoutGroupId: null,
+        manufacturerId: null,
+        distributorId: null,
+        assignedGiftId: "gift-1",
+        assignedGiftInventoryId: null,
+        assignedDistributorGiftInventoryId: "stock-1",
+        giftStatus: "PENDING_PACKING",
+      }),
+      findMany: async () => [{ id: "order-1", status: "Cancelled" }],
+      update: async ({ data }) => { events.push(["order", data]); return {}; },
+      updateMany: async () => ({ count: 1 }),
+    },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
+    distributorGiftInventory: {
+      updateMany: async ({ data }) => { events.push(["stock", data]); return { count: 1 }; },
+    },
+    distributorGiftMovementLog: { create: async ({ data }) => { events.push(["movement", data]); return {}; } },
+    giftRewardEntitlement: {
+      updateMany: async ({ data }) => { events.push(["entitlement", data]); return { count: 1 }; },
+    },
+  };
+
+  await releaseGiftRewardOnOrderCancellation(tx, "order-1");
+
+  assert.deepEqual(events.find(([type]) => type === "stock")[1], {
+    quantityReserved: { decrement: 1 },
+    quantityAvailable: { increment: 1 },
+  });
+  assert.equal(events.find(([type]) => type === "entitlement")[1].status, "PENDING");
+});
+
+test("an intact returned gift is restocked in distributor inventory", async () => {
+  const events = [];
+  let giftStatus = "DELIVERED";
+  const tx = {
+    order: {
+      findUnique: async () => ({
+        id: "order-1",
+        manufacturerId: null,
+        distributorId: null,
+        assignedGiftId: "gift-1",
+        assignedGiftInventoryId: null,
+        assignedDistributorGiftInventoryId: "stock-1",
+        giftStatus,
+      }),
+      updateMany: async ({ data }) => { giftStatus = data.giftStatus; events.push(["order-update", data]); return { count: 1 }; },
+    },
+    orderAssignment: { findUnique: async () => ({ distributorId: "distributor-1" }) },
+    distributorGiftInventory: {
+      updateMany: async ({ where, data }) => { events.push(["stock", { where, data }]); return { count: 1 }; },
+    },
+    distributorGiftMovementLog: { create: async ({ data }) => { events.push(["movement", data]); return {}; } },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await onOrderReturned("order-1", { giftReturned: true, expectedDistributorId: "distributor-1" }, client);
+
+  assert.equal(result.updated, true);
+  assert.equal(events.find(([type]) => type === "stock")[1].data.quantityAvailable.increment, 1);
+  assert.equal(events.find(([type]) => type === "movement")[1].movementType, "RESTOCKED");
+});
+
+test("claiming a card gift creates a pending exact-value entitlement for the customer's next order", async () => {
+  let entitlementData;
+  const redemption = { id: "redemption-1", status: "CLAIMED", claimedAt: new Date() };
+  const tx = {
+    marketingCard: {
+      findUnique: async () => ({
+        id: "card-1",
+        physicalStatus: "AVAILABLE",
+        hasBenefit: true,
+        exchangeLockRequestId: null,
+        campaign: { isOwnStore: true, cardExpiresAt: null },
+        customerLinks: [{ id: "link-1", status: "ACTIVE", activatedAt: new Date() }],
+        benefit: { id: "benefit-1", benefitType: "GIFT", value: 500, status: "ACTIVE" },
+      }),
+    },
+    marketingBenefitRedemption: {
+      findUnique: async () => null,
+      create: async () => redemption,
+    },
+    giftRewardEntitlement: {
+      upsert: async ({ create }) => { entitlementData = create; return create; },
+    },
+    marketingCardEvent: { create: async () => ({}) },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await claimCustomerReward({ customerId: "customer-1", cardId: "card-1", client });
+
+  assert.equal(result.benefitType, "GIFT");
+  assert.equal(result.status, "CLAIMED");
+  assert.equal(entitlementData.customerId, "customer-1");
+  assert.equal(entitlementData.sourceType, "CARD");
+  assert.equal(entitlementData.rewardValue, 500);
+  assert.equal(entitlementData.marketingBenefitRedemptionId, "redemption-1");
+});
+
+test("claiming an Own Store voucher makes it available for checkout without creating a gift entitlement", async () => {
+  let entitlementCreated = false;
+  const tx = {
+    marketingCard: {
+      findUnique: async () => ({
+        id: "card-voucher",
+        physicalStatus: "AVAILABLE",
+        hasBenefit: true,
+        exchangeLockRequestId: null,
+        campaign: { isOwnStore: true, cardExpiresAt: null },
+        customerLinks: [{ id: "link-1", status: "ACTIVE", activatedAt: new Date() }],
+        benefit: { id: "benefit-voucher", benefitType: "VOUCHER", value: 500, status: "ACTIVE" },
+      }),
+    },
+    marketingBenefitRedemption: {
+      findUnique: async () => null,
+      create: async () => ({ id: "redemption-voucher", status: "CLAIMED", claimedAt: new Date() }),
+    },
+    giftRewardEntitlement: {
+      upsert: async () => { entitlementCreated = true; },
+    },
+    marketingCardEvent: { create: async () => ({}) },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await claimCustomerReward({ customerId: "customer-1", cardId: "card-voucher", client });
+
+  assert.equal(result.benefitType, "VOUCHER");
+  assert.equal(result.status, "CLAIMED");
+  assert.equal(entitlementCreated, false);
+});
+
+test("card reward claims reject zero-value vouchers and discounts above 100 percent", async () => {
+  for (const benefit of [
+    { benefitType: "VOUCHER", value: 0 },
+    { benefitType: "DISCOUNT", value: 101 },
+  ]) {
+    const tx = {
+      marketingCard: {
+        findUnique: async () => ({
+          id: "card-invalid-reward",
+          physicalStatus: "AVAILABLE",
+          hasBenefit: true,
+          exchangeLockRequestId: null,
+          campaign: { isOwnStore: true, cardExpiresAt: null },
+          customerLinks: [{ id: "link-1", status: "ACTIVE", activatedAt: new Date() }],
+          benefit: { id: "benefit-invalid", ...benefit, status: "ACTIVE" },
+        }),
+      },
+    };
+
+    await assert.rejects(
+      claimCustomerReward({
+        customerId: "customer-1",
+        cardId: "card-invalid-reward",
+        client: { $transaction: async (callback) => callback(tx) },
+      }),
+      /card reward has an invalid value/i
+    );
+  }
+});
+
+test("an assigned but unscanned card cannot create a gift entitlement", async () => {
+  let redemptionCreated = false;
+  let entitlementCreated = false;
+  const tx = {
+    marketingCard: {
+      findUnique: async () => ({
+        id: "card-1",
+        physicalStatus: "ASSIGNED",
+        hasBenefit: true,
+        exchangeLockRequestId: null,
+        campaign: { isOwnStore: true, cardExpiresAt: null },
+        customerLinks: [],
+        benefit: { id: "benefit-1", benefitType: "GIFT", value: 200, status: "ACTIVE" },
+      }),
+    },
+    marketingBenefitRedemption: {
+      findUnique: async () => null,
+      create: async () => { redemptionCreated = true; },
+    },
+    giftRewardEntitlement: {
+      upsert: async () => { entitlementCreated = true; },
+    },
+    marketingCardEvent: { create: async () => ({}) },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  await assert.rejects(
+    claimCustomerReward({ customerId: "customer-1", cardId: "card-1", client }),
+    /scan and verify this card/i
+  );
+  assert.equal(redemptionCreated, false);
+  assert.equal(entitlementCreated, false);
+});
+
+test("Admin cannot replace a gift after checklist completion or packing", async () => {
+  for (const fulfillmentStatus of ["checklist_complete", "packed"]) {
+    const client = {
+      $transaction: async (callback) => callback({
+        order: {
+          findUnique: async () => ({
+            id: "order-1",
+            status: "Processing",
+            fulfillmentStatus,
+            giftStatus: "PENDING_PACKING",
+            assignedGiftId: "gift-1",
+            assignedGift: { id: "gift-1", priceValue: 500 },
+            assignedDistributorGiftInventory: { id: "stock-1", distributorId: "distributor-1" },
+            assignedDistributorGiftInventoryId: "stock-1",
+            giftRewardEntitlement: { id: "entitlement-1", rewardValue: 500 },
+          }),
+        },
+      }),
+    };
+
+    await assert.rejects(
+      replaceAdminOrderGift({ orderId: "order-1", inventoryId: "replacement-stock", client }),
+      /only allowed for active orders before packing/
+    );
+  }
+});
+
+test("Admin replacement only accepts same-distributor stock at the exact reward value", async () => {
+  let stockQuery;
+  const client = {
+    $transaction: async (callback) => callback({
+      order: {
+        findUnique: async () => ({
+          id: "order-1",
+          status: "Processing",
+          fulfillmentStatus: "quality_check",
+          giftStatus: "PENDING_PACKING",
+          assignedGiftId: "gift-1",
+          assignedGift: { id: "gift-1", priceValue: 500 },
+          assignedDistributorGiftInventory: { id: "stock-1", distributorId: "distributor-1" },
+          assignedDistributorGiftInventoryId: "stock-1",
+          giftRewardEntitlement: { id: "entitlement-1", rewardValue: 500 },
+        }),
+      },
+      distributorGiftInventory: {
+        findFirst: async (query) => { stockQuery = query; return null; },
+      },
+    }),
+  };
+
+  await assert.rejects(
+    replaceAdminOrderGift({ orderId: "order-1", inventoryId: "replacement-stock", client }),
+    /exact reward value/
+  );
+  assert.equal(stockQuery.where.distributorId, "distributor-1");
+  assert.deepEqual(stockQuery.where.gift.priceValue, { equals: 500 });
 });

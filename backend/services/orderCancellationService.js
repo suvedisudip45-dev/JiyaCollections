@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
+import { releaseGiftRewardOnOrderCancellation } from "./giftService.js";
 
 const parseJsonArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -153,6 +154,7 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
     if (changed.count !== 1) {
       throw cancelledError("The order changed while cancellation was being processed. Refresh and try again.", "CANCELLATION_CONFLICT");
     }
+    await releaseGiftRewardOnOrderCancellation(tx, order.id);
 
     const assignment = await tx.orderAssignment.findUnique({ where: { orderId: order.id } });
     const itemLines = aggregateOrderItems(order.items);

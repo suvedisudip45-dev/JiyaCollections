@@ -87,12 +87,14 @@ Use status strings and IDs consistent with Prisma and the current service layer.
 
 ### 1.7 Gift promotion and inventory rules
 
-- Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Keep trigger evaluation in backend services and do not treat UI-selected gifts as authoritative.
-- Distributor gift distributions are independently accepted inventory batches. The distributor chooses only from its own accepted stock for distributor hub orders; the backend must claim that exact batch atomically and store it on the order.
-- Distributor actions that change a hub order gift must verify authenticated distributor ownership. Pack, delivery, return, and loss transitions must be idempotent and update distributor movement logs and stock in the same transaction. Legacy manufacturer gift rows remain historical and must not be treated as distributor inventory.
+- Gifts are reusable retention/promotion inventory, not a loyalty-only feature. Loyalty eligibility comes from the backend's active reward snapshot; order-value promotions remain separately configurable. Card gift claims create pending customer entitlements for the next checkout. Keep trigger evaluation and exact-to-the-cent value matching in backend services; the UI is not authoritative.
+- Each checkout group may receive at most one physical gift, even when fulfilled by multiple distributors. At distributor `letter_ready`, select randomly among equivalent gifts from accepted stock at distributors already assigned to that checkout, preferring customer district, then province, then other eligible assigned distributors. Do not create a gift-only shipment or allow a distributor to select arbitrary stock.
+- Distributor gift distributions record units sent separately from units acknowledged by the distributor. Only the acknowledged quantity is available. Claim stock atomically, link the exact inventory batch to the order, and record each movement; release reserved inventory on cancellation, deduct only on delivery, and handle returns/loss through the explicit lifecycle.
+- Admin gift replacement must use accepted stock at the same assigned distributor, match the entitlement value exactly, and atomically reject changes once packing has started. Do not allow catalog value edits to silently invalidate an active unfulfilled gift assignment.
+- Distributor actions that change a hub order gift must verify authenticated distributor ownership. Legacy manufacturer gift rows remain historical and must not be treated as distributor inventory.
 - Direct hub orders, hub inventory, physical marketing-card stock, and gift stock are distributor features. Direct hub stock reads and deductions must use the distributor inventory ledger; never use `ManufacturerInventory` as a distributor fallback. Keep their routes, permissions, UI access, and admin allocations distributor-scoped.
 - NCM delivery status is authoritative for delivered-gift deduction. Do not mark a gift delivered from optimistic frontend state.
-- Update this guide and the project overview, architecture, schema, and UI docs when gift routes, permissions, states, or lifecycle rules change.
+- Update this guide and the project overview, architecture, schema, UI, and security-flow docs when gift routes, permissions, states, or lifecycle rules change.
 
 ## 2. Do’s and Don’ts
 

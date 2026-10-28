@@ -8,10 +8,9 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnapshot.js";
 import { onOrderPacked } from "../services/giftService.js";
 import {
-  assignGiftToDistributorOrder,
-  assignGiftToOrder,
-  getDistributorGiftOptions,
-  getManufacturerGiftOptions,
+  autoAssignGiftForCheckout,
+  reconcileNonCardGiftAssignment,
+  releaseUnfulfilledGiftForPackedCheckout,
 } from "../services/giftService.js";
 import { allocateProductionLayersForOrderItem } from "../services/manufacturerProductionService.js";
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
@@ -102,8 +101,8 @@ const buildFulfillmentBenefits = (order, items = []) => {
     productDiscount: Number(productDiscount.toFixed(2)),
     totalDiscount: Number((loyaltyDiscount + productDiscount).toFixed(2)),
     freeShipping: Boolean(reward.freeShipping),
-    giftAmount: Number(reward.giftAmount || 0),
-    giftDescription: order?.assignedGift?.name || reward.giftDescription || "",
+    giftAmount: Number(order?.assignedGift?.priceValue || 0),
+    giftDescription: order?.assignedGift?.name || "",
     assignedGift: order?.assignedGift ? {
       id: order.assignedGift.id,
       name: order.assignedGift.name,
@@ -116,7 +115,7 @@ const buildFulfillmentBenefits = (order, items = []) => {
     offerItems,
     packingInstructions: [
       reward.letterIncluded ? "Include a handwritten thank-you card." : "",
-      reward.giftDescription ? `Include gift: ${reward.giftDescription}.` : "",
+      order?.assignedGift?.name ? `Include gift: ${order.assignedGift.name}.` : "",
       reward.customPerk || "",
     ].filter(Boolean),
   };
@@ -1021,7 +1020,6 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction,
       instruction,
       packagingChecklist,
-      giftInventoryId,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
@@ -1074,21 +1072,12 @@ const updateAssignmentStatus = async (req, res) => {
       });
     }
 
-    if (giftInventoryId && normalizedStatus !== "checklist_complete") {
-      return res.status(400).json({ success: false, message: "Select a gift while completing the final packing checklist." });
-    }
     const distributorOwnsAssignment = Boolean(distributorId && assignment.distributorId === distributorId);
-    if (normalizedStatus === "checklist_complete") {
-      const giftOptions = distributorOwnsAssignment
-        ? await getDistributorGiftOptions({ orderId: assignment.orderId, distributorId })
-        : await getManufacturerGiftOptions({ orderId: assignment.orderId, manufacturerId });
-      if (giftOptions.eligible && !giftOptions.alreadyAssigned && giftOptions.options.length > 0 && !giftInventoryId) {
-        return res.status(409).json({
-          success: false,
-          message: "This order has an active gift reward. Select one of the accepted gifts available at your hub before completing the checklist.",
-          code: "GIFT_SELECTION_REQUIRED",
-        });
-      }
+    if (req.body?.giftInventoryId) {
+      return res.status(400).json({
+        success: false,
+        message: "Gift selection is managed automatically for distributor checkout fulfillment.",
+      });
     }
 
     if (["checklist_complete", "packed", "package_details_complete"].includes(normalizedStatus)) {
@@ -1146,22 +1135,8 @@ const updateAssignmentStatus = async (req, res) => {
         where: { id: assignment.orderId },
         select: { fulfillmentStatus: true },
       });
-      if (giftInventoryId) {
-        if (distributorOwnsAssignment) {
-          await assignGiftToDistributorOrder({
-            orderId: assignment.orderId,
-            distributorId,
-            inventoryId: giftInventoryId,
-            client: tx,
-          });
-        } else {
-          await assignGiftToOrder({
-            orderId: assignment.orderId,
-            manufacturerId,
-            inventoryId: giftInventoryId,
-            client: tx,
-          });
-        }
+      if (distributorOwnsAssignment && normalizedStatus === "letter_ready") {
+        await autoAssignGiftForCheckout({ orderId: assignment.orderId, client: tx });
       }
       await tx.orderAssignment.update({ where: { id: assignmentId }, data: updateData });
       await tx.order.update({
@@ -1182,6 +1157,7 @@ const updateAssignmentStatus = async (req, res) => {
         distributorOwnsAssignment ? undefined : manufacturerId,
         distributorOwnsAssignment ? distributorId : undefined,
       );
+      await releaseUnfulfilledGiftForPackedCheckout({ orderId: assignment.orderId });
     }
 
     res.json({ success: true, message: `Status updated to ${status}` });
@@ -1366,6 +1342,8 @@ const getAssignmentById = async (req, res) => {
     if (req.distributorId && assignment.distributorId !== req.distributorId) {
       return res.status(403).json({ success: false, message: "Unauthorized access" });
     }
+
+    await reconcileNonCardGiftAssignment(assignment.orderId);
 
     const [order, delivery] = await Promise.all([
       prisma.order.findUnique({ where: { id: assignment.orderId }, include: { assignedGift: true } }),

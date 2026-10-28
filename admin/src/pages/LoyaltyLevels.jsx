@@ -109,8 +109,8 @@ const LoyaltyLevels = ({ token }) => {
       toast.error("Please fill in level name and reward title");
       return;
     }
-    if ((Number(form.giftAmount) > 0) !== Boolean(form.giftDescription.trim())) {
-      toast.error("Set both a gift product description and its maximum value, or leave both empty.");
+    if (form.giftDescription.trim() && Number(form.giftAmount) <= 0) {
+      toast.error("Set an exact gift value when adding a gift note.");
       return;
     }
 
@@ -528,8 +528,8 @@ const LoyaltyLevels = ({ token }) => {
                             giftDescription: "Loyalty gift",
                             letterIncluded: true,
                             customPerk: "VIP Priority Dispatch",
-                            rewardTitle: "Free Delivery + Rs. 200 Off + Gift up to Rs. 500",
-                            rewardDescription: "VIP combo with free delivery, Rs. 200 off, a physical hub gift up to Rs. 500, and a letter.",
+                            rewardTitle: "Free Delivery + Rs. 200 Off + Rs. 500 Gift",
+                            rewardDescription: "VIP combo with free delivery, Rs. 200 off, a physical gift valued at Rs. 500 when assigned distributor stock is available, and a letter.",
                           }));
                         }
                       }}
@@ -543,7 +543,7 @@ const LoyaltyLevels = ({ token }) => {
                       <option value="DISCOUNT_150">4. Rs. 150 Off Only</option>
                       <option value="FREE_DELIVERY_AND_100">5. Free Delivery + Rs. 100 Off</option>
                       <option value="FREE_DELIVERY_AND_150">6. Free Delivery + Rs. 150 Off</option>
-                      <option value="FREE_DELIVERY_AND_200_GIFT">7. Free Delivery + Rs. 200 Off + Gift up to Rs. 500</option>
+                      <option value="FREE_DELIVERY_AND_200_GIFT">7. Free Delivery + Rs. 200 Off + Rs. 500 Gift</option>
                     </select>
                   </div>
                 </div>
@@ -641,18 +641,18 @@ const LoyaltyLevels = ({ token }) => {
                       min="0.01"
                       value={form.giftAmount}
                       onChange={(e) => setForm({ ...form, giftAmount: Number(e.target.value) })}
-                      placeholder="Maximum gift value (Rs)"
+                      placeholder="Exact gift value (Rs)"
                       className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-indigo-600 focus:outline-none"
                     />
                     <input
                       type="text"
                       value={form.giftDescription}
                       onChange={(e) => setForm({ ...form, giftDescription: e.target.value })}
-                      placeholder="Gift note or suggested item"
+                      placeholder="Gift note (optional)"
                       className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:border-indigo-600 focus:outline-none"
                     />
                   </div>
-                  <p className="text-[10px] text-gray-500">When this reward is active, the assigned manufacturer can select a product from accepted hub gift stock up to this value.</p>
+                  <p className="text-[10px] text-gray-500">When selected at checkout, the gift is matched to accepted distributor stock at this exact value (any category). If the assigned distributors cannot fulfill it, the order proceeds and the gift is carried forward for a later order.</p>
                 </div>
 
                 {/* Perk 5: Custom Perk & Order Limit */}
@@ -700,7 +700,7 @@ const LoyaltyLevels = ({ token }) => {
                           const parts = [];
                           if (form.freeShipping) parts.push("Free Delivery");
                           if (form.discountAmount > 0) parts.push(`Rs. ${form.discountAmount} Off`);
-                          if (form.giftAmount > 0 || form.giftDescription) parts.push(form.giftAmount > 0 ? `${form.giftDescription || "Gift"} up to Rs. ${form.giftAmount}` : form.giftDescription);
+                          if (form.giftAmount > 0) parts.push(`${form.giftDescription || "Loyalty gift"} valued at Rs. ${form.giftAmount}`);
                           if (form.letterIncluded) parts.push("Handwritten Letter");
                           if (form.customPerk) parts.push(form.customPerk);
                           const generated = parts.length > 0 ? parts.join(" + ") : "Entry Level (No Perks)";

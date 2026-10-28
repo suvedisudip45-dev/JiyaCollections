@@ -9,17 +9,74 @@ import {
   getDistributorGiftOptions,
   getManufacturerGiftInventory,
   getDistributorGiftInventory,
+  listAdminDistributorGiftStock,
+  listAdminGiftAssignments,
+  getAdminOrderGiftOptions,
+  replaceAdminOrderGift,
   respondToGiftAllocation,
   respondToDistributorGiftAllocation,
   onOrderReturned,
 } from "../services/giftService.js";
 
+const sendGiftError = (res, error) => res.status(error.statusCode || (error.code ? 409 : 400)).json({
+  success: false,
+  message: error.message || "Gift operation failed.",
+  ...(error.code ? { code: error.code } : {}),
+});
+
 export const getGiftCatalog = async (req, res) => {
   try {
-    const gifts = await listGiftCatalog();
+    const gifts = await listGiftCatalog({ includeInactive: req.query.includeInactive === "true" });
     res.json({ success: true, gifts });
   } catch (error) {
     res.json({ success: false, message: error.message });
+  }
+};
+
+export const getAdminGiftStock = async (_req, res) => {
+  try {
+    const inventory = await listAdminDistributorGiftStock();
+    return res.json({ success: true, inventory });
+  } catch (error) {
+    return sendGiftError(res, error);
+  }
+};
+
+export const getAdminGiftAssignments = async (_req, res) => {
+  try {
+    const orders = await listAdminGiftAssignments();
+    return res.json({ success: true, orders });
+  } catch (error) {
+    return sendGiftError(res, error);
+  }
+};
+
+export const getAdminGiftOptions = async (req, res) => {
+  try {
+    const result = await getAdminOrderGiftOptions({ orderId: req.params.orderId });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return sendGiftError(res, error);
+  }
+};
+
+export const updateAdminOrderGift = async (req, res) => {
+  try {
+    const order = await replaceAdminOrderGift({
+      orderId: req.params.orderId,
+      inventoryId: req.body?.inventoryId,
+      actorContext: {
+        actorId: req.auth?.accountId || null,
+        actorRole: req.auth?.role || "ADMIN",
+        portalSource: req.auth?.role || "ADMIN",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.json({ success: true, message: "Order gift updated before packing.", order });
+  } catch (error) {
+    return sendGiftError(res, error);
   }
 };
 
@@ -118,6 +175,7 @@ export const respondToDistributorGiftQueue = async (req, res) => {
       inventoryId: req.params.id,
       distributorId: req.distributorId,
       decision: req.body.decision,
+      receivedQuantity: req.body.receivedQuantity,
       notes: req.body.notes,
     });
     res.json({ success: true, message: "Distributor gift response recorded.", inventory });
