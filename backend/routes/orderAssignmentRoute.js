@@ -9,6 +9,10 @@ import {
   getAllAssignments,
   getUnassignedOrders,
   manualAssign,
+  getAdminAssignmentDistributors,
+  adminAssignFailedOrder,
+  adminReassignOrder,
+  adminUpdateAssignmentFulfillment,
 } from "../controllers/orderAssignmentController.js";
 import {
   authenticate,
@@ -32,15 +36,45 @@ orderAssignmentRouter.post("/assign", authenticate, authorize("assignment:create
 orderAssignmentRouter.get(
   "/admin/unassigned",
   authenticate,
-  authorize("assignment:admin_list"),
+  requireAdminRole,
+  authorizeAny("assignment:admin_list", "order:control"),
   getUnassignedOrders,
+);
+orderAssignmentRouter.get(
+  "/admin/control/distributors",
+  authenticate,
+  requireAdminRole,
+  authorize("order:control"),
+  getAdminAssignmentDistributors,
+);
+orderAssignmentRouter.post(
+  "/admin/control/assign",
+  authenticate,
+  requireAdminRole,
+  authorize("order:control"),
+  adminAssignFailedOrder,
+);
+orderAssignmentRouter.post(
+  "/admin/control/reassign",
+  authenticate,
+  requireAdminRole,
+  authorize("order:control"),
+  adminReassignOrder,
+);
+orderAssignmentRouter.put(
+  "/admin/control/fulfillment/:id",
+  authenticate,
+  requireAdminRole,
+  authorize("order:control"),
+  setFulfillmentContext,
+  adminUpdateAssignmentFulfillment,
 );
 orderAssignmentRouter.get("/all", authenticate, authorize("assignment:admin_list"), getAllAssignments);
 orderAssignmentRouter.get(
   "/admin/all",
   authenticate,
   requireAdminRole,
-  authorizeAny("assignment:admin_list", "distributor:admin_fulfillment_read"),
+  authorizeAny("assignment:admin_list", "distributor:admin_fulfillment_read", "order:control"),
   getAllAssignments,
 );
 orderAssignmentRouter.post("/manual-assign", authenticate, authorize("assignment:manual_assign"), manualAssign);

@@ -70,6 +70,7 @@ const installAllocationMocks = (t, {
   missingProductIds = [],
 } = {}) => {
   let assignmentData;
+  const auditEvents = [];
   const stockQueryDistributorIds = [];
   const transactionEvents = [];
   stubMethod(t, prisma.order, "findUnique", async () => order);
@@ -129,12 +130,18 @@ const installAllocationMocks = (t, {
         return { id: "assignment-1", ...data };
       },
     },
-    systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
+    systemAuditOutbox: {
+      create: async ({ data }) => {
+        auditEvents.push(data.event);
+        return { id: "audit-1" };
+      },
+    },
   }));
   return {
     getAssignment: () => assignmentData,
     getStockQueryDistributorIds: () => stockQueryDistributorIds,
     getTransactionEvents: () => transactionEvents,
+    getAuditEvents: () => auditEvents,
   };
 };
 
@@ -207,6 +214,67 @@ test("allocator falls back from an out-of-stock preferred hub to a stocked hub b
   assert.equal(result.success, true);
   assert.equal(result.distributor.id, sameProvinceHub.id);
   assert.equal(getAssignment().distributorId, sameProvinceHub.id);
+});
+
+test("admin forced assignment selects only the requested stocked distributor and records its reason", async (t) => {
+  const defaultHub = createDistributor({ id: "default-hub", qualityRating: 5 });
+  const selectedHub = createDistributor({
+    id: "admin-selected-hub",
+    district: "Lalitpur",
+    locations: [],
+    qualityRating: 1,
+  });
+  const { getAssignment, getAuditEvents, getStockQueryDistributorIds } = installAllocationMocks(t, {
+    order: {
+      ...createOrder(),
+      orderType: "ONLINE_STORE",
+      fulfillmentStatus: "PENDING_ASSIGNMENT",
+    },
+    distributors: [defaultHub, selectedHub],
+  });
+
+  const result = await runAllocationEngine("order-1", {
+    preferredDistributorId: selectedHub.id,
+    forcePreferredDistributorId: true,
+    adminOverrideReason: "Customer delivery deadline requires this local hub.",
+    actorId: "admin-account-1",
+    actorRole: "ADMIN",
+    portalSource: "ADMIN",
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.distributor.id, selectedHub.id);
+  assert.equal(getAssignment().distributorId, selectedHub.id);
+  assert.match(getAssignment().notes, /Customer delivery deadline/);
+  assert.deepEqual(getStockQueryDistributorIds(), [[selectedHub.id]]);
+  assert.equal(getAuditEvents()[0].action, "ORDER_ADMIN_ASSIGNED_DISTRIBUTOR");
+  assert.equal(getAuditEvents()[0].afterState.reason, "Customer delivery deadline requires this local hub.");
+});
+
+test("admin forced assignment does not fall back when the selected distributor lacks stock", async (t) => {
+  const stockedDefaultHub = createDistributor({ id: "default-hub" });
+  const selectedHub = createDistributor({
+    id: "admin-selected-hub",
+    stock: [createBalance("selected-short-balance", 1)],
+  });
+  const { getAssignment, getStockQueryDistributorIds } = installAllocationMocks(t, {
+    order: {
+      ...createOrder(),
+      orderType: "ONLINE_STORE",
+      fulfillmentStatus: "PENDING_ASSIGNMENT",
+    },
+    distributors: [stockedDefaultHub, selectedHub],
+  });
+
+  const result = await runAllocationEngine("order-1", {
+    preferredDistributorId: selectedHub.id,
+    forcePreferredDistributorId: true,
+  });
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "INSUFFICIENT_DISTRIBUTOR_STOCK");
+  assert.equal(getAssignment(), undefined);
+  assert.deepEqual(getStockQueryDistributorIds(), [[selectedHub.id]]);
 });
 
 test("shipping allocation preview uses the same priority-ranked stocked distributor", async (t) => {

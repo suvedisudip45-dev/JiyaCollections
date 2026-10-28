@@ -1,3 +1,4 @@
+/* eslint-disable react/prop-types */
 import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -28,6 +29,7 @@ const getPendingAgeLabel = (order) => {
 const OrderAssignments = ({ token }) => {
   const { can } = usePermissions();
   const canRetryAllocation = can("assignment:create");
+  const canControlOrders = can("order:control");
   const [assignments, setAssignments] = useState([]);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
@@ -43,6 +45,13 @@ const OrderAssignments = ({ token }) => {
   const [ncmAssignment, setNcmAssignment] = useState(null);
   const [ncmForm, setNcmForm] = useState({});
   const [bookingAssignmentId, setBookingAssignmentId] = useState("");
+  const [activeManualOrder, setActiveManualOrder] = useState(null);
+  const [activeManualAssignmentId, setActiveManualAssignmentId] = useState("");
+  const [activeManualDistributorId, setActiveManualDistributorId] = useState("");
+  const [activeDistributors, setActiveDistributors] = useState([]);
+  const [manualDistributorId, setManualDistributorId] = useState("");
+  const [manualAssignmentReason, setManualAssignmentReason] = useState("");
+  const [manualAssignmentBusy, setManualAssignmentBusy] = useState(false);
 
   const fetchAssignmentsData = useCallback(async () => {
     if (!token) return;
@@ -122,6 +131,49 @@ const OrderAssignments = ({ token }) => {
     }
   };
 
+  const openManualAssignment = (order) => {
+    setActiveManualOrder(order);
+    setActiveManualAssignmentId("");
+    setActiveManualDistributorId("");
+    setManualDistributorId("");
+    setManualAssignmentReason("");
+  };
+
+  const openManualReassignment = (assignment) => {
+    setActiveManualOrder(assignment.order);
+    setActiveManualAssignmentId(assignment.id);
+    setActiveManualDistributorId(assignment.distributorId);
+    setManualDistributorId("");
+    setManualAssignmentReason("");
+  };
+
+  const submitManualAssignment = async (event) => {
+    event.preventDefault();
+    if (!activeManualOrder || manualAssignmentBusy) return;
+    setManualAssignmentBusy(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/order-assignment/admin/control/${activeManualAssignmentId ? "reassign" : "assign"}`,
+        {
+          ...(activeManualAssignmentId
+            ? { assignmentId: activeManualAssignmentId }
+            : { orderId: activeManualOrder.id }),
+          distributorId: manualDistributorId,
+          reason: manualAssignmentReason.trim(),
+        },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Order assignment failed.");
+      toast.success(response.data.message || "Order assigned.");
+      setActiveManualOrder(null);
+      await fetchAssignmentsData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Order assignment failed.");
+    } finally {
+      setManualAssignmentBusy(false);
+    }
+  };
+
   const openNcmForm = (assignment) => {
     const notes = getAssignmentNotes(assignment);
     const firstItem = assignment.order?.items?.[0] || {};
@@ -162,6 +214,20 @@ const OrderAssignments = ({ token }) => {
   useEffect(() => {
     fetchAssignmentsData();
   }, [fetchAssignmentsData]);
+
+  useEffect(() => {
+    if (!token || !canControlOrders) return;
+    axios.get(`${backendUrl}/api/order-assignment/admin/control/distributors`, {
+      headers: { token },
+    })
+      .then(({ data }) => {
+        if (!data.success) throw new Error(data.message || "Could not load active distributors.");
+        setActiveDistributors(data.distributors || []);
+      })
+      .catch((error) => {
+        toast.error(error.response?.data?.message || error.message || "Could not load active distributors.");
+      });
+  }, [canControlOrders, token]);
 
   const filtered = assignments.filter((a) => {
     if (searchTerm) {
@@ -268,16 +334,30 @@ const OrderAssignments = ({ token }) => {
                       <p className="text-[11px] text-slate-500">{getPendingAgeLabel(order)}</p>
                     )}
                   </div>
-                  {canRetryAllocation && order.allocationFailed && (
-                    <button
-                      type="button"
-                      onClick={() => retryAllocation(order.id)}
-                      disabled={retryingOrderId === order.id}
-                      className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-                    >
-                      <RotateCw className={`h-3.5 w-3.5 ${retryingOrderId === order.id ? "animate-spin" : ""}`} />
-                      {retryingOrderId === order.id ? "Retrying..." : "Retry allocation"}
-                    </button>
+                  {order.allocationFailed && (
+                    <div className="flex flex-wrap gap-2">
+                      {canRetryAllocation && (
+                        <button
+                          type="button"
+                          onClick={() => retryAllocation(order.id)}
+                          disabled={retryingOrderId === order.id}
+                          className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                        >
+                          <RotateCw className={`h-3.5 w-3.5 ${retryingOrderId === order.id ? "animate-spin" : ""}`} />
+                          {retryingOrderId === order.id ? "Retrying..." : "Retry allocation"}
+                        </button>
+                      )}
+                      {canControlOrders && (
+                        <button
+                          type="button"
+                          onClick={() => openManualAssignment(order)}
+                          disabled={!activeDistributors.length}
+                          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Assign to distributor
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
                 {allocationFailures[order.id] && (
@@ -425,6 +505,17 @@ const OrderAssignments = ({ token }) => {
                         {a.distributorId ? "Distributor" : a.manufacturerId ? "Legacy manufacturer" : "Unassigned"}
                       </td>
                       <td className="py-3.5 px-4 min-w-40">
+                        {canControlOrders && a.distributorId && !a.delivery && String(a.status || "").toLowerCase() === "rejected" && (
+                          <button
+                            type="button"
+                            onClick={() => openManualReassignment(a)}
+                            disabled={!activeDistributors.some((distributor) => distributor.id !== a.distributorId)}
+                            className="mb-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <RotateCw className="h-3.5 w-3.5" />
+                            Reassign hub
+                          </button>
+                        )}
                         {a.delivery?.ncmOrderId ? (
                           <div className="space-y-1">
                             <span className="font-mono text-[11px] font-bold text-sky-800">Waybill #{a.delivery.ncmOrderId}</span>
@@ -546,6 +637,64 @@ const OrderAssignments = ({ token }) => {
               <button type="submit" disabled={bookingAssignmentId === ncmAssignment.id} className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
                 <Truck className="h-3.5 w-3.5" />
                 {bookingAssignmentId === ncmAssignment.id ? "Submitting..." : "Submit to NCM"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {activeManualOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={submitManualAssignment} className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">{activeManualAssignmentId ? "Reassign order to another distributor" : "Manually assign failed order"}</h2>
+                <p className="mt-1 text-xs text-slate-500">Order #{activeManualOrder.id.slice(-8)} · assignment requires enough available distributor ledger stock.</p>
+              </div>
+              <button type="button" onClick={() => setActiveManualOrder(null)} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Active distributor
+              <select
+                required
+                value={manualDistributorId}
+                onChange={(event) => setManualDistributorId(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"
+              >
+                <option value="">Select a distributor</option>
+                {activeDistributors.filter((distributor) => (
+                  !activeManualAssignmentId || distributor.id !== activeManualDistributorId
+                )).map((distributor) => (
+                  <option key={distributor.id} value={distributor.id}>
+                    {distributor.name} · {[distributor.district, distributor.province].filter(Boolean).join(", ")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs font-semibold text-slate-700">
+              Reason for override
+              <textarea
+                required
+                minLength={10}
+                maxLength={500}
+                rows={3}
+                value={manualAssignmentReason}
+                onChange={(event) => setManualAssignmentReason(event.target.value)}
+                placeholder="Explain why this distributor should fulfill the order."
+                className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+              />
+            </label>
+            <p className="text-[11px] text-slate-500">{activeManualAssignmentId ? "Available only before acceptance and before delivery handoff. The current stock reservation will be transferred atomically." : "This operation is audited. It will not fall back to another distributor if the selected hub lacks stock."}</p>
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+              <button type="button" onClick={() => setActiveManualOrder(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Cancel</button>
+              <button
+                type="submit"
+                disabled={manualAssignmentBusy || !manualDistributorId || manualAssignmentReason.trim().length < 10}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {manualAssignmentBusy ? "Saving..." : activeManualAssignmentId ? "Confirm reassignment" : "Confirm assignment"}
               </button>
             </div>
           </form>

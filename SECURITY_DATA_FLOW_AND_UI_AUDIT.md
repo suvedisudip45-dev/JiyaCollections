@@ -51,6 +51,9 @@ Admin product reports require the ADMIN role and `product:sales_analytics_read`.
 The audit history now includes:
 
 - Business changes already covered by the system audit outbox: access/role management, product and inventory changes, order assignment/fulfillment, and return/refund decisions.
+- Admin-selected distributor assignment for failed online orders is permission-protected (`order:control`), reason-required, and audited transactionally with the stock reservation. The endpoint rejects already assigned or advanced orders and never uses an unverified delivery-state override.
+- The `order:control` detail endpoint exposes only bounded operational histories: up to 30 delivery events, 10 carrier attempt summaries (excluding request/response payloads), 20 cash-event summaries, and 50 order audit entries. It does not cache mutable order or carrier state.
+- Admin cancellation requires an audit reason and reuses the established cancellation transaction to release stock, gifts, card reservations, assignment state, and product availability. It is pre-carrier-handoff only; ambiguous NCM submissions block it, and paid orders are redirected to the refund workflow instead of being marked cancelled without accounting.
 - Authentication failures, account lock/block events, privileged-portal sign-in/MFA milestones, and refresh-token reuse detections.
 - Admin password-change success and incorrect-current-password events, without storing password values or hashes.
 - Authentication rate-limit denials, deduplicated per identifier/IP/portal/code during the limiter window.

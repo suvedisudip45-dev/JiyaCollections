@@ -259,7 +259,37 @@ service-area districts remain managed separately.
   has the required inventory. Existing pending orders can be retried from
   **Order Allocation & Routing Engine** after inventory is fixed. Retry
   responses include each affected product variant's required and currently
-  available quantity.
+  available quantity. Admins with `order:control` may also assign a failed,
+  unassigned online order to a selected active distributor. The Admin must
+  provide a reason; the selected hub must have every required SKU quantity in
+  available platform-owned ledger stock, reserved in the same transaction as
+  assignment creation. This explicit override does not fall back to another
+  distributor and is recorded in the system audit outbox. This failed-order
+  assignment action is unavailable after assignment, acceptance, cancellation,
+  or delivery handoff.
+  Before a distributor accepts an order and before a delivery record exists,
+  Admins with `order:control` may reroute an existing distributor assignment.
+  The action requires a reason and transfers the exact reservation from the
+  source hub to the selected active hub atomically. A stock shortage,
+  reservation mismatch, or concurrent fulfillment change prevents the
+  reassignment; manufacturer assignments and orders already in fulfillment or
+  delivery are not eligible.
+- Admins with `order:control` may advance an assignment to its next validated
+  fulfillment stage from the order control history. Acceptance reuses the
+  regular acceptance transaction and its manufacturer cost/production-layer
+  checks; later stages retain the assigned hub's checklist, marketing-card,
+  gift, and packing rules. A reason is mandatory. This control does not roll
+  stages backward or alter carrier/delivery states and is unavailable once a
+  delivery record exists.
+- Authorized Admins can open an order's control history from **Orders** to
+  review checkout sibling shipments, current assignment, delivery events and
+  bounded NCM attempt summaries, order audit events, and distributor cash/
+  accounting records. Carrier request/response payloads are not included.
+- An Admin may cancel an unpaid order before carrier handoff from its detail
+  page. A reason is mandatory, and stock, gift, card, and assignment
+  reservations are released within the existing cancellation transaction.
+  Cancellation is rejected after confirmed or ambiguous NCM submission and
+  for paid orders; paid-order refunds must use the refund workflow.
 - Customers can submit or edit one 1-5 star review for each delivered
   distributor-fulfilled order from the storefront Orders page. The review API
   verifies customer ownership and delivery, then updates the distributor's

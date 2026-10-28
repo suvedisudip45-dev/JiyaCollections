@@ -23,7 +23,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/add-order": ["order:admin_create"],
   "/orders": ["order:list_admin"],
   "/product-analytics": ["product:sales_analytics_read"],
-  "/order-assignments": ["assignment:admin_list"],
+  "/order-assignments": ["assignment:admin_list", "order:control"],
   "/delivery-monitor": ["delivery:admin_list", "delivery:settlements_read", "delivery:logs_read", "delivery:ncm_handoff_recover"],
   "/ncm-deliveries": ["delivery:admin_list"],
   "/self-deliveries": ["delivery:admin_list"],
@@ -58,8 +58,8 @@ export const ADMIN_ROUTE_PERMISSIONS = {
 
 export const ADMIN_SECTION_PERMISSIONS = {
   catalog: ["product:create", "product:update", "product:delete", "category:create", "category:delete", "combo_bundle:create", "combo_bundle:update", "combo_bundle:delete", "subcategory:create", "color:create", "offer:list", "offer:create", "offer:update"],
-  sales: ["order:list_admin", "order:admin_create", "product:sales_analytics_read"],
-  supply: ["assignment:admin_list", "delivery:admin_list", "manufacturer:admin_list", "manufacturer:admin_detail", "manufacturer:production_admin", "distributor:admin_list", "inventory:admin_read_all", "inventory:admin_low_stock", "transfer:admin_read"],
+  sales: ["order:list_admin", "order:control", "order:admin_create", "product:sales_analytics_read"],
+  supply: ["assignment:admin_list", "order:control", "delivery:admin_list", "manufacturer:admin_list", "manufacturer:admin_detail", "manufacturer:production_admin", "distributor:admin_list", "inventory:admin_read_all", "inventory:admin_low_stock", "transfer:admin_read"],
   marketing: ["marketing_card:admin_manage", "marketing_card:own_store_manage", "marketing_card:custom_assign"],
   operations: ["inventory:admin_read_all", "inventory:ledger_read", "cogs:read", "shipping:config_update"],
   finance: ["finance:dashboard_read", "finance:treasury_read", "finance:assets_read", "finance:partnership_read", "expense:read", "finance:income_read", "finance:tax_report_read", "finance:tax_configure", "returns:supplier_read", "finance:payables_read", "finance:receivable_collect", "finance:statements_read"],

@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "./auditService.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { transitionOrderProductionAllocations } from "./manufacturerProductionService.js";
 import { releaseGiftRewardOnOrderCancellation } from "./giftService.js";
@@ -17,7 +18,7 @@ const parseJsonArray = (value) => {
 const normalize = (value) => String(value || "").trim().toLowerCase();
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
 
-const cancelledError = (message, code) => Object.assign(new Error(message), { code });
+const cancelledError = (message, code, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
 
 export const isBeforeNcmHandoff = ({ order, delivery, submissionAttempt }) => {
   const attemptMayHaveReachedCarrier = submissionAttempt && (
@@ -117,42 +118,69 @@ const releaseDistributorReservation = async (tx, distributorId, item) => {
   }
 };
 
-export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
+const cancelOrderBeforeHandoff = async ({
+  orderId,
+  customerId = null,
+  actorId,
+  actorRole,
+  reason,
+  requireUnpaid = false,
+}) => {
   const cancellationReason = String(reason || "").trim();
-  if (!orderId || !customerId || cancellationReason.length < 3) {
+  if (!orderId || !actorId || cancellationReason.length < 3) {
     throw cancelledError("Order ID and a cancellation reason are required.", "INVALID_CANCELLATION");
   }
+  const orderWhere = { id: orderId, ...(customerId ? { userId: customerId } : {}) };
 
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
-      where: { id: orderId, userId: customerId },
+      where: orderWhere,
       include: { deliveryOrder: true },
     });
-    if (!order) throw cancelledError("Order not found.", "ORDER_NOT_FOUND");
+    if (!order) throw cancelledError("Order not found.", "ORDER_NOT_FOUND", 404);
     if (order.status === "Cancelled") {
       return { alreadyCancelled: true, order };
+    }
+    if (requireUnpaid && order.payment) {
+      throw cancelledError(
+        "This paid order requires the approved refund workflow before it can be cancelled.",
+        "PAID_ORDER_REFUND_REQUIRED",
+        409,
+      );
     }
 
     const delivery = order.deliveryOrder;
     const submissionAttempt = delivery
-      ? await tx.ncmRequestAttempt.findFirst({ where: { deliveryOrderId: delivery.id } })
+      ? await tx.ncmRequestAttempt.findFirst({
+          where: {
+            deliveryOrderId: delivery.id,
+            OR: [
+              { result: { in: ["STARTED", "UNKNOWN", "SUCCESS"] } },
+              {
+                result: "FAILED",
+                OR: [{ httpStatus: null }, { httpStatus: { gte: 500 } }],
+              },
+            ],
+          },
+          select: { result: true, httpStatus: true },
+        })
       : null;
     if (!isBeforeNcmHandoff({ order, delivery, submissionAttempt })) {
-      throw cancelledError("This order can no longer be cancelled because it has been handed to the delivery partner. Submit an exchange request instead.", "CANCELLATION_CUTOFF_PASSED");
+      throw cancelledError("This order can no longer be cancelled because it has been handed to the delivery partner. Submit an exchange request instead.", "CANCELLATION_CUTOFF_PASSED", 409);
     }
 
     const changed = await tx.order.updateMany({
-      where: { id: order.id, userId: customerId, status: { not: "Cancelled" } },
+      where: { ...orderWhere, status: { not: "Cancelled" } },
       data: {
         status: "Cancelled",
         fulfillmentStatus: "cancelled",
         cancelledAt: new Date(),
         cancellationReason,
-        cancelledByUserId: customerId,
+        cancelledByUserId: customerId || null,
       },
     });
     if (changed.count !== 1) {
-      throw cancelledError("The order changed while cancellation was being processed. Refresh and try again.", "CANCELLATION_CONFLICT");
+      throw cancelledError("The order changed while cancellation was being processed. Refresh and try again.", "CANCELLATION_CONFLICT", 409);
     }
     await releaseGiftRewardOnOrderCancellation(tx, order.id);
 
@@ -203,8 +231,8 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
         data: {
           cardId: cardLink.cardId,
           eventType: "CARD_RELEASED_AFTER_ORDER_CANCELLATION",
-          actorId: customerId,
-          actorRole: "CUSTOMER",
+          actorId,
+          actorRole,
           fromStatus: "ATTACHED",
           toStatus: "AVAILABLE",
           referenceId: order.id,
@@ -225,12 +253,34 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
             previousQty: Number(before?.stockQuantity || 0),
             newQty: Number(stockChange.stockQuantity ?? stockChange.newQty ?? 0),
             changeQty: lines.reduce((sum, item) => sum + item.quantity, 0),
-            reason: `Customer order cancelled before NCM handoff (${order.id})`,
-            source: "customer_cancel",
+            reason: `${actorRole === "ADMIN" ? "Admin" : "Customer"} cancelled order before NCM handoff (${order.id})`,
+            source: actorRole === "ADMIN" ? "admin_cancel" : "customer_cancel",
             orderId: order.id,
           },
         });
       }
+    }
+    if (actorRole === "ADMIN") {
+      await recordSystemAudit({
+        actorId,
+        actorRole,
+        portalSource: "ADMIN",
+      }, {
+        action: "ORDER_CANCELLED_BY_ADMIN",
+        entityType: "Order",
+        entityId: order.id,
+        beforeState: {
+          status: order.status,
+          fulfillmentStatus: order.fulfillmentStatus,
+          payment: order.payment,
+          assignmentId: order.assignmentId,
+        },
+        afterState: {
+          status: "Cancelled",
+          fulfillmentStatus: "cancelled",
+          cancellationReason,
+        },
+      }, { client: tx });
     }
 
     return {
@@ -239,3 +289,21 @@ export const cancelCustomerOrder = async ({ orderId, customerId, reason }) => {
     };
   }, { isolationLevel: "Serializable" });
 };
+
+export const cancelCustomerOrder = ({ orderId, customerId, reason }) =>
+  cancelOrderBeforeHandoff({
+    orderId,
+    customerId,
+    actorId: customerId,
+    actorRole: "CUSTOMER",
+    reason,
+  });
+
+export const cancelAdminOrder = ({ orderId, actorId, reason }) =>
+  cancelOrderBeforeHandoff({
+    orderId,
+    actorId,
+    actorRole: "ADMIN",
+    reason,
+    requireUnpaid: true,
+  });

@@ -201,6 +201,9 @@ The application exposes modules such as:
 - `/payables` displays distributor settlement requests with the payable balance and lets an authorized Admin make full or partial payment from a selected treasury account.
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/product-analytics`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
+- In `/order-assignments`, Admins with `order:control` can manually assign failed, unassigned online orders and reroute an existing distributor assignment before acceptance or delivery handoff. Both dialogs require an active distributor and a reason; rerouting atomically transfers the exact stock reservation, and backend validation does not silently substitute another hub.
+- `/orders/:orderId` displays the permission-protected control timeline to authorized Admins: checkout split shipments, current assignment and delivery state, bounded carrier attempts/events, distributor cash/accounting entries, and order audit history. Admins can advance fulfillment to its next validated stage with a reason; acceptance reuses the normal acceptance workflow, and the control is blocked after a delivery record exists.
+- Authorized Admins may cancel an unpaid order before carrier handoff from the order detail. The action requires a reason, releases eligible reservations transactionally, and is blocked for paid orders or any confirmed/ambiguous NCM handoff.
 - `/manufacturers`, `/manufacturer-inventory`, `/manufacturer-production`, `/distributor-applications`, `/stock-transfers`, `/marketing-cards`
 - `/customers`, `/loyalty-levels`, `/gift-promotions`, `/categories`, `/combo-bundles`
 - `/reviews`, `/story-letter-library`, `/shipping`

@@ -5,6 +5,7 @@ import {
   canAdminReassignAssignment,
   canManufacturerRejectAssignment,
   manualAssign,
+  adminAssignFailedOrder,
 } from "../controllers/orderAssignmentController.js";
 
 test("admin reassigning is blocked once manufacturer has accepted production", () => {
@@ -42,4 +43,22 @@ test("manual assignment cannot direct customer orders to manufacturers", async (
   assert.equal(response.status, 409);
   assert.equal(response.body.success, false);
   assert.match(response.body.message, /distributor allocation/i);
+});
+
+test("admin manual assignment requires a distributor and an auditable reason", async () => {
+  let response;
+  const res = {
+    status: (status) => ({
+      json: (body) => {
+        response = { status, body };
+        return response;
+      },
+    }),
+  };
+
+  await adminAssignFailedOrder({ body: { orderId: "order-1", distributorId: "hub-1", reason: "   " } }, res);
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.code, "INVALID_ADMIN_ASSIGNMENT");
+  assert.match(response.body.message, /reason between 10 and 500 characters/i);
 });

@@ -23,7 +23,7 @@ const permissionDefinitions = [
   ["admin:change_password", "Change an administrator password."],
   ["product:create", "Create products."], ["product:update", "Update products."], ["product:delete", "Delete products."], ["product:list_admin", "Read unpublished products in the administrative catalog."], ["product:sales_analytics_read", "Read administrative product sales, revenue, returns, and geographic analytics."],
   ["stock:adjust", "Adjust product stock."], ["stock:logs_read", "Read stock logs."],
-  ["order:list_all", "Read all orders."], ["order:list_admin", "Read administrative order views."], ["order:customer_lookup", "Look up order customers."],
+  ["order:list_all", "Read all orders."], ["order:list_admin", "Read administrative order views."], ["order:control", "Perform audited order allocation and fulfillment controls."], ["order:customer_lookup", "Look up order customers."],
   ["order:customer_verify", "Verify order customers."], ["order:admin_create", "Create orders administratively."],
   ["category:create", "Create categories."], ["category:delete", "Delete categories."],
   ["combo_bundle:create", "Create combo bundles."], ["combo_bundle:update", "Update combo bundles."], ["combo_bundle:delete", "Delete combo bundles."],

@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 /* eslint-disable react/prop-types */
 /* eslint-disable no-unused-vars */
 import React, { useEffect, useState, useMemo } from "react";
@@ -9,6 +8,7 @@ import { assets } from "../assets/assets";
 import ShippingLabelModal from "../components/ShippingLabelModal";
 import Pagination from "../components/Pagination";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const ORDERS_PAGE_SIZE = 10;
 const ADMIN_ORDER_STATUSES = [
@@ -84,6 +84,63 @@ const getFulfillmentLabel = (fs) => {
     default:                           return fs ? fs.replace(/_/g, " ") : "Unknown";
   }
 };
+
+const getAdminFulfillmentChoices = (assignment) => {
+  if (!assignment) return [];
+  const stages = assignment.distributor
+    ? ["assigned", "accepted", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"]
+    : ["assigned", "accepted", "preparing", "quality_check", "letter_ready", "checklist_complete", "packed", "package_details_complete"];
+  let current = String(assignment.status || "").toLowerCase();
+  if (current === "pending_acceptance") current = "assigned";
+  if (assignment.distributor && current === "preparing") current = "accepted";
+  const currentIndex = stages.indexOf(current);
+  if (currentIndex < 0) return [];
+  return [stages[currentIndex + 1]].filter(Boolean);
+};
+
+const parseFulfillmentNotes = (notes) => {
+  if (!notes) return {};
+  if (typeof notes === "object") return notes;
+  try {
+    const parsed = JSON.parse(notes);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const getAdminChecklistFields = (assignment) => [
+  ["productVerified", "Product verified"],
+  ["sizeColorVerified", "Size and color verified"],
+  ...(!assignment?.distributor
+    ? [["stitchingVerified", "Stitching verified"], ["brandingVerified", "Branding verified"]]
+    : []),
+  ["qualityVerified", "Quality verified"],
+  ["customerLetterIncluded", "Customer letter included"],
+  ["addressVerified", "Delivery address verified"],
+  ["packagingMaterialsVerified", "Packaging materials verified"],
+];
+
+const isAdminCreatedOrder = (order) => {
+  if (order.orderType === "ADMIN_DIRECT") return true;
+  try {
+    const reward = typeof order.rewardApplied === "string"
+      ? JSON.parse(order.rewardApplied)
+      : order.rewardApplied;
+    return reward?.adminCreated === true;
+  } catch (error) {
+    console.warn("Order reward metadata could not be parsed.", { orderId: order._id || order.id, error });
+    return false;
+  }
+};
+
+const toAdminOrderCardData = (order) => ({
+  ...order,
+  _id: order.id,
+  delivery: order.deliveryOrder || null,
+  assignedDistributorId: order.orderAssignment?.distributorId || order.distributorId || null,
+  distributorAssignment: order.orderAssignment || null,
+});
 
 // ─── ORDER CARD — Admin-managed (with full controls) ─────────────────────────
 const AdminOrderCard = ({
@@ -567,11 +624,7 @@ const Orders = ({ token }) => {
   const filteredMonitorOrders = useMemo(() => {
     return allOrders.filter((order) => {
       // Exclude admin-created orders from monitor (they're in the admin tab)
-      try {
-        const reward = typeof order.rewardApplied === "string" ? JSON.parse(order.rewardApplied) : order.rewardApplied;
-        if (reward && reward.adminCreated === true) return false;
-      } catch {}
-      if (order.orderType === "ADMIN_DIRECT") return false;
+      if (isAdminCreatedOrder(order)) return false;
 
       if (monitorFulfillmentFilter !== "All" && (order.fulfillmentStatus || "PENDING_ASSIGNMENT") !== monitorFulfillmentFilter) return false;
 
@@ -698,7 +751,7 @@ const Orders = ({ token }) => {
         >
           <span>Website Orders — Hub Monitor</span>
           <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${activeTab === "monitor" ? "bg-indigo-600 text-white" : "bg-gray-200 text-gray-700"}`}>
-            {allOrders.filter(o => { try { const r = typeof o.rewardApplied === "string" ? JSON.parse(o.rewardApplied) : o.rewardApplied; if (r?.adminCreated) return false; } catch {} return o.orderType !== "ADMIN_DIRECT"; }).length}
+            {allOrders.filter((order) => !isAdminCreatedOrder(order)).length}
           </span>
           <span className="px-1.5 py-0.5 bg-rose-50 text-rose-600 border border-rose-200 rounded text-[10px] font-bold">READ ONLY</span>
         </button>
@@ -871,7 +924,7 @@ const Orders = ({ token }) => {
             <div>
               <h4 className="text-sm font-bold text-slate-800">Hub Monitor — Read Only</h4>
               <p className="text-xs text-slate-500 mt-0.5">
-                Website and storefront orders are fulfilled exclusively by assigned manufacturer hubs. Admin can monitor orders and print courier slips, but cannot change fulfillment status here.
+                  Storefront orders are fulfilled by distributor hubs. This list is for monitoring; authorized order controls and the complete operational history are available in each order detail.
               </p>
             </div>
           </div>
@@ -1008,17 +1061,126 @@ export const AdminOrderDetail = ({ token }) => {
   const { orderId } = useParams();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const { can } = usePermissions();
+  const canControlOrders = can("order:control");
   const source = searchParams.get("source") === "monitor" ? "monitor" : "admin";
   const [order, setOrder] = useState(null);
+  const [controlDetails, setControlDetails] = useState(null);
+  const [controlDetailsError, setControlDetailsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [printOrdersList, setPrintOrdersList] = useState(null);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [cancellationBusy, setCancellationBusy] = useState(false);
+  const [fulfillmentDialogOpen, setFulfillmentDialogOpen] = useState(false);
+  const [fulfillmentStatus, setFulfillmentStatus] = useState("");
+  const [fulfillmentReason, setFulfillmentReason] = useState("");
+  const [fulfillmentData, setFulfillmentData] = useState({});
+  const [fulfillmentBusy, setFulfillmentBusy] = useState(false);
+
+  const openFulfillmentDialog = () => {
+    const notes = parseFulfillmentNotes(controlDetails?.order?.orderAssignment?.notes);
+    setFulfillmentStatus("");
+    setFulfillmentReason("");
+    setFulfillmentData({
+      stitchingBrandingCompleted: notes.stitchingBrandingCompleted === true,
+      packageWeight: notes.packageWeight || "",
+      packageDimensions: notes.packageDimensions || "",
+      packageType: notes.packageType || "Box",
+      productType: notes.productType || "",
+      productDescription: notes.productDescription || "",
+      packagingNotes: notes.packagingNotes || "",
+      deliveryInstruction: notes.deliveryInstruction || "",
+      isFragile: Boolean(notes.isFragile),
+      packagingChecklist: notes.packagingChecklist || {},
+    });
+    setFulfillmentDialogOpen(true);
+  };
+
+  const submitAdminCancellation = async (event) => {
+    event.preventDefault();
+    if (!canControlOrders || cancellationBusy || cancellationReason.trim().length < 10) return;
+    setCancellationBusy(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/order/admin/control/${encodeURIComponent(orderId)}/cancel`,
+        { reason: cancellationReason.trim() },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Order cancellation failed.");
+      toast.success(response.data.message || "Order cancelled.");
+      setCancelDialogOpen(false);
+      setCancellationReason("");
+      const { data } = await axios.get(`${backendUrl}/api/order/admin/control/${encodeURIComponent(orderId)}`, {
+        headers: { token },
+      });
+      if (!data.success) throw new Error(data.message || "Order was cancelled but the refreshed details could not be loaded.");
+      setControlDetails(data);
+      setOrder(toAdminOrderCardData(data.order));
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Order cancellation failed.");
+    } finally {
+      setCancellationBusy(false);
+    }
+  };
+
+  const submitAdminFulfillmentUpdate = async (event) => {
+    event.preventDefault();
+    const assignmentId = controlDetails?.order?.orderAssignment?.id;
+    if (
+      !canControlOrders ||
+      !assignmentId ||
+      fulfillmentBusy ||
+      !fulfillmentStatus ||
+      fulfillmentReason.trim().length < 10
+    ) return;
+    setFulfillmentBusy(true);
+    try {
+      const response = await axios.put(
+        `${backendUrl}/api/order-assignment/admin/control/fulfillment/${encodeURIComponent(assignmentId)}`,
+        { ...fulfillmentData, status: fulfillmentStatus, reason: fulfillmentReason.trim() },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Fulfillment update failed.");
+      toast.success(response.data.message || "Fulfillment updated.");
+      setFulfillmentDialogOpen(false);
+      setFulfillmentStatus("");
+      setFulfillmentReason("");
+      const { data } = await axios.get(`${backendUrl}/api/order/admin/control/${encodeURIComponent(orderId)}`, {
+        headers: { token },
+      });
+      if (!data.success) throw new Error(data.message || "Fulfillment was updated but the latest order details could not be loaded.");
+      setControlDetails(data);
+      setOrder(toAdminOrderCardData(data.order));
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Fulfillment update failed.");
+    } finally {
+      setFulfillmentBusy(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
+    setControlDetails(null);
+    setControlDetailsError("");
     const stateOrder = location.state?.order;
     if (stateOrder?._id === orderId) {
       setOrder(stateOrder);
       setLoading(false);
+      if (canControlOrders) {
+        axios.get(`${backendUrl}/api/order/admin/control/${encodeURIComponent(orderId)}`, {
+          headers: { token },
+        }).then(({ data }) => {
+          if (!active) return;
+          if (!data.success) throw new Error(data.message || "Order control history could not be loaded.");
+          setControlDetails(data);
+          setOrder(toAdminOrderCardData(data.order));
+          setControlDetailsError("");
+        }).catch((error) => {
+          if (!active) return;
+          setControlDetailsError(error.response?.data?.message || error.message || "Order control history could not be loaded.");
+        });
+      }
       return () => {
         active = false;
       };
@@ -1027,6 +1189,20 @@ export const AdminOrderDetail = ({ token }) => {
     const loadOrder = async () => {
       setLoading(true);
       try {
+        if (canControlOrders) {
+          const { data } = await axios.get(`${backendUrl}/api/order/admin/control/${encodeURIComponent(orderId)}`, {
+            headers: { token },
+          });
+          if (!active) return;
+          if (!data.success) {
+            toast.error(data.message || "Could not load order details.");
+            setOrder(null);
+            return;
+          }
+          setControlDetails(data);
+          setOrder(toAdminOrderCardData(data.order));
+          return;
+        }
         const endpoint = source === "monitor" ? "/api/order/list" : "/api/order/admin-list";
         const response = await axios.post(`${backendUrl}${endpoint}`, {}, {
           headers: { token },
@@ -1043,6 +1219,7 @@ export const AdminOrderDetail = ({ token }) => {
       } catch (error) {
         if (active) {
           toast.error(error.response?.data?.message || error.message || "Could not load order details.");
+          if (canControlOrders) setControlDetailsError(error.response?.data?.message || "Order control history could not be loaded.");
           setOrder(null);
         }
       } finally {
@@ -1054,7 +1231,167 @@ export const AdminOrderDetail = ({ token }) => {
     return () => {
       active = false;
     };
-  }, [location.state, orderId, source, token]);
+  }, [canControlOrders, location.state, orderId, source, token]);
+
+  const renderControlDetails = () => {
+    if (!canControlOrders) return null;
+    if (controlDetailsError) {
+      return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{controlDetailsError}</div>;
+    }
+    if (!controlDetails) return null;
+
+    const operational = controlDetails.order;
+    const assignment = operational.orderAssignment;
+    const delivery = operational.deliveryOrder;
+    const audit = controlDetails.audit || [];
+    const events = delivery?.events || [];
+    const attempts = controlDetails.deliveryAttempts || [];
+    const cashEvents = operational.distributorCashEvents || [];
+    const shipments = controlDetails.checkoutShipments || [];
+    const dateTime = (value) => value ? new Date(value).toLocaleString() : "—";
+    const fulfillmentChoices = getAdminFulfillmentChoices(assignment);
+    const deliveryControlLocked = Boolean(delivery || ["cancelled", "delivered"].includes(String(operational.status || "").toLowerCase()));
+
+    return (
+      <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Order control &amp; history</h2>
+            <p className="mt-1 text-xs text-slate-500">Current operational state and recorded delivery, payment, and Admin audit events.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {assignment && fulfillmentChoices.length > 0 && !deliveryControlLocked && (
+              <button
+                type="button"
+                onClick={openFulfillmentDialog}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Update fulfillment
+              </button>
+            )}
+            {!deliveryControlLocked && !operational.payment && (
+              <button
+                type="button"
+                onClick={() => setCancelDialogOpen(true)}
+                className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+              >
+                Cancel before carrier handoff
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Order", operational.status],
+            ["Fulfillment", operational.fulfillmentStatus],
+            ["Payment", `${operational.payment ? "Paid" : "Unpaid"} · ${operational.paymentMethod || "Unknown method"}`],
+            ["Assignment", assignment ? `${assignment.status} · ${assignment.distributor?.name || assignment.manufacturer?.name || "Hub not identified"}` : "Not assigned"],
+            ["Delivery", delivery ? `${delivery.state} · ${delivery.ncmStatus || delivery.deliveryType || "NCM"}` : "No carrier delivery record"],
+            ["Order value", `${currency}${Number(operational.amount || 0).toLocaleString()}`],
+            ["Delivery fee", `${currency}${Number(operational.deliveryFee || 0).toLocaleString()}`],
+            ["Last updated", dateTime(operational.updatedAt)],
+          ].map(([label, value]) => (
+            <div key={label} className="rounded-xl bg-slate-50 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className="mt-1 break-words text-xs font-semibold text-slate-800">{value || "—"}</p>
+            </div>
+          ))}
+        </div>
+
+        {operational.cancelledAt && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+            Cancelled {dateTime(operational.cancelledAt)}{operational.cancellationReason ? ` · ${operational.cancellationReason}` : ""}
+          </div>
+        )}
+
+        {shipments.length > 1 && (
+          <div>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Checkout shipments ({shipments.length})</h3>
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+                  <tr><th className="px-3 py-2">Order</th><th className="px-3 py-2">Distributor</th><th className="px-3 py-2">Fulfillment</th><th className="px-3 py-2">Delivery</th><th className="px-3 py-2">Payment</th><th className="px-3 py-2 text-right">Amount</th></tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {shipments.map((shipment) => (
+                    <tr key={shipment.id} className={shipment.currentShipment ? "bg-indigo-50/60" : ""}>
+                      <td className="px-3 py-2 font-mono">{shipment.id.slice(-8)}{shipment.currentShipment ? " · current" : ""}</td>
+                      <td className="px-3 py-2">{shipment.distributor?.name || "Unassigned"}</td>
+                      <td className="px-3 py-2">{shipment.fulfillmentStatus || "—"}</td>
+                      <td className="px-3 py-2">{shipment.deliveryOrder?.state || shipment.orderAssignment?.deliveryType || "—"}</td>
+                      <td className="px-3 py-2">{shipment.payment ? "Paid" : "Unpaid"}</td>
+                      <td className="px-3 py-2 text-right">{currency}{Number(shipment.amount || 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Delivery events</h3>
+            {events.length ? (
+              <ol className="space-y-2">
+                {events.map((event) => (
+                  <li key={event.id} className="rounded-xl border border-slate-100 p-3">
+                    <p className="text-xs font-semibold text-slate-800">{event.eventType.replace(/_/g, " ")}{event.ncmStatus ? ` · ${event.ncmStatus}` : ""}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">{event.fromState || "—"} → {event.toState || "—"} · {event.source} · {dateTime(event.occurredAt)}</p>
+                  </li>
+                ))}
+              </ol>
+            ) : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No delivery events recorded.</p>}
+            {attempts.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50/60 p-3">
+                <h4 className="text-[10px] font-bold uppercase tracking-wide text-amber-900">Carrier request attempts</h4>
+                <ul className="mt-2 space-y-1.5">
+                  {attempts.map((attempt) => (
+                    <li key={attempt.id} className="text-[11px] text-amber-950">
+                  {attempt.operation} · {attempt.result}{attempt.httpStatus ? ` · HTTP ${attempt.httpStatus}` : ""}{attempt.errorCode ? ` · ${attempt.errorCode}` : ""} · {dateTime(attempt.startedAt)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          <div>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Audit history</h3>
+            {audit.length ? (
+              <ol className="max-h-[28rem] space-y-2 overflow-y-auto">
+                {audit.map((entry) => (
+                  <li key={entry.id} className="rounded-xl border border-slate-100 p-3">
+                    <p className="text-xs font-semibold text-slate-800">{entry.action.replace(/_/g, " ")}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">{entry.actorRole || "System"}{entry.actorId ? ` · ${entry.actorId}` : ""} · {dateTime(entry.createdAt)}</p>
+                    {(entry.beforeState || entry.afterState) && (
+                      <details className="mt-2 text-[10px] text-slate-500">
+                        <summary className="cursor-pointer font-semibold">View recorded change</summary>
+                        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-2">{JSON.stringify({ before: entry.beforeState, after: entry.afterState }, null, 2)}</pre>
+                      </details>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            ) : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No system audit events have been recorded for this order.</p>}
+          </div>
+        </div>
+
+        {cashEvents.length > 0 && (
+          <div>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-600">Distributor cash &amp; accounting events</h3>
+            <div className="space-y-2">
+              {cashEvents.map((event) => (
+                <div key={event.id} className="flex flex-wrap justify-between gap-2 rounded-xl border border-slate-100 p-3 text-xs">
+                  <span>{event.eventType.replace(/_/g, " ")} · {event.status} · {dateTime(event.occurredAt)}</span>
+                  <strong>{currency}{Number(event.amount || 0).toLocaleString()}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  };
 
   return (
     <section className="space-y-5">
@@ -1083,6 +1420,194 @@ export const AdminOrderDetail = ({ token }) => {
           onPrint={setPrintOrdersList}
           customerLoyaltyMap={{}}
         />
+      )}
+      {renderControlDetails()}
+      {cancelDialogOpen && canControlOrders && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={submitAdminCancellation} className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5 shadow-2xl">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Cancel order</h2>
+              <p className="mt-1 text-xs text-slate-600">This releases eligible stock and gift reservations. Cancellation is blocked after an NCM handoff/ambiguous carrier request and for paid orders, which must use the refund workflow.</p>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              Cancellation reason
+              <textarea
+                autoFocus
+                required
+                minLength={10}
+                maxLength={500}
+                rows={4}
+                value={cancellationReason}
+                onChange={(event) => setCancellationReason(event.target.value)}
+                placeholder="Record why this order is being cancelled."
+                className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+              />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+              <button type="button" onClick={() => setCancelDialogOpen(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Keep order</button>
+              <button
+                type="submit"
+                disabled={cancellationBusy || cancellationReason.trim().length < 10}
+                className="rounded-lg bg-rose-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {cancellationBusy ? "Cancelling..." : "Confirm cancellation"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {fulfillmentDialogOpen && canControlOrders && controlDetails?.order?.orderAssignment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={submitAdminFulfillmentUpdate} className="w-full max-w-lg space-y-4 rounded-2xl bg-white p-5 shadow-2xl">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Update fulfillment stage</h2>
+              <p className="mt-1 text-xs text-slate-600">Admin updates follow the same fulfillment sequence, checklist, gift/card, and packing validation as the assigned hub. Delivery and carrier states cannot be changed here.</p>
+            </div>
+            <label className="block text-xs font-semibold text-slate-700">
+              New fulfillment stage
+              <select
+                required
+                value={fulfillmentStatus}
+                onChange={(event) => setFulfillmentStatus(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"
+              >
+                <option value="">Select a stage</option>
+                {getAdminFulfillmentChoices(controlDetails.order.orderAssignment).map((stage) => (
+                  <option key={stage} value={stage}>{stage.replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            </label>
+            {!controlDetails.order.orderAssignment.distributor && (
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={fulfillmentData.stitchingBrandingCompleted === true}
+                  onChange={(event) => setFulfillmentData((current) => ({
+                    ...current,
+                    stitchingBrandingCompleted: event.target.checked,
+                  }))}
+                />
+                Manufacturer confirmed stitching and branding
+              </label>
+            )}
+            {["letter_ready", "checklist_complete"].includes(fulfillmentStatus) && (
+              <fieldset className="space-y-2 rounded-xl border border-slate-200 p-3">
+                <legend className="px-1 text-xs font-semibold text-slate-700">
+                  {fulfillmentStatus === "letter_ready" ? "Customer letter confirmation" : "Packing checklist"}
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {getAdminChecklistFields(controlDetails.order.orderAssignment).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 text-[11px] text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={fulfillmentData.packagingChecklist?.[key] === true}
+                        onChange={(event) => setFulfillmentData((current) => ({
+                          ...current,
+                          packagingChecklist: {
+                            ...current.packagingChecklist,
+                            [key]: event.target.checked,
+                          },
+                        }))}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+            {fulfillmentStatus === "package_details_complete" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  Package weight (kg)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={fulfillmentData.packageWeight || ""}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, packageWeight: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Package type
+                  <select
+                    value={fulfillmentData.packageType || "Box"}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, packageType: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"
+                  >
+                    {["Box", "Polybag", "Envelope", "Carton", "Gift Box"].map((type) => <option key={type}>{type}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Dimensions
+                  <input
+                    value={fulfillmentData.packageDimensions || ""}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, packageDimensions: event.target.value }))}
+                    placeholder="30 × 20 × 10 cm"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-slate-700">
+                  Product type
+                  <input
+                    value={fulfillmentData.productType || ""}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, productType: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-slate-700 sm:col-span-2">
+                  Product description
+                  <textarea
+                    rows={2}
+                    value={fulfillmentData.productDescription || ""}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, productDescription: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+                  />
+                </label>
+                <label className="text-xs font-semibold text-slate-700 sm:col-span-2">
+                  Delivery / packing instructions
+                  <textarea
+                    rows={2}
+                    value={fulfillmentData.deliveryInstruction || ""}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, deliveryInstruction: event.target.value }))}
+                    className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={fulfillmentData.isFragile === true}
+                    onChange={(event) => setFulfillmentData((current) => ({ ...current, isFragile: event.target.checked }))}
+                  />
+                  Package is fragile
+                </label>
+              </div>
+            )}
+            <label className="block text-xs font-semibold text-slate-700">
+              Reason for Admin update
+              <textarea
+                required
+                minLength={10}
+                maxLength={500}
+                rows={3}
+                value={fulfillmentReason}
+                onChange={(event) => setFulfillmentReason(event.target.value)}
+                placeholder="Explain the operational reason for this stage update."
+                className="mt-1 w-full rounded-lg border border-slate-200 p-3 text-sm font-normal"
+              />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+              <button type="button" onClick={() => setFulfillmentDialogOpen(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">Cancel</button>
+              <button
+                type="submit"
+                disabled={fulfillmentBusy || !fulfillmentStatus || fulfillmentReason.trim().length < 10}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {fulfillmentBusy ? "Saving..." : "Update fulfillment"}
+              </button>
+            </div>
+          </form>
+        </div>
       )}
       {printOrdersList && (
         <ShippingLabelModal
