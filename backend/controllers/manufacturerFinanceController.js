@@ -6,6 +6,11 @@ import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
 import {
+  confirmFinancialPayout,
+  failFinancialPayout,
+  initiateFinancialPayout,
+} from "../services/financialPayoutService.js";
+import {
   getManufacturerSettlementSummary,
   allocateManufacturerPaymentToDocuments,
   normalizeSettlementRequest,
@@ -130,140 +135,188 @@ export const listAdminManufacturerSettlements = async (req, res) => {
 export const payManufacturerSettlement = async (req, res) => {
   try {
     const { id } = req.params;
-    const financialAccountId = String(req.body.financialAccountId || "").trim();
-    if (!financialAccountId) return res.status(400).json({ success: false, message: "Source financial account is required." });
-    const externalPaymentReference = requireExternalPaymentReference(req.body.externalPaymentReference);
-    const result = await prisma.$transaction(async (tx) => {
-      const request = await tx.manufacturerSettlementRequest.findUnique({
-        where: { id },
-        include: { manufacturer: { select: { id: true, name: true } } },
+    const action = String(req.body?.action || "INITIATE").trim().toUpperCase();
+    const adminAccountId = req.auth?.accountId || req.auth?.userId || null;
+    if (action === "FAIL") {
+      const result = await failFinancialPayout({
+        payoutId: req.body?.payoutId,
+        expectedTargetType: "MANUFACTURER_SETTLEMENT",
+        failureReason: req.body?.failureReason,
+        failedByAccountId: adminAccountId,
       });
-      if (!request) throw Object.assign(new Error("Manufacturer settlement request not found."), { statusCode: 404 });
-      if (request.status !== "PENDING") throw Object.assign(new Error("Only pending settlement requests can be paid."), { statusCode: 409 });
-      const account = await tx.financialAccount.findUnique({
-        where: { id: financialAccountId },
-      });
-      if (!account || account.status !== "ACTIVE" || !["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())) {
-        throw Object.assign(new Error("An active cash, bank, or wallet account is required."), { statusCode: 404 });
-      }
-      const accountingAccount = await validateTreasuryPayoutAccount(account, tx);
-      const amount = Number(request.amount);
-      const summary = await getManufacturerSettlementSummary(request.manufacturerId, { client: tx });
-      if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
-      const outstanding = request.requestType === "LOGISTICS" ? summary.logisticsOutstanding : summary.productionOutstanding;
-      if (amount > outstanding) {
-        throw Object.assign(new Error(`Outstanding ${request.requestType.toLowerCase()} payable is Rs ${outstanding.toFixed(2)}; payment would exceed it.`), { statusCode: 409 });
-      }
-      const idempotencyKey = `MFG-SETTLEMENT:${request.id}`;
-      const existingPayment = await tx.cashTransaction.findUnique({ where: { idempotencyKey } });
-      if (existingPayment) throw Object.assign(new Error("This settlement payment has already been recorded."), { statusCode: 409 });
-      const debited = await tx.financialAccount.updateMany({
-        where: { id: account.id, currentBalance: { gte: amount } },
-        data: { currentBalance: { decrement: amount } },
-      });
-      if (debited.count !== 1) throw Object.assign(new Error("Insufficient balance in the selected financial account."), { statusCode: 409 });
+      return res.json(result);
+    }
 
-      await tx.cashTransaction.create({
-        data: {
-          idempotencyKey,
-          amount,
-          type: "OUTFLOW",
-          fromAccountId: account.id,
-          category: "SUPPLIER_PAYMENT",
-          partyName: request.manufacturer.name,
-          referenceId: request.manufacturerId,
-          externalPaymentReference,
-          description: `${request.requestType} settlement ${request.id} paid to ${request.manufacturer.name}`,
-        },
-      });
-      const journal = await postSupplierPaymentAccounting({
-        payableId: `MFG-SETTLEMENT-${request.id}`,
-        payeeName: request.manufacturer.name,
+    if (action === "INITIATE") {
+      const financialAccountId = String(req.body?.financialAccountId || "").trim();
+      if (!financialAccountId) return res.status(400).json({ success: false, message: "Source financial account is required." });
+      const amount = req.body?.amount;
+      const externalPaymentReference = requireExternalPaymentReference(req.body?.externalPaymentReference);
+      const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
+      const initiated = await initiateFinancialPayout({
+        targetType: "MANUFACTURER_SETTLEMENT",
+        targetId: id,
         amount,
-        settlementAmount: amount,
-        fromAccountType: account.accountType === "CASH" ? "CASH" : "BANK",
-        payableAccountCode: "2160",
-        cashAccountId: accountingAccount.id,
-        supplierId: request.manufacturerId,
-        idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
-        referenceNumber: `MFG-SET-${request.id.slice(-8).toUpperCase()}`,
-        client: tx,
-      });
-      if (!journal) throw new Error("Accounting journal could not be posted for the settlement.");
-      const documentAllocation = request.requestType === "PRODUCTION"
-        ? await allocateManufacturerPaymentToDocuments({
-          manufacturerId: request.manufacturerId,
-          amount,
-          journalEntryId: journal.id,
-          idempotencyKey: `MFG-SETTLEMENT-ALLOCATION:${request.id}`,
-          notes: `Production settlement ${request.id}`,
-          client: tx,
-        })
-        : null;
-
-      const updated = await tx.manufacturerSettlementRequest.updateMany({
-        where: { id: request.id, status: "PENDING" },
-        data: {
-          status: "PAID",
-          reviewedBy: req.auth?.accountId || null,
-          financialAccountId: account.id,
-          externalPaymentReference,
-          paidAt: new Date(),
-        },
-      });
-      if (updated.count !== 1) throw Object.assign(new Error("Settlement request status changed before payment completed."), { statusCode: 409 });
-      const freightSettlementReconciliation = request.requestType === "LOGISTICS"
-        ? await reconcileManufacturerLogisticsShipmentPayments({
-          manufacturerId: request.manufacturerId,
-          client: tx,
-        })
-        : null;
-      await recordSystemAudit(actorContext(req), {
-        action: "MANUFACTURER_SETTLEMENT_PAID",
-        entityType: "ManufacturerSettlementRequest",
-        entityId: request.id,
-        beforeState: { status: request.status },
-        afterState: {
-          status: "PAID",
-          amount: amount.toFixed(2),
-          financialAccountId: account.id,
-          externalPaymentReference,
-          journalEntryId: journal.id,
-          documentAllocation: documentAllocation && {
-            allocatedAmount: documentAllocation.totalAllocated.toFixed(2),
-            unallocatedLegacyAmount: documentAllocation.unallocatedAmount.toFixed(2),
-          },
-          freightSettlementReconciliation: freightSettlementReconciliation && {
-            allocatedPaidAmount: freightSettlementReconciliation.allocatedPaidAmount.toFixed(2),
-            unreconciledPaidAmount: freightSettlementReconciliation.unreconciledPaidAmount.toFixed(2),
-          },
-        },
-      }, { client: tx });
-      const updatedAccount = await tx.financialAccount.findUnique({ where: { id: account.id }, select: { currentBalance: true } });
-      return {
-        settlementId: request.id,
-        journalEntryId: journal.id,
-        amount,
-        accountBalance: updatedAccount.currentBalance,
+        financialAccountId,
         externalPaymentReference,
-        documentAllocation,
-        freightSettlementReconciliation,
-      };
-    }, { isolationLevel: "Serializable" });
-    const hasUnreconciledFreight = result.freightSettlementReconciliation?.unreconciledPaidAmount.greaterThan(0);
-    const hasUnallocatedLegacyPayment = result.documentAllocation?.unallocatedAmount.greaterThan(0);
+        idempotencyKey,
+        initiatedByAccountId: adminAccountId,
+        notes: req.body?.notes,
+        validateTarget: async (tx) => {
+          const request = await tx.manufacturerSettlementRequest.findUnique({
+            where: { id },
+            include: { manufacturer: { select: { id: true, name: true } } },
+          });
+          if (!request || !["PENDING", "PARTIALLY_PAID"].includes(request.status)) {
+            throw Object.assign(new Error("Only an open manufacturer settlement request can be paid."), { statusCode: 409, code: "SETTLEMENT_NOT_PAYABLE" });
+          }
+          const amountLeft = new Prisma.Decimal(String(request.amount))
+            .minus(new Prisma.Decimal(String(request.paidAmount || 0)));
+          const pendingPayouts = await tx.financialPayout.aggregate({
+            where: { targetType: "MANUFACTURER_SETTLEMENT", targetId: id, status: "INITIATED" },
+            _sum: { settlementAmount: true },
+          });
+          const pendingAmount = new Prisma.Decimal(String(pendingPayouts._sum.settlementAmount || 0));
+          const summary = await getManufacturerSettlementSummary(request.manufacturerId, { client: tx });
+          if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
+          const rawOutstanding = request.requestType === "LOGISTICS" ? summary.logisticsOutstanding : summary.productionOutstanding;
+          const payableAvailable = new Prisma.Decimal(String(rawOutstanding)).minus(pendingAmount);
+          const availableAmount = Prisma.Decimal.max(
+            new Prisma.Decimal(0),
+            Prisma.Decimal.min(amountLeft.minus(pendingAmount), payableAvailable),
+          );
+          const account = await tx.financialAccount.findUnique({ where: { id: financialAccountId } });
+          await validateTreasuryPayoutAccount(account, tx);
+          return { availableAmount };
+        },
+      });
+      return res.status(initiated.isReplay ? 200 : 201).json({
+        ...initiated,
+        message: initiated.isReplay
+          ? "This manufacturer payout was already initiated."
+          : "Manufacturer payout initiated; funds are reserved pending bank confirmation.",
+      });
+    }
+
+    if (action !== "CONFIRM") {
+      return res.status(400).json({ success: false, message: "Payout action must be INITIATE, CONFIRM, or FAIL." });
+    }
+    const confirmed = await confirmFinancialPayout({
+      payoutId: req.body?.payoutId,
+      bankEvidenceReference: req.body?.bankEvidenceReference,
+      confirmedByAccountId: adminAccountId,
+      finalizePayout: async (tx, payout) => {
+        if (payout.targetType !== "MANUFACTURER_SETTLEMENT" || payout.targetId !== id) {
+          throw Object.assign(new Error("Payout does not match this manufacturer settlement."), { statusCode: 409, code: "PAYOUT_TARGET_MISMATCH" });
+        }
+        const request = await tx.manufacturerSettlementRequest.findUnique({
+          where: { id },
+          include: { manufacturer: { select: { id: true, name: true } } },
+        });
+        if (!request || !["PENDING", "PARTIALLY_PAID"].includes(request.status)) {
+          throw Object.assign(new Error("Manufacturer settlement request is no longer payable."), { statusCode: 409, code: "SETTLEMENT_NOT_PAYABLE" });
+        }
+        const amount = new Prisma.Decimal(String(payout.amount));
+        const amountLeft = new Prisma.Decimal(String(request.amount))
+          .minus(new Prisma.Decimal(String(request.paidAmount || 0)));
+        const summary = await getManufacturerSettlementSummary(request.manufacturerId, { client: tx });
+        if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
+        const rawOutstanding = request.requestType === "LOGISTICS" ? summary.logisticsOutstanding : summary.productionOutstanding;
+        if (amount.greaterThan(amountLeft) || amount.greaterThan(new Prisma.Decimal(String(rawOutstanding)))) {
+          throw Object.assign(new Error("The confirmed payout exceeds the remaining settlement request or payable."), { statusCode: 409, code: "PAYOUT_EXCEEDS_PAYABLE" });
+        }
+        const account = await tx.financialAccount.findUnique({ where: { id: payout.financialAccountId } });
+        const accountingAccount = await validateTreasuryPayoutAccount(account, tx);
+        const debited = await tx.financialAccount.updateMany({
+          where: { id: account.id, status: "ACTIVE", currentBalance: { gte: amount } },
+          data: { currentBalance: { decrement: amount } },
+        });
+        if (debited.count !== 1) throw Object.assign(new Error("Treasury balance is insufficient or changed."), { statusCode: 409, code: "INSUFFICIENT_FUNDS" });
+        await tx.cashTransaction.create({
+          data: {
+            idempotencyKey: payout.idempotencyKey,
+            amount,
+            type: "OUTFLOW",
+            fromAccountId: account.id,
+            category: "SUPPLIER_PAYMENT",
+            partyName: request.manufacturer.name,
+            referenceId: request.manufacturerId,
+            externalPaymentReference: payout.externalPaymentReference,
+            description: `${request.requestType} settlement ${request.id} paid to ${request.manufacturer.name}`,
+          },
+        });
+        const journal = await postSupplierPaymentAccounting({
+          payableId: `MFG-SETTLEMENT-${request.id}`,
+          payeeName: request.manufacturer.name,
+          amount,
+          settlementAmount: amount,
+          fromAccountType: account.accountType === "CASH" ? "CASH" : "BANK",
+          payableAccountCode: "2160",
+          cashAccountId: accountingAccount.id,
+          supplierId: request.manufacturerId,
+          idempotencyKey: `SUPPLIER_PAYMENT:${payout.idempotencyKey}`,
+          referenceNumber: `MFG-SET-${payout.id.slice(-8).toUpperCase()}`,
+          client: tx,
+        });
+        if (!journal?.id) throw new Error("Accounting journal could not be posted for the settlement.");
+        const documentAllocation = request.requestType === "PRODUCTION"
+          ? await allocateManufacturerPaymentToDocuments({
+              manufacturerId: request.manufacturerId,
+              amount,
+              journalEntryId: journal.id,
+              idempotencyKey: `MFG-SETTLEMENT-ALLOCATION:${payout.id}`,
+              notes: `Production settlement ${request.id}`,
+              client: tx,
+            })
+          : null;
+        const paidToDate = new Prisma.Decimal(String(request.paidAmount || 0)).plus(amount);
+        const requestRemaining = new Prisma.Decimal(String(request.amount)).minus(paidToDate);
+        const nextStatus = requestRemaining.isZero() ? "PAID" : "PARTIALLY_PAID";
+        const updated = await tx.manufacturerSettlementRequest.updateMany({
+          where: { id: request.id, status: request.status, paidAmount: request.paidAmount || new Prisma.Decimal(0) },
+          data: {
+            paidAmount: paidToDate,
+            status: nextStatus,
+            reviewedBy: adminAccountId,
+            financialAccountId: account.id,
+            externalPaymentReference: payout.externalPaymentReference,
+            paidAt: requestRemaining.isZero() ? new Date() : null,
+          },
+        });
+        if (updated.count !== 1) throw Object.assign(new Error("Manufacturer settlement changed before payout confirmation."), { statusCode: 409, code: "PAYOUT_STATE_CONFLICT" });
+        const freightSettlementReconciliation = request.requestType === "LOGISTICS"
+          ? await reconcileManufacturerLogisticsShipmentPayments({ manufacturerId: request.manufacturerId, client: tx })
+          : null;
+        await recordSystemAudit(actorContext(req), {
+          action: "MANUFACTURER_SETTLEMENT_PAID",
+          entityType: "ManufacturerSettlementRequest",
+          entityId: request.id,
+          beforeState: { status: request.status, paidAmount: String(request.paidAmount || 0) },
+          afterState: {
+            status: nextStatus,
+            paidAmount: paidToDate.toFixed(2),
+            payoutId: payout.id,
+            journalEntryId: journal.id,
+            bankEvidenceReference: String(req.body.bankEvidenceReference).trim(),
+          },
+        }, { client: tx });
+        return { settlementId: request.id, journalEntryId: journal.id, amount, documentAllocation, freightSettlementReconciliation };
+      },
+    });
+    const hasUnreconciledFreight = confirmed.settlement.freightSettlementReconciliation?.unreconciledPaidAmount.greaterThan(0);
+    const hasUnallocatedLegacyPayment = confirmed.settlement.documentAllocation?.unallocatedAmount.greaterThan(0);
     return res.json({
       success: true,
       message: hasUnreconciledFreight
-        ? "Manufacturer settlement paid and journaled, but part of the logistics payment could not be matched to dispatched local freight."
+        ? "Manufacturer payout settled, but part of the logistics amount could not be matched to dispatched local freight."
         : hasUnallocatedLegacyPayment
-          ? "Manufacturer settlement paid and journaled. Part of the payment applies to legacy payable balances not represented by delivery bills."
-        : "Manufacturer settlement paid and recorded in the accounting journal.",
+          ? "Manufacturer payout settled; part of the amount remains allocated to legacy payable balances."
+          : "Manufacturer payout settled and recorded in the accounting journal.",
       reconciliationRequired: Boolean(hasUnreconciledFreight || hasUnallocatedLegacyPayment),
-      ...result,
+      ...confirmed,
     });
   } catch (error) {
     console.error("payManufacturerSettlement error:", error);
-    return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Unable to pay manufacturer settlement." });
+    return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Unable to process manufacturer settlement payout.", code: error.code });
   }
 };

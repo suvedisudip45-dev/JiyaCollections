@@ -17,6 +17,7 @@ import {
   recordInvestorFinancing,
   recordLiabilityRepayment,
   getPayablesAndReceivables,
+  getFinancialPayouts,
   createPayable,
   createReceivable,
   settlePayable,
@@ -94,6 +95,7 @@ financialRouter.post("/repay-liability", authenticate, authorize("finance:liabil
 
 // Accounts Payable & Receivable (Liabilities & Settlements)
 financialRouter.get("/payables-receivables", authenticate, authorize("finance:payables_read"), getPayablesAndReceivables);
+financialRouter.get("/payouts", authenticate, authorize("finance:payables_read"), getFinancialPayouts);
 financialRouter.post("/create-payable", authenticate, authorize("finance:payable_create"), createPayable);
 financialRouter.post("/create-receivable", authenticate, authorize("finance:receivable_create"), createReceivable);
 financialRouter.post("/settle-payable", authenticate, authorize("finance:payable_settle"), settlePayable);

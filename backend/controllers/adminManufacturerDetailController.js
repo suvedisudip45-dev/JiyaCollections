@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { getManufacturerSettlementSummary } from "../services/manufacturerSettlementService.js";
+import { applyManufacturerCreditToBill } from "../services/supplierCreditApplicationService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const sendError = (res, error, action) => {
@@ -144,6 +145,109 @@ export const getAdminManufacturerFinance = async (req, res) => {
     });
   } catch (error) {
     return sendError(res, error, "getAdminManufacturerFinance");
+  }
+};
+
+export const getAdminManufacturerCreditApplications = async (req, res) => {
+  try {
+    const manufacturerId = req.params.id;
+    const manufacturer = await findManufacturer(manufacturerId, { id: true, name: true });
+    if (!manufacturer) return res.status(404).json({ success: false, message: "Manufacturer profile not found." });
+    const party = await prisma.accountingParty.findUnique({
+      where: { partyType_sourceEntityId: { partyType: "MANUFACTURER", sourceEntityId: manufacturerId } },
+      select: { id: true },
+    });
+    if (!party) return res.json({ success: true, credits: [], bills: [] });
+
+    const [creditDocuments, bills] = await Promise.all([
+      prisma.accountingDocument.findMany({
+        where: {
+          partyId: party.id,
+          side: "RECEIVABLE",
+          documentType: "CREDIT_NOTE",
+          sourceType: "MANUFACTURER_DELIVERY_RETURN",
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+        },
+        orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
+        take: 100,
+        select: {
+          id: true,
+          documentNumber: true,
+          sourceId: true,
+          currency: true,
+          originalAmount: true,
+          allocatedAmount: true,
+          remainingAmount: true,
+          status: true,
+          issueDate: true,
+          notes: true,
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: {
+          partyId: party.id,
+          side: "PAYABLE",
+          documentType: "BILL",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+        },
+        orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
+        take: 100,
+        select: {
+          id: true,
+          documentNumber: true,
+          sourceId: true,
+          currency: true,
+          originalAmount: true,
+          allocatedAmount: true,
+          remainingAmount: true,
+          status: true,
+          issueDate: true,
+        },
+      }),
+    ]);
+    const returnRecords = creditDocuments.length
+      ? await prisma.customerReturn.findMany({
+          where: { id: { in: creditDocuments.map((credit) => credit.sourceId) } },
+          select: { id: true, orderId: true },
+        })
+      : [];
+    const orderIdByReturnId = new Map(returnRecords.map((record) => [record.id, record.orderId]));
+    const credits = creditDocuments.map((credit) => ({
+      ...credit,
+      sourceOrderId: orderIdByReturnId.get(credit.sourceId) || null,
+    }));
+    return res.json({
+      success: true,
+      manufacturer,
+      credits,
+      bills,
+      applicationPolicy: "Applications reference the existing confirmed return journal and do not post a second journal entry.",
+    });
+  } catch (error) {
+    return sendError(res, error, "getAdminManufacturerCreditApplications");
+  }
+};
+
+export const postAdminManufacturerCreditApplication = async (req, res) => {
+  try {
+    const idempotencyKey = req.headers["idempotency-key"] || req.body?.idempotencyKey;
+    const result = await applyManufacturerCreditToBill({
+      manufacturerId: req.params.id,
+      creditDocumentId: req.params.creditDocumentId,
+      billDocumentId: req.body?.billDocumentId,
+      amount: req.body?.amount,
+      idempotencyKey,
+      notes: req.body?.notes,
+      appliedByAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Unable to apply manufacturer supplier credit.",
+      ...(error.code ? { code: error.code } : {}),
+    });
   }
 };
 

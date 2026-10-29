@@ -1,7 +1,10 @@
 import {
   getDistributorFinancialStatement,
+  resolveDistributorSettlementReconciliation,
   submitDistributorSettlementRequest,
-  executeAdminDistributorSettlement,
+  initiateAdminDistributorSettlement,
+  confirmAdminDistributorSettlement,
+  failAdminDistributorSettlement,
 } from "../services/distributorFinanceService.js";
 import {
   recordDistributorRateCard,
@@ -262,21 +265,52 @@ export const adminExecuteSettlement = async (req, res) => {
       });
     }
     const settlementId = req.params.id || req.body.settlementId || req.body.id || null;
-    const { amount, financialAccountId, externalPaymentReference, adminNotes, notes } = req.body;
-
-    const adminAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
-
-    const result = await executeAdminDistributorSettlement({
-      settlementId,
+    const {
+      action = "INITIATE",
       amount,
       financialAccountId,
       externalPaymentReference,
-      adminNotes: adminNotes || notes,
-      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
-      adminAccountId,
-    });
+      bankEvidenceReference,
+      failureReason,
+      adminNotes,
+      notes,
+    } = req.body;
 
-    return res.status(200).json(result);
+    const adminAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
+    const normalizedAction = String(action).trim().toUpperCase();
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || null;
+    let result;
+    if (normalizedAction === "INITIATE") {
+      result = await initiateAdminDistributorSettlement({
+        settlementId,
+        amount,
+        financialAccountId,
+        externalPaymentReference,
+        adminNotes: adminNotes || notes,
+        idempotencyKey,
+        adminAccountId,
+      });
+    } else if (normalizedAction === "CONFIRM") {
+      result = await confirmAdminDistributorSettlement({
+        payoutId: req.body.payoutId,
+        bankEvidenceReference,
+        adminAccountId,
+      });
+    } else if (normalizedAction === "FAIL") {
+      result = await failAdminDistributorSettlement({
+        payoutId: req.body.payoutId,
+        failureReason,
+        adminAccountId,
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "Payout action must be INITIATE, CONFIRM, or FAIL.",
+        code: "INVALID_PAYOUT_ACTION",
+      });
+    }
+
+    return res.status(normalizedAction === "INITIATE" && !result.isReplay ? 201 : 200).json(result);
   } catch (error) {
     console.error("adminExecuteSettlement error:", error);
     return res.status(error.statusCode || 500).json({
@@ -287,10 +321,34 @@ export const adminExecuteSettlement = async (req, res) => {
   }
 };
 
-/**
- * GET /api/admin/distributor-finance/settlements
- * List distributor settlement requests for Admin.
- */
+export const adminResolveSettlementReconciliation = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({
+        success: false,
+        message: "A JSON reconciliation decision body is required.",
+        code: "INVALID_REQUEST_BODY",
+      });
+    }
+    const result = await resolveDistributorSettlementReconciliation({
+      settlementId: req.params.id,
+      decision: req.body.decision,
+      earningDocumentIds: req.body.earningDocumentIds,
+      reviewNotes: req.body.reviewNotes,
+      reviewerAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("adminResolveSettlementReconciliation error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to resolve distributor settlement reconciliation.",
+      code: error.code || "SETTLEMENT_RECONCILIATION_ERROR",
+    });
+  }
+};
+
+// GET /api/admin/distributor-finance/settlements lists distributor settlement requests for Admin.
 export const listAdminDistributorSettlements = async (req, res) => {
   try {
     const { distributorId, status, page = 1, limit = 20 } = req.query;
@@ -340,15 +398,76 @@ export const listAdminDistributorSettlements = async (req, res) => {
       }),
       prisma.distributorSettlementRequest.count({ where }),
     ]);
-    const cashPositions = await getDistributorCashPositions({
-      distributorIds: [...new Set(settlements.map((settlement) => settlement.distributorId))],
-    });
+    const distributorIds = [...new Set(settlements.map((settlement) => settlement.distributorId))];
+    const [cashPositions, earningDocuments, openRequests] = await Promise.all([
+      getDistributorCashPositions({ distributorIds }),
+      prisma.accountingDocument.findMany({
+        where: {
+          side: "PAYABLE",
+          sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          party: { partyType: "DISTRIBUTOR", sourceEntityId: { in: distributorIds } },
+        },
+        select: {
+          id: true,
+          sourceId: true,
+          sourceType: true,
+          documentNumber: true,
+          remainingAmount: true,
+          party: { select: { sourceEntityId: true } },
+        },
+      }),
+      prisma.distributorSettlementRequest.findMany({
+        where: {
+          distributorId: { in: distributorIds },
+          status: { in: ["PENDING", "PARTIALLY_PAID"] },
+        },
+        select: { id: true, distributorId: true, metadata: true },
+      }),
+    ]);
+    const reservedDocumentsByDistributor = new Map();
+    for (const request of openRequests) {
+      const documentIds = Array.isArray(request.metadata?.earningDocumentIds)
+        ? request.metadata.earningDocumentIds
+        : [];
+      if (!reservedDocumentsByDistributor.has(request.distributorId)) {
+        reservedDocumentsByDistributor.set(request.distributorId, new Set());
+      }
+      for (const documentId of documentIds) {
+        reservedDocumentsByDistributor.get(request.distributorId).add(documentId);
+      }
+    }
     const settlementsWithCashWarnings = settlements.map((settlement) => {
       const position = cashPositions.get(settlement.distributorId);
+      const snapshotEarningIds = new Set(
+        (Array.isArray(settlement.metadata?.statementSnapshot?.lineItems)
+          ? settlement.metadata.statementSnapshot.lineItems
+          : [])
+          .map((item) => item.earningId)
+          .filter(Boolean)
+      );
+      const reservedDocumentIds = reservedDocumentsByDistributor.get(settlement.distributorId) || new Set();
+      const reconciliationCandidates = settlement.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED"
+        ? earningDocuments
+            .filter((document) =>
+              document.party.sourceEntityId === settlement.distributorId &&
+              !reservedDocumentIds.has(document.id) &&
+              (snapshotEarningIds.size === 0 || snapshotEarningIds.has(document.sourceId))
+            )
+            .map(({ id, sourceId, sourceType, documentNumber, remainingAmount }) => ({
+              id,
+              sourceId,
+              sourceType,
+              documentNumber,
+              remainingAmount,
+            }))
+        : [];
       return {
         ...settlement,
+        reconciliationCandidates,
         codExposureWarning: Number(position?.outstandingReceivable || 0) > 0
           ? {
+              code: "UNREMITTED_COD_OUTSTANDING",
               outstandingReceivable: position.outstandingReceivable,
               pendingRemittance: position.pendingRemittance,
               availableToRemit: position.availableToRemit,

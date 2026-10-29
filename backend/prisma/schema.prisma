@@ -1026,7 +1026,8 @@ model FinancialAccount {
   accountType          String            @default("BANK") // CASH, BANK, WALLET, ESCROW
   accountNumber        String?           @default("")
   bankName             String?           @default("")
-  currentBalance       Float             @default(0)
+  currentBalance       Decimal           @default(0) @db.Decimal(20, 2)
+  reservedBalance      Decimal           @default(0) @db.Decimal(20, 2)
   currency             String            @default("NPR")
   isDefault            Boolean           @default(false)
   status               String            @default("ACTIVE")
@@ -1037,6 +1038,7 @@ model FinancialAccount {
   outflows             CashTransaction[] @relation("FromAccount")
   inflows              CashTransaction[] @relation("ToAccount")
   distributorRemittanceBatches DistributorRemittanceBatch[]
+  financialPayouts     FinancialPayout[]
 
   @@index([accountingAccountId])
 }
@@ -1046,7 +1048,7 @@ model CashTransaction {
   idempotencyKey String?           @unique @db.VarChar(191)
   externalPaymentReference String? @db.VarChar(191)
   date           DateTime          @default(now())
-  amount         Float
+  amount         Decimal           @db.Decimal(20, 2)
   type           String // INFLOW, OUTFLOW, TRANSFER
   fromAccountId  String?
   toAccountId    String?
@@ -1064,6 +1066,35 @@ model CashTransaction {
   @@index([category])
   @@index([type])
   @@index([referenceId])
+}
+
+model FinancialPayout {
+  id                    String          @id @default(uuid())
+  idempotencyKey        String          @unique @db.VarChar(191)
+  targetType            String          @db.VarChar(32) // MANUFACTURER_SETTLEMENT | MANUFACTURER_PAYABLE | DISTRIBUTOR_SETTLEMENT | ACCOUNT_PAYABLE
+  targetId              String          @db.VarChar(191)
+  financialAccountId    String
+  financialAccount      FinancialAccount @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  amount                Decimal         @db.Decimal(20, 2)
+  settlementAmount      Decimal         @db.Decimal(20, 2)
+  adjustmentType        String          @default("NONE") @db.VarChar(16)
+  adjustmentAmount      Decimal         @default(0) @db.Decimal(20, 2)
+  status                String          @default("INITIATED") @db.VarChar(24) // INITIATED | SETTLED | FAILED
+  externalPaymentReference String?      @db.VarChar(191)
+  bankEvidenceReference String?         @db.VarChar(191)
+  initiatedByAccountId  String?
+  confirmedByAccountId  String?
+  failedByAccountId     String?
+  notes                 String?         @db.Text
+  failureReason         String?         @db.Text
+  initiatedAt           DateTime        @default(now())
+  settledAt             DateTime?
+  failedAt              DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@index([targetType, targetId, status])
+  @@index([financialAccountId, status])
 }
 
 model FixedAsset {
@@ -1438,9 +1469,9 @@ model AccountPayable {
   category          String    @default("OPERATING_EXPENSE") // SUPPLIER_INVOICE, OPERATING_EXPENSE, ASSET_PURCHASE, PARTNER_DISTRIBUTION, TAX_DUE, LOAN_NOTE, OTHER
   referenceType     String?   @default("MANUAL") // INBOUND_SHIPMENT, FIXED_ASSET, PROFIT_DISTRIBUTION, TAX_FILING, EXPENSE, MANUAL, CUSTOMER_REFUND
   referenceId       String?   @default("")
-  totalAmount       Float
-  paidAmount        Float     @default(0)
-  remainingBalance  Float
+  totalAmount       Decimal   @db.Decimal(20, 2)
+  paidAmount        Decimal   @default(0) @db.Decimal(20, 2)
+  remainingBalance  Decimal   @db.Decimal(20, 2)
   dueDate           DateTime?
   invoiceNumber     String?   @default("")
   status            String    @default("UNPAID") // UNPAID, PARTIALLY_PAID, SETTLED, CANCELLED
@@ -1462,9 +1493,9 @@ model AccountReceivable {
   category          String    @default("CUSTOMER_RECEIVABLE") // CUSTOMER_RECEIVABLE, SUPPLIER_DEBIT_REFUND, TAX_REFUND_CREDIT, OTHER
   referenceType     String?   @default("MANUAL") // CUSTOMER_ORDER, SUPPLIER_RETURN, TAX_CREDIT, MANUAL
   referenceId       String?   @default("")
-  totalAmount       Float
-  receivedAmount    Float     @default(0)
-  remainingBalance  Float
+  totalAmount       Decimal   @db.Decimal(20, 2)
+  receivedAmount    Decimal   @default(0) @db.Decimal(20, 2)
+  remainingBalance  Decimal   @db.Decimal(20, 2)
   dueDate           DateTime?
   invoiceNumber     String?   @default("")
   status            String    @default("UNPAID") // UNPAID, PARTIALLY_RECEIVED, SETTLED, CANCELLED
@@ -1553,6 +1584,7 @@ model JournalEntry {
   updatedAt          DateTime      @updatedAt
   lines              JournalLine[]
   settlementOffset  DistributorSettlementOffset?
+  supplierCreditApplications SupplierCreditApplication[]
 
   @@index([transactionDate])
   @@index([sourceType, sourceId])
@@ -1642,7 +1674,7 @@ model AccountingEvent {
   journalEntry   JournalEntry?
 
   @@index([status, createdAt])
-  @@index([sourceType, eventType, status, nextAttemptAt, createdAt])
+  @@index([sourceType, eventType, status, nextAttemptAt, createdAt], map: "AcctEvent_source_event_status_retry_created_idx")
   @@index([sourceType, sourceId])
   @@index([effectiveAt])
 }
@@ -1668,6 +1700,8 @@ model AccountingDocument {
   createdAt       DateTime               @default(now())
   updatedAt       DateTime               @updatedAt
   allocations     AccountingAllocation[]
+  supplierCreditApplicationsAsCredit SupplierCreditApplication[] @relation("SupplierCreditApplicationCredit")
+  supplierCreditApplicationsAsBill   SupplierCreditApplication[] @relation("SupplierCreditApplicationBill")
   distributorCashEvents DistributorCashEvent[]
 
   @@index([partyId, side, status])
@@ -1686,6 +1720,26 @@ model AccountingAllocation {
   idempotencyKey String?            @unique @db.VarChar(191)
 
   @@index([documentId, allocatedAt])
+  @@index([journalEntryId])
+}
+
+model SupplierCreditApplication {
+  id                 String             @id @default(uuid())
+  idempotencyKey     String             @unique @db.VarChar(191)
+  creditDocumentId   String
+  billDocumentId     String
+  journalEntryId     String
+  amount             Decimal            @db.Decimal(20, 2)
+  appliedByAccountId String?
+  notes              String?            @db.Text
+  appliedAt          DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+  creditDocument     AccountingDocument @relation("SupplierCreditApplicationCredit", fields: [creditDocumentId], references: [id], onDelete: Restrict)
+  billDocument       AccountingDocument @relation("SupplierCreditApplicationBill", fields: [billDocumentId], references: [id], onDelete: Restrict)
+  journalEntry       JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+
+  @@index([creditDocumentId, appliedAt])
+  @@index([billDocumentId, appliedAt])
   @@index([journalEntryId])
 }
 
@@ -1948,7 +2002,7 @@ model DistributorDeliveryChargeNegotiation {
   distributor         Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
   product             Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
 
-  @@index([distributorId, status, effectiveFrom])
+  @@index([distributorId, status, effectiveFrom], map: "DistDelChargeNeg_dist_status_from_idx")
   @@index([productId, status])
 }
 
@@ -2046,7 +2100,7 @@ model DistributorSettlementRequest {
   updatedAt           DateTime @updatedAt
   distributor         Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
 
-  @@index([distributorId, status, requestedAt])
+  @@index([distributorId, status, requestedAt], map: "DistSettleReq_dist_status_reqAt_idx")
   @@index([status])
 }
 
@@ -2280,7 +2334,7 @@ model StockTransferShipmentLineCostLayer {
   shipmentLine        StockTransferShipmentLine    @relation(fields: [shipmentLineId], references: [id], onDelete: Restrict)
   costLayer           ManufacturerInventoryCostLayer @relation(fields: [costLayerId], references: [id], onDelete: Restrict)
 
-  @@unique([shipmentLineId, costLayerId])
+  @@unique([shipmentLineId, costLayerId], map: "STShipLineCostLayer_line_layer_key")
   @@index([costLayerId, status])
 }
 
@@ -2424,7 +2478,7 @@ model MarketingCampaign {
   settlements        MarketingPartnerSettlement[]
 
   @@index([marketingPartnerId, status])
-  @@index([targetScopeType, targetProvince, targetDistrict])
+  @@index([targetScopeType, targetProvince, targetDistrict], map: "MktCampaign_scope_province_district_idx")
 }
 
 model MarketingCardBatch {
@@ -2877,7 +2931,7 @@ model ManufacturerProductionRequest {
   lines                      ManufacturerProductionRequestLine[]
   costLayers                 ManufacturerInventoryCostLayer[]
 
-  @@index([manufacturerId, status, requestedAt])
+  @@index([manufacturerId, status, requestedAt], map: "MfgProdReq_manuf_status_reqAt_idx")
   @@index([productId, status])
 }
 
@@ -2900,7 +2954,8 @@ model ManufacturerSettlementRequest {
   manufacturerId      String
   requestType         String   @default("PRODUCTION") // PRODUCTION | LOGISTICS
   amount              Decimal  @db.Decimal(20, 2)
-  status              String   @default("PENDING") // PENDING | PAID | REJECTED
+  paidAmount          Decimal  @default(0) @db.Decimal(20, 2)
+  status              String   @default("PENDING") // PENDING | PARTIALLY_PAID | PAID | REJECTED
   notes               String?  @db.Text
   requestedBy         String?
   reviewedBy          String?
@@ -2913,7 +2968,7 @@ model ManufacturerSettlementRequest {
   updatedAt           DateTime @updatedAt
   manufacturer        Manufacturer @relation(fields: [manufacturerId], references: [id], onDelete: Restrict)
 
-  @@index([manufacturerId, status, requestedAt])
+  @@index([manufacturerId, status, requestedAt], map: "MfgSettlementReq_mfg_status_reqAt_idx")
   @@index([requestType, status])
 }
 
@@ -2945,8 +3000,8 @@ model ManufacturerInventoryCostLayer {
   transferAllocations StockTransferShipmentLineCostLayer[]
   ledgerEntries    InventoryLedgerEntry[]
 
-  @@index([manufacturerId, productId, size, color, createdAt])
-  @@unique([productionRequestId, size, color])
+  @@index([manufacturerId, productId, size, color, createdAt], map: "MfgInvCostLayer_mfg_prod_variant_created_idx")
+  @@unique([productionRequestId, size, color], map: "MfgInvCostLayer_req_size_color_key")
 }
 
 model ManufacturerInventoryCostAllocation {
@@ -2962,7 +3017,7 @@ model ManufacturerInventoryCostAllocation {
   order       Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
   costLayer   ManufacturerInventoryCostLayer @relation(fields: [costLayerId], references: [id], onDelete: Restrict)
 
-  @@unique([orderId, orderItemIndex, costLayerId])
+  @@unique([orderId, orderItemIndex, costLayerId], map: "MfgInvCostAlloc_order_item_layer_key")
   @@index([costLayerId, state])
   @@index([orderId, state])
 }
@@ -3018,7 +3073,7 @@ model OrderAssignment {
   @@index([manufacturerId])
   @@index([distributorId])
   @@index([status])
-  @@index([deliveryType, distributorId, status, assignedAt])
+  @@index([deliveryType, distributorId, status, assignedAt], map: "OrdAssign_type_dist_status_time_idx")
 }
 
 // One carrier package and NCM submission for an order.

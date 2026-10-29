@@ -13,6 +13,7 @@ const DistributorApplications = ({ token }) => {
   const { lookups: locationLookups, lookupError } = useLocationLookups(backendUrl);
   const { can } = usePermissions();
   const canEditCoverage = can("distributor:admin_review");
+  const canResolveSettlements = can("finance:payable_settle");
   const [activeTab, setActiveTab] = useState("applications");
   const [status, setStatus] = useState("PENDING_APPROVAL");
   const [applications, setApplications] = useState([]);
@@ -48,6 +49,11 @@ const DistributorApplications = ({ token }) => {
   // Settlements state
   const [settlements, setSettlements] = useState([]);
   const [settlementsLoading, setSettlementsLoading] = useState(false);
+  const [reconciliationRequest, setReconciliationRequest] = useState(null);
+  const [reconciliationDecision, setReconciliationDecision] = useState("RECONCILE");
+  const [selectedEarningDocumentIds, setSelectedEarningDocumentIds] = useState([]);
+  const [reconciliationNotes, setReconciliationNotes] = useState("");
+  const [savingReconciliation, setSavingReconciliation] = useState(false);
   const editDistributorProvince = distributorForm?.province;
   const editDistributorDistrict = distributorForm?.district;
   const editDistributorCity = distributorForm?.city;
@@ -143,6 +149,52 @@ const DistributorApplications = ({ token }) => {
       setSettlementsLoading(false);
     }
   }, [token]);
+
+  const openSettlementReconciliation = (request) => {
+    setReconciliationRequest(request);
+    setReconciliationDecision("RECONCILE");
+    setSelectedEarningDocumentIds([]);
+    setReconciliationNotes("");
+  };
+
+  const resolveSettlementReconciliation = async (event) => {
+    event.preventDefault();
+    if (!reconciliationRequest || !reconciliationNotes.trim()) {
+      toast.error("Add review notes before resolving this request.");
+      return;
+    }
+    if (reconciliationDecision === "RECONCILE" && selectedEarningDocumentIds.length === 0) {
+      toast.error("Select verified earning documents to reconcile this request.");
+      return;
+    }
+    if (
+      reconciliationDecision === "REJECT" &&
+      !window.confirm("Reject this legacy settlement request? This does not create or change any accounting earning.")
+    ) return;
+
+    setSavingReconciliation(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/admin/distributor-finance/settlements/${reconciliationRequest.id}/resolve-reconciliation`,
+        {
+          decision: reconciliationDecision,
+          earningDocumentIds: selectedEarningDocumentIds,
+          reviewNotes: reconciliationNotes.trim(),
+        },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Settlement reconciliation failed.");
+      toast.success(reconciliationDecision === "RECONCILE"
+        ? "Verified earning documents linked to the settlement request."
+        : "Unsupported settlement request rejected with an audit record.");
+      setReconciliationRequest(null);
+      await loadSettlements();
+    } catch (requestError) {
+      toast.error(requestError.response?.data?.message || requestError.message || "Settlement reconciliation failed.");
+    } finally {
+      setSavingReconciliation(false);
+    }
+  };
 
   useEffect(() => {
     if (activeTab === "applications") loadApplications();
@@ -918,7 +970,14 @@ const DistributorApplications = ({ token }) => {
                       </td>
                       <td className="px-4 py-3 text-right">
                         {req.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" ? (
-                          <span className="text-xs font-medium text-amber-700">Reconcile earnings</span>
+                          canResolveSettlements ? (
+                            <button
+                              onClick={() => openSettlementReconciliation(req)}
+                              className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                            >
+                              Review reconciliation
+                            </button>
+                          ) : <span className="text-xs font-medium text-amber-700">Finance permission required</span>
                         ) : req.status !== "SETTLED" && req.status !== "PAID" && req.status !== "REJECTED" && (
                           <button
                             onClick={() => navigate("/payables")}
@@ -1025,6 +1084,78 @@ const DistributorApplications = ({ token }) => {
               <button type="button" onClick={() => { setEditingDistributor(null); setDistributorForm(null); }} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
               <button type="submit" disabled={savingDistributorProfile} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
                 {savingDistributorProfile ? "Saving..." : "Save profile"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {reconciliationRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <form onSubmit={resolveSettlementReconciliation} className="max-h-[90vh] w-full max-w-2xl space-y-4 overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">Review legacy settlement</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {reconciliationRequest.distributor?.name || reconciliationRequest.distributorId} · requested Rs {Number(reconciliationRequest.amount || 0).toFixed(2)}
+                </p>
+                <p className="mt-1 text-xs text-amber-700">Only link existing, open accounting earning documents. This action does not synthesize earnings.</p>
+              </div>
+              <button type="button" onClick={() => setReconciliationRequest(null)} className="text-sm font-semibold text-slate-500 hover:text-slate-900">Close</button>
+            </div>
+            <label className="block text-sm font-semibold text-slate-700">
+              Decision
+              <select
+                value={reconciliationDecision}
+                onChange={(event) => setReconciliationDecision(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              >
+                <option value="RECONCILE">Reconcile to existing earning documents</option>
+                <option value="REJECT">Reject unsupported request</option>
+              </select>
+            </label>
+            {reconciliationDecision === "RECONCILE" && (
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-semibold text-slate-700">Verified open earning documents</legend>
+                {(reconciliationRequest.reconciliationCandidates || []).length === 0 ? (
+                  <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">No eligible existing earning documents were found. Do not invent a backfill; investigate the source records first.</p>
+                ) : (reconciliationRequest.reconciliationCandidates || []).map((document) => (
+                  <label key={document.id} className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedEarningDocumentIds.includes(document.id)}
+                      onChange={(event) => setSelectedEarningDocumentIds((current) => event.target.checked
+                        ? [...current, document.id]
+                        : current.filter((id) => id !== document.id))}
+                      className="mt-1"
+                    />
+                    <span>
+                      <span className="block font-semibold text-slate-900">{document.documentNumber}</span>
+                      <span className="text-xs text-slate-500">{document.sourceType} · source {document.sourceId}</span>
+                      <span className="mt-1 block text-xs font-semibold text-emerald-700">Open Rs {Number(document.remainingAmount || 0).toFixed(2)}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
+            <label className="block text-sm font-semibold text-slate-700">
+              Review notes (required)
+              <textarea
+                required
+                maxLength={1000}
+                rows={3}
+                value={reconciliationNotes}
+                onChange={(event) => setReconciliationNotes(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
+              <button type="button" onClick={() => setReconciliationRequest(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">Cancel</button>
+              <button
+                type="submit"
+                disabled={savingReconciliation || (reconciliationDecision === "RECONCILE" && selectedEarningDocumentIds.length === 0)}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${reconciliationDecision === "REJECT" ? "bg-rose-600 hover:bg-rose-700" : "bg-slate-900 hover:bg-black"}`}
+              >
+                {savingReconciliation ? "Saving..." : reconciliationDecision === "REJECT" ? "Reject request" : "Link verified earnings"}
               </button>
             </div>
           </form>

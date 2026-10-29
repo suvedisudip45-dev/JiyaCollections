@@ -19,6 +19,7 @@ import {
   getDistributorFinancialStatement,
   submitDistributorSettlementRequest,
   executeAdminDistributorSettlement,
+  resolveDistributorSettlementReconciliation,
 } from "../services/distributorFinanceService.js";
 import { getDistributorCashPositions } from "../services/distributorCashSettlementService.js";
 
@@ -933,6 +934,96 @@ test("Admin cannot pay a request-only distributor payable until earning document
   );
 });
 
+test("Admin reconciliation links only verified open earnings and audits the resolution", async () => {
+  const request = {
+    id: "legacy-request-1",
+    distributorId: "dist-1",
+    amount: new Prisma.Decimal("25.00"),
+    paidAmount: new Prisma.Decimal("0"),
+    status: "PENDING",
+    metadata: {
+      settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
+      statementSnapshot: { lineItems: [{ earningId: "earning-1" }] },
+    },
+    distributor: { id: "dist-1", name: "Kathmandu Hub" },
+  };
+  let update;
+  let auditPayload;
+  const client = {
+    $transaction: async (callback) => callback({
+      distributorSettlementRequest: {
+        findUnique: async () => request,
+        findMany: async () => [{ id: request.id, metadata: request.metadata }],
+        updateMany: async (args) => {
+          update = args;
+          return { count: 1 };
+        },
+      },
+      accountingDocument: {
+        findMany: async () => [{
+          id: "document-1",
+          sourceId: "earning-1",
+          remainingAmount: new Prisma.Decimal("30.00"),
+        }],
+      },
+    }),
+  };
+
+  const result = await resolveDistributorSettlementReconciliation({
+    settlementId: request.id,
+    decision: "RECONCILE",
+    earningDocumentIds: ["document-1"],
+    reviewNotes: "Matched to the recorded delivery earning.",
+    reviewerAccountId: "admin-1",
+    writeAudit: async (_actor, payload) => { auditPayload = payload; },
+    client,
+  });
+
+  assert.equal(result.settlementRequest.metadata.settlementBasis, "ACCOUNTING_SUBLEDGER");
+  assert.deepEqual(result.settlementRequest.metadata.earningDocumentIds, ["document-1"]);
+  assert.equal(update.data.metadata.reconciledBy, "admin-1");
+  assert.equal(auditPayload.action, "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_RESOLVED");
+});
+
+test("Admin may reject an unsupported legacy settlement request with an audited reason", async () => {
+  const request = {
+    id: "legacy-request-2",
+    distributorId: "dist-1",
+    amount: new Prisma.Decimal("25.00"),
+    paidAmount: new Prisma.Decimal("0"),
+    status: "PENDING",
+    metadata: { settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" },
+    distributor: { id: "dist-1", name: "Kathmandu Hub" },
+  };
+  let update;
+  let auditPayload;
+  const client = {
+    $transaction: async (callback) => callback({
+      distributorSettlementRequest: {
+        findUnique: async () => request,
+        updateMany: async (args) => {
+          update = args;
+          return { count: 1 };
+        },
+      },
+    }),
+  };
+
+  const result = await resolveDistributorSettlementReconciliation({
+    settlementId: request.id,
+    decision: "REJECT",
+    reviewNotes: "No supported delivery earning was found.",
+    reviewerAccountId: "admin-1",
+    writeAudit: async (_actor, payload) => { auditPayload = payload; },
+    client,
+  });
+
+  assert.equal(result.settlementRequest.status, "REJECTED");
+  assert.equal(update.data.status, "REJECTED");
+  assert.equal(update.data.metadata.rejectionNotes, "No supported delivery earning was found.");
+  assert.equal(auditPayload.action, "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_REJECTED");
+});
+
 test("8. executeAdminDistributorSettlement records partial and final payout against payable and treasury", async (t) => {
   let settlementState = {
     id: "set-req-1",
@@ -1147,6 +1238,7 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
 
     assert.equal(result.success, true);
     assert.equal(result.settlement.status, "SETTLED");
+    assert.equal(result.codExposureWarning.code, "UNREMITTED_COD_OUTSTANDING");
     assert.equal(result.codExposureWarning.outstandingReceivable, "300.00");
     assert.equal(result.requiresCodRemittanceReview, true);
     assert.deepEqual(requestedSourceTypes, ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"]);
@@ -1167,6 +1259,7 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
   assert.equal(res.settlement.paidAmount, 40);
   assert.equal(res.settlement.externalPaymentReference, "BANK-TRANSFER-001");
   assert.equal(res.payable.remainingBalance, 60);
+  assert.equal(res.codExposureWarning.code, "UNREMITTED_COD_OUTSTANDING");
   assert.equal(res.codExposureWarning.outstandingReceivable, "250.00");
   assert.equal(res.requiresCodRemittanceReview, true);
   assert.equal(cashTransactions.get("settlement-payment-1").amount, 40);

@@ -2,7 +2,7 @@
 
 **Owner:** Engineering + business/accounting approver  
 **Last updated:** 2026-10-29
-**Overall status:** Manufacturer/distributor payment-control remediation through Iteration G is implemented and focused tests pass. Database migrations remain unapplied; Prisma Client generation and sandbox cutover are still blocked/gated.
+**Overall status:** Core recognition, payout mapping, bill/document controls, and the payout initiation/confirmation/failure lifecycle are implemented in code. The 2026-10-29 revalidation added strict manufacturer attribution and an Admin resolution path for legacy distributor settlement claims. Admin supplier-credit application is implemented against the existing return journal without a duplicate posting. Full Decimal writer migration, verified-source historical backfill, isolated-database migration 05 validation, and cutover remain incomplete.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
 
 Manufacturer commissions were removed on 2026-10-28; historical postings remain, but the prior commission accrual requirements below are superseded.
@@ -73,6 +73,20 @@ No runtime source, schema, frontend, database or accounting records were changed
 | G — COD exposure | Admin settlement lists and payout results expose outstanding distributor COD and pending remittance; COD remains gross and is not silently netted against service earnings. | COMPLETE |
 | H — Documentation and release gates | Operations, cutover, and iteration guidance updated below. | COMPLETE |
 
+## Revalidation Follow-up (2026-10-29)
+
+The approved remediation plan was checked against the current schema and routes before implementation. Stale plan snippets were not copied where they disagreed with the repository: `AccountingAllocation` stores `amount` (not `allocatedAmount`), and the current wallet clearing mapping is GL `1180` (not `1130`, which is receivables).
+
+| Follow-up | Result | Status |
+| --- | --- | --- |
+| Manufacturer attribution | Settlement journal lines are attributed only through stable `supplierId` or manufacturer `AccountingParty` identity. Same-name records do not cross-attribute. Unattributed same-name legacy lines are surfaced as a reconciliation warning count. Completed payments are based on matching payable journal postings, not settlement-request totals. | IMPLEMENTED; focused tests pass |
+| Distributor legacy request resolution | Admin can reconcile an unpaid legacy request to existing, open earning/bonus documents belonging to the distributor, provided the amount is covered and the documents are not reserved by another open request. Admin can instead reject an unsupported request with mandatory notes. Both decisions are audited and use a serializable transaction. No earnings are synthesized by this endpoint. | IMPLEMENTED; focused tests pass |
+| Distributor Admin UI | The settlement screen exposes the review action, verified-document selection, and audited rejection path to users with `finance:payable_settle`. | IMPLEMENTED; Admin build required |
+| Manufacturer supplier credits | Admin can apply a confirmed return credit only to the same manufacturer's bill for the same order, with balance guards, audit evidence, idempotency, and paired document allocations. It references the existing return-payable reversal and does not post a second journal. | IMPLEMENTED IN CODE; additive migration and isolated-database verification pending |
+| Transfer lifecycle | Manufacturer, distributor, and generic AP payouts now reserve funds at initiation, post cash/journal/AP effects only after Admin records bank-statement evidence, and release reservations on a recorded failure. Initiated payouts are recoverable from the Admin payout list. | IMPLEMENTED IN CODE; isolated migration and database-backed transition/concurrency tests pending |
+| Money precision/state convergence | Treasury, cash transaction, AP, AR, payout, and manufacturer settlement-request schema fields use Decimal in the staged migration. The preflight report is present, but not all application writers/readers use Decimal and full balance reconciliation is not complete. | PARTIAL; migration `20261029000005_financial_payout_lifecycle` and writer inventory/reconciliation required |
+| Cutover/backfill | The supplier-credit migration was reported applied to an isolated test database. The user reports running `npm run db:push` against `local_dev`; this script synchronizes schema and runs seed data, but it does not apply or record migration 05. Its resulting schema state has not been verified. No dedicated isolated payout-test DB was used, and no historical source dataset has been identified or backfilled. Missing source earnings require verified evidence and an authenticated Admin approval record; approver contact is to remain null. | RELEASE BLOCKER |
+
 These phases are implementation-complete, not production-approved. Existing unmapped Treasury accounts must be mapped and legacy accounting balances reconciled in an isolated sandbox. Do not pay a distributor request marked `LEGACY_EARNINGS_RECONCILIATION_REQUIRED` until source earnings have been backfilled/reconciled.
 
 ## Iterations
@@ -85,15 +99,27 @@ These phases are implementation-complete, not production-approved. Existing unma
 | 3 | Precision, database foundation, COA/account mappings and periods | COMPLETE | Decimal schema and BS periods are migrated/validated; party/event/account mappings seeded and tested |
 | 4 | Central posting service and durable idempotent accounting events | COMPLETE | Atomic balanced posting, immutable journals, stable idempotency, operational event wiring and 41 tests pass |
 | 5 | Party master, bill-wise AR/AP, payments, receipts and allocations | COMPLETE | Partial/full/advance/overpayment allocation tests pass; manufacturer delivery bills and payout allocations are covered; remaining legacy balances stay explicitly identified |
-| 6 | Cash, bank, petty cash and readiness controls | IN PROGRESS (partial) | Payout paths require NPR Treasury-to-GL mappings and use the mapped account; opening vouchers, legacy cash migration, full source reconciliation, and finance readiness remain |
+| 6 | Cash, bank, petty cash and readiness controls | IN PROGRESS (partial) | Payout paths require NPR Treasury-to-GL mappings and use the mapped account; lifecycle is code-complete but needs isolated migration/DB verification; opening vouchers, legacy cash migration, full source reconciliation, and finance readiness remain |
 | 7 | Sales, manufacturer COGS and delivery-triggered payable | COMPLETE | Delivered/non-returned rule, approved-cost snapshot, direct-order commission classification, COD/revenue event timing and idempotency pass |
 | 8 | Customer/supplier returns, RTO and exchanges | COMPLETE | Original-event links, reversals, manufacturer supplier-credit notes for documented delivery bills, inventory/ownership treatment, refund and tax effects pass |
-| 9 | Manufacturer, marketing-partner and NCM settlements | COMPLETE (legacy cutover remains) | Manufacturer delivery bills/allocations, external references, NPR mapped payouts, COD warnings, and gross COD/service-payable handling pass focused tests; historical distributor request-accrual records require reconciliation |
+| 9 | Manufacturer, marketing-partner and NCM settlements | IN PROGRESS (legacy cutover remains) | Manufacturer delivery bills/allocations, NPR mapped payouts, payout lifecycle code, COD warnings, and gross COD/service-payable handling pass focused tests; legacy distributor claims have a safe Admin resolution path but need historical reconciliation and database-backed payout transition tests |
 | 10 | Expenses, procurement, tax, assets, debt and equity | NOT STARTED | Each supported finance event posts exactly once; policy-based tax and period behavior verified |
 | 11 | GL reports, statements, ageing and health reconciliation | IN PROGRESS (partial) | GL statement now includes key manufacturer/partner/carrier controls; report UI has no operational P&L/BS fallback; AP/AR/event coverage and ledger cash flow remain incomplete |
 | 12 | Admin accounting UI and permissions | NOT STARTED | Existing required finance capability covered with drill-down, filters, statuses, warnings and exports |
 | 13 | Failure, concurrency, security and portal regression | NOT STARTED | Duplicate/retry/out-of-order/concurrent/failure scenarios pass; customer/manufacturer/marketing/admin flows remain compatible |
 | 14 | Cutover and final audit | IN PROGRESS (sandbox gate) | Sandbox migration runbook, reconciliation gate, rollback plan and accountant sign-off are documented; live deployment remains blocked |
+
+### Supplier-credit application increment
+
+- Added `SupplierCreditApplication` as an auditable application record and an Admin-only endpoint/UI action.
+- The service verifies the posted `DELIVERY_RETURN` journal reverses manufacturer payable account 2160 for the same manufacturer, and that the credit note and bill are for that manufacturer's same returned order and currency.
+- The application updates document balances using compare-and-set conditions, creates paired allocations tied to the existing return journal, records an audit event, and never posts another journal for the return.
+- Idempotency replay is supported; reuse with different document/amount details is rejected. A caller cannot apply a different manufacturer's documents through another manufacturer's route.
+- The supplier-credit migration was reported applied to an isolated test database; verify migration history and balances in the cutover runbook before relying on that environment.
+- The user reports running `npm run db:push` against `local_dev`. That command is not `prisma migrate deploy`; do not infer migration history or isolated-database readiness from it. Its target schema/seed effects were not inspected by this session.
+- Migration `20261029000005_financial_payout_lifecycle` is staged but not confirmed deployed through migrations or validated in a dedicated isolated database. Code generation and unit tests do not establish database migration correctness or production readiness.
+- The payout lifecycle requires Admin review of bank evidence before settlement. It does not automate bank confirmation.
+- Full Decimal migration, historical backfill, isolated-database reconciliation, and accountant approval remain release gates.
 
 ## Delivery Accounting Outbox Follow-up (2026-10-17)
 

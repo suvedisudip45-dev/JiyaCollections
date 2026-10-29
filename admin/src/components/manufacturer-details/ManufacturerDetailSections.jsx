@@ -1,6 +1,7 @@
 /* eslint-disable react/prop-types */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import { toast } from "react-toastify";
 import { backendUrl, currency } from "../../App";
 import Pagination from "../Pagination";
 
@@ -198,11 +199,17 @@ export const ManufacturerTransfersSection = ({ manufacturerId, token }) => {
   );
 };
 
-export const ManufacturerFinanceSection = ({ manufacturerId, token }) => {
+export const ManufacturerFinanceSection = ({ manufacturerId, token, canApplyCredits = false }) => {
   const [finance, setFinance] = useState(null);
+  const [creditOptions, setCreditOptions] = useState({ credits: [], bills: [] });
+  const [creditLoading, setCreditLoading] = useState(true);
+  const [creditError, setCreditError] = useState("");
+  const [applicationInputs, setApplicationInputs] = useState({});
+  const [applyingCreditId, setApplyingCreditId] = useState("");
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const endpoint = `${backendUrl}/api/admin/manufacturers/${manufacturerId}/finance`;
+  const creditEndpoint = `${endpoint}/credits`;
 
   useEffect(() => {
     let active = true;
@@ -219,6 +226,56 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token }) => {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [endpoint, token]);
+
+  const loadCreditOptions = useCallback(async () => {
+    setCreditLoading(true);
+    setCreditError("");
+    try {
+      const response = await axios.get(creditEndpoint, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to load manufacturer credits.");
+      setCreditOptions({ credits: response.data.credits || [], bills: response.data.bills || [] });
+    } catch (error) {
+      setCreditError(error.response?.data?.message || error.message || "Unable to load manufacturer credits.");
+    } finally {
+      setCreditLoading(false);
+    }
+  }, [creditEndpoint, token]);
+
+  useEffect(() => {
+    loadCreditOptions();
+  }, [loadCreditOptions]);
+
+  const applySupplierCredit = async (credit) => {
+    const input = applicationInputs[credit.id] || {};
+    if (!input.billDocumentId || !input.amount || !input.notes?.trim()) {
+      toast.error("Choose a bill, enter the credit amount, and provide notes.");
+      return;
+    }
+    setApplyingCreditId(credit.id);
+    try {
+      const idempotencyKey = `mfg-credit:${credit.id}:${input.billDocumentId}:${crypto.randomUUID()}`;
+      const response = await axios.post(
+        `${creditEndpoint}/${credit.id}/apply`,
+        {
+          billDocumentId: input.billDocumentId,
+          amount: input.amount,
+          notes: input.notes.trim(),
+          idempotencyKey,
+        },
+        { headers: { token, "Idempotency-Key": idempotencyKey } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Supplier credit application failed.");
+      toast.success("Supplier credit applied to the selected bill. No second journal was posted.");
+      setApplicationInputs((current) => ({ ...current, [credit.id]: {} }));
+      await Promise.all([loadCreditOptions(), axios.get(endpoint, { headers: { token } }).then((res) => {
+        if (res.data?.success) setFinance(res.data.finance);
+      })]);
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Supplier credit application failed.");
+    } finally {
+      setApplyingCreditId("");
+    }
+  };
 
   if (loading) return <p className="rounded-2xl border border-slate-200 bg-white px-5 py-12 text-center text-sm text-slate-500">Loading financial summary…</p>;
   if (errorMessage) return <p className="rounded-2xl border border-rose-200 bg-white px-5 py-12 text-center text-sm text-rose-700">{errorMessage}</p>;
@@ -242,6 +299,50 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token }) => {
         <Fact label="Receivable documents / total" value={`${finance.receivables?.documents || 0} / ${amount(finance.receivables?.total)}`} />
       </div>
       <p className="mt-3 text-[11px] text-slate-500">Payables reuse the manufacturer settlement accounting service. Receivables are from manufacturer-linked accounting documents; they are not inferred from unrelated supplier/customer balances.</p>
+    </section>
+    <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+      <div>
+        <h2 className="font-bold text-slate-900">Supplier return credits</h2>
+        <p className="mt-1 text-xs text-slate-500">Applications link a confirmed return credit to its original manufacturer bill. The return journal already reduced AP; applying a credit updates document allocations only and does not post another journal.</p>
+      </div>
+      {creditLoading ? <p className="text-sm text-slate-500">Loading open credit notes and bills…</p>
+        : creditError ? <p role="alert" className="text-sm text-rose-700">{creditError}</p>
+          : creditOptions.credits.length === 0 ? <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">No open manufacturer return credit notes.</p>
+            : creditOptions.credits.map((credit) => {
+              const input = applicationInputs[credit.id] || {};
+              const eligibleBills = creditOptions.bills.filter((bill) =>
+                credit.sourceOrderId &&
+                bill.sourceId === credit.sourceOrderId &&
+                bill.currency === credit.currency
+              );
+              return (
+                <article key={credit.id} className="space-y-3 rounded-xl border border-slate-200 p-4">
+                  <div className="flex flex-wrap justify-between gap-2 text-sm">
+                    <div><p className="font-semibold text-slate-900">{credit.documentNumber}</p><p className="text-xs text-slate-500">Return {credit.sourceId}{credit.sourceOrderId ? ` · order ${credit.sourceOrderId}` : ""} · {date(credit.issueDate)}</p></div>
+                    <div className="text-right"><p className="font-bold text-emerald-700">{amount(credit.remainingAmount)} available</p><p className="text-xs text-slate-500">Original {amount(credit.originalAmount)}</p></div>
+                  </div>
+                  {canApplyCredits ? (
+                    eligibleBills.length === 0 ? <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">No open bill for the same delivered order and currency was found. Do not apply this credit to another bill.</p> : (
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <label className="text-xs font-semibold text-slate-700 md:col-span-1">Original bill
+                          <select value={input.billDocumentId || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], billDocumentId: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2">
+                            <option value="">Select bill</option>
+                            {eligibleBills.map((bill) => <option key={bill.id} value={bill.id}>{bill.documentNumber} · open {amount(bill.remainingAmount)}</option>)}
+                          </select>
+                        </label>
+                        <label className="text-xs font-semibold text-slate-700">Amount
+                          <input type="number" min="0.01" max={credit.remainingAmount} step="0.01" value={input.amount || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], amount: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
+                        </label>
+                        <label className="text-xs font-semibold text-slate-700 md:col-span-1">Audit notes
+                          <input maxLength={1000} value={input.notes || ""} onChange={(event) => setApplicationInputs((current) => ({ ...current, [credit.id]: { ...current[credit.id], notes: event.target.value } }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2" />
+                        </label>
+                        <button type="button" disabled={applyingCreditId === credit.id || !input.billDocumentId || !input.amount || !input.notes?.trim()} onClick={() => applySupplierCredit(credit)} className="self-end rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{applyingCreditId === credit.id ? "Applying…" : "Apply to bill"}</button>
+                      </div>
+                    )
+                  ) : <p className="text-xs text-slate-500">Finance payable-settlement permission is required to apply credits.</p>}
+                </article>
+              );
+            })}
     </section>
   </div>;
 };

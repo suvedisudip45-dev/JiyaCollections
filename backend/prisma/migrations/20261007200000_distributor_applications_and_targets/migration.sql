@@ -68,7 +68,7 @@ CREATE TABLE `DistributorDeliveryChargeNegotiation` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
-    INDEX `DistributorDeliveryChargeNegotiation_distributorId_status_effectiveFrom_idx` (`distributorId`, `status`, `effectiveFrom`),
+    INDEX `DistDelChargeNeg_dist_status_from_idx` (`distributorId`, `status`, `effectiveFrom`),
     INDEX `DistributorDeliveryChargeNegotiation_productId_status_idx` (`productId`, `status`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

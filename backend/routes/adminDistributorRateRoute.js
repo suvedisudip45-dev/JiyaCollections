@@ -7,6 +7,7 @@ import {
   adminSaveDistributorBonusPlan,
   listAdminDistributorBonusPlans,
   adminExecuteSettlement,
+  adminResolveSettlementReconciliation,
   listAdminDistributorSettlements,
 } from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
@@ -86,6 +87,13 @@ adminDistributorFinanceRouter.get(
   requireAdminRole,
   authorize("finance:payables_read"),
   listAdminDistributorSettlements,
+);
+adminDistributorFinanceRouter.post(
+  "/settlements/:id/resolve-reconciliation",
+  authenticate,
+  requireAdminRole,
+  authorize("finance:payable_settle"),
+  adminResolveSettlementReconciliation,
 );
 
 export default adminDistributorRateRouter;

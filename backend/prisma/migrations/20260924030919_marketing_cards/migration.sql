@@ -41,7 +41,7 @@ CREATE TABLE `MarketingCampaign` (
     `updatedAt` DATETIME(3) NOT NULL,
 
     INDEX `MarketingCampaign_marketingPartnerId_status_idx`(`marketingPartnerId`, `status`),
-    INDEX `MarketingCampaign_targetScopeType_targetProvince_targetDistr_idx`(`targetScopeType`, `targetProvince`, `targetDistrict`),
+    INDEX `MktCampaign_scope_province_district_idx`(`targetScopeType`, `targetProvince`, `targetDistrict`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

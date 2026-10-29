@@ -1,7 +1,9 @@
 import express from "express";
 import {
   getAdminManufacturerFinance,
+  getAdminManufacturerCreditApplications,
   getAdminManufacturerFinancialTransactions,
+  postAdminManufacturerCreditApplication,
   getAdminManufacturerInventory,
 } from "../controllers/adminManufacturerDetailController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
@@ -22,6 +24,12 @@ const requireAdminRole = (req, res, next) => {
 adminManufacturerDetailRouter.use(authenticate, requireAdminRole);
 adminManufacturerDetailRouter.get("/:id/inventory", authorize("manufacturer:admin_inventory_read"), getAdminManufacturerInventory);
 adminManufacturerDetailRouter.get("/:id/finance", authorize("manufacturer:admin_finance_read"), getAdminManufacturerFinance);
+adminManufacturerDetailRouter.get("/:id/finance/credits", authorize("manufacturer:admin_finance_read"), getAdminManufacturerCreditApplications);
+adminManufacturerDetailRouter.post(
+  "/:id/finance/credits/:creditDocumentId/apply",
+  authorize("finance:payable_settle"),
+  postAdminManufacturerCreditApplication,
+);
 adminManufacturerDetailRouter.get("/:id/finance/transactions", authorize("manufacturer:admin_finance_read"), getAdminManufacturerFinancialTransactions);
 
 export default adminManufacturerDetailRouter;

@@ -30,7 +30,7 @@ CREATE TABLE `ManufacturerSettlementRequest` (
     `updatedAt` DATETIME(3) NOT NULL,
 
     UNIQUE INDEX `ManufacturerSettlementRequest_idempotencyKey_key` (`idempotencyKey`),
-    INDEX `ManufacturerSettlementRequest_manufacturerId_status_requestedAt_idx` (`manufacturerId`, `status`, `requestedAt`),
+    INDEX `MfgSettlementReq_mfg_status_reqAt_idx` (`manufacturerId`, `status`, `requestedAt`),
     INDEX `ManufacturerSettlementRequest_requestType_status_idx` (`requestType`, `status`),
     PRIMARY KEY (`id`),
     CONSTRAINT `ManufacturerSettlementRequest_manufacturerId_fkey`

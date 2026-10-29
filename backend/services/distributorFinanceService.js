@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import { accrueClosedDistributorBonuses, getClosedDistributorBonusPreview } from "./distributorBonusService.js";
@@ -11,6 +12,11 @@ import {
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { getDistributorCashPosition } from "./distributorCashSettlementService.js";
 import { validateTreasuryPayoutAccount } from "./treasuryAccountingService.js";
+import {
+  confirmFinancialPayout,
+  failFinancialPayout,
+  initiateFinancialPayout,
+} from "./financialPayoutService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -53,6 +59,157 @@ const validateOptionalText = (value, label, maxLength) => {
   }
   return text || null;
 };
+
+export const initiateAdminDistributorSettlement = async ({
+  settlementId,
+  amount,
+  financialAccountId,
+  externalPaymentReference = null,
+  idempotencyKey,
+  adminNotes = null,
+  adminAccountId = null,
+  client = prisma,
+} = {}) => {
+  if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
+    throw fail("A valid settlement request ID is required.", 400, "INVALID_SETTLEMENT_ID");
+  }
+  const settleAmount = parseMoney(amount, "Settlement payment amount");
+  const normalizedKey = validateOptionalText(idempotencyKey, "Idempotency key", 191);
+  if (!normalizedKey) throw fail("A payout idempotency key is required.", 400, "IDEMPOTENCY_KEY_REQUIRED");
+
+  const validateTarget = async (tx) => {
+    const settlement = await tx.distributorSettlementRequest.findUnique({
+      where: { id: settlementId },
+      include: { distributor: true },
+    });
+    if (!settlement) throw fail("Distributor settlement request not found.", 404);
+    if (settlement.status === "SETTLED" || settlement.status === "REJECTED") {
+      throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
+    }
+    if (settlement.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED") {
+      throw fail("Reconcile verified earning documents before initiating this payout.", 409, "LEGACY_EARNINGS_RECONCILIATION_REQUIRED");
+    }
+    const requestRemaining = new Prisma.Decimal(String(settlement.amount))
+      .minus(new Prisma.Decimal(String(settlement.paidAmount || 0)));
+    const pending = await tx.financialPayout.aggregate({
+      where: {
+        targetType: "DISTRIBUTOR_SETTLEMENT",
+        targetId: settlementId,
+        status: "INITIATED",
+      },
+      _sum: { amount: true },
+    });
+    const alreadyReserved = new Prisma.Decimal(String(pending._sum.amount || 0));
+    const requestAvailable = requestRemaining.minus(alreadyReserved);
+
+    let documentAvailable = new Prisma.Decimal(0);
+    if (settlement.metadata?.settlementBasis === "ACCOUNTING_SUBLEDGER") {
+      const party = await resolveAccountingParty({
+        partyType: "DISTRIBUTOR",
+        sourceEntityId: settlement.distributorId,
+        displayName: settlement.distributor.name,
+      }, { client: tx });
+      const documentIds = Array.isArray(settlement.metadata.earningDocumentIds)
+        ? settlement.metadata.earningDocumentIds
+        : [];
+      const documents = documentIds.length
+        ? await tx.accountingDocument.findMany({
+            where: {
+              id: { in: documentIds },
+              partyId: party.id,
+              side: "PAYABLE",
+              sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
+              status: { in: ["OPEN", "PARTIALLY_PAID"] },
+            },
+            select: { remainingAmount: true },
+          })
+        : [];
+      documentAvailable = documents.reduce(
+        (sum, document) => sum.plus(new Prisma.Decimal(String(document.remainingAmount))),
+        new Prisma.Decimal(0),
+      );
+    } else {
+      const payable = settlement.metadata?.accountPayableId
+        ? await tx.accountPayable.findUnique({ where: { id: settlement.metadata.accountPayableId } })
+        : await tx.accountPayable.findFirst({
+            where: { referenceType: "DISTRIBUTOR_SETTLEMENT", referenceId: settlement.id },
+          });
+      if (!payable) throw fail("The linked Accounts Payable record is missing.", 409, "DISTRIBUTOR_PAYABLE_NOT_FOUND");
+      documentAvailable = new Prisma.Decimal(String(payable.remainingBalance));
+    }
+
+    const availableAmount = Prisma.Decimal.max(
+      new Prisma.Decimal(0),
+      Prisma.Decimal.min(requestAvailable, documentAvailable),
+    );
+    if (new Prisma.Decimal(String(settleAmount)).greaterThan(availableAmount)) {
+      throw fail("Payout exceeds the unreserved, verified distributor payable.", 409, "PAYOUT_EXCEEDS_PAYABLE");
+    }
+    const account = await tx.financialAccount.findUnique({ where: { id: financialAccountId } });
+    await validateTreasuryPayoutAccount(account, tx);
+    return { availableAmount };
+  };
+
+  return initiateFinancialPayout({
+    targetType: "DISTRIBUTOR_SETTLEMENT",
+    targetId: settlementId,
+    amount: settleAmount,
+    financialAccountId,
+    idempotencyKey: normalizedKey,
+    externalPaymentReference,
+    initiatedByAccountId: adminAccountId,
+    notes: adminNotes,
+    validateTarget,
+    client,
+  });
+};
+
+export const confirmAdminDistributorSettlement = async ({
+  payoutId,
+  bankEvidenceReference,
+  adminAccountId = null,
+  client = prisma,
+  writeAudit = recordSystemAudit,
+  ...dependencies
+} = {}) => confirmFinancialPayout({
+  payoutId,
+  bankEvidenceReference,
+  confirmedByAccountId: adminAccountId,
+  client,
+  writeAudit,
+  finalizePayout: async (tx, payout) => {
+    if (payout.targetType !== "DISTRIBUTOR_SETTLEMENT") {
+      throw fail("This payout is not a distributor settlement.", 409, "PAYOUT_TARGET_MISMATCH");
+    }
+    return executeAdminDistributorSettlement({
+      settlementId: payout.targetId,
+      amount: payout.amount.toString(),
+      financialAccountId: payout.financialAccountId,
+      externalPaymentReference: payout.externalPaymentReference,
+      idempotencyKey: payout.idempotencyKey,
+      adminNotes: payout.notes,
+      adminAccountId,
+      client: tx,
+      writeAudit,
+      ...dependencies,
+    });
+  },
+});
+
+export const failAdminDistributorSettlement = async ({
+  payoutId,
+  failureReason,
+  adminAccountId = null,
+  client = prisma,
+  writeAudit = recordSystemAudit,
+} = {}) => failFinancialPayout({
+  payoutId,
+  expectedTargetType: "DISTRIBUTOR_SETTLEMENT",
+  failureReason,
+  failedByAccountId: adminAccountId,
+  client,
+  writeAudit,
+});
 
 /**
  * Detailed Financial Statement for Distributor Dashboard
@@ -483,6 +640,8 @@ export const submitDistributorSettlementRequest = async ({
             referenceId: item.referenceId,
             date: item.date,
             description: item.description,
+            earningId: item.earningId || null,
+            accountingDocumentId: item.accountingDocumentId || null,
             quantity: item.type === "DELIVERY" ? 1 : undefined,
             deliveryCharge: item.type === "DELIVERY" ? item.grossAmount : 0,
             incentiveAmount: item.incentiveAmount || 0,
@@ -558,6 +717,165 @@ export const submitDistributorSettlementRequest = async ({
   };
 };
 
+export const resolveDistributorSettlementReconciliation = async ({
+  settlementId,
+  decision,
+  earningDocumentIds = [],
+  reviewNotes,
+  reviewerAccountId,
+  writeAudit = recordSystemAudit,
+  client = prisma,
+} = {}) => {
+  if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
+    throw fail("A valid settlement request ID is required.", 400, "INVALID_SETTLEMENT_ID");
+  }
+  const normalizedDecision = String(decision || "").trim().toUpperCase();
+  if (!["RECONCILE", "REJECT"].includes(normalizedDecision)) {
+    throw fail("Decision must be RECONCILE or REJECT.", 400, "INVALID_RECONCILIATION_DECISION");
+  }
+  const normalizedNotes = validateOptionalText(reviewNotes, "Review notes", 1000);
+  if (!normalizedNotes) {
+    throw fail("Review notes are required to resolve a legacy settlement request.", 400, "REVIEW_NOTES_REQUIRED");
+  }
+  if (
+    normalizedDecision === "RECONCILE" &&
+    (!Array.isArray(earningDocumentIds) ||
+      earningDocumentIds.length === 0 ||
+      earningDocumentIds.length > 100 ||
+      earningDocumentIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 191) ||
+      new Set(earningDocumentIds).size !== earningDocumentIds.length)
+  ) {
+    throw fail("Select one or more unique earning document IDs to reconcile this request.", 400, "INVALID_EARNING_DOCUMENTS");
+  }
+
+  return client.$transaction(async (tx) => {
+    const request = await tx.distributorSettlementRequest.findUnique({
+      where: { id: settlementId },
+      include: { distributor: { select: { id: true, name: true } } },
+    });
+    if (!request) throw fail("Distributor settlement request not found.", 404, "SETTLEMENT_NOT_FOUND");
+    if (
+      request.status !== "PENDING" ||
+      new Prisma.Decimal(String(request.paidAmount || 0)).greaterThan(0) ||
+      request.metadata?.settlementBasis !== "LEGACY_EARNINGS_RECONCILIATION_REQUIRED"
+    ) {
+      throw fail("Only unpaid legacy reconciliation requests can be resolved.", 409, "SETTLEMENT_NOT_RECONCILABLE");
+    }
+
+    let updatedMetadata = parseJSON(request.metadata, {});
+    let verifiedDocuments = [];
+    if (normalizedDecision === "RECONCILE") {
+      verifiedDocuments = await tx.accountingDocument.findMany({
+        where: {
+          id: { in: earningDocumentIds },
+          side: "PAYABLE",
+          sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
+          status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          party: { partyType: "DISTRIBUTOR", sourceEntityId: request.distributorId },
+        },
+        select: { id: true, sourceId: true, remainingAmount: true },
+      });
+      if (verifiedDocuments.length !== earningDocumentIds.length) {
+        throw fail("One or more selected documents are not open earning documents for this distributor.", 409, "EARNING_DOCUMENTS_NOT_VERIFIED");
+      }
+
+      const competingRequests = await tx.distributorSettlementRequest.findMany({
+        where: {
+          distributorId: request.distributorId,
+          status: { in: ["PENDING", "PARTIALLY_PAID"] },
+        },
+        select: { id: true, metadata: true },
+      });
+      const reservedDocumentIds = new Set(
+        competingRequests
+          .filter((other) => other.id !== request.id)
+          .flatMap((other) => {
+            const metadata = parseJSON(other.metadata, {});
+            return Array.isArray(metadata.earningDocumentIds) ? metadata.earningDocumentIds : [];
+          })
+      );
+      if (verifiedDocuments.some((document) => reservedDocumentIds.has(document.id))) {
+        throw fail("A selected earning document is already reserved by another open settlement request.", 409, "EARNING_DOCUMENT_ALREADY_RESERVED");
+      }
+
+      const eligibleSnapshotEarningIds = new Set(
+        (Array.isArray(updatedMetadata.statementSnapshot?.lineItems)
+          ? updatedMetadata.statementSnapshot.lineItems
+          : [])
+          .map((item) => item.earningId)
+          .filter(Boolean)
+      );
+      if (
+        eligibleSnapshotEarningIds.size > 0 &&
+        verifiedDocuments.some((document) => !eligibleSnapshotEarningIds.has(document.sourceId))
+      ) {
+        throw fail("Selected earning documents do not match the settlement request's recorded statement.", 409, "EARNING_DOCUMENT_SNAPSHOT_MISMATCH");
+      }
+
+      const verifiedBalance = verifiedDocuments.reduce(
+        (sum, document) => sum.plus(new Prisma.Decimal(String(document.remainingAmount))),
+        new Prisma.Decimal(0)
+      );
+      if (new Prisma.Decimal(String(request.amount)).greaterThan(verifiedBalance)) {
+        throw fail("Verified earning documents do not cover the requested settlement amount.", 409, "INSUFFICIENT_VERIFIED_EARNINGS");
+      }
+      updatedMetadata = {
+        ...updatedMetadata,
+        settlementBasis: "ACCOUNTING_SUBLEDGER",
+        earningDocumentIds: verifiedDocuments.map((document) => document.id),
+        reconciledAt: new Date().toISOString(),
+        reconciledBy: reviewerAccountId || null,
+        reconciliationNotes: normalizedNotes,
+      };
+    }
+
+    const claim = await tx.distributorSettlementRequest.updateMany({
+      where: {
+        id: request.id,
+        status: "PENDING",
+        paidAmount: request.paidAmount,
+      },
+      data: normalizedDecision === "RECONCILE"
+        ? { metadata: updatedMetadata, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null }
+        : { status: "REJECTED", metadata: { ...updatedMetadata, rejectedAt: new Date().toISOString(), rejectedBy: reviewerAccountId || null, rejectionNotes: normalizedNotes }, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null },
+    });
+    if (claim.count !== 1) {
+      throw fail("Settlement request changed while reconciliation was being recorded. Refresh and retry.", 409, "SETTLEMENT_CONCURRENCY_CONFLICT");
+    }
+
+    await writeAudit(
+      { actorId: reviewerAccountId || null, actorRole: "ADMIN", portalSource: "ADMIN" },
+      {
+        action: normalizedDecision === "RECONCILE"
+          ? "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_RESOLVED"
+          : "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_REJECTED",
+        entityType: "DistributorSettlementRequest",
+        entityId: request.id,
+        beforeState: { status: request.status, settlementBasis: request.metadata?.settlementBasis },
+        afterState: {
+          status: normalizedDecision === "REJECT" ? "REJECTED" : request.status,
+          settlementBasis: normalizedDecision === "RECONCILE" ? "ACCOUNTING_SUBLEDGER" : request.metadata?.settlementBasis,
+          earningDocumentIds: verifiedDocuments.map((document) => document.id),
+          reviewNotes: normalizedNotes,
+        },
+      },
+      { client: tx },
+    );
+
+    return {
+      success: true,
+      decision: normalizedDecision,
+      settlementRequest: {
+        ...request,
+        status: normalizedDecision === "REJECT" ? "REJECTED" : request.status,
+        metadata: updatedMetadata,
+        adminNotes: normalizedNotes,
+        reviewedBy: reviewerAccountId || null,
+      },
+    };
+  }, { isolationLevel: "Serializable" });
+};
+
 /**
  * Admin Executes Settlement (applying commissions, bonuses, discounts, and charges)
  */
@@ -589,7 +907,7 @@ export const executeAdminDistributorSettlement = async ({
   const normalizedKey = idempotencyKey == null ? null : validateOptionalText(idempotencyKey, "Idempotency key", 191);
   const now = new Date();
 
-  return client.$transaction(async (tx) => {
+  const execute = async (tx) => {
     const targetSettlement = await tx.distributorSettlementRequest.findUnique({
       where: { id: settlementId },
       include: { distributor: true },
@@ -667,6 +985,7 @@ export const executeAdminDistributorSettlement = async ({
       const cashPosition = await loadCashPosition({ distributorId: targetSettlement.distributorId, client: tx });
       const codExposureWarning = Number(cashPosition.outstandingReceivable) > 0
         ? {
+            code: "UNREMITTED_COD_OUTSTANDING",
             outstandingReceivable: cashPosition.outstandingReceivable,
             pendingRemittance: cashPosition.pendingRemittance,
             availableToRemit: cashPosition.availableToRemit,
@@ -842,6 +1161,7 @@ export const executeAdminDistributorSettlement = async ({
     const cashPosition = await loadCashPosition({ distributorId: targetSettlement.distributorId, client: tx });
     const codExposureWarning = Number(cashPosition.outstandingReceivable) > 0
       ? {
+          code: "UNREMITTED_COD_OUTSTANDING",
           outstandingReceivable: cashPosition.outstandingReceivable,
           pendingRemittance: cashPosition.pendingRemittance,
           availableToRemit: cashPosition.availableToRemit,
@@ -957,5 +1277,8 @@ export const executeAdminDistributorSettlement = async ({
       settlement: finalizedSettlement,
       payable: { ...payable, paidAmount: newPaidAmount, remainingBalance: newRemainingBalance },
     };
-  }, { isolationLevel: "Serializable" });
+  };
+  return typeof client.$transaction === "function"
+    ? client.$transaction(execute, { isolationLevel: "Serializable" })
+    : execute(client);
 };

@@ -65,7 +65,15 @@ test("manufacturer settlement summary uses recognized payable journals and all s
         {
           debit: 12,
           credit: 0,
-          supplierId: null,
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "SUPPLIER_PAYMENT" },
+        },
+        {
+          debit: 500,
+          credit: 0,
+          supplierId: "mfg-2",
           supplierName: "Textile Co",
           accountingParty: null,
           journalEntry: { sourceType: "SUPPLIER_PAYMENT" },
@@ -82,10 +90,11 @@ test("manufacturer settlement summary uses recognized payable journals and all s
   assert.equal(summary.productionOutstanding, 90);
   assert.equal(summary.logisticsOutstanding, 3);
   assert.equal(summary.productionPayableAvailable, 70);
+  assert.equal(summary.attributionReconciliationRequired, false);
   assert.equal(summary.logisticsPayableAvailable, 0);
 });
 
-test("manufacturer settlement summary uses open delivery bills and nets supplier credit notes", async () => {
+test("manufacturer settlement summary reports supplier credits separately from gross open bills", async () => {
   const client = {
     manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
     manufacturerSettlementRequest: {
@@ -140,9 +149,48 @@ test("manufacturer settlement summary uses open delivery bills and nets supplier
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
   assert.equal(summary.totalManufacturedGoodsValue, 100);
-  assert.equal(summary.productionOutstanding, 50);
+  assert.equal(summary.productionOutstanding, 60);
   assert.equal(summary.supplierCreditOutstanding, 10);
-  assert.equal(summary.productionPayableAvailable, 50);
+  assert.equal(summary.supplierCreditsRequireExplicitApplication, true);
+  assert.equal(summary.productionPayableAvailable, 60);
+});
+
+test("manufacturer settlement summary does not attribute another manufacturer by matching name", async () => {
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    manufacturerSettlementRequest: {
+      findMany: async () => [],
+      groupBy: async () => [],
+    },
+    account: { findUnique: async () => ({ id: "payable-account" }) },
+    journalLine: {
+      findMany: async () => [
+        {
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("500"),
+          supplierId: "mfg-2",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "MANUFACTURER_PRODUCTION", sourceId: "production-2" },
+        },
+        {
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("75"),
+          supplierId: null,
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "MANUFACTURER_PRODUCTION", sourceId: "production-legacy" },
+        },
+      ],
+    },
+  };
+
+  const summary = await getManufacturerSettlementSummary("mfg-1", { client });
+
+  assert.equal(summary.totalManufacturedGoodsValue, 0);
+  assert.equal(summary.productionOutstanding, 0);
+  assert.equal(summary.unattributedLegacyLineCount, 1);
+  assert.equal(summary.attributionReconciliationRequired, true);
 });
 
 test("manufacturer settlement summary reduces legacy delivery payables for returns without a bill", async () => {

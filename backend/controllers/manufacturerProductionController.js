@@ -763,7 +763,7 @@ export const completeProduction = async (req, res) => {
       const recoverableInputVat = productionCost.recoverableVat
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      const claimed = await tx.manufacturerProductionRequest.updateMany({
+      const completionClaim = await tx.manufacturerProductionRequest.updateMany({
         where: { id: request.id, status: "PRODUCTION_REVIEW_IN_PROGRESS" },
         data: {
           status: "COMPLETED",
@@ -776,7 +776,7 @@ export const completeProduction = async (req, res) => {
           productionReviewNote: reviewNote || null,
         },
       });
-      if (claimed.count !== 1) throw Object.assign(new Error("Production request changed before completion could be recorded."), { statusCode: 409 });
+      if (completionClaim.count !== 1) throw Object.assign(new Error("Production request changed before completion could be recorded."), { statusCode: 409 });
       await syncProductStock(product.id, { client: tx, throwOnError: true });
       await recordSystemAudit(actorContext(req), {
         action: "ADMIN_MANUFACTURER_PRODUCTION_RECEIPT_ACCEPTED",

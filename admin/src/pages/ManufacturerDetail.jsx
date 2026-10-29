@@ -99,7 +99,7 @@ const ManufacturerDetail = ({ token }) => {
       {activeTab === "inventory" && <ManufacturerInventorySection manufacturerId={manufacturerId} token={token} />}
       {activeTab === "production" && <ManufacturerProductionSection manufacturerId={manufacturerId} token={token} />}
       {activeTab === "transfers" && <ManufacturerTransfersSection manufacturerId={manufacturerId} token={token} />}
-      {activeTab === "finance" && <ManufacturerFinanceSection manufacturerId={manufacturerId} token={token} />}
+      {activeTab === "finance" && <ManufacturerFinanceSection manufacturerId={manufacturerId} token={token} canApplyCredits={can("finance:payable_settle")} />}
       {activeTab === "transactions" && <ManufacturerTransactionsSection manufacturerId={manufacturerId} token={token} />}
       {activeTab === "settlements" && <ManufacturerSettlementsSection manufacturerId={manufacturerId} token={token} />}
     </main>

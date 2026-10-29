@@ -302,7 +302,18 @@ New distributor settlement requests do not create an AP from the amount requeste
 - ensure the Treasury account used for the payment/receipt is mapped to a valid GL cash/bank entry
 - use a stable idempotency key for retries
 
-### 9.3 Warning
+### 9.3 Payable payout lifecycle
+
+Admin payable, manufacturer, and distributor transfers use a two-step confirmation flow:
+
+1. Initiate the payout from a mapped Treasury account. The system reserves the cash amount, but does not yet debit Treasury, clear the payable, create a cash transaction, or post the payment journal.
+2. Make the transfer through the bank or other payment provider outside the application.
+3. Confirm only after checking the bank statement or equivalent transfer evidence. Record the evidence reference; confirmation atomically debits Treasury, posts the journal, updates the payable/settlement, releases the reservation, and records the audit event.
+4. If the transfer failed, mark the initiated payout failed with a reason. The reservation is released without recording a payment.
+
+An initiated payout remains recoverable from the Admin payout list if the original dialog is closed. Do not treat the external transfer reference entered at initiation as proof of settlement. The payout lifecycle migration and database-backed transition tests must be verified in an isolated database before operational rollout.
+
+### 9.4 Warning
 
 Do not mark a receivable or payable as cleared based only on a UI toggle or a partial payment status. It must reconcile to the balance and to the ledger.
 
@@ -361,6 +372,18 @@ Never:
 - post a payment without a valid source document or control account
 - reverse a journal without preserving the original reference
 - edit a posted journal
+
+### Legacy distributor settlement requests
+
+Requests marked `LEGACY_EARNINGS_RECONCILIATION_REQUIRED` are not payable until an Admin resolves them through `POST /api/admin/distributor-finance/settlements/:id/resolve-reconciliation`.
+
+- `RECONCILE` requires selecting existing, open distributor earning or target-bonus documents for that distributor. The requested amount must be covered, selected documents must not already be reserved by another open request, and the decision requires review notes.
+- `REJECT` closes an unsupported unpaid request and requires review notes.
+- Both decisions are audited. This endpoint does not backfill or create earning records. If historical delivery earnings are missing from the subledger, investigate and backfill them from verified source records before reconciling; never infer or fabricate an earning amount.
+
+Open supplier credit notes are reported separately from gross manufacturer bills. An Admin with `finance:payable_settle` may apply a confirmed manufacturer return credit to the matching delivery bill for the same manufacturer and order. The workflow requires an existing posted `DELIVERY_RETURN` payable reversal, a positive amount within both open balances, and a reason note. It updates the two document balances, stores paired allocations against the existing return journal, and writes an audit event; it does not post another journal for the return. The action is idempotent and a retry with the same key and payload returns the prior application.
+
+Do not apply credits across manufacturers, currencies, or orders. Do not apply a credit when the return journal or original bill is missing. The additive `SupplierCreditApplication` migration must be applied and verified in an isolated database before enabling this workflow in a deployed environment.
 
 ---
 

@@ -19,7 +19,17 @@ import {
 } from "../services/financialDashboardCosting.js";
 import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
-import { executeAdminDistributorSettlement } from "../services/distributorFinanceService.js";
+import {
+  confirmAdminDistributorSettlement,
+  failAdminDistributorSettlement,
+  initiateAdminDistributorSettlement,
+} from "../services/distributorFinanceService.js";
+import {
+  confirmFinancialPayout,
+  failFinancialPayout,
+  initiateFinancialPayout,
+} from "../services/financialPayoutService.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { allocateManufacturerPaymentToDocuments } from "../services/manufacturerSettlementService.js";
@@ -3098,6 +3108,7 @@ export const getPayablesAndReceivables = async (req, res) => {
           notes: "Manufacturer orders are payable at approved COGS.",
           status: remainingPayable === 0 && totalCogs > 0 ? "SETTLED" : totalPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
         };
+
       } else if (totalCogs > 0 || totalPaid > 0) {
         payables.push({
           id: `AP-MFG-${m.id}`,
@@ -3260,6 +3271,31 @@ export const getPayablesAndReceivables = async (req, res) => {
   }
 };
 
+export const getFinancialPayouts = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const status = String(req.query.status || "INITIATED").trim().toUpperCase();
+    if (!["INITIATED", "SETTLED", "FAILED"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Payout status filter is invalid." });
+    }
+    const where = { status };
+    const [payouts, total] = await prisma.$transaction([
+      prisma.financialPayout.findMany({
+        where,
+        orderBy: { initiatedAt: "desc" },
+        skip: pagination.skip,
+        take: pagination.limit,
+        include: { financialAccount: { select: { id: true, accountName: true, accountType: true } } },
+      }),
+      prisma.financialPayout.count({ where }),
+    ]);
+    return res.json(paginatedResponse("payouts", payouts, pagination, total));
+  } catch (error) {
+    console.error("getFinancialPayouts error:", error);
+    return res.status(500).json({ success: false, message: "Unable to load payout lifecycle records." });
+  }
+};
+
 export const createPayable = async (req, res) => {
   try {
     const { title, payeeName, category, referenceType, referenceId, totalAmount, dueDate, invoiceNumber, priority, notes } = req.body;
@@ -3340,11 +3376,49 @@ export const createReceivable = async (req, res) => {
 // ==========================================
 export const payManufacturer = async (req, res) => {
   try {
-    const { manufacturerId, amount, fromAccountId, notes } = req.body;
-    const externalPaymentReference = requireExternalPaymentReference(req.body.externalPaymentReference);
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A payout request body is required." });
+    }
+    const payoutAction = String(req.body.action || "INITIATE").trim().toUpperCase();
+    const adminAccountId = req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null;
+    if (payoutAction === "FAIL") {
+      const failed = await failFinancialPayout({
+        payoutId: req.body.payoutId,
+        expectedTargetType: "MANUFACTURER_PAYABLE",
+        failureReason: req.body.failureReason,
+        failedByAccountId: adminAccountId,
+      });
+      return res.json(failed);
+    }
+    if (!["INITIATE", "CONFIRM"].includes(payoutAction)) {
+      return res.status(400).json({ success: false, message: "Payout action must be INITIATE, CONFIRM, or FAIL." });
+    }
+    let payoutRecord = null;
+    if (payoutAction === "CONFIRM") {
+      if (typeof req.body.payoutId !== "string" || !req.body.payoutId.trim()) {
+        return res.status(400).json({ success: false, message: "Payout ID is required.", code: "PAYOUT_ID_REQUIRED" });
+      }
+      payoutRecord = await prisma.financialPayout.findUnique({ where: { id: req.body.payoutId } });
+      if (!payoutRecord || payoutRecord.targetType !== "MANUFACTURER_PAYABLE" || payoutRecord.status !== "INITIATED") {
+        return res.status(409).json({ success: false, message: "An initiated manufacturer payout is required.", code: "PAYOUT_NOT_INITIATED" });
+      }
+      if (req.body.manufacturerId && req.body.manufacturerId !== payoutRecord.targetId) {
+        return res.status(409).json({ success: false, message: "Payout does not match the selected manufacturer.", code: "PAYOUT_TARGET_MISMATCH" });
+      }
+      if (!String(req.body.bankEvidenceReference || "").trim()) {
+        return res.status(400).json({ success: false, message: "Bank transfer evidence reference is required before settlement.", code: "PAYOUT_EVIDENCE_REQUIRED" });
+      }
+    }
+    const manufacturerId = payoutRecord?.targetId || req.body.manufacturerId;
+    const amount = payoutRecord?.amount?.toString() || req.body.amount;
+    const fromAccountId = payoutRecord?.financialAccountId || req.body.fromAccountId;
+    const notes = payoutRecord?.notes || req.body.notes;
+    const externalPaymentReference = payoutRecord
+      ? requireExternalPaymentReference(payoutRecord.externalPaymentReference)
+      : requireExternalPaymentReference(req.body.externalPaymentReference);
     let payAmount = Number(amount || 0);
-    const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
-    const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
+    const adjustmentType = String(payoutRecord?.adjustmentType || req.body.adjustmentType || "NONE").toUpperCase();
+    const adjustmentAmount = Number(payoutRecord?.adjustmentAmount ?? req.body.adjustmentAmount ?? 0);
 
     if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
       return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
@@ -3484,15 +3558,18 @@ export const payManufacturer = async (req, res) => {
     }
 
     // STRICT CAPITAL SOLVENCY CHECK
-    if (fromAccount.currentBalance < payAmount) {
+    const balanceAvailableForPayout = Number(fromAccount.currentBalance || 0)
+      - Number(fromAccount.reservedBalance || 0)
+      + (payoutRecord ? Number(payoutRecord.amount) : 0);
+    if (balanceAvailableForPayout < payAmount) {
       return res.status(400).json({
         success: false,
-        message: `Insufficient liquid cash in ${fromAccount.accountName}. Available balance: Rs ${fromAccount.currentBalance.toLocaleString()}, required: Rs ${payAmount.toLocaleString()}. Please deposit funds first or pay a smaller partial amount.`,
+        message: `Insufficient unreserved liquid cash in ${fromAccount.accountName}. Available balance: Rs ${Math.max(0, balanceAvailableForPayout).toLocaleString()}, required: Rs ${payAmount.toLocaleString()}.`,
       });
     }
 
     // Ensure unique idempotency key for this payout transaction
-    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `MFGPAY-${manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const idempotencyKey = payoutRecord?.idempotencyKey || req.body.idempotencyKey || req.headers?.["idempotency-key"] || `MFGPAY-${manufacturerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Check if duplicate transaction with this idempotency key already exists
     const existingTx = await prisma.cashTransaction.findUnique({
@@ -3517,11 +3594,43 @@ export const payManufacturer = async (req, res) => {
         createdAt: { gte: new Date(Date.now() - 4000) },
       },
     });
-    if (duplicateRecentTx) {
+    if (duplicateRecentTx && payoutAction !== "CONFIRM") {
       return res.status(409).json({
         success: false,
         alreadyProcessed: true,
         message: `Duplicate transaction rejected: an identical payout of Rs ${payAmount.toLocaleString()} to ${manufacturer.name} was just processed moments ago.`,
+      });
+    }
+
+    if (payoutAction === "INITIATE") {
+      const start = await initiateFinancialPayout({
+        targetType: "MANUFACTURER_PAYABLE",
+        targetId: manufacturerId,
+        amount: payAmount,
+        settlementAmount,
+        adjustmentType,
+        adjustmentAmount,
+        financialAccountId: fromAccountId,
+        externalPaymentReference,
+        idempotencyKey,
+        initiatedByAccountId: adminAccountId,
+        notes,
+        validateTarget: async (tx) => {
+          const pendingPayouts = await tx.financialPayout.aggregate({
+            where: {
+              targetType: "MANUFACTURER_PAYABLE",
+              targetId: manufacturerId,
+              status: "INITIATED",
+            },
+            _sum: { settlementAmount: true },
+          });
+          const pendingAmount = Number(pendingPayouts._sum.settlementAmount || 0);
+          return { availableAmount: Math.max(0, postedPayable.outstanding - pendingAmount) };
+        },
+      });
+      return res.status(start.isReplay ? 200 : 201).json({
+        ...start,
+        message: start.isReplay ? "This manufacturer payout was already initiated." : "Manufacturer payout initiated; funds are reserved pending bank confirmation.",
       });
     }
 
@@ -3630,6 +3739,7 @@ export const payManufacturer = async (req, res) => {
         fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2160",
         cashAccountId: accountingAccount.id,
+        supplierId: manufacturer.id,
         idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
         referenceNumber: `MFG-NET-${idempotencyKey.slice(-8)}`,
         client: tx,
@@ -3643,6 +3753,39 @@ export const payManufacturer = async (req, res) => {
         notes: `Manufacturer COGS payout ${idempotencyKey}`,
         client: tx,
       });
+      if (payoutRecord) {
+        const reservationReleased = await tx.financialAccount.updateMany({
+          where: { id: payoutRecord.financialAccountId, reservedBalance: { gte: payoutRecord.amount } },
+          data: { reservedBalance: { decrement: payoutRecord.amount } },
+        });
+        if (reservationReleased.count !== 1) {
+          throw Object.assign(new Error("Manufacturer payout reservation is missing; settlement was rolled back."), { statusCode: 409, code: "PAYOUT_RESERVATION_MISSING" });
+        }
+        const settledAt = new Date();
+        const payoutUpdate = await tx.financialPayout.updateMany({
+          where: { id: payoutRecord.id, status: "INITIATED" },
+          data: {
+            status: "SETTLED",
+            bankEvidenceReference: String(req.body.bankEvidenceReference).trim(),
+            confirmedByAccountId: adminAccountId,
+            settledAt,
+          },
+        });
+        if (payoutUpdate.count !== 1) {
+          throw Object.assign(new Error("Manufacturer payout changed before confirmation; settlement was rolled back."), { statusCode: 409, code: "PAYOUT_STATE_CONFLICT" });
+        }
+        await recordSystemAudit(
+          { actorId: adminAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+          {
+            action: "FINANCIAL_PAYOUT_SETTLED",
+            entityType: "FinancialPayout",
+            entityId: payoutRecord.id,
+            beforeState: { status: "INITIATED" },
+            afterState: { status: "SETTLED", bankEvidenceReference: String(req.body.bankEvidenceReference).trim() },
+          },
+          { client: tx },
+        );
+      }
       const updatedAccount = await tx.financialAccount.findUnique({
         where: { id: fromAccountId },
         select: { currentBalance: true },
@@ -3661,6 +3804,7 @@ export const payManufacturer = async (req, res) => {
       offsetApplied,
       documentAllocation,
       reconciliationRequired: documentAllocation.unallocatedAmount.greaterThan(0),
+      ...(payoutRecord ? { payoutStatus: "SETTLED" } : {}),
     });
   } catch (error) {
     console.error("Pay Manufacturer Error:", error);
@@ -3668,10 +3812,176 @@ export const payManufacturer = async (req, res) => {
   }
 };
 
+const finalizeAccountPayablePayout = async (tx, payout, actorId) => {
+  const payable = await tx.accountPayable.findUnique({ where: { id: payout.targetId } });
+  if (!payable || !["UNPAID", "PARTIALLY_PAID"].includes(payable.status)) {
+    throw Object.assign(new Error("Payable is no longer open for settlement."), { statusCode: 409, code: "PAYABLE_NOT_OPEN" });
+  }
+  const paymentAmount = new Prisma.Decimal(String(payout.amount));
+  const settlementAmount = new Prisma.Decimal(String(payout.settlementAmount));
+  const adjustmentAmount = new Prisma.Decimal(String(payout.adjustmentAmount || 0));
+  const remaining = new Prisma.Decimal(String(payable.remainingBalance));
+  if (settlementAmount.greaterThan(remaining)) {
+    throw Object.assign(new Error("Settlement exceeds the payable's current remaining balance."), { statusCode: 409, code: "SETTLEMENT_AMOUNT_EXCEEDS_PAYABLE" });
+  }
+  const account = await tx.financialAccount.findUnique({ where: { id: payout.financialAccountId } });
+  const accountingAccount = await validateTreasuryPayoutAccount(account, tx);
+  const nextRemaining = remaining.minus(settlementAmount);
+  const nextPaid = new Prisma.Decimal(String(payable.paidAmount)).plus(paymentAmount);
+  const nextStatus = nextRemaining.isZero() ? "SETTLED" : "PARTIALLY_PAID";
+  let history = [];
+  try {
+    history = typeof payable.settlementHistory === "string"
+      ? JSON.parse(payable.settlementHistory)
+      : (payable.settlementHistory || []);
+  } catch (error) {
+    throw Object.assign(new Error("Payable settlement history is invalid; reconcile it before proceeding."), { statusCode: 409, code: "INVALID_SETTLEMENT_HISTORY", cause: error });
+  }
+  const settlementEntry = {
+    id: payout.id,
+    idempotencyKey: payout.idempotencyKey,
+    date: new Date().toISOString(),
+    amount: paymentAmount.toFixed(2),
+    settlementAmount: settlementAmount.toFixed(2),
+    adjustmentType: payout.adjustmentType,
+    adjustmentAmount: adjustmentAmount.toFixed(2),
+    externalPaymentReference: payout.externalPaymentReference,
+    bankEvidenceReference: payout.bankEvidenceReference,
+    fromAccountId: account.id,
+    accountName: account.accountName,
+    notes: payout.notes || "Payable settlement",
+  };
+  const cashCategory = payable.category === "SUPPLIER_INVOICE" ? "SUPPLIER_PAYMENT"
+    : payable.category === "PARTNER_DISTRIBUTION" ? "DRAWINGS"
+      : payable.category === "ASSET_PURCHASE" ? "ASSET_PURCHASE"
+        : payable.category === "LOAN_NOTE" ? "LOAN_REPAYMENT" : "EXPENSE";
+
+  const debit = await tx.financialAccount.updateMany({
+    where: { id: account.id, status: "ACTIVE", currentBalance: { gte: paymentAmount } },
+    data: { currentBalance: { decrement: paymentAmount } },
+  });
+  if (debit.count !== 1) {
+    throw Object.assign(new Error("Treasury balance is insufficient or changed."), { statusCode: 409, code: "INSUFFICIENT_FUNDS" });
+  }
+  const claimed = await tx.accountPayable.updateMany({
+    where: {
+      id: payable.id,
+      paidAmount: payable.paidAmount,
+      remainingBalance: payable.remainingBalance,
+      status: payable.status,
+    },
+    data: {
+      paidAmount: nextPaid,
+      remainingBalance: nextRemaining,
+      status: nextStatus,
+      settlementHistory: [...history, settlementEntry],
+    },
+  });
+  if (claimed.count !== 1) {
+    throw Object.assign(new Error("Payable changed during payout confirmation."), { statusCode: 409, code: "PAYABLE_CONCURRENCY_CONFLICT" });
+  }
+  await tx.cashTransaction.create({
+    data: {
+      idempotencyKey: payout.idempotencyKey,
+      amount: paymentAmount,
+      type: "OUTFLOW",
+      fromAccountId: account.id,
+      category: cashCategory,
+      partyName: payable.payeeName,
+      referenceId: payable.id,
+      externalPaymentReference: payout.externalPaymentReference,
+      description: `Settlement of ${payable.title} to ${payable.payeeName}`,
+    },
+  });
+  const journal = await postSupplierPaymentAccounting({
+    payableId: payable.id,
+    payeeName: payable.payeeName,
+    amount: paymentAmount,
+    settlementAmount,
+    discountAmount: payout.adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
+    fineAmount: payout.adjustmentType === "FINE" ? adjustmentAmount : 0,
+    fromAccountType: account.accountType === "CASH" ? "CASH" : "BANK",
+    cashAccountId: accountingAccount.id,
+    idempotencyKey: `SUPPLIER_PAYMENT:${payout.idempotencyKey}`,
+    client: tx,
+  });
+  if (!journal?.id) throw new Error("Accounts-payable settlement journal could not be posted.");
+  if (payable.category === "PARTNER_DISTRIBUTION" && payable.referenceId) {
+    const partnerId = payable.referenceId.split("#")[1];
+    if (partnerId) {
+      await tx.partnerEquity.updateMany({
+        where: { id: partnerId },
+        data: { totalDistributionsReceived: { increment: Number(paymentAmount) } },
+      });
+    }
+  }
+  await recordSystemAudit(
+    { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+    {
+      action: "ACCOUNT_PAYABLE_PAYOUT_SETTLED",
+      entityType: "AccountPayable",
+      entityId: payable.id,
+      beforeState: { remainingBalance: remaining.toFixed(2), status: payable.status },
+      afterState: {
+        remainingBalance: nextRemaining.toFixed(2),
+        status: nextStatus,
+        payoutId: payout.id,
+        journalEntryId: journal.id,
+      },
+    },
+    { client: tx },
+  );
+  return { payableId: payable.id, journalEntryId: journal.id, remainingBalance: nextRemaining, status: nextStatus };
+};
+
 export const settlePayable = async (req, res) => {
   try {
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       return res.status(400).json({ success: false, message: "A JSON payable settlement body is required." });
+    }
+    const payoutAction = String(req.body.action || "INITIATE").trim().toUpperCase();
+    const adminAccountId = req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null;
+    if (payoutAction === "CONFIRM" || payoutAction === "FAIL") {
+      if (typeof req.body.payoutId !== "string" || !req.body.payoutId.trim()) {
+        return res.status(400).json({ success: false, message: "Payout ID is required.", code: "PAYOUT_ID_REQUIRED" });
+      }
+      const payout = await prisma.financialPayout.findUnique({ where: { id: req.body.payoutId } });
+      if (!payout) return res.status(404).json({ success: false, message: "Payout was not found.", code: "PAYOUT_NOT_FOUND" });
+      if (payout.targetType === "MANUFACTURER_PAYABLE") return payManufacturer(req, res);
+      if (payout.targetType === "ACCOUNT_PAYABLE") {
+        const result = payoutAction === "CONFIRM"
+          ? await confirmFinancialPayout({
+              payoutId: payout.id,
+              bankEvidenceReference: req.body.bankEvidenceReference,
+              confirmedByAccountId: adminAccountId,
+              finalizePayout: (tx, currentPayout) => finalizeAccountPayablePayout(tx, currentPayout, adminAccountId),
+            })
+          : await failFinancialPayout({
+              payoutId: payout.id,
+              expectedTargetType: "ACCOUNT_PAYABLE",
+              failureReason: req.body.failureReason,
+              failedByAccountId: adminAccountId,
+            });
+        return res.status(200).json(result);
+      }
+      if (payout.targetType !== "DISTRIBUTOR_SETTLEMENT") {
+        return res.status(409).json({ success: false, message: "This payout requires a different settlement operation.", code: "PAYOUT_TARGET_MISMATCH" });
+      }
+      const result = payoutAction === "CONFIRM"
+        ? await confirmAdminDistributorSettlement({
+            payoutId: payout.id,
+            bankEvidenceReference: req.body.bankEvidenceReference,
+            adminAccountId,
+          })
+        : await failAdminDistributorSettlement({
+            payoutId: payout.id,
+            failureReason: req.body.failureReason,
+            adminAccountId,
+          });
+      return res.status(200).json(result);
+    }
+    if (payoutAction !== "INITIATE") {
+      return res.status(400).json({ success: false, message: "Payout action must be INITIATE, CONFIRM, or FAIL." });
     }
     const { payableId, amount, fromAccountId, notes } = req.body;
     const externalPaymentReference = req.body.externalPaymentReference === undefined
@@ -3687,8 +3997,19 @@ export const settlePayable = async (req, res) => {
     if (!["NONE", "DISCOUNT", "FINE"].includes(adjustmentType) || !Number.isFinite(adjustmentAmount) || adjustmentAmount < 0 || (adjustmentType === "NONE" && adjustmentAmount > 0) || (adjustmentType !== "NONE" && adjustmentAmount <= 0)) {
       return res.status(400).json({ success: false, message: "Choose a valid discount or fine amount, or select no adjustment." });
     }
-    const settlementAmount = settleAmount + (adjustmentType === "DISCOUNT" ? adjustmentAmount : 0) - (adjustmentType === "FINE" ? adjustmentAmount : 0);
-    if (settlementAmount <= 0) {
+    const amountText = String(amount ?? "").trim();
+    const adjustmentText = String(req.body.adjustmentAmount ?? "0").trim();
+    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(amountText) || !/^\d{1,18}(?:\.\d{1,2})?$/.test(adjustmentText)) {
+      return res.status(400).json({ success: false, message: "Payout amounts must be valid positive currency values with no more than two decimal places." });
+    }
+    const cashAmountDecimal = new Prisma.Decimal(amountText);
+    const adjustmentAmountDecimal = new Prisma.Decimal(adjustmentText);
+    const payableReduction = adjustmentType === "DISCOUNT"
+      ? cashAmountDecimal.plus(adjustmentAmountDecimal)
+      : adjustmentType === "FINE"
+        ? cashAmountDecimal.minus(adjustmentAmountDecimal)
+        : cashAmountDecimal;
+    if (!payableReduction.isFinite() || payableReduction.lessThanOrEqualTo(0)) {
       return res.status(400).json({ success: false, message: "The cash payment and adjustment must settle a positive amount of the payable." });
     }
 
@@ -3718,16 +4039,16 @@ export const settlePayable = async (req, res) => {
           message: "Distributor settlement requests cannot be paid with an unapproved discount or fine.",
         });
       }
-      const result = await executeAdminDistributorSettlement({
+      const result = await initiateAdminDistributorSettlement({
         settlementId: payable.referenceId,
         amount,
         financialAccountId: fromAccountId,
         externalPaymentReference: requireExternalPaymentReference(externalPaymentReference),
         idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
         adminNotes: notes,
-        adminAccountId: req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null,
+        adminAccountId,
       });
-      return res.json(result);
+      return res.status(result.isReplay ? 200 : 201).json(result);
     }
 
     if (payable.status === "SETTLED") {
@@ -3742,10 +4063,10 @@ export const settlePayable = async (req, res) => {
       });
     }
 
-    if (settlementAmount > payable.remainingBalance) {
+    if (payableReduction.greaterThan(new Prisma.Decimal(String(payable.remainingBalance)))) {
       return res.json({
         success: false,
-        message: `Net settlement (Rs ${settlementAmount.toLocaleString()}) cannot exceed remaining balance (Rs ${payable.remainingBalance.toLocaleString()}). Check the cash amount and adjustment.`,
+        message: `Net settlement (Rs ${payableReduction.toFixed(2)}) cannot exceed remaining balance (Rs ${new Prisma.Decimal(String(payable.remainingBalance)).toFixed(2)}). Check the cash amount and adjustment.`,
       });
     }
 
@@ -3754,160 +4075,42 @@ export const settlePayable = async (req, res) => {
       return res.json({ success: false, message: "Source account not found" });
     }
 
-    // STRICT OVERDRAFT CHECK
-    if (fromAccount.currentBalance < settleAmount) {
-      return res.json({
-        success: false,
-        message: `Insufficient liquid cash in ${fromAccount.accountName}. Available balance: Rs ${fromAccount.currentBalance.toLocaleString()}, required: Rs ${settleAmount.toLocaleString()}. Please deposit funds first or settle with a smaller partial payment.`,
-      });
-    }
-
-    // Unique idempotency key
     const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || `PAY-${payable.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    // Check duplicate transaction by idempotencyKey
-    const existingTx = await prisma.cashTransaction.findUnique({
-      where: { idempotencyKey },
-    });
-    if (existingTx) {
-      return res.status(409).json({
-        success: false,
-        alreadyProcessed: true,
-        message: `This payment transaction (Rs ${existingTx.amount.toLocaleString()}) has already been processed and recorded.`,
-      });
-    }
-
-    // Debounce check: prevent duplicate rapid clicks within 4 seconds
-    const duplicateRecentTx = await prisma.cashTransaction.findFirst({
-      where: {
-        referenceId: payable.id,
-        fromAccountId,
-        amount: settleAmount,
-        type: "OUTFLOW",
-        createdAt: { gte: new Date(Date.now() - 4000) },
+    const initiated = await initiateFinancialPayout({
+      targetType: "ACCOUNT_PAYABLE",
+      targetId: payable.id,
+      amount: cashAmountDecimal,
+      settlementAmount: payableReduction,
+      adjustmentType,
+      adjustmentAmount: adjustmentAmountDecimal,
+      financialAccountId: fromAccountId,
+      externalPaymentReference,
+      idempotencyKey,
+      initiatedByAccountId: adminAccountId,
+      notes,
+      validateTarget: async (tx) => {
+        const freshPayable = await tx.accountPayable.findUnique({ where: { id: payable.id } });
+        if (!freshPayable || !["UNPAID", "PARTIALLY_PAID"].includes(freshPayable.status)) {
+          throw Object.assign(new Error("Payable is no longer open for settlement."), { statusCode: 409, code: "PAYABLE_NOT_OPEN" });
+        }
+        const pending = await tx.financialPayout.aggregate({
+          where: { targetType: "ACCOUNT_PAYABLE", targetId: payable.id, status: "INITIATED" },
+          _sum: { settlementAmount: true },
+        });
+        const availableAmount = new Prisma.Decimal(String(freshPayable.remainingBalance))
+          .minus(new Prisma.Decimal(String(pending._sum.settlementAmount || 0)));
+        await validateTreasuryPayoutAccount(
+          await tx.financialAccount.findUnique({ where: { id: fromAccountId } }),
+          tx,
+        );
+        return { availableAmount: Prisma.Decimal.max(availableAmount, 0) };
       },
     });
-    if (duplicateRecentTx) {
-      return res.status(409).json({
-        success: false,
-        alreadyProcessed: true,
-        message: `Duplicate transaction rejected: an identical payment of Rs ${settleAmount.toLocaleString()} was just recorded moments ago.`,
-      });
-    }
-
-    const newRemaining = Math.max(0, Number(payable.remainingBalance) - settlementAmount);
-    const newPaid = Number(payable.paidAmount) + settlementAmount;
-    const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_PAID";
-
-    let history = [];
-    try {
-      history = typeof payable.settlementHistory === "string" ? JSON.parse(payable.settlementHistory) : (payable.settlementHistory || []);
-    } catch {
-      history = [];
-    }
-
-    const settlementEntry = {
-      id: Date.now().toString(),
-      idempotencyKey,
-      date: new Date().toISOString(),
-      amount: settleAmount,
-      settlementAmount,
-      adjustmentType,
-      adjustmentAmount,
-      externalPaymentReference,
-      fromAccountId,
-      accountName: fromAccount.accountName,
-      notes: notes || "Payable settlement",
-    };
-    history.push(settlementEntry);
-
-    // Determine Cash Transaction Category
-    let cashCategory = "EXPENSE";
-    if (payable.category === "SUPPLIER_INVOICE") cashCategory = "SUPPLIER_PAYMENT";
-    else if (payable.category === "PARTNER_DISTRIBUTION") cashCategory = "DRAWINGS";
-    else if (payable.category === "ASSET_PURCHASE") cashCategory = "ASSET_PURCHASE";
-    else if (payable.category === "TAX_DUE") cashCategory = "EXPENSE";
-    else if (payable.category === "LOAN_NOTE") cashCategory = "LOAN_REPAYMENT";
-
-    const updatedAccount = await prisma.$transaction(async (tx) => {
-      const debited = await tx.financialAccount.updateMany({
-        where: {
-          id: fromAccountId,
-          status: "ACTIVE",
-          currentBalance: { gte: settleAmount },
-        },
-        data: { currentBalance: { decrement: settleAmount } },
-      });
-      if (debited.count !== 1) {
-        throw Object.assign(new Error("Source Treasury balance changed or is insufficient."), { statusCode: 409 });
-      }
-      const payableUpdate = await tx.accountPayable.updateMany({
-        where: {
-          id: payable.id,
-          paidAmount: payable.paidAmount,
-          remainingBalance: payable.remainingBalance,
-        },
-        data: {
-          paidAmount: newPaid,
-          remainingBalance: newRemaining,
-          status: newStatus,
-          settlementHistory: history,
-        },
-      });
-      if (payableUpdate.count !== 1) {
-        throw Object.assign(new Error("Payable balance changed before settlement completed."), { statusCode: 409 });
-      }
-      await tx.cashTransaction.create({
-        data: {
-          idempotencyKey,
-          amount: settleAmount,
-          type: "OUTFLOW",
-          fromAccountId,
-          category: cashCategory,
-          referenceId: payable.id,
-          ...(externalPaymentReference ? { externalPaymentReference } : {}),
-          description: `Settlement of ${payable.title} to ${payable.payeeName}`,
-        },
-      });
-      const paymentJournal = await postSupplierPaymentAccounting({
-        payableId: payable.id,
-        payeeName: payable.payeeName,
-        amount: settleAmount,
-        settlementAmount,
-        discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
-        fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
-        fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
-        cashAccountId: accountingAccount.id,
-        idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
-        client: tx,
-      });
-      if (!paymentJournal?.id) {
-        throw new Error("Accounts-payable settlement journal could not be posted.");
-      }
-      if (payable.category === "PARTNER_DISTRIBUTION" && payable.referenceId) {
-        const parts = payable.referenceId.split("#");
-        const partnerId = parts[1];
-        if (partnerId) {
-          await tx.partnerEquity.updateMany({
-            where: { id: partnerId },
-            data: { totalDistributionsReceived: { increment: settleAmount } },
-          });
-        }
-      }
-      const updatedFinancialAccount = await tx.financialAccount.findUnique({
-        where: { id: fromAccountId },
-        select: { currentBalance: true },
-      });
-      if (!updatedFinancialAccount) {
-        throw new Error("Source Treasury account could not be reloaded after payout.");
-      }
-      return updatedFinancialAccount;
-    });
-
-    res.json({
-      success: true,
-      message: `Successfully paid Rs ${settleAmount.toLocaleString()} to ${payable.payeeName}${adjustmentAmount > 0 ? ` with Rs ${adjustmentAmount.toLocaleString()} ${adjustmentType.toLowerCase()}` : ""}. Remaining balance: Rs ${newRemaining.toLocaleString()}`,
-      newAccountBalance: updatedAccount.currentBalance,
+    return res.status(initiated.isReplay ? 200 : 201).json({
+      ...initiated,
+      message: initiated.isReplay
+        ? "This payable payout was already initiated."
+        : "Payable payout initiated; funds are reserved pending bank confirmation.",
     });
   } catch (error) {
     console.error("Settle Payable Error:", error);

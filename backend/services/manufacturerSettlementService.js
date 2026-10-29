@@ -6,8 +6,7 @@ import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 const roundAmount = (value) => Number(new Prisma.Decimal(String(value || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
 const isManufacturerLine = (line, manufacturer) =>
   line.supplierId === manufacturer.id ||
-  (line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturer.id) ||
-  String(line.supplierName || "").trim().toLowerCase() === manufacturer.name.trim().toLowerCase();
+  (line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturer.id);
 
 export const getManufacturerSettlementSummary = async (manufacturerId, { client = prisma } = {}) => {
   const manufacturer = await client.manufacturer.findUnique({
@@ -25,7 +24,7 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
     client.manufacturerSettlementRequest.groupBy({
       by: ["status", "requestType"],
       where: { manufacturerId },
-      _sum: { amount: true },
+      _sum: { amount: true, paidAmount: true },
     }),
     client.account.findUnique({ where: { accountCode: "2160" }, select: { id: true } }),
     client.accountingDocument
@@ -64,6 +63,7 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   let legacyProductionRecognized = 0;
   let logisticsRecognized = 0;
   let totalPaid = 0;
+  let unattributedLegacyLineCount = 0;
   const documentedProductionSources = new Set(
     manufacturerDocuments
       .filter((document) => document.side === "PAYABLE" && document.sourceType === "MANUFACTURER_DELIVERY_COGS")
@@ -83,6 +83,13 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
     );
   }
   for (const line of accountingLines) {
+    if (
+      !line.supplierId &&
+      !(line.accountingParty?.partyType === "MANUFACTURER" && line.accountingParty.sourceEntityId === manufacturer.id) &&
+      String(line.supplierName || "").trim().toLowerCase() === manufacturer.name.trim().toLowerCase()
+    ) {
+      unattributedLegacyLineCount += 1;
+    }
     if (!isManufacturerLine(line, manufacturer)) continue;
     const sourceType = line.journalEntry?.sourceType;
     const netPayable = Number(line.credit || 0) - Number(line.debit || 0);
@@ -105,25 +112,39 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   );
   const pendingProduction = settlementTotal("PENDING", "PRODUCTION");
   const pendingLogistics = settlementTotal("PENDING", "LOGISTICS");
-  const settlementPaidProduction = settlementTotal("PAID", "PRODUCTION");
-  const settlementPaidLogistics = settlementTotal("PAID", "LOGISTICS");
+  const partiallyPaid = (requestType) => {
+    const entry = settlementTotals.find((item) => item.status === "PARTIALLY_PAID" && item.requestType === requestType);
+    return Math.max(0, Number(entry?._sum.amount || 0) - Number(entry?._sum.paidAmount || 0));
+  };
+  const paidFromSettlements = (requestType) => {
+    const paidEntry = settlementTotals.find((item) => item.status === "PAID" && item.requestType === requestType);
+    const partialEntry = settlementTotals.find((item) => item.status === "PARTIALLY_PAID" && item.requestType === requestType);
+    return Number(paidEntry?._sum.paidAmount ?? paidEntry?._sum.amount ?? 0)
+      + Number(partialEntry?._sum.paidAmount || 0);
+  };
+  const settlementPaidLogistics = paidFromSettlements("LOGISTICS");
+  const pendingRequestTotal = pendingProduction + pendingLogistics
+    + partiallyPaid("PRODUCTION") + partiallyPaid("LOGISTICS");
   const nonDocumentedProductionPayments = Math.max(0, totalPaid - productionAllocatedPayments - settlementPaidLogistics);
   const productionRecognized = productionBillOriginal + legacyProductionRecognized;
   const productionOutstanding = Math.max(
     0,
-    productionBillOutstanding + legacyProductionRecognized - nonDocumentedProductionPayments - supplierCreditOutstanding
+    productionBillOutstanding + legacyProductionRecognized - nonDocumentedProductionPayments
   );
   const logisticsOutstanding = Math.max(0, logisticsRecognized - settlementPaidLogistics);
-  const completedPayments = settlementPaidProduction + settlementPaidLogistics;
+  const completedPayments = totalPaid;
 
   return {
     manufacturer,
     totalManufacturedGoodsValue: roundAmount(productionRecognized),
     logisticsReimbursements: roundAmount(logisticsRecognized),
-    pendingSettlementAmount: roundAmount(pendingProduction + pendingLogistics),
+    pendingSettlementAmount: roundAmount(pendingRequestTotal),
     completedPayments: roundAmount(completedPayments),
     outstandingPayable: roundAmount(Math.max(0, productionOutstanding + logisticsOutstanding)),
     supplierCreditOutstanding: roundAmount(supplierCreditOutstanding),
+    supplierCreditsRequireExplicitApplication: supplierCreditOutstanding > 0,
+    unattributedLegacyLineCount,
+    attributionReconciliationRequired: unattributedLegacyLineCount > 0,
     productionOutstanding: roundAmount(productionOutstanding),
     logisticsOutstanding: roundAmount(logisticsOutstanding),
     productionPayableAvailable: roundAmount(Math.max(0, productionOutstanding - pendingProduction)),

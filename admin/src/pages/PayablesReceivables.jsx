@@ -130,6 +130,9 @@ const AccountSelector = ({ accounts, value, onChange, label, helpText, forPaymen
 
 const PayablesReceivables = ({ token }) => {
   const [data, setData]     = useState(null);
+  const [initiatedPayouts, setInitiatedPayouts] = useState([]);
+  const [payoutEvidence, setPayoutEvidence] = useState({});
+  const [payoutFailureReasons, setPayoutFailureReasons] = useState({});
   const [mfgSummary, setMfgSummary] = useState(null);
   const [range, setRange]   = useState("month");
   const [selectedMfgId, setSelectedMfgId] = useState("ALL");
@@ -148,9 +151,9 @@ const PayablesReceivables = ({ token }) => {
   const emptyR = { title:"",payerName:"",category:"CUSTOMER_RECEIVABLE",totalAmount:"",dueDate:"",invoiceNumber:"",notes:"" };
   const [pForm, setPForm] = useState(emptyP);
   const [rForm, setRForm] = useState(emptyR);
-  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
+  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
   const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
-  const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false });
+  const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false });
   const payableRequestRef = useRef(null);
   const receivableRequestRef = useRef(null);
   const manufacturerPaymentRequestRef = useRef(null);
@@ -161,11 +164,37 @@ const PayablesReceivables = ({ token }) => {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/finance/payables-receivables`,{headers:{token}});
+      const [res, payoutResponse] = await Promise.all([
+        axios.get(`${backendUrl}/api/finance/payables-receivables`,{headers:{token}}),
+        axios.get(`${backendUrl}/api/finance/payouts?status=INITIATED&limit=100`,{headers:{token}}),
+      ]);
       if (res.data.success) setData(res.data.data); else toast.error(res.data.message);
+      setInitiatedPayouts(payoutResponse.data?.payouts || []);
     } catch { toast.error("Failed to load payables & receivables"); }
     finally { setLoading(false); }
   },[token]);
+
+  const processInitiatedPayout = async (payout, action) => {
+    const bankEvidenceReference = String(payoutEvidence[payout.id] || "").trim();
+    const failureReason = String(payoutFailureReasons[payout.id] || "").trim();
+    if (action === "CONFIRM" && !bankEvidenceReference) return toast.warn("Bank transfer evidence reference is required.");
+    if (action === "FAIL" && !failureReason) return toast.warn("A reason is required to mark the payout failed.");
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/settle-payable`, {
+        action,
+        payoutId: payout.id,
+        bankEvidenceReference: action === "CONFIRM" ? bankEvidenceReference : undefined,
+        failureReason: action === "FAIL" ? failureReason : undefined,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Payout update failed.");
+      toast.success(action === "CONFIRM" ? "Payout settled with bank evidence recorded." : "Payout marked failed and reservation released.");
+      setPayoutEvidence((current) => ({ ...current, [payout.id]: "" }));
+      setPayoutFailureReasons((current) => ({ ...current, [payout.id]: "" }));
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to update payout.");
+    }
+  };
 
   const fetchMfg = useCallback(async (r, mfgId = selectedMfgId) => {
     try {
@@ -213,6 +242,10 @@ const PayablesReceivables = ({ token }) => {
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient balance in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
     setSLoading(true);
+    const isDistributorPayout = showSettle.referenceType === "DISTRIBUTOR_SETTLEMENT";
+    if (isDistributorPayout && sForm.payoutId && !sForm.bankEvidenceReference.trim()) {
+      return toast.warn("Enter the bank statement or transfer evidence reference before confirming settlement.");
+    }
     const idempotencyKey = getStableIdempotencyKey(payableRequestRef, "PAY", {
       payableId: showSettle.id,
       amount: amt,
@@ -223,6 +256,7 @@ const PayablesReceivables = ({ token }) => {
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{
+        action: isDistributorPayout ? (sForm.payoutId ? "CONFIRM" : "INITIATE") : "INITIATE",
         payableId: showSettle.id,
         amount: amt,
         adjustmentType: sForm.adjustmentType,
@@ -230,13 +264,22 @@ const PayablesReceivables = ({ token }) => {
         fromAccountId: sForm.fromAccountId,
         notes: sForm.notes,
         externalPaymentReference: sForm.externalPaymentReference.trim() || undefined,
+        payoutId: sForm.payoutId || undefined,
+        bankEvidenceReference: sForm.bankEvidenceReference.trim() || undefined,
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
+        if (isDistributorPayout && !sForm.payoutId) {
+          setSForm((current) => ({ ...current, payoutId: res.data.payout?.id || "" }));
+          payableRequestRef.current = null;
+          toast.info("Payout initiated and funds reserved. Confirm only after verifying the bank transfer evidence.");
+          fetchData();
+          return;
+        }
         payableRequestRef.current = null;
         toast.success(res.data.message);
         setShowSettle(null);
-        setSForm({amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
+        setSForm({amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
         fetchData();
         fetchMfg(range,selectedMfgId);
       } else {
@@ -244,6 +287,29 @@ const PayablesReceivables = ({ token }) => {
       }
     } catch(e){
       toast.error(e.response?.data?.message||e.message);
+    } finally {
+      setSLoading(false);
+    }
+  };
+
+  const failInitiatedPayout = async () => {
+    if (!sForm.payoutId || !sForm.failureReason.trim() || sLoading) {
+      return toast.warn("Enter why the initiated payout failed.");
+    }
+    setSLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/settle-payable`, {
+        action: "FAIL",
+        payoutId: sForm.payoutId,
+        failureReason: sForm.failureReason.trim(),
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to mark payout failed.");
+      toast.success("Payout marked failed; its reserved balance was released.");
+      setShowSettle(null);
+      setSForm({ amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to mark payout failed.");
     } finally {
       setSLoading(false);
     }
@@ -295,7 +361,8 @@ const PayablesReceivables = ({ token }) => {
     e.preventDefault();
     if (mfgLoading) return;
     const amt=Number(mfgPayForm.amount);
-    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt||!mfgPayForm.externalPaymentReference.trim()) return toast.warn("Manufacturer, amount, payment account, and external transfer reference are required");
+    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt||!mfgPayForm.externalPaymentReference.trim()) return toast.warn("Manufacturer, amount, payment account, and transfer reference are required");
+    if (mfgPayForm.payoutId && !mfgPayForm.bankEvidenceReference.trim()) return toast.warn("Bank transfer evidence reference is required before confirming settlement.");
     const acc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
@@ -308,18 +375,28 @@ const PayablesReceivables = ({ token }) => {
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
+        action: mfgPayForm.payoutId ? "CONFIRM" : "INITIATE",
         manufacturerId: mfgPayForm.manufacturerId,
         amount: amt,
         fromAccountId: mfgPayForm.fromAccountId,
         notes: mfgPayForm.notes,
         externalPaymentReference: mfgPayForm.externalPaymentReference.trim(),
+        payoutId: mfgPayForm.payoutId || undefined,
+        bankEvidenceReference: mfgPayForm.bankEvidenceReference.trim() || undefined,
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
+        if (!mfgPayForm.payoutId) {
+          setMfgPayForm((current) => ({ ...current, payoutId: res.data.payout?.id || "" }));
+          manufacturerPaymentRequestRef.current = null;
+          toast.info("Manufacturer payout initiated and funds reserved. Confirm settlement only after verifying bank evidence.");
+          fetchData();
+          return;
+        }
         manufacturerPaymentRequestRef.current = null;
         toast.success(res.data.message);
         setShowPayMfg(false);
-        setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false});
+        setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false});
         fetchData();
         fetchMfg(range, selectedMfgId);
       } else {
@@ -327,6 +404,29 @@ const PayablesReceivables = ({ token }) => {
       }
     } catch(err){
       toast.error(err.response?.data?.message||err.message);
+    } finally {
+      setMfgLoading(false);
+    }
+  };
+
+  const failManufacturerPayout = async () => {
+    if (!mfgPayForm.payoutId || !mfgPayForm.failureReason.trim() || mfgLoading) {
+      return toast.warn("Enter why the initiated payout failed.");
+    }
+    setMfgLoading(true);
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`, {
+        action: "FAIL",
+        payoutId: mfgPayForm.payoutId,
+        failureReason: mfgPayForm.failureReason.trim(),
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to mark payout failed.");
+      toast.success("Payout marked failed; its reserved balance was released.");
+      setShowPayMfg(false);
+      setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false});
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to mark payout failed.");
     } finally {
       setMfgLoading(false);
     }
@@ -440,6 +540,39 @@ const PayablesReceivables = ({ token }) => {
           </button>
         </div>
       </div>
+
+      {initiatedPayouts.length > 0 && (
+        <section className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+          <div className="mb-3">
+            <h2 className="text-sm font-bold text-amber-950">Initiated payouts awaiting bank evidence</h2>
+            <p className="mt-1 text-[11px] text-amber-800">These amounts are reserved. Confirm only after matching the transfer to a bank statement or equivalent evidence. Mark failed only when the transfer is confirmed not to have settled.</p>
+          </div>
+          <div className="space-y-3">
+            {initiatedPayouts.map((payout) => (
+              <article key={payout.id} className="grid gap-3 rounded-lg border border-amber-200 bg-white p-3 lg:grid-cols-[1fr_1.2fr_auto] lg:items-end">
+                <div className="text-xs">
+                  <p className="font-bold text-slate-900">{payout.targetType.replaceAll("_", " ")} · {payout.targetId}</p>
+                  <p className="mt-1 text-slate-600">Transfer: {payout.externalPaymentReference || "No reference"} · Account: {payout.financialAccount?.accountName || payout.financialAccountId}</p>
+                  <p className="mt-1 font-semibold text-slate-800">Cash {fmt(payout.amount)} · Payable reduction {fmt(payout.settlementAmount)}</p>
+                  <p className="mt-1 text-slate-500">Initiated {formatDate(payout.initiatedAt)}</p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="text-[11px] font-semibold text-slate-700">Bank statement / evidence reference
+                    <input maxLength={191} value={payoutEvidence[payout.id] || ""} onChange={(event) => setPayoutEvidence((current) => ({ ...current, [payout.id]: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2" placeholder="Statement line / evidence ID"/>
+                  </label>
+                  <label className="text-[11px] font-semibold text-slate-700">Failure reason
+                    <input maxLength={2000} value={payoutFailureReasons[payout.id] || ""} onChange={(event) => setPayoutFailureReasons((current) => ({ ...current, [payout.id]: event.target.value }))} className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-2" placeholder="Only if transfer failed"/>
+                  </label>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => processInitiatedPayout(payout, "FAIL")} disabled={!String(payoutFailureReasons[payout.id] || "").trim()} className="rounded-lg border border-rose-300 px-3 py-2 text-[11px] font-bold text-rose-700 disabled:opacity-40">Mark failed</button>
+                  <button type="button" onClick={() => processInitiatedPayout(payout, "CONFIRM")} disabled={!String(payoutEvidence[payout.id] || "").trim()} className="rounded-lg bg-slate-900 px-3 py-2 text-[11px] font-bold text-white disabled:opacity-40">Confirm settled</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-white border border-red-200 rounded-xl p-4">
@@ -856,7 +989,7 @@ const PayablesReceivables = ({ token }) => {
                             </div>
                             <div className="flex items-center gap-3 shrink-0 sm:flex-col sm:items-end">
                               <div className="text-right"><p className="text-base font-black text-red-700">{fmt(p.remainingBalance)}</p>{p.totalAmount!==p.remainingBalance&&<p className="text-[10px] text-slate-400">of {fmt(p.totalAmount)}</p>}</div>
-                              <button onClick={()=>{setShowSettle(p);                              setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
+                              <button onClick={()=>{setShowSettle(p);setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",externalPaymentReference:"",bankEvidenceReference:"",failureReason:"",payoutId:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
                             </div>
                           </div>
                         </div>
@@ -1211,13 +1344,25 @@ const PayablesReceivables = ({ token }) => {
                 </div>
               )}
               <AccountSelector accounts={accounts} value={sForm.fromAccountId} onChange={id=>setSForm({...sForm,fromAccountId:id})} label="Pay From Account *" helpText="Select the cash drawer or bank account to pay from" forPayment={true}/>
-              <div><label className="block text-xs font-semibold text-slate-700 mb-1">External bank / payment reference {requiresExternalPaymentReference ? "*" : "(optional)"}</label><input maxLength={191} required={requiresExternalPaymentReference} value={sForm.externalPaymentReference} onChange={e=>setSForm({...sForm,externalPaymentReference:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="Bank transaction ID, cheque number, wallet reference"/></div>
+              <div><label className="block text-xs font-semibold text-slate-700 mb-1">Transfer instruction reference {requiresExternalPaymentReference ? "*" : "(optional)"}</label><input maxLength={191} required={requiresExternalPaymentReference} value={sForm.externalPaymentReference} onChange={e=>setSForm({...sForm,externalPaymentReference:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="Reference used when initiating the bank/wallet transfer"/></div>
+              {showSettle.referenceType==="DISTRIBUTOR_SETTLEMENT" && sForm.payoutId && (
+                <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-semibold text-amber-900">Payout initiated; funds are reserved. Confirm only after checking the bank statement or transfer evidence.</p>
+                  <label className="block text-xs font-semibold text-slate-700">Bank statement / transfer evidence reference *
+                    <input maxLength={191} value={sForm.bankEvidenceReference} onChange={e=>setSForm({...sForm,bankEvidenceReference:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Statement line ID or evidence record reference"/>
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">Failure reason (only if transfer failed)
+                    <input maxLength={2000} value={sForm.failureReason} onChange={e=>setSForm({...sForm,failureReason:e.target.value})} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Required only when marking transfer failed"/>
+                  </label>
+                </div>
+              )}
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Notes</label><input value={sForm.notes} onChange={e=>setSForm({...sForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Bank transfer, Cheque #1234"/></div>
               {insuff&&<div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">⚠️ Insufficient balance in <b>{selAcc?.accountName}</b>. Available: {fmt(selAcc?.currentBalance)}, required: {fmt(sForm.amount)}.</div>}
               <div className="flex gap-2 pt-1">
                 <button type="button" disabled={sLoading} onClick={()=>setShowSettle(null)} className="flex-1 py-2.5 border border-slate-300 text-slate-700 text-sm font-semibold rounded-xl hover:bg-slate-50 disabled:opacity-50">Cancel</button>
+                {showSettle.referenceType==="DISTRIBUTOR_SETTLEMENT" && sForm.payoutId && <button type="button" disabled={sLoading || !sForm.failureReason.trim()} onClick={failInitiatedPayout} className="flex-1 py-2.5 border border-rose-300 text-rose-700 text-sm font-semibold rounded-xl hover:bg-rose-50 disabled:opacity-50">Mark Failed</button>}
                 <button type="submit" disabled={sLoading} className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-400 text-white text-sm font-bold rounded-xl hover:bg-slate-700 cursor-pointer disabled:cursor-not-allowed shadow-sm transition">
-                  {sLoading ? "Processing Payment..." : "Confirm Payment"}
+                  {sLoading ? "Processing..." : showSettle.referenceType==="DISTRIBUTOR_SETTLEMENT" ? (sForm.payoutId ? "Confirm Settled" : "Initiate Payout") : "Confirm Payment"}
                 </button>
               </div>
             </form>
@@ -1393,16 +1538,29 @@ const PayablesReceivables = ({ token }) => {
               />
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">External bank / payment reference *</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Transfer instruction reference *</label>
                 <input
                   required
                   maxLength={191}
                   value={mfgPayForm.externalPaymentReference || ""}
                   onChange={(e) => setMfgPayForm({ ...mfgPayForm, externalPaymentReference: e.target.value })}
+                  readOnly={Boolean(mfgPayForm.payoutId)}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
-                  placeholder="Bank transaction ID, cheque number, wallet reference"
+                  placeholder="Reference used for the transfer instruction"
                 />
               </div>
+
+              {mfgPayForm.payoutId && (
+                <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-semibold text-amber-900">Payout initiated; funds are reserved. Confirm settlement only after verifying the bank transaction.</p>
+                  <label className="block text-xs font-semibold text-slate-700">Bank statement / transfer evidence reference *
+                    <input maxLength={191} value={mfgPayForm.bankEvidenceReference} onChange={(e) => setMfgPayForm({ ...mfgPayForm, bankEvidenceReference: e.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Statement line ID or evidence record reference"/>
+                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">Failure reason (only if transfer failed)
+                    <input maxLength={2000} value={mfgPayForm.failureReason} onChange={(e) => setMfgPayForm({ ...mfgPayForm, failureReason: e.target.value })} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Required only when marking transfer failed"/>
+                  </label>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Payout Notes</label>
@@ -1429,12 +1587,13 @@ const PayablesReceivables = ({ token }) => {
                 >
                   Cancel
                 </button>
+                {mfgPayForm.payoutId && <button type="button" disabled={mfgLoading || !mfgPayForm.failureReason.trim()} onClick={failManufacturerPayout} className="flex-1 rounded-xl border border-rose-300 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:opacity-50">Mark Failed</button>}
                 <button
                   type="submit"
                   disabled={mfgLoading || mfgInsuff || !mfgPayForm.amount || Number(mfgPayForm.amount) <= 0}
                   className="flex-1 py-2.5 bg-slate-900 disabled:bg-slate-300 text-white text-sm font-bold rounded-xl hover:bg-slate-800 cursor-pointer disabled:cursor-not-allowed shadow-sm transition"
                 >
-                  {mfgLoading ? "Processing Payout..." : "Confirm Net Payout"}
+                  {mfgLoading ? "Processing..." : mfgPayForm.payoutId ? "Confirm Settled" : "Initiate Payout"}
                 </button>
               </div>
             </form>
