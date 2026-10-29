@@ -1,5 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
+import { ensureAccountingParty } from "./accountingPartyService.js";
+import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 
 const roundAmount = (value) => Number(new Prisma.Decimal(String(value || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP));
 const isManufacturerLine = (line, manufacturer) =>
@@ -14,16 +16,7 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   });
   if (!manufacturer) return null;
 
-  const [completedRequests, settlements, settlementTotals, payableAccount] = await Promise.all([
-    client.manufacturerProductionRequest.findMany({
-      where: { manufacturerId, status: "COMPLETED" },
-      select: {
-        approvedUnitCogs: true,
-        approvedDeliveryCost: true,
-        costTermsVersion: true,
-        lines: { select: { actualQuantity: true, damagedQuantity: true, quantity: true } },
-      },
-    }),
+  const [settlements, settlementTotals, payableAccount, manufacturerDocuments] = await Promise.all([
     client.manufacturerSettlementRequest.findMany({
       where: { manufacturerId },
       orderBy: { requestedAt: "desc" },
@@ -35,15 +28,25 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
       _sum: { amount: true },
     }),
     client.account.findUnique({ where: { accountCode: "2160" }, select: { id: true } }),
+    client.accountingDocument
+      ? client.accountingDocument.findMany({
+          where: {
+            party: { is: { partyType: "MANUFACTURER", sourceEntityId: manufacturerId } },
+            sourceType: { in: ["MANUFACTURER_DELIVERY_COGS", "MANUFACTURER_DELIVERY_RETURN"] },
+            side: { in: ["PAYABLE", "RECEIVABLE"] },
+          },
+          select: {
+            side: true,
+            sourceType: true,
+            sourceId: true,
+            originalAmount: true,
+            allocatedAmount: true,
+            remainingAmount: true,
+            status: true,
+          },
+        })
+      : [],
   ]);
-
-  let recognizedProductionValue = 0;
-  for (const request of completedRequests) {
-    const goodUnits = request.lines.reduce((total, line) =>
-      total + Math.max(0, Number(line.actualQuantity ?? line.quantity) - Number(line.damagedQuantity || 0)), 0);
-    recognizedProductionValue += Number(request.approvedUnitCogs || 0) * goodUnits
-      + (request.costTermsVersion >= 2 && goodUnits > 0 ? Number(request.approvedDeliveryCost || 0) : 0);
-  }
 
   const accountingLines = payableAccount
     ? await client.journalLine.findMany({
@@ -54,21 +57,49 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
           supplierId: true,
           supplierName: true,
           accountingParty: { select: { partyType: true, sourceEntityId: true } },
-          journalEntry: { select: { sourceType: true } },
+          journalEntry: { select: { sourceType: true, sourceId: true } },
         },
       })
     : [];
-  let productionRecognized = 0;
+  let legacyProductionRecognized = 0;
   let logisticsRecognized = 0;
   let totalPaid = 0;
+  const documentedProductionSources = new Set(
+    manufacturerDocuments
+      .filter((document) => document.side === "PAYABLE" && document.sourceType === "MANUFACTURER_DELIVERY_COGS")
+      .map((document) => document.sourceId)
+  );
+  const productionBills = manufacturerDocuments.filter((document) =>
+    document.side === "PAYABLE" && document.sourceType === "MANUFACTURER_DELIVERY_COGS"
+  );
+  const supplierCredits = manufacturerDocuments.filter((document) =>
+    document.side === "RECEIVABLE" && document.sourceType === "MANUFACTURER_DELIVERY_RETURN"
+  );
+  const supplierCreditOriginalByReturn = new Map();
+  for (const document of supplierCredits) {
+    supplierCreditOriginalByReturn.set(
+      document.sourceId,
+      (supplierCreditOriginalByReturn.get(document.sourceId) || 0) + Number(document.originalAmount || 0)
+    );
+  }
   for (const line of accountingLines) {
     if (!isManufacturerLine(line, manufacturer)) continue;
     const sourceType = line.journalEntry?.sourceType;
     const netPayable = Number(line.credit || 0) - Number(line.debit || 0);
-    if (sourceType === "MANUFACTURER_PRODUCTION") productionRecognized += netPayable;
+    if (sourceType === "MANUFACTURER_PRODUCTION" ||
+        (sourceType === "DELIVERY_SALE" && !documentedProductionSources.has(line.journalEntry?.sourceId))) {
+      legacyProductionRecognized += netPayable;
+    }
+    if (sourceType === "DELIVERY_RETURN") {
+      legacyProductionRecognized += netPayable + (supplierCreditOriginalByReturn.get(line.journalEntry?.sourceId) || 0);
+    }
     if (sourceType === "MANUFACTURER_LOGISTICS") logisticsRecognized += netPayable;
     if (sourceType === "SUPPLIER_PAYMENT") totalPaid -= netPayable;
   }
+  const productionBillOriginal = productionBills.reduce((sum, document) => sum + Number(document.originalAmount || 0), 0);
+  const productionBillOutstanding = productionBills.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
+  const productionAllocatedPayments = productionBills.reduce((sum, document) => sum + Number(document.allocatedAmount || 0), 0);
+  const supplierCreditOutstanding = supplierCredits.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
   const settlementTotal = (status, requestType) => Number(
     settlementTotals.find((entry) => entry.status === status && entry.requestType === requestType)?._sum.amount || 0
   );
@@ -76,23 +107,91 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   const pendingLogistics = settlementTotal("PENDING", "LOGISTICS");
   const settlementPaidProduction = settlementTotal("PAID", "PRODUCTION");
   const settlementPaidLogistics = settlementTotal("PAID", "LOGISTICS");
-  const nonSettlementPaid = Math.max(0, totalPaid - settlementPaidProduction - settlementPaidLogistics);
-  const productionOutstanding = Math.max(0, productionRecognized - settlementPaidProduction - nonSettlementPaid);
+  const nonDocumentedProductionPayments = Math.max(0, totalPaid - productionAllocatedPayments - settlementPaidLogistics);
+  const productionRecognized = productionBillOriginal + legacyProductionRecognized;
+  const productionOutstanding = Math.max(
+    0,
+    productionBillOutstanding + legacyProductionRecognized - nonDocumentedProductionPayments - supplierCreditOutstanding
+  );
   const logisticsOutstanding = Math.max(0, logisticsRecognized - settlementPaidLogistics);
   const completedPayments = settlementPaidProduction + settlementPaidLogistics;
 
   return {
     manufacturer,
-    totalManufacturedGoodsValue: roundAmount(recognizedProductionValue),
+    totalManufacturedGoodsValue: roundAmount(productionRecognized),
     logisticsReimbursements: roundAmount(logisticsRecognized),
     pendingSettlementAmount: roundAmount(pendingProduction + pendingLogistics),
     completedPayments: roundAmount(completedPayments),
     outstandingPayable: roundAmount(Math.max(0, productionOutstanding + logisticsOutstanding)),
+    supplierCreditOutstanding: roundAmount(supplierCreditOutstanding),
     productionOutstanding: roundAmount(productionOutstanding),
     logisticsOutstanding: roundAmount(logisticsOutstanding),
     productionPayableAvailable: roundAmount(Math.max(0, productionOutstanding - pendingProduction)),
     logisticsPayableAvailable: roundAmount(Math.max(0, logisticsOutstanding - pendingLogistics)),
     settlements,
+  };
+};
+
+export const allocateManufacturerPaymentToDocuments = async ({
+  manufacturerId,
+  amount,
+  journalEntryId,
+  idempotencyKey,
+  notes = null,
+  client = prisma,
+}) => {
+  const paymentAmount = new Prisma.Decimal(String(amount || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (!paymentAmount.isFinite() || paymentAmount.lessThanOrEqualTo(0)) {
+    throw new Error("Manufacturer payment allocation requires a positive amount.");
+  }
+  const manufacturer = await client.manufacturer.findUnique({
+    where: { id: manufacturerId },
+    select: { id: true, name: true },
+  });
+  if (!manufacturer) throw new Error("Manufacturer profile not found while allocating payment.");
+  const party = await ensureAccountingParty({
+    partyType: "MANUFACTURER",
+    sourceEntityId: manufacturer.id,
+    displayName: manufacturer.name,
+  }, { client });
+  const documents = await client.accountingDocument.findMany({
+    where: {
+      partyId: party.id,
+      side: "PAYABLE",
+      sourceType: "MANUFACTURER_DELIVERY_COGS",
+      status: { in: ["OPEN", "PARTIALLY_PAID"] },
+    },
+    orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
+    select: { id: true, remainingAmount: true },
+  });
+  const availableDocumentAmount = documents.reduce(
+    (sum, document) => sum.plus(new Prisma.Decimal(String(document.remainingAmount))),
+    new Prisma.Decimal(0)
+  );
+  const allocationAmount = Prisma.Decimal.min(paymentAmount, availableDocumentAmount)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (allocationAmount.lessThanOrEqualTo(0)) {
+    return {
+      totalAllocated: new Prisma.Decimal(0),
+      unallocatedAmount: paymentAmount,
+      allocations: [],
+      updatedDocuments: [],
+    };
+  }
+  const allocation = await allocatePaymentToDocuments({
+    partyId: party.id,
+    side: "PAYABLE",
+    amount: allocationAmount,
+    journalEntryId,
+    targetDocumentIds: documents.map((document) => document.id),
+    sourceTypes: ["MANUFACTURER_DELIVERY_COGS"],
+    idempotencyKey,
+    notes: notes || `Manufacturer payout allocation ${idempotencyKey}`,
+  }, { client });
+  return {
+    ...allocation,
+    unallocatedAmount: paymentAmount.minus(allocation.totalAllocated)
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
   };
 };
 

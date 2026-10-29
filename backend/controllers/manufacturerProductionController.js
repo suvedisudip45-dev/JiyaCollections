@@ -1,8 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
-import { ensureAccountingParty } from "../services/accountingPartyService.js";
-import { postJournalEntry } from "../services/accountingPostingEngine.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
@@ -515,57 +513,139 @@ export const startProduction = async (req, res) => {
   }
 };
 
-export const completeProduction = async (req, res) => {
+export const submitProductionForAdminAcceptance = async (req, res) => {
   try {
     const { id } = req.params;
-    const completed = await prisma.$transaction(async (tx) => {
+    const submitted = await prisma.$transaction(async (tx) => {
       const request = await tx.manufacturerProductionRequest.findUnique({
         where: { id },
-        include: { lines: true, manufacturer: { select: { id: true, name: true } } },
+        include: { lines: true },
       });
       if (!request || request.manufacturerId !== req.manufacturerId) {
         throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
       }
       if (!["IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status)) {
-        throw Object.assign(new Error("Only a request in production can be completed."), { statusCode: 409 });
+        throw Object.assign(new Error("Only a request in production can submit final inspection results."), { statusCode: 409 });
       }
       if (!request.approvedUnitCogs || request.approvedMinimumOrderQuantity === null || request.approvedDeliveryCost === null) {
         throw Object.assign(new Error("The production request is missing approved cost terms."), { statusCode: 409 });
       }
-      const checklist = validatePostProductionChecklist(req.body.checklist || req.body, request.lines);
-      if (!checklist.passed) {
-        await tx.manufacturerProductionRequest.update({
-          where: { id: request.id },
-          data: {
-            status: "POST_CHECK_FAILED",
-            postProductionChecklist: checklist,
-            postProductionCheckedAt: new Date(),
-          },
-        });
-        for (const actual of checklist.actualCounts) {
-          await tx.manufacturerProductionRequestLine.update({
-            where: { requestId_size_color: { requestId: request.id, size: actual.size, color: actual.color } },
-            data: { actualQuantity: actual.quantity, damagedQuantity: actual.damagedQuantity },
-          });
-        }
-        await recordSystemAudit(actorContext(req), {
-          action: "MANUFACTURER_POST_PRODUCTION_CHECKLIST_FAILED",
-          entityType: "ManufacturerProductionRequest",
-          entityId: request.id,
-          beforeState: { status: request.status },
-          afterState: { status: "POST_CHECK_FAILED", checklist },
-        }, { client: tx });
-        return { failed: true, requestId: request.id };
+      const validatedChecklist = validatePostProductionChecklist(req.body.checklist || req.body, request.lines);
+      const status = validatedChecklist.passed ? "PENDING_ADMIN_ACCEPTANCE" : "POST_CHECK_FAILED";
+      const claimed = await tx.manufacturerProductionRequest.updateMany({
+        where: { id, manufacturerId: req.manufacturerId, status: request.status },
+        data: {
+          status,
+          postProductionChecklist: validatedChecklist,
+          postProductionCheckedAt: new Date(),
+          productionReviewDecision: null,
+          productionReviewedBy: null,
+          productionReviewedAt: null,
+          productionReviewNote: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw Object.assign(new Error("Production request changed while inspection results were being recorded."), { statusCode: 409 });
       }
-      const product = await tx.product.findUnique({ where: { id: request.productId }, select: { id: true, name: true } });
-      if (!product) throw Object.assign(new Error("The requested product no longer exists."), { statusCode: 409 });
-
-      for (const actual of checklist.actualCounts) {
+      for (const actual of validatedChecklist.actualCounts) {
         await tx.manufacturerProductionRequestLine.update({
           where: { requestId_size_color: { requestId: request.id, size: actual.size, color: actual.color } },
           data: { actualQuantity: actual.quantity, damagedQuantity: actual.damagedQuantity },
         });
       }
+      await recordSystemAudit(actorContext(req), {
+        action: validatedChecklist.passed
+          ? "MANUFACTURER_PRODUCTION_SUBMITTED_FOR_ADMIN_ACCEPTANCE"
+          : "MANUFACTURER_POST_PRODUCTION_CHECKLIST_FAILED",
+        entityType: "ManufacturerProductionRequest",
+        entityId: request.id,
+        beforeState: { status: request.status },
+        afterState: { status, checklist: validatedChecklist },
+      }, { client: tx });
+      return { status, requestId: request.id };
+    }, { isolationLevel: "Serializable" });
+
+    if (submitted.status === "POST_CHECK_FAILED") {
+      return res.status(422).json({
+        success: false,
+        message: "Resolve failed post-production checks before submitting for Admin acceptance.",
+        requestId: submitted.requestId,
+      });
+    }
+    return res.json({
+      success: true,
+      message: "Final inspection submitted for Admin acceptance. Stock and payable records remain unposted until Admin accepts the goods.",
+      requestId: submitted.requestId,
+    });
+  } catch (error) {
+    console.error("submitProductionForAdminAcceptance error:", error);
+    return res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message || "Unable to submit production inspection results.",
+    });
+  }
+};
+
+export const completeProduction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const decision = String(req.body.decision || "").trim().toUpperCase();
+    const reviewNote = String(req.body.reviewNote || "").trim();
+    if (!["ACCEPT", "REJECT"].includes(decision)) {
+      return res.status(400).json({ success: false, message: "Choose ACCEPT or REJECT for the production receipt." });
+    }
+    if (reviewNote.length > 2000) {
+      return res.status(400).json({ success: false, message: "Production review note cannot exceed 2000 characters." });
+    }
+    const completed = await prisma.$transaction(async (tx) => {
+      const request = await tx.manufacturerProductionRequest.findUnique({
+        where: { id },
+        include: { lines: true, manufacturer: { select: { id: true, name: true } } },
+      });
+      if (!request) {
+        throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
+      }
+      if (request.status !== "PENDING_ADMIN_ACCEPTANCE") {
+        throw Object.assign(new Error("Only production inspection results awaiting Admin acceptance can be reviewed."), { statusCode: 409 });
+      }
+      if (!request.approvedUnitCogs || request.approvedMinimumOrderQuantity === null || request.approvedDeliveryCost === null) {
+        throw Object.assign(new Error("The production request is missing approved cost terms."), { statusCode: 409 });
+      }
+      const checklist = validatePostProductionChecklist(request.postProductionChecklist, request.lines);
+      if (!checklist.passed) {
+        throw Object.assign(new Error("Only passed manufacturer inspection results can be accepted by Admin."), { statusCode: 409 });
+      }
+      const claimed = await tx.manufacturerProductionRequest.updateMany({
+        where: { id: request.id, status: "PENDING_ADMIN_ACCEPTANCE" },
+        data: { status: "PRODUCTION_REVIEW_IN_PROGRESS" },
+      });
+      if (claimed.count !== 1) {
+        throw Object.assign(new Error("Production request changed while Admin was reviewing the receipt."), { statusCode: 409 });
+      }
+
+      if (decision === "REJECT") {
+        await tx.manufacturerProductionRequest.update({
+          where: { id: request.id },
+          data: {
+            status: "POST_CHECK_FAILED",
+            productionReviewDecision: decision,
+            productionReviewedBy: req.auth?.accountId || null,
+            productionReviewedAt: new Date(),
+            productionReviewNote: reviewNote || null,
+          },
+        });
+        await recordSystemAudit(actorContext(req), {
+          action: "ADMIN_MANUFACTURER_PRODUCTION_RECEIPT_REJECTED",
+          entityType: "ManufacturerProductionRequest",
+          entityId: request.id,
+          beforeState: { status: request.status, checklist },
+          afterState: { status: "POST_CHECK_FAILED", decision, reviewNote: reviewNote || null },
+        }, { client: tx });
+        return { rejected: true, requestId: request.id };
+      }
+
+      const product = await tx.product.findUnique({ where: { id: request.productId }, select: { id: true, name: true } });
+      if (!product) throw Object.assign(new Error("The requested product no longer exists."), { statusCode: 409 });
       const inventory = await tx.manufacturerInventory.findUnique({
         where: { manufacturerId_productId: { manufacturerId: request.manufacturerId, productId: request.productId } },
       });
@@ -683,68 +763,30 @@ export const completeProduction = async (req, res) => {
       const recoverableInputVat = productionCost.recoverableVat
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      const manufacturerPayable = productionCogs.plus(recoverableInputVat)
-        .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      const party = await ensureAccountingParty({
-        partyType: "MANUFACTURER",
-        sourceEntityId: request.manufacturerId,
-        displayName: request.manufacturer.name,
-      }, { client: tx });
-      if (productionCogs.greaterThan(0)) {
-        await postJournalEntry({
-          transactionDate: new Date(),
-          sourceType: "MANUFACTURER_PRODUCTION",
-          sourceId: request.id,
-          idempotencyKey: `MANUFACTURER_PRODUCTION:${request.id}`,
-          referenceNumber: `MFG-PROD-${request.id.slice(-8).toUpperCase()}`,
-          description: `Completed production of ${productionQuantity} ${product.name} units`,
-          lines: [
-            {
-              mappingKey: "INVENTORY",
-              debit: productionCogs,
-              credit: 0,
-              description: `Inventory received from production request ${request.id}`,
-              productId: product.id,
-            },
-            ...(recoverableInputVat.greaterThan(0) ? [{
-              mappingKey: "INPUT_VAT_RECEIVABLE",
-              debit: recoverableInputVat,
-              credit: 0,
-              description: `Verified manufacturer VAT invoice ${request.approvedVatInvoiceReference || ""}`,
-              supplierId: request.manufacturerId,
-              accountingPartyId: party.id,
-            }] : []),
-            {
-              mappingKey: "MANUFACTURER_PAYABLE",
-              debit: 0,
-              credit: manufacturerPayable,
-              description: `Production COGS payable to ${request.manufacturer.name}`,
-              supplierId: request.manufacturerId,
-              accountingPartyId: party.id,
-            },
-          ],
-          client: tx,
-        });
-      }
-
       const claimed = await tx.manufacturerProductionRequest.updateMany({
-        where: { id: request.id, manufacturerId: request.manufacturerId, status: request.status },
+        where: { id: request.id, status: "PRODUCTION_REVIEW_IN_PROGRESS" },
         data: {
           status: "COMPLETED",
           completedAt: new Date(),
           postProductionChecklist: checklist,
           postProductionCheckedAt: new Date(),
+          productionReviewDecision: decision,
+          productionReviewedBy: req.auth?.accountId || null,
+          productionReviewedAt: new Date(),
+          productionReviewNote: reviewNote || null,
         },
       });
       if (claimed.count !== 1) throw Object.assign(new Error("Production request changed before completion could be recorded."), { statusCode: 409 });
       await syncProductStock(product.id, { client: tx, throwOnError: true });
       await recordSystemAudit(actorContext(req), {
-        action: "MANUFACTURER_PRODUCTION_COMPLETED",
+        action: "ADMIN_MANUFACTURER_PRODUCTION_RECEIPT_ACCEPTED",
         entityType: "ManufacturerProductionRequest",
         entityId: request.id,
         beforeState: { status: request.status, inventoryQuantity: inventory?.quantity || 0 },
         afterState: {
           status: "COMPLETED",
+          decision,
+          reviewNote: reviewNote || null,
           inventoryQuantity: totalQuantity,
           factoryLocationId: factoryLocation.id,
           producedQuantity: productionQuantity,
@@ -770,16 +812,20 @@ export const completeProduction = async (req, res) => {
         productionCogs: productionCogs.toFixed(2),
       };
     }, { isolationLevel: "Serializable" });
-    if (completed.failed) {
-      return res.status(422).json({
-        success: false,
-        message: "Resolve failed post-production checks before inventory can be received.",
+    if (completed.rejected) {
+      return res.json({
+        success: true,
+        message: "Production receipt rejected. No inventory or production cost layer was recorded; the manufacturer can resubmit after rework.",
         requestId: completed.requestId,
       });
     }
-    return res.json({ success: true, message: "Production completed; inventory and COGS payable were recorded.", ...completed });
+    return res.json({
+      success: true,
+      message: "Production receipt accepted. Good units and cost layers are recorded; manufacturer payable is recognized when the goods are delivered.",
+      ...completed,
+    });
   } catch (error) {
     console.error("completeProduction error:", error);
-    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to complete production." });
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to review the production receipt." });
   }
 };

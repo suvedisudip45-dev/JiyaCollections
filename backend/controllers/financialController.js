@@ -20,7 +20,10 @@ import {
 import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import { executeAdminDistributorSettlement } from "../services/distributorFinanceService.js";
+import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
+import { allocateManufacturerPaymentToDocuments } from "../services/manufacturerSettlementService.js";
+import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
@@ -1163,6 +1166,16 @@ export const recordCashTransfer = async (req, res) => {
       const fromAccount = await prisma.financialAccount.findUnique({ where: { id: fromAccountId } });
       if (!fromAccount) {
         return res.json({ success: false, message: "Source account not found" });
+      }
+      let accountingAccount;
+      try {
+        accountingAccount = await validateTreasuryPayoutAccount(fromAccount, prisma);
+      } catch (error) {
+        return res.status(error.statusCode || 409).json({
+          success: false,
+          message: error.message || "Source Treasury account is not valid for NPR payouts.",
+          code: "INVALID_TREASURY_ACCOUNT",
+        });
       }
 
       // CRITICAL CHECK: Overdraft protection
@@ -3328,6 +3341,7 @@ export const createReceivable = async (req, res) => {
 export const payManufacturer = async (req, res) => {
   try {
     const { manufacturerId, amount, fromAccountId, notes } = req.body;
+    const externalPaymentReference = requireExternalPaymentReference(req.body.externalPaymentReference);
     let payAmount = Number(amount || 0);
     const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
     const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
@@ -3382,6 +3396,16 @@ export const payManufacturer = async (req, res) => {
     }
     if (!fromAccount) {
       return res.status(404).json({ success: false, message: "Source payment account not found." });
+    }
+    let accountingAccount;
+    try {
+      accountingAccount = await validateTreasuryPayoutAccount(fromAccount, prisma);
+    } catch (error) {
+      return res.status(error.statusCode || 409).json({
+        success: false,
+        message: error.message || "Source Treasury account is not valid for NPR payouts.",
+        code: "INVALID_TREASURY_ACCOUNT",
+      });
     }
 
     // Build cost lookups
@@ -3530,6 +3554,7 @@ export const payManufacturer = async (req, res) => {
       grossReceivable: remainingReceivable,
       fromAccountId,
       accountName: fromAccount.accountName,
+      externalPaymentReference,
       notes: notes || `Net settlement payout to ${manufacturer.name}`,
     };
     history.push(settlementEntry);
@@ -3540,11 +3565,18 @@ export const payManufacturer = async (req, res) => {
 
     const description = `Net Settlement to ${manufacturer.name}: Approved COGS Rs ${remainingPayable.toLocaleString()} less Direct Margin Rs ${remainingReceivable.toLocaleString()} = Net Paid Rs ${payAmount.toLocaleString()}${notes ? ` (${notes})` : ""}`;
 
-    const { updatedAccount } = await prisma.$transaction(async (tx) => {
-      const updatedAccount = await tx.financialAccount.update({
-        where: { id: fromAccountId },
+    const { updatedAccount, documentAllocation } = await prisma.$transaction(async (tx) => {
+      const debitedAccount = await tx.financialAccount.updateMany({
+        where: {
+          id: fromAccountId,
+          status: "ACTIVE",
+          currentBalance: { gte: payAmount },
+        },
         data: { currentBalance: { decrement: payAmount } },
       });
+      if (debitedAccount.count !== 1) {
+        throw Object.assign(new Error("Source Treasury account changed before payout."), { statusCode: 409 });
+      }
       await tx.cashTransaction.create({
         data: {
           idempotencyKey,
@@ -3554,6 +3586,7 @@ export const payManufacturer = async (req, res) => {
           category: "SUPPLIER_PAYMENT",
           partyName: manufacturer.name,
           referenceId: manufacturer.id,
+          externalPaymentReference,
           description,
         },
       });
@@ -3587,7 +3620,7 @@ export const payManufacturer = async (req, res) => {
           });
       }
 
-      await postSupplierPaymentAccounting({
+      const paymentJournal = await postSupplierPaymentAccounting({
         payableId: payable?.id || `MFG-COGS-${manufacturer.id}`,
         payeeName: manufacturer.name,
         amount: payAmount,
@@ -3596,24 +3629,42 @@ export const payManufacturer = async (req, res) => {
         fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
         fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2160",
+        cashAccountId: accountingAccount.id,
         idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
         referenceNumber: `MFG-NET-${idempotencyKey.slice(-8)}`,
         client: tx,
       });
+      if (!paymentJournal) throw new Error("Accounting journal could not be posted for the manufacturer payout.");
+      const documentAllocation = await allocateManufacturerPaymentToDocuments({
+        manufacturerId: manufacturer.id,
+        amount: settlementAmount,
+        journalEntryId: paymentJournal.id,
+        idempotencyKey: `MFG-PAYOUT-ALLOCATION:${idempotencyKey}`,
+        notes: `Manufacturer COGS payout ${idempotencyKey}`,
+        client: tx,
+      });
+      const updatedAccount = await tx.financialAccount.findUnique({
+        where: { id: fromAccountId },
+        select: { currentBalance: true },
+      });
 
-      return { updatedAccount };
+      return { updatedAccount, documentAllocation };
     });
 
     res.json({
       success: true,
-      message: `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name} from ${fromAccount.accountName}. (Gross COGS: Rs ${remainingPayable.toLocaleString()}, Direct Offset: Rs ${offsetApplied.toLocaleString()}). Remaining balance in ${fromAccount.accountName}: Rs ${updatedAccount.currentBalance.toLocaleString()}`,
+      message: documentAllocation.unallocatedAmount.greaterThan(0)
+        ? `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name}. Part of the settlement applies to legacy payable balances not represented by delivery bills.`
+        : `Successfully paid Net Rs ${payAmount.toLocaleString()} to ${manufacturer.name} from ${fromAccount.accountName}. (Gross COGS: Rs ${remainingPayable.toLocaleString()}, Direct Offset: Rs ${offsetApplied.toLocaleString()}). Remaining balance in ${fromAccount.accountName}: Rs ${updatedAccount.currentBalance.toLocaleString()}`,
       newAccountBalance: updatedAccount.currentBalance,
       netDisbursed: payAmount,
       offsetApplied,
+      documentAllocation,
+      reconciliationRequired: documentAllocation.unallocatedAmount.greaterThan(0),
     });
   } catch (error) {
     console.error("Pay Manufacturer Error:", error);
-    res.status(500).json({ success: false, message: error.message || "Failed to process manufacturer payment." });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || "Failed to process manufacturer payment." });
   }
 };
 
@@ -3623,6 +3674,9 @@ export const settlePayable = async (req, res) => {
       return res.status(400).json({ success: false, message: "A JSON payable settlement body is required." });
     }
     const { payableId, amount, fromAccountId, notes } = req.body;
+    const externalPaymentReference = req.body.externalPaymentReference === undefined
+      ? null
+      : requireExternalPaymentReference(req.body.externalPaymentReference);
     const settleAmount = Number(amount || 0);
     const adjustmentType = String(req.body.adjustmentType || "NONE").toUpperCase();
     const adjustmentAmount = Number(req.body.adjustmentAmount || 0);
@@ -3640,6 +3694,7 @@ export const settlePayable = async (req, res) => {
 
     // Check if this is a synthesized or direct manufacturer payable
     if (String(payableId).startsWith("AP-MFG-")) {
+      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
       const manufacturerId = payableId.replace("AP-MFG-", "");
       req.body.manufacturerId = manufacturerId;
       return payManufacturer(req, res);
@@ -3651,6 +3706,7 @@ export const settlePayable = async (req, res) => {
     }
 
     if (payable.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {
+      req.body.externalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
       req.body.manufacturerId = payable.referenceId;
       return payManufacturer(req, res);
     }
@@ -3666,6 +3722,7 @@ export const settlePayable = async (req, res) => {
         settlementId: payable.referenceId,
         amount,
         financialAccountId: fromAccountId,
+        externalPaymentReference: requireExternalPaymentReference(externalPaymentReference),
         idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
         adminNotes: notes,
         adminAccountId: req.auth?.accountId || req.auth?.userId || req.auth?.id || req.adminId || null,
@@ -3739,7 +3796,7 @@ export const settlePayable = async (req, res) => {
     }
 
     const newRemaining = Math.max(0, Number(payable.remainingBalance) - settlementAmount);
-    const newPaid = Number(payable.paidAmount) + settleAmount;
+    const newPaid = Number(payable.paidAmount) + settlementAmount;
     const newStatus = newRemaining === 0 ? "SETTLED" : "PARTIALLY_PAID";
 
     let history = [];
@@ -3757,6 +3814,7 @@ export const settlePayable = async (req, res) => {
       settlementAmount,
       adjustmentType,
       adjustmentAmount,
+      externalPaymentReference,
       fromAccountId,
       accountName: fromAccount.accountName,
       notes: notes || "Payable settlement",
@@ -3771,12 +3829,35 @@ export const settlePayable = async (req, res) => {
     else if (payable.category === "TAX_DUE") cashCategory = "EXPENSE";
     else if (payable.category === "LOAN_NOTE") cashCategory = "LOAN_REPAYMENT";
 
-    await prisma.$transaction([
-      prisma.financialAccount.update({
-        where: { id: fromAccountId },
+    const updatedAccount = await prisma.$transaction(async (tx) => {
+      const debited = await tx.financialAccount.updateMany({
+        where: {
+          id: fromAccountId,
+          status: "ACTIVE",
+          currentBalance: { gte: settleAmount },
+        },
         data: { currentBalance: { decrement: settleAmount } },
-      }),
-      prisma.cashTransaction.create({
+      });
+      if (debited.count !== 1) {
+        throw Object.assign(new Error("Source Treasury balance changed or is insufficient."), { statusCode: 409 });
+      }
+      const payableUpdate = await tx.accountPayable.updateMany({
+        where: {
+          id: payable.id,
+          paidAmount: payable.paidAmount,
+          remainingBalance: payable.remainingBalance,
+        },
+        data: {
+          paidAmount: newPaid,
+          remainingBalance: newRemaining,
+          status: newStatus,
+          settlementHistory: history,
+        },
+      });
+      if (payableUpdate.count !== 1) {
+        throw Object.assign(new Error("Payable balance changed before settlement completed."), { statusCode: 409 });
+      }
+      await tx.cashTransaction.create({
         data: {
           idempotencyKey,
           amount: settleAmount,
@@ -3784,49 +3865,49 @@ export const settlePayable = async (req, res) => {
           fromAccountId,
           category: cashCategory,
           referenceId: payable.id,
+          ...(externalPaymentReference ? { externalPaymentReference } : {}),
           description: `Settlement of ${payable.title} to ${payable.payeeName}`,
         },
-      }),
-      prisma.accountPayable.update({
-        where: { id: payableId },
-        data: {
-          paidAmount: newPaid,
-          remainingBalance: newRemaining,
-          status: newStatus,
-          settlementHistory: history,
-        },
-      }),
-    ]);
-
-    // If this payable was for a partner distribution, update the partner's total distributions received
-    if (payable.category === "PARTNER_DISTRIBUTION" && payable.referenceId) {
-      const parts = payable.referenceId.split("#");
-      const partnerId = parts[1];
-      if (partnerId) {
-        await prisma.partnerEquity.updateMany({
-          where: { id: partnerId },
-          data: { totalDistributionsReceived: { increment: settleAmount } },
-        });
+      });
+      const paymentJournal = await postSupplierPaymentAccounting({
+        payableId: payable.id,
+        payeeName: payable.payeeName,
+        amount: settleAmount,
+        settlementAmount,
+        discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
+        fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
+        fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
+        cashAccountId: accountingAccount.id,
+        idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
+        client: tx,
+      });
+      if (!paymentJournal?.id) {
+        throw new Error("Accounts-payable settlement journal could not be posted.");
       }
-    }
-
-    // Post Supplier / Accounts Payable settlement to Double-Entry General Ledger
-    await postSupplierPaymentAccounting({
-      payableId: payable.id,
-      payeeName: payable.payeeName,
-      amount: settleAmount,
-      settlementAmount,
-      discountAmount: adjustmentType === "DISCOUNT" ? adjustmentAmount : 0,
-      fineAmount: adjustmentType === "FINE" ? adjustmentAmount : 0,
-      fromAccountType: fromAccount.accountType === "CASH" ? "CASH" : "BANK",
-      idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
-    }).catch((glErr) => {
-      console.error("General Ledger AP settlement posting error:", glErr);
+      if (payable.category === "PARTNER_DISTRIBUTION" && payable.referenceId) {
+        const parts = payable.referenceId.split("#");
+        const partnerId = parts[1];
+        if (partnerId) {
+          await tx.partnerEquity.updateMany({
+            where: { id: partnerId },
+            data: { totalDistributionsReceived: { increment: settleAmount } },
+          });
+        }
+      }
+      const updatedFinancialAccount = await tx.financialAccount.findUnique({
+        where: { id: fromAccountId },
+        select: { currentBalance: true },
+      });
+      if (!updatedFinancialAccount) {
+        throw new Error("Source Treasury account could not be reloaded after payout.");
+      }
+      return updatedFinancialAccount;
     });
 
     res.json({
       success: true,
       message: `Successfully paid Rs ${settleAmount.toLocaleString()} to ${payable.payeeName}${adjustmentAmount > 0 ? ` with Rs ${adjustmentAmount.toLocaleString()} ${adjustmentType.toLowerCase()}` : ""}. Remaining balance: Rs ${newRemaining.toLocaleString()}`,
+      newAccountBalance: updatedAccount.currentBalance,
     });
   } catch (error) {
     console.error("Settle Payable Error:", error);

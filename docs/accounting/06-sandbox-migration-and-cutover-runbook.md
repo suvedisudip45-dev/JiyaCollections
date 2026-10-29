@@ -95,6 +95,10 @@ npm run build
 - nonzero opening balance is rejected without a proper opening voucher flow
 - internal transfer postings remain balanced
 - AP settlement uses the mapped Treasury account and posted payable control account
+- manufacturer and distributor payouts reject unmapped, inactive, non-NPR, or type-mismatched Treasury accounts and credit the mapped GL account
+- manufacturer delivery bills are reduced by document allocations; supplier credits are recorded for returns backed by those bills
+- new distributor requests without earning documents create no AP and cannot be paid before reconciliation
+- distributor COD warnings remain visible during service-settlement review; COD and service earnings remain gross unless an approved offset is posted
 - AR/NCM receipt postings use the mapped Treasury account and calculate net remittance correctly
 - no unsupported category silently posts as a guessed account
 - unmapped account warnings appear in reconciliation and health views
@@ -111,6 +115,7 @@ The sandbox migration passes only if these conditions are satisfied:
 4. unmapped accounts are visible as `UNMAPPED` or `NOT_RECONCILED`
 5. unsupported categories are blocked
 6. all APS/AR receipts/payments remain idempotent under retry
+7. existing Treasury mappings, legacy manufacturer journals, and old distributor request-accrual AP records have documented reconciliation/backfill decisions
 
 If any check fails, stop the cutover and fix the accounting logic before the next deployment.
 

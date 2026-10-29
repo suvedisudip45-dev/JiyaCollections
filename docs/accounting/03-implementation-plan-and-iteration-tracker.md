@@ -1,8 +1,8 @@
 # Accounting Implementation Plan And Iteration Tracker
 
 **Owner:** Engineering + business/accounting approver  
-**Last updated:** 2026-10-28
-**Overall status:** Treasury mapping and a limited atomic posting slice are in progress. Delivered-sale accounting now has a durable outbox implementation; its additive migration remains unapplied and rollout is gated.
+**Last updated:** 2026-10-29
+**Overall status:** Manufacturer/distributor payment-control remediation through Iteration G is implemented and focused tests pass. Database migrations remain unapplied; Prisma Client generation and sandbox cutover are still blocked/gated.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
 
 Manufacturer commissions were removed on 2026-10-28; historical postings remain, but the prior commission accrual requirements below are superseded.
@@ -60,6 +60,21 @@ Use the existing unified RBAC for accounting permissions. Do not add a new auth 
 
 No runtime source, schema, frontend, database or accounting records were changed during discovery.
 
+## Payment-Control Remediation Follow-up
+
+| Phase | Result | Status |
+| --- | --- | --- |
+| A — Manufacturer recognition | New production COGS/payable is recognized at delivery; historical production-recognized layers retain compatibility handling. | COMPLETE |
+| B — Production receipt gate | Manufacturer QA counts remain pending until Admin accepts them; only accepted good units enter stock/cost layers. | COMPLETE |
+| C — Payout evidence | Manufacturer and distributor payout flows require and persist the external transfer reference. | COMPLETE |
+| D — Manufacturer payable subledger | Delivered production creates bills; manufacturer payouts allocate to open bills; returns create supplier credit notes only when a delivery bill exists. | COMPLETE |
+| E — Distributor legacy accrual | New requests without earning documents are recorded as reconciliation-required claims, not AP; pre-existing legacy AP requests retain their compatibility path. | COMPLETE |
+| F — Treasury payout validation | Manufacturer, distributor, and generic payable payouts require an active NPR Treasury account mapped to the matching cash/bank/wallet GL account; the journal credits that mapped account. | COMPLETE |
+| G — COD exposure | Admin settlement lists and payout results expose outstanding distributor COD and pending remittance; COD remains gross and is not silently netted against service earnings. | COMPLETE |
+| H — Documentation and release gates | Operations, cutover, and iteration guidance updated below. | COMPLETE |
+
+These phases are implementation-complete, not production-approved. Existing unmapped Treasury accounts must be mapped and legacy accounting balances reconciled in an isolated sandbox. Do not pay a distributor request marked `LEGACY_EARNINGS_RECONCILIATION_REQUIRED` until source earnings have been backfilled/reconciled.
+
 ## Iterations
 
 | Iteration | Objective | Status | Exit gate |
@@ -69,11 +84,11 @@ No runtime source, schema, frontend, database or accounting records were changed
 | 2 | Recognition policy and acceptance snapshot | COMPLETE | Checkpoint `checkpoints/iteration-02-recognition-and-acceptance.md`; 13 focused tests pass; no database mutation |
 | 3 | Precision, database foundation, COA/account mappings and periods | COMPLETE | Decimal schema and BS periods are migrated/validated; party/event/account mappings seeded and tested |
 | 4 | Central posting service and durable idempotent accounting events | COMPLETE | Atomic balanced posting, immutable journals, stable idempotency, operational event wiring and 41 tests pass |
-| 5 | Party master, bill-wise AR/AP, payments, receipts and allocations | COMPLETE | Partial/full/advance/overpayment allocation tests and subledger-to-control reconciliation pass |
-| 6 | Cash, bank, petty cash and readiness controls | IN PROGRESS (partial) | Treasury-to-GL mapping is explicit; internal transfers and limited direct entries post atomically; opening vouchers, full source reconciliation, complete failure coverage, and finance readiness remain |
+| 5 | Party master, bill-wise AR/AP, payments, receipts and allocations | COMPLETE | Partial/full/advance/overpayment allocation tests pass; manufacturer delivery bills and payout allocations are covered; remaining legacy balances stay explicitly identified |
+| 6 | Cash, bank, petty cash and readiness controls | IN PROGRESS (partial) | Payout paths require NPR Treasury-to-GL mappings and use the mapped account; opening vouchers, legacy cash migration, full source reconciliation, and finance readiness remain |
 | 7 | Sales, manufacturer COGS and delivery-triggered payable | COMPLETE | Delivered/non-returned rule, approved-cost snapshot, direct-order commission classification, COD/revenue event timing and idempotency pass |
-| 8 | Customer/supplier returns, RTO and exchanges | COMPLETE | Original-event links, reversals, inventory/ownership treatment, refund and tax effects pass |
-| 9 | Manufacturer, marketing-partner and NCM settlements | COMPLETE | Gross AP/AR, CPA/commission basis, COD/fee settlement, offsets and statements reconcile |
+| 8 | Customer/supplier returns, RTO and exchanges | COMPLETE | Original-event links, reversals, manufacturer supplier-credit notes for documented delivery bills, inventory/ownership treatment, refund and tax effects pass |
+| 9 | Manufacturer, marketing-partner and NCM settlements | COMPLETE (legacy cutover remains) | Manufacturer delivery bills/allocations, external references, NPR mapped payouts, COD warnings, and gross COD/service-payable handling pass focused tests; historical distributor request-accrual records require reconciliation |
 | 10 | Expenses, procurement, tax, assets, debt and equity | NOT STARTED | Each supported finance event posts exactly once; policy-based tax and period behavior verified |
 | 11 | GL reports, statements, ageing and health reconciliation | IN PROGRESS (partial) | GL statement now includes key manufacturer/partner/carrier controls; report UI has no operational P&L/BS fallback; AP/AR/event coverage and ledger cash flow remain incomplete |
 | 12 | Admin accounting UI and permissions | NOT STARTED | Existing required finance capability covered with drill-down, filters, statuses, warnings and exports |

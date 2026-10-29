@@ -447,6 +447,45 @@ export const postJournalEntry = async ({
  * CR Manufacturer Payable (2160): Approved COGS
  * Previously posted direct-sale commissions are preserved for historical return reversals only.
  */
+const hydrateProductionCostRecognitionMode = async (items, client) => {
+  const allocations = items.flatMap((item) =>
+    Array.isArray(item?.productionCostAllocations) ? item.productionCostAllocations : []
+  );
+  const missingRecognitionMode = allocations.filter((allocation) =>
+    !Object.prototype.hasOwnProperty.call(allocation, "manufacturerPayableRecognizedAtProduction")
+  );
+  if (!missingRecognitionMode.length) return;
+
+  const costLayerIds = [...new Set(missingRecognitionMode
+    .map((allocation) => allocation.costLayerId)
+    .filter(Boolean))];
+  if (missingRecognitionMode.some((allocation) => !allocation.costLayerId)) {
+    throw new Error("Production cost allocation is missing its cost-layer recognition reference; reconcile before delivery accounting.");
+  }
+  const costLayers = await client.manufacturerInventoryCostLayer.findMany({
+    where: { id: { in: costLayerIds } },
+    select: {
+      id: true,
+      manufacturerId: true,
+      unitVatAmount: true,
+      vatInvoiceVerified: true,
+      manufacturerPayableRecognizedAtProduction: true,
+    },
+  });
+  const costLayersById = new Map(costLayers.map((layer) => [layer.id, layer]));
+  for (const allocation of missingRecognitionMode) {
+    const layer = costLayersById.get(allocation.costLayerId);
+    if (!layer) {
+      throw new Error(`Production cost layer ${allocation.costLayerId} was not found; reconcile before delivery accounting.`);
+    }
+    allocation.manufacturerId ||= layer.manufacturerId;
+    allocation.unitVatAmount ??= String(layer.unitVatAmount || 0);
+    allocation.vatInvoiceVerified ??= layer.vatInvoiceVerified === true;
+    allocation.manufacturerPayableRecognizedAtProduction =
+      layer.manufacturerPayableRecognizedAtProduction === true;
+  }
+};
+
 export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => {
   const client = opts.client || prisma;
   const order = orderOrParams.order || orderOrParams;
@@ -479,16 +518,49 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     items = [];
   }
 
-  let totalAgreedCogs = new Prisma.Decimal(0);
-  let productionLayerCogs = new Prisma.Decimal(0);
-  let legacyManufacturerCogs = new Prisma.Decimal(0);
+  await hydrateProductionCostRecognitionMode(items, client);
+
+  const manufacturerCosts = new Map();
+  const fallbackManufacturerId = order.manufacturerId || deliveryOrder?.manufacturerId ||
+    items.find((item) => item?.manufacturerId)?.manufacturerId ||
+    items.flatMap((item) => item?.productionCostAllocations || [])
+      .find((allocation) => allocation?.manufacturerId)?.manufacturerId || null;
+  const getManufacturerCosts = (manufacturerId) => {
+    const key = manufacturerId || "";
+    if (!manufacturerCosts.has(key)) {
+      manufacturerCosts.set(key, {
+        manufacturerId: manufacturerId || null,
+        productionCogs: new Prisma.Decimal(0),
+        productionInputVat: new Prisma.Decimal(0),
+        inventoryRecognizedCogs: new Prisma.Decimal(0),
+        legacyGrossCogs: new Prisma.Decimal(0),
+        legacyInputVat: new Prisma.Decimal(0),
+        party: null,
+      });
+    }
+    return manufacturerCosts.get(key);
+  };
   for (const item of items) {
     const qty = Number(item.quantity || 1);
+    const manufacturerId = item.manufacturerId || fallbackManufacturerId;
     if (Array.isArray(item.productionCostAllocations)) {
       for (const allocation of item.productionCostAllocations) {
         const allocationQty = new Prisma.Decimal(String(allocation.quantity || 0));
         const unitCogs = new Prisma.Decimal(String(allocation.unitCogs || 0));
-        productionLayerCogs = productionLayerCogs.plus(unitCogs.mul(allocationQty));
+        const costs = getManufacturerCosts(allocation.manufacturerId || manufacturerId);
+        if (allocation.manufacturerPayableRecognizedAtProduction === true) {
+          costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.plus(unitCogs.mul(allocationQty));
+        } else {
+          costs.productionCogs = costs.productionCogs.plus(unitCogs.mul(allocationQty));
+        }
+        if (
+          allocation.manufacturerPayableRecognizedAtProduction !== true &&
+          allocation.vatInvoiceVerified === true
+        ) {
+          costs.productionInputVat = costs.productionInputVat.plus(
+            new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocationQty)
+          );
+        }
       }
       const legacyQty = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
       const legacyUnitCost = new Prisma.Decimal(String(
@@ -497,26 +569,27 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         item.costPrice ??
         0
       ));
-      legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQty));
+      getManufacturerCosts(manufacturerId).legacyGrossCogs =
+        getManufacturerCosts(manufacturerId).legacyGrossCogs.plus(legacyUnitCost.mul(legacyQty));
     } else {
       const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
         ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
         : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-      legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+      const costs = getManufacturerCosts(manufacturerId);
+      costs.legacyGrossCogs = costs.legacyGrossCogs.plus(unitCost.mul(qty));
     }
   }
-  totalAgreedCogs = productionLayerCogs.plus(legacyManufacturerCogs);
-  totalAgreedCogs = totalAgreedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const hasValidTaxInvoice = Boolean(orderOrParams.hasValidTaxInvoice || opts.hasValidTaxInvoice);
-  let recoverableInputVat = new Prisma.Decimal(0);
-  let netCogs = totalAgreedCogs;
-  if (hasValidTaxInvoice && legacyManufacturerCogs.greaterThan(0)) {
-    const net = legacyManufacturerCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-    recoverableInputVat = legacyManufacturerCogs.minus(net);
-    netCogs = productionLayerCogs.plus(net);
+  for (const costs of manufacturerCosts.values()) {
+    costs.productionCogs = costs.productionCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    costs.productionInputVat = costs.productionInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    costs.legacyGrossCogs = costs.legacyGrossCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (hasValidTaxInvoice && costs.legacyGrossCogs.greaterThan(0)) {
+      const netLegacyCost = costs.legacyGrossCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      costs.legacyInputVat = costs.legacyGrossCogs.minus(netLegacyCost);
+    }
   }
 
   const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
@@ -555,14 +628,13 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     }, { client });
   }
 
-  let manufacturerParty = null;
-  const manufacturerId = order.manufacturerId || deliveryOrder?.manufacturerId || (items[0]?.manufacturerId);
-  if (manufacturerId) {
-    const mfg = await client.manufacturer.findUnique({ where: { id: manufacturerId } }).catch(() => null);
-    manufacturerParty = await ensureAccountingParty({
+  for (const costs of manufacturerCosts.values()) {
+    if (!costs.manufacturerId) continue;
+    const mfg = await client.manufacturer.findUnique({ where: { id: costs.manufacturerId } }).catch(() => null);
+    costs.party = await ensureAccountingParty({
       partyType: "MANUFACTURER",
-      sourceEntityId: manufacturerId,
-      displayName: mfg?.name || `Manufacturer (${manufacturerId.slice(-6)})`,
+      sourceEntityId: costs.manufacturerId,
+      displayName: mfg?.name || `Manufacturer (${costs.manufacturerId.slice(-6)})`,
     }, { client });
   }
 
@@ -601,69 +673,46 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     });
   }
 
-  if (productionLayerCogs.greaterThan(0)) {
-    lines.push(
-      {
+  for (const costs of manufacturerCosts.values()) {
+    const legacyCogs = costs.legacyGrossCogs.minus(costs.legacyInputVat);
+    const cogs = costs.productionCogs.plus(costs.inventoryRecognizedCogs).plus(legacyCogs);
+    const inputVat = costs.productionInputVat.plus(costs.legacyInputVat);
+    const manufacturerPayable = costs.productionCogs.plus(costs.productionInputVat).plus(costs.legacyGrossCogs);
+    if (cogs.greaterThan(0)) {
+      lines.push({
         mappingKey: "COGS",
-        debit: productionLayerCogs,
+        debit: cogs,
         credit: 0,
-        description: `COGS for delivered production-batch inventory on Order #${order.id.slice(-6)}`,
-        accountingPartyId: manufacturerParty?.id,
-      },
-      {
+        description: `Approved manufacturer COGS for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    if (costs.inventoryRecognizedCogs.greaterThan(0)) {
+      lines.push({
         mappingKey: "INVENTORY",
         debit: 0,
-        credit: productionLayerCogs,
-        description: `Relieve production-batch inventory for Order #${order.id.slice(-6)}`,
-        productId: items.find((item) => Array.isArray(item.productionCostAllocations))?.productId || null,
-      }
-    );
-  }
-
-  if (legacyManufacturerCogs.greaterThan(0)) {
-    if (recoverableInputVat.greaterThan(0)) {
-      lines.push(
-        {
-          mappingKey: "COGS",
-          debit: legacyManufacturerCogs.minus(recoverableInputVat),
-          credit: 0,
-          description: `Approved COGS ex-VAT for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "INPUT_VAT_RECEIVABLE",
-          debit: recoverableInputVat,
-          credit: 0,
-          description: `Recoverable Input VAT for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "MANUFACTURER_PAYABLE",
-          debit: 0,
-          credit: legacyManufacturerCogs,
-          description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
-          supplierId: manufacturerId,
-          accountingPartyId: manufacturerParty?.id,
-        }
-      );
-    } else {
-      lines.push(
-        {
-          mappingKey: "COGS",
-          debit: legacyManufacturerCogs,
-          credit: 0,
-          description: `Approved Gross COGS for Order #${order.id.slice(-6)}`,
-          accountingPartyId: manufacturerParty?.id,
-        },
-        {
-          mappingKey: "MANUFACTURER_PAYABLE",
-          debit: 0,
-          credit: legacyManufacturerCogs,
-          description: `Manufacturer AP for Order #${order.id.slice(-6)}`,
-          supplierId: manufacturerId,
-          accountingPartyId: manufacturerParty?.id,
-        }
-      );
+        credit: costs.inventoryRecognizedCogs,
+        description: `Relieve previously recognized manufacturer inventory for Order #${order.id.slice(-6)}`,
+      });
+    }
+    if (inputVat.greaterThan(0)) {
+      lines.push({
+        mappingKey: "INPUT_VAT_RECEIVABLE",
+        debit: inputVat,
+        credit: 0,
+        description: `Verified manufacturer input VAT for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    if (manufacturerPayable.greaterThan(0)) {
+      lines.push({
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: 0,
+        credit: manufacturerPayable,
+        description: `Manufacturer payable recognized on delivery of Order #${order.id.slice(-6)}`,
+        supplierId: costs.manufacturerId,
+        accountingPartyId: costs.party?.id,
+      });
     }
   }
 
@@ -678,24 +727,48 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     description: `Delivered sale, revenue, VAT, and manufacturer COGS for Order #${order.id.slice(-6)}`,
     lines,
     accountingEventId: opts.accountingEventId,
-    afterPost: collectionDistributorParty || ncmParty
-      ? async (tx) => createAccountingDocument({
-        documentType: "INVOICE",
-        documentNumber: collectionDistributorParty ? `DCO-${order.id}` : `NCM-COD-${order.id}`,
-        partyId: collectionDistributorParty?.id || ncmParty.id,
-        side: "RECEIVABLE",
-        sourceType: collectionDistributorParty ? "DISTRIBUTOR_COD_SALE" : "NCM_COD_SALE",
-        sourceId: order.id,
-        amount: grossAmount,
-        issueDate: transactionDate,
-        idempotencyKey: collectionDistributorParty
-          ? `DISTRIBUTOR_COD_SALE:${order.id}`
-          : `NCM_COD_SALE:${order.id}`,
-        notes: collectionDistributorParty
-          ? `COD collected by distributor for delivered order ${order.id}.`
-          : `COD collected by NCM for delivered order ${order.id}.`,
-      }, { client: tx })
-      : null,
+    afterPost: async (tx) => {
+      if (collectionDistributorParty || ncmParty) {
+        await createAccountingDocument({
+          documentType: "INVOICE",
+          documentNumber: collectionDistributorParty ? `DCO-${order.id}` : `NCM-COD-${order.id}`,
+          partyId: collectionDistributorParty?.id || ncmParty.id,
+          side: "RECEIVABLE",
+          sourceType: collectionDistributorParty ? "DISTRIBUTOR_COD_SALE" : "NCM_COD_SALE",
+          sourceId: order.id,
+          amount: grossAmount,
+          issueDate: transactionDate,
+          idempotencyKey: collectionDistributorParty
+            ? `DISTRIBUTOR_COD_SALE:${order.id}`
+            : `NCM_COD_SALE:${order.id}`,
+          notes: collectionDistributorParty
+            ? `COD collected by distributor for delivered order ${order.id}.`
+            : `COD collected by NCM for delivered order ${order.id}.`,
+        }, { client: tx });
+      }
+
+      for (const costs of manufacturerCosts.values()) {
+        if (!costs.party) continue;
+        const amount = costs.productionCogs
+          .plus(costs.productionInputVat)
+          .plus(costs.legacyGrossCogs);
+        if (!amount.greaterThan(0)) continue;
+        const key = `MANUFACTURER_DELIVERY_COGS:${order.id}:${costs.manufacturerId}`;
+        const documentHash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24).toUpperCase();
+        await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `MFG-DEL-${documentHash}`,
+          partyId: costs.party.id,
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: order.id,
+          amount,
+          issueDate: transactionDate,
+          idempotencyKey: key,
+          notes: `Manufacturer payable for delivered order ${order.id}.`,
+        }, { client: tx });
+      }
+    },
     client,
   });
 };
@@ -732,18 +805,32 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   } catch {
     items = [];
   }
+  await hydrateProductionCostRecognitionMode(items, client);
 
   let totalAgreedCogs = new Prisma.Decimal(0);
   let productionLayerCogs = new Prisma.Decimal(0);
+  let productionLayerInputVat = new Prisma.Decimal(0);
+  let productionInventoryRecognizedCogs = new Prisma.Decimal(0);
   let legacyManufacturerCogs = new Prisma.Decimal(0);
   for (const item of items) {
     const qty = new Prisma.Decimal(String(item.quantity || 1));
     if (Array.isArray(item.productionCostAllocations)) {
       for (const allocation of item.productionCostAllocations) {
         const allocatedQuantity = new Prisma.Decimal(String(allocation.quantity || 0));
-        productionLayerCogs = productionLayerCogs.plus(
-          new Prisma.Decimal(String(allocation.unitCogs || 0)).mul(allocatedQuantity)
-        );
+        const allocationCogs = new Prisma.Decimal(String(allocation.unitCogs || 0)).mul(allocatedQuantity);
+        if (allocation.manufacturerPayableRecognizedAtProduction === true) {
+          productionInventoryRecognizedCogs = productionInventoryRecognizedCogs.plus(allocationCogs);
+        } else {
+          productionLayerCogs = productionLayerCogs.plus(allocationCogs);
+        }
+        if (
+          allocation.manufacturerPayableRecognizedAtProduction !== true &&
+          allocation.vatInvoiceVerified === true
+        ) {
+          productionLayerInputVat = productionLayerInputVat.plus(
+            new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocatedQuantity)
+          );
+        }
       }
       const legacyQuantity = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
       const legacyUnitCost = new Prisma.Decimal(String(
@@ -761,8 +848,13 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     }
   }
   productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionLayerInputVat = productionLayerInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  productionInventoryRecognizedCogs = productionInventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   legacyManufacturerCogs = legacyManufacturerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  totalAgreedCogs = productionLayerCogs.plus(legacyManufacturerCogs).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  totalAgreedCogs = productionLayerCogs
+    .plus(productionInventoryRecognizedCogs)
+    .plus(legacyManufacturerCogs)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
   let commissionAmount = new Prisma.Decimal(0);
@@ -783,7 +875,10 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
   const tenderMappingKey = isCod ? "NCM_COD_RECEIVABLE" : "BANK";
 
-  const manufacturerId = returnRecord.manufacturerId || order.manufacturerId;
+  const manufacturerId = returnRecord.manufacturerId || order.manufacturerId ||
+    items.find((item) => item?.manufacturerId)?.manufacturerId ||
+    items.flatMap((item) => item?.productionCostAllocations || [])
+      .find((allocation) => allocation?.manufacturerId)?.manufacturerId || null;
   let manufacturerParty = null;
   if (manufacturerId) {
     const mfg = await client.manufacturer.findUnique({ where: { id: manufacturerId } }).catch(() => null);
@@ -837,10 +932,12 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   if (productionLayerCogs.greaterThan(0)) {
     lines.push(
       {
-        mappingKey: "INVENTORY",
-        debit: productionLayerCogs,
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: productionLayerCogs.plus(productionLayerInputVat),
         credit: 0,
-        description: `Restore production-batch inventory for returned Order #${order.id.slice(-6)}`,
+        description: `Reverse manufacturer payable for returned production-batch goods on Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
       },
       {
         mappingKey: "COGS",
@@ -848,7 +945,32 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         credit: productionLayerCogs,
         description: `Reverse production-batch COGS for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
-      }
+      },
+      ...(productionLayerInputVat.greaterThan(0) ? [{
+        mappingKey: "INPUT_VAT_RECEIVABLE",
+        debit: 0,
+        credit: productionLayerInputVat,
+        description: `Reverse recoverable manufacturer input VAT for returned Order #${order.id.slice(-6)}`,
+        supplierId: manufacturerId,
+        accountingPartyId: manufacturerParty?.id,
+      }] : [])
+    );
+  }
+  if (productionInventoryRecognizedCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: productionInventoryRecognizedCogs,
+        credit: 0,
+        description: `Restore previously recognized production-batch inventory for returned Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: productionInventoryRecognizedCogs,
+        description: `Reverse COGS for returned pre-cutover production-batch inventory on Order #${order.id.slice(-6)}`,
+        accountingPartyId: manufacturerParty?.id,
+      },
     );
   }
 
@@ -871,6 +993,10 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     );
   }
 
+  const supplierCreditAmount = legacyManufacturerCogs
+    .plus(productionLayerCogs)
+    .plus(productionLayerInputVat)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   return await postJournalEntry({
     transactionDate: new Date(),
     sourceType: "DELIVERY_RETURN",
@@ -879,6 +1005,33 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     referenceNumber: `RET-${returnId.slice(-6)}`,
     description: `Confirmed delivery return and financial reversal for Order #${order.id.slice(-6)}`,
     lines,
+    afterPost: async (tx) => {
+      if (!manufacturerParty || !supplierCreditAmount.greaterThan(0)) return;
+      const deliveryBill = await tx.accountingDocument.findFirst({
+        where: {
+          partyId: manufacturerParty.id,
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: order.id,
+        },
+        select: { id: true },
+      });
+      if (!deliveryBill) return;
+      const key = `MANUFACTURER_DELIVERY_RETURN:${returnId}:${manufacturerId}`;
+      const documentHash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24).toUpperCase();
+      await createAccountingDocument({
+        documentType: "CREDIT_NOTE",
+        documentNumber: `MFG-RET-${documentHash}`,
+        partyId: manufacturerParty.id,
+        side: "RECEIVABLE",
+        sourceType: "MANUFACTURER_DELIVERY_RETURN",
+        sourceId: returnId,
+        amount: supplierCreditAmount,
+        issueDate: new Date(),
+        idempotencyKey: key,
+        notes: `Supplier credit for manufacturer payable reversed on returned order ${order.id}.`,
+      }, { client: tx });
+    },
     client,
   });
 };

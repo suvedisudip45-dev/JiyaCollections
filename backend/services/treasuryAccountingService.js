@@ -58,6 +58,20 @@ export const validateTreasuryAccountTypeMapping = (treasuryAccountType, accounti
   return true;
 };
 
+export const validateTreasuryPayoutAccount = async (financialAccount, client) => {
+  const treasuryType = String(financialAccount?.accountType || "").toUpperCase();
+  if (!financialAccount || financialAccount.status !== "ACTIVE" ||
+      !["CASH", "BANK", "WALLET"].includes(treasuryType)) {
+    throw mappingError("Select an active cash, bank, or wallet Treasury account for payout.");
+  }
+  if (String(financialAccount.currency || "").toUpperCase() !== "NPR") {
+    throw mappingError("Supplier payouts currently require an NPR Treasury account.");
+  }
+  const accountingAccount = await validateTreasuryAccountingAccount(financialAccount.accountingAccountId, client);
+  validateTreasuryAccountTypeMapping(treasuryType, accountingAccount.accountCode);
+  return accountingAccount;
+};
+
 export const getDirectCashOffsetAccountCode = (type, category) => {
   const direction = String(type || "").toUpperCase();
   const normalizedCategory = String(category || "").toUpperCase();

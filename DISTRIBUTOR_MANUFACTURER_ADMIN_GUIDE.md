@@ -564,19 +564,27 @@ transfer flow:
    `POST /api/manufacturer/production/:id/start`.
 4. Manufacturer submits stitching, quality, color, and size/color actual-count
    checks through `PATCH /api/manufacturer/production/:id/post-check`.
-   Completion records actual and damaged quantities transactionally; only
-   good units are received into factory `InventoryBalance`, `InventoryLedgerEntry`,
-   SKU/cost-layer, and legacy inventory records. A failed checklist records the
-   failed state and does not change available stock. The legacy
-   `POST /api/manufacturer-production/requests/:id/complete` route requires the
-   same post-production checklist.
+   The submission records actual and damaged quantities in
+   `PENDING_ADMIN_ACCEPTANCE`; it does not create inventory or cost layers.
+   Admin reviews the reported good units through
+   `POST /api/manufacturer-production/admin/requests/:id/acceptance`, accepting
+   the count or rejecting it for rework. Only acceptance transactionally
+   receives accepted good units into factory `InventoryBalance`,
+   `InventoryLedgerEntry`, SKU/cost-layer, and legacy inventory records. The
+   legacy `POST /api/manufacturer-production/requests/:id/complete` route
+   submits for this same Admin acceptance; it does not complete receipt itself.
 5. For local/manual transfer dispatch, a positive freight charge is recorded
    as a manufacturer logistics expense and payable. NCM booking remains a
    separate carrier flow. Manufacturer finance is available from
    `GET /api/manufacturer/finance/dashboard`; payout requests are submitted to
    `POST /api/manufacturer/finance/settlement-request`, and admins pay pending
    requests listed at `GET /api/admin/finance/settlements` through
-   `PATCH /api/admin/finance/settlements/:id/pay` with a `financialAccountId`.
+   `PATCH /api/admin/finance/settlements/:id/pay` with a `financialAccountId`
+   and external transfer reference. Delivered goods create manufacturer bills;
+   production payouts allocate to open bills, while legacy payable amounts not
+   represented by bills remain explicitly flagged for reconciliation. Payout
+   Treasury accounts must be active, NPR-denominated, and mapped to the
+   matching GL cash/bank/wallet account.
 6. Customer orders use `Order` and `OrderAssignment`. Automatic allocation
    targets an approved distributor covering the destination district and holding all
    requested variants in local stock.
@@ -630,7 +638,8 @@ transfer flow:
 10. Distributor Financial Dashboard & Accounting:
    - `GET /api/distributor/finance/statement`: Itemized self-delivery charges, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. New deliveries use immutable per-delivery `DistributorServiceEarning` snapshots.
    - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations. The request stores a statement snapshot with delivery-level charges and monthly bonus qualification details.
-   - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Rate-card revisions create new versions; closing an approved card preserves history.
+   - If matching earning documents are absent, the request is stored as reconciliation-required without creating AP from the requested amount; Admin payout is blocked until legacy earnings are reconciled. Existing legacy request-accrual records remain on the compatibility path pending controlled migration.
+   - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Active NPR Treasury mapping to the matching GL account is required. The Admin settlement list displays outstanding COD and pending-remittance warnings; service earnings are paid gross and COD is not silently netted. Rate-card revisions create new versions; closing an approved card preserves history.
    - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
 Relevant endpoints:
@@ -658,7 +667,7 @@ Relevant endpoints:
 | `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
-| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; closed-period target bonuses are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. |
+| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; closed-period target bonuses are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. Requests without earning documents are marked reconciliation-required and do not create AP. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
@@ -666,8 +675,9 @@ Relevant endpoints:
 | `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
 | `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
 | `POST /manufacturer-production/requests/:id/start` | Manufacturer | `manufacturer:production_manage` | Start approved request. |
-| `POST /manufacturer-production/requests/:id/complete` | Manufacturer | `manufacturer:production_manage` | Submit post-production checklist and complete production. |
+| `POST /manufacturer-production/requests/:id/complete` | Manufacturer | `manufacturer:production_manage` | Submit post-production counts for Admin acceptance; no stock receipt is recorded yet. |
 | `GET /manufacturer-production/admin/requests` | Admin | `manufacturer:production_admin` | Review queue. |
+| `POST /manufacturer-production/admin/requests/:id/acceptance` | Admin | `manufacturer:production_admin` | Accept reported good-unit counts to receive stock/cost layers, or reject for manufacturer rework. |
 | `GET /manufacturer-production/admin/options` | Admin | `manufacturer:production_admin` | Paginated active manufacturers and published products/SKUs for creating production orders (`type=manufacturers` or `type=products`). |
 | `POST /manufacturer-production/admin/requests/:id/review` | Admin | `manufacturer:production_admin` | Approve/reject and set terms. |
 | `POST /manufacturer/production/create` | Admin | `manufacturer:production_admin` | Create a specification- and batch-backed production order. |

@@ -109,6 +109,10 @@ test("manufacturer dashboard separates factory stock, inspected output, accepted
         lines: [{ actualQuantity: null, damagedQuantity: 0 }],
       },
       {
+        status: "PENDING_ADMIN_ACCEPTANCE",
+        lines: [{ actualQuantity: 8, damagedQuantity: 1 }],
+      },
+      {
         status: "PENDING_MANUFACTURER_QUOTE",
         lines: [{ actualQuantity: null, damagedQuantity: 0 }],
       },
@@ -125,12 +129,12 @@ test("manufacturer dashboard separates factory stock, inspected output, accepted
     factoryUnitsOnHand: 11,
     factoryUnitsAvailable: 9,
     factoryUnitsReserved: 2,
-    producedUnits: 23,
+    producedUnits: 31,
     goodUnitsProduced: 14,
-    damagedUnits: 4,
+    damagedUnits: 5,
     completedBatches: 1,
     failedQaBatches: 1,
-    activeBatches: 4,
+    activeBatches: 5,
   });
 });
 

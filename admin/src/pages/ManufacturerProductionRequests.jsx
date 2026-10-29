@@ -9,6 +9,7 @@ const statusClass = {
   PENDING_REVIEW: "bg-amber-100 text-amber-800",
   PENDING_MANUFACTURER_QUOTE: "bg-amber-100 text-amber-800",
   PENDING_ADMIN_APPROVAL: "bg-orange-100 text-orange-800",
+  PENDING_ADMIN_ACCEPTANCE: "bg-amber-100 text-amber-800",
   PRE_CHECK_PASSED: "bg-emerald-100 text-emerald-800",
   PRE_CHECK_FAILED: "bg-rose-100 text-rose-800",
   APPROVED: "bg-blue-100 text-blue-800",
@@ -210,6 +211,23 @@ const ManufacturerProductionRequests = ({ token }) => {
     }
   };
 
+  const reviewReceipt = async (request, decision) => {
+    setSavingId(request.id);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/manufacturer-production/admin/requests/${request.id}/acceptance`,
+        { decision, reviewNote: notes[request.id] || "" },
+        { headers: { token } },
+      );
+      toast.success(response.data.message || `Production receipt ${decision.toLowerCase()}d.`);
+      await loadRequests();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to review production receipt.");
+    } finally {
+      setSavingId("");
+    }
+  };
+
   const setTerm = (id, field, value) => setTerms((current) => ({
     ...current,
     [id]: { ...current[id], [field]: value },
@@ -275,6 +293,7 @@ const ManufacturerProductionRequests = ({ token }) => {
           : <div className="space-y-4">{requests.map((request) => {
             const quantity = (request.lines || []).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
             const pending = ["PENDING_ADMIN_APPROVAL", "PENDING_REVIEW"].includes(request.status);
+            const pendingAcceptance = request.status === "PENDING_ADMIN_ACCEPTANCE";
             const awaitingQuote = request.status === "PENDING_MANUFACTURER_QUOTE";
             const approvedTerms = terms[request.id] || {};
             const unitCostBreakdown = getUnitCostBreakdown(
@@ -306,6 +325,39 @@ const ManufacturerProductionRequests = ({ token }) => {
                 </div>
               </section>}
               {awaitingQuote && <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Waiting for the manufacturer to submit per-piece pricing and batch expenses.</p>}
+              {pendingAcceptance && <section className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <h3 className="text-xs font-bold text-amber-950">Inspect production receipt before stock is accepted</h3>
+                <p className="mt-1 text-xs text-amber-900">No inventory or manufacturer payable has been recorded. Accepting posts only good units to stock; production payable remains due on customer delivery.</p>
+                <div className="mt-3 overflow-x-auto rounded-lg border border-amber-200 bg-white">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-amber-50 text-amber-950"><tr><th className="p-2">Size / color</th><th className="p-2">Requested</th><th className="p-2">Reported</th><th className="p-2">Damaged</th><th className="p-2">Good units</th></tr></thead>
+                    <tbody>{(request.lines || []).map((line) => {
+                      const actualQuantity = Number(line.actualQuantity || 0);
+                      const damagedQuantity = Number(line.damagedQuantity || 0);
+                      return <tr key={`${line.size}-${line.color}`} className="border-t border-amber-100">
+                        <td className="p-2">{line.size}{line.color !== "Standard" ? ` / ${line.color}` : ""}</td>
+                        <td className="p-2">{line.quantity}</td>
+                        <td className="p-2">{actualQuantity}</td>
+                        <td className="p-2">{damagedQuantity}</td>
+                        <td className="p-2 font-semibold">{actualQuantity - damagedQuantity}</td>
+                      </tr>;
+                    })}</tbody>
+                  </table>
+                </div>
+                <p className="mt-3 text-xs text-slate-700">Manufacturer QA: {request.postProductionChecklist?.passed === true ? "Passed" : "Not passed"}{request.postProductionChecklist?.notes ? ` · ${request.postProductionChecklist.notes}` : ""}</p>
+                <textarea
+                  value={notes[request.id] ?? ""}
+                  onChange={(event) => setNotes((current) => ({ ...current, [request.id]: event.target.value }))}
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Admin inspection or rework note"
+                  className="mt-3 w-full rounded-xl border border-amber-200 px-3 py-2 text-sm"
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button disabled={savingId === request.id} onClick={() => reviewReceipt(request, "ACCEPT")} className="flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50"><Check className="h-4 w-4" /> Accept good units</button>
+                  <button disabled={savingId === request.id} onClick={() => reviewReceipt(request, "REJECT")} className="flex items-center gap-1.5 rounded-xl border border-rose-200 px-4 py-2 text-xs font-bold text-rose-700 disabled:opacity-50"><X className="h-4 w-4" /> Reject for rework</button>
+                </div>
+              </section>}
               {pending && <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <label className="text-xs font-semibold text-slate-600">Approved unit COGS ({currency})
                   <input type="number" min="0.01" step="0.01" value={approvedTerms.unitCogs ?? ""} onChange={(event) => setTerm(request.id, "unitCogs", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />

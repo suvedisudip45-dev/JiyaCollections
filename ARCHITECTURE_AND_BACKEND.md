@@ -198,6 +198,17 @@ one serializable transaction. Offset history and an audit event are retained.
 These cash flows use scoped distributor context, idempotency keys, and
 transactional accounting and audit records.
 
+Manufacturer post-production QA now enters `PENDING_ADMIN_ACCEPTANCE`; inventory
+and production cost layers are recorded only after Admin accepts the reported
+good-unit counts. Delivery creates manufacturer payable bills, payouts allocate
+to open bills, and returns create supplier credit notes only when a delivery
+bill exists. New distributor settlement requests without earning documents do
+not accrue AP from the requested amount and remain blocked until historical
+earnings are reconciled. Manufacturer, distributor, and generic payable payouts
+require an active NPR Treasury account mapped to the correct cash/bank/wallet GL
+account. Distributor service settlements remain gross and expose COD receivable
+warnings rather than silently netting COD from earnings.
+
 Manufacturer-to-distributor stock-transfer booking resolves the destination
 branch from the distributor profile and validates origin and destination
 against active `NcmBranch` records. A catalog-matched branch marked

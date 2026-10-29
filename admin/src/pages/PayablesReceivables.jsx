@@ -77,7 +77,7 @@ const SettlementHistory = ({ history, label="History" }) => {
       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{label}</p>
       {rows.map(h=>(
         <div key={h.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-2.5 py-1.5 text-[11px] mb-0.5">
-          <span className="text-slate-600"><b>{h.accountName}</b><span className="text-slate-400 ml-1">{formatDate(h.date)}</span>{h.adjustmentAmount>0?<span className="text-slate-500 ml-1">• {h.adjustmentType?.toLowerCase()} {fmt(h.adjustmentAmount)}</span>:null}{h.notes?<span className="text-slate-400 ml-1">• {h.notes}</span>:null}</span>
+          <span className="text-slate-600"><b>{h.accountName}</b><span className="text-slate-400 ml-1">{formatDate(h.date)}</span>{h.adjustmentAmount>0?<span className="text-slate-500 ml-1">• {h.adjustmentType?.toLowerCase()} {fmt(h.adjustmentAmount)}</span>:null}{h.externalPaymentReference?<span className="text-slate-500 ml-1">• Bank ref: {h.externalPaymentReference}</span>:null}{h.notes?<span className="text-slate-400 ml-1">• {h.notes}</span>:null}</span>
           <span className="font-bold text-slate-900">{fmt(h.amount)}</span>
         </div>
       ))}
@@ -148,9 +148,9 @@ const PayablesReceivables = ({ token }) => {
   const emptyR = { title:"",payerName:"",category:"CUSTOMER_RECEIVABLE",totalAmount:"",dueDate:"",invoiceNumber:"",notes:"" };
   const [pForm, setPForm] = useState(emptyP);
   const [rForm, setRForm] = useState(emptyR);
-  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
+  const [sForm, setSForm] = useState({ amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
   const [cForm, setCForm] = useState({ amount:"",toAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:"" });
-  const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false });
+  const [mfgPayForm, setMfgPayForm] = useState({ manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false });
   const payableRequestRef = useRef(null);
   const receivableRequestRef = useRef(null);
   const manufacturerPaymentRequestRef = useRef(null);
@@ -205,6 +205,7 @@ const PayablesReceivables = ({ token }) => {
     if (sLoading) return;
     const amt=Number(sForm.amount);
     if (!sForm.fromAccountId||!amt) return toast.warn("Amount and account required");
+    if (requiresExternalPaymentReference && !sForm.externalPaymentReference.trim()) return toast.warn("External transfer reference is required for manufacturer and distributor payouts");
     const adjustmentAmount=Number(sForm.adjustmentAmount||0);
     const netSettlement=amt+(sForm.adjustmentType==="DISCOUNT"?adjustmentAmount:0)-(sForm.adjustmentType==="FINE"?adjustmentAmount:0);
     if (netSettlement<=0||netSettlement>showSettle.remainingBalance) return toast.warn("Cash amount and adjustment must settle a positive amount without exceeding the remaining balance");
@@ -218,6 +219,7 @@ const PayablesReceivables = ({ token }) => {
       adjustmentType: sForm.adjustmentType,
       adjustmentAmount,
       fromAccountId: sForm.fromAccountId,
+      externalPaymentReference: sForm.externalPaymentReference.trim(),
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/settle-payable`,{
@@ -227,13 +229,14 @@ const PayablesReceivables = ({ token }) => {
         adjustmentAmount,
         fromAccountId: sForm.fromAccountId,
         notes: sForm.notes,
+        externalPaymentReference: sForm.externalPaymentReference.trim() || undefined,
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
         payableRequestRef.current = null;
         toast.success(res.data.message);
         setShowSettle(null);
-        setSForm({amount:"",fromAccountId:"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
+        setSForm({amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});
         fetchData();
         fetchMfg(range,selectedMfgId);
       } else {
@@ -292,7 +295,7 @@ const PayablesReceivables = ({ token }) => {
     e.preventDefault();
     if (mfgLoading) return;
     const amt=Number(mfgPayForm.amount);
-    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt) return toast.warn("Manufacturer, amount, and payment account are required");
+    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt||!mfgPayForm.externalPaymentReference.trim()) return toast.warn("Manufacturer, amount, payment account, and external transfer reference are required");
     const acc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
@@ -301,6 +304,7 @@ const PayablesReceivables = ({ token }) => {
       manufacturerId: mfgPayForm.manufacturerId,
       amount: amt,
       fromAccountId: mfgPayForm.fromAccountId,
+      externalPaymentReference: mfgPayForm.externalPaymentReference.trim(),
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
@@ -308,13 +312,14 @@ const PayablesReceivables = ({ token }) => {
         amount: amt,
         fromAccountId: mfgPayForm.fromAccountId,
         notes: mfgPayForm.notes,
+        externalPaymentReference: mfgPayForm.externalPaymentReference.trim(),
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
         manufacturerPaymentRequestRef.current = null;
         toast.success(res.data.message);
         setShowPayMfg(false);
-        setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",partial:false});
+        setMfgPayForm({manufacturerId:"",amount:"",fromAccountId:"",notes:"",externalPaymentReference:"",partial:false});
         fetchData();
         fetchMfg(range, selectedMfgId);
       } else {
@@ -392,6 +397,11 @@ const PayablesReceivables = ({ token }) => {
   const activeMfgDirectReceivable = Number(activeMfgObj.receivable || 0);
   const activeMfgNetPayable = Math.max(0, activeMfgCogs - activeMfgDirectReceivable);
   const activeMfgOffset = Math.min(activeMfgCogs, activeMfgDirectReceivable);
+  const requiresExternalPaymentReference = Boolean(showSettle && (
+    ["MANUFACTURER_COGS", "DISTRIBUTOR_SETTLEMENT"].includes(showSettle.referenceType) ||
+    String(showSettle.id || "").startsWith("AP-MFG-") ||
+    showSettle.category === "DISTRIBUTOR_SETTLEMENT"
+  ));
 
   return (
     <div className="space-y-6">
@@ -413,6 +423,7 @@ const PayablesReceivables = ({ token }) => {
               amount: String(defNet > 0 ? defNet : defCogs),
               fromAccountId: accounts[0]?.id || "",
               notes: "",
+              externalPaymentReference: "",
               partial: false,
             });
           }} className="px-3 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 flex items-center gap-1.5 shadow-sm cursor-pointer">
@@ -660,6 +671,7 @@ const PayablesReceivables = ({ token }) => {
                                     amount: String(m.remainingPayable !== undefined ? m.remainingPayable : m.payable),
                                     fromAccountId: accounts[0]?.id || "",
                                     notes: `Approved COGS settlement for ${m.name}`,
+                                    externalPaymentReference: "",
                                     partial: false,
                                   });
                                 }}
@@ -844,7 +856,7 @@ const PayablesReceivables = ({ token }) => {
                             </div>
                             <div className="flex items-center gap-3 shrink-0 sm:flex-col sm:items-end">
                               <div className="text-right"><p className="text-base font-black text-red-700">{fmt(p.remainingBalance)}</p>{p.totalAmount!==p.remainingBalance&&<p className="text-[10px] text-slate-400">of {fmt(p.totalAmount)}</p>}</div>
-                              <button onClick={()=>{setShowSettle(p);setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
+                              <button onClick={()=>{setShowSettle(p);                              setSForm({amount:String(p.remainingBalance),fromAccountId:accounts[0]?.id||"",notes:"",externalPaymentReference:"",partial:false,adjustmentType:"NONE",adjustmentAmount:""});}} className="px-3.5 py-2 bg-slate-900 text-white text-[11px] font-bold rounded-xl hover:bg-slate-700 whitespace-nowrap shadow-sm">💳 Pay Now</button>
                             </div>
                           </div>
                         </div>
@@ -1199,6 +1211,7 @@ const PayablesReceivables = ({ token }) => {
                 </div>
               )}
               <AccountSelector accounts={accounts} value={sForm.fromAccountId} onChange={id=>setSForm({...sForm,fromAccountId:id})} label="Pay From Account *" helpText="Select the cash drawer or bank account to pay from" forPayment={true}/>
+              <div><label className="block text-xs font-semibold text-slate-700 mb-1">External bank / payment reference {requiresExternalPaymentReference ? "*" : "(optional)"}</label><input maxLength={191} required={requiresExternalPaymentReference} value={sForm.externalPaymentReference} onChange={e=>setSForm({...sForm,externalPaymentReference:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="Bank transaction ID, cheque number, wallet reference"/></div>
               <div><label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Notes</label><input value={sForm.notes} onChange={e=>setSForm({...sForm,notes:e.target.value})} className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none" placeholder="e.g. Bank transfer, Cheque #1234"/></div>
               {insuff&&<div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">⚠️ Insufficient balance in <b>{selAcc?.accountName}</b>. Available: {fmt(selAcc?.currentBalance)}, required: {fmt(sForm.amount)}.</div>}
               <div className="flex gap-2 pt-1">
@@ -1378,6 +1391,18 @@ const PayablesReceivables = ({ token }) => {
                 helpText="Liquid cash or bank account to debit funds from"
                 forPayment={true}
               />
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">External bank / payment reference *</label>
+                <input
+                  required
+                  maxLength={191}
+                  value={mfgPayForm.externalPaymentReference || ""}
+                  onChange={(e) => setMfgPayForm({ ...mfgPayForm, externalPaymentReference: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-slate-900 outline-none"
+                  placeholder="Bank transaction ID, cheque number, wallet reference"
+                />
+              </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Reference / Payout Notes</label>

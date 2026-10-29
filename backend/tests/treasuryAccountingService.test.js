@@ -5,6 +5,7 @@ import {
   getDirectCashOffsetAccountCode,
   validateTreasuryAccountingAccount,
   validateTreasuryAccountTypeMapping,
+  validateTreasuryPayoutAccount,
 } from "../services/treasuryAccountingService.js";
 
 const makeGlAccount = (overrides = {}) => ({
@@ -86,4 +87,30 @@ test("Treasury types map to their designated GL accounts and reject carrier-held
   assert.equal(validateTreasuryAccountTypeMapping("WALLET", "1180"), true);
   assert.throws(() => validateTreasuryAccountTypeMapping("CASH", "1120"), { statusCode: 400 });
   assert.throws(() => validateTreasuryAccountTypeMapping("ESCROW", "1180"), { statusCode: 400 });
+});
+
+test("Treasury payouts require active NPR accounts with the matching mapped GL account", async () => {
+  const accountingAccount = makeGlAccount({ accountCode: "1120" });
+  const client = { account: { findUnique: async () => accountingAccount } };
+  const financialAccount = {
+    id: "bank-1",
+    status: "ACTIVE",
+    accountType: "BANK",
+    currency: "NPR",
+    accountingAccountId: accountingAccount.id,
+  };
+
+  assert.equal((await validateTreasuryPayoutAccount(financialAccount, client)).id, accountingAccount.id);
+  await assert.rejects(
+    validateTreasuryPayoutAccount({ ...financialAccount, currency: "USD" }, client),
+    /require an NPR Treasury account/,
+  );
+  await assert.rejects(
+    validateTreasuryPayoutAccount({ ...financialAccount, accountingAccountId: null }, client),
+    /Select the accounting asset account/,
+  );
+  await assert.rejects(
+    validateTreasuryPayoutAccount({ ...financialAccount, accountType: "CASH" }, client),
+    /must map to GL account 1110/,
+  );
 });

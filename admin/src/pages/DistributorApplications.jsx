@@ -901,9 +901,25 @@ const DistributorApplications = ({ token }) => {
                         }`}>
                           {req.status}
                         </span>
+                        {req.externalPaymentReference && <div className="mt-1 text-[10px] text-slate-500">Transfer ref: {req.externalPaymentReference}</div>}
+                        {req.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" && (
+                          <div className="mt-2 max-w-xs rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-800">
+                            Accounting reconciliation required before payout; no payable was created from the requested amount.
+                          </div>
+                        )}
+                        {Number(req.codExposureWarning?.outstandingReceivable || 0) > 0 && (
+                          <div className="mt-2 max-w-xs rounded-md border border-orange-200 bg-orange-50 px-2 py-1 text-[10px] font-medium text-orange-800">
+                            COD receivable Rs {Number(req.codExposureWarning.outstandingReceivable).toFixed(2)} remains outstanding
+                            {Number(req.codExposureWarning.pendingRemittance || 0) > 0
+                              ? `; Rs ${Number(req.codExposureWarning.pendingRemittance).toFixed(2)} is awaiting review`
+                              : ""}. Service payout is gross; COD is not netted.
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {req.status !== "SETTLED" && req.status !== "PAID" && req.status !== "REJECTED" && (
+                        {req.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" ? (
+                          <span className="text-xs font-medium text-amber-700">Reconcile earnings</span>
+                        ) : req.status !== "SETTLED" && req.status !== "PAID" && req.status !== "REJECTED" && (
                           <button
                             onClick={() => navigate("/payables")}
                             className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"

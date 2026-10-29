@@ -228,6 +228,7 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token }) => {
       <SummaryCard label="Recognized production value" value={amount(finance.totalManufacturedGoodsValue)} />
       <SummaryCard label="Logistics reimbursements accrued" value={amount(finance.logisticsReimbursements)} />
       <SummaryCard label="Outstanding payable" value={amount(finance.outstandingPayable)} />
+      <SummaryCard label="Supplier credit outstanding" value={amount(finance.supplierCreditOutstanding)} />
       <SummaryCard label="Pending settlement requests" value={amount(finance.pendingSettlements)} />
       <SummaryCard label="Completed payments" value={amount(finance.completedPayments)} />
       <SummaryCard label="Receivables outstanding" value={amount(finance.receivables?.outstanding)} />
@@ -237,6 +238,7 @@ export const ManufacturerFinanceSection = ({ manufacturerId, token }) => {
       <div className="mt-3 grid gap-3 sm:grid-cols-3">
         <Fact label="Production payable" value={amount(finance.productionOutstanding)} />
         <Fact label="Logistics payable" value={amount(finance.logisticsOutstanding)} />
+        <Fact label="Supplier credit outstanding" value={amount(finance.supplierCreditOutstanding)} />
         <Fact label="Receivable documents / total" value={`${finance.receivables?.documents || 0} / ${amount(finance.receivables?.total)}`} />
       </div>
       <p className="mt-3 text-[11px] text-slate-500">Payables reuse the manufacturer settlement accounting service. Receivables are from manufacturer-linked accounting documents; they are not inferred from unrelated supplier/customer balances.</p>
@@ -265,9 +267,9 @@ export const ManufacturerSettlementsSection = ({ manufacturerId, token }) => {
     params: { manufacturerId },
   });
   return <RecordFrame title="Payable requests" description="Existing manufacturer settlement requests, their requested type, amount and payment state." loading={loading} errorMessage={errorMessage} emptyMessage="No settlement requests found." pagination={pagination} page={page} setPage={setPage}>
-    {records.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-left text-xs">
-      <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Requested</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Amount</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Notes</th></tr></thead>
-      <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 font-semibold">{amount(settlement.amount)}</td><td className="px-4 py-3">{settlement.status}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.notes || "—"}</td></tr>)}</tbody>
+    {records.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs">
+      <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Requested</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Amount</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Transfer reference</th><th className="px-4 py-3">Notes</th></tr></thead>
+      <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 font-semibold">{amount(settlement.amount)}</td><td className="px-4 py-3">{settlement.status}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.externalPaymentReference || "—"}</td><td className="px-4 py-3">{settlement.notes || "—"}</td></tr>)}</tbody>
     </table></div>}
   </RecordFrame>;
 };

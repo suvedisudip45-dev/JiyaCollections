@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import {
   validateSelfDeliveryTransition,
@@ -19,6 +20,7 @@ import {
   submitDistributorSettlementRequest,
   executeAdminDistributorSettlement,
 } from "../services/distributorFinanceService.js";
+import { getDistributorCashPositions } from "../services/distributorCashSettlementService.js";
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -27,6 +29,71 @@ const stubMethod = (t, target, name, implementation) => {
     target[name] = original;
   });
 };
+
+test("Admin service-settlement cash warnings aggregate distributor COD and pending remittances", async () => {
+  const positions = await getDistributorCashPositions({
+    distributorIds: ["dist-1", "dist-2"],
+    client: {
+      accountingParty: {
+        findMany: async () => [
+          { id: "party-1", sourceEntityId: "dist-1" },
+          { id: "party-2", sourceEntityId: "dist-2" },
+        ],
+      },
+      accountingDocument: {
+        groupBy: async () => [
+          {
+            partyId: "party-1",
+            side: "RECEIVABLE",
+            sourceType: "DISTRIBUTOR_COD_SALE",
+            _sum: { remainingAmount: new Prisma.Decimal("100") },
+          },
+          {
+            partyId: "party-1",
+            side: "PAYABLE",
+            sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+            _sum: { remainingAmount: new Prisma.Decimal("15") },
+          },
+        ],
+      },
+      distributorRemittanceBatch: {
+        groupBy: async () => [{
+          distributorId: "dist-1",
+          _sum: { amount: new Prisma.Decimal("20") },
+        }],
+      },
+    },
+  });
+
+  assert.deepEqual(positions.get("dist-1"), {
+    outstandingReceivable: "100.00",
+    pendingRemittance: "20.00",
+    refundPayable: "15.00",
+    availableToRemit: "80.00",
+    availableToOffset: "15.00",
+  });
+  assert.equal(positions.get("dist-2").outstandingReceivable, "0.00");
+});
+
+test("Admin distributor payout requires a valid external transfer reference", async () => {
+  await assert.rejects(
+    executeAdminDistributorSettlement({
+      settlementId: "settlement-1",
+      amount: 10,
+      financialAccountId: "treasury-1",
+    }),
+    { code: "EXTERNAL_PAYMENT_REFERENCE_REQUIRED" },
+  );
+  await assert.rejects(
+    executeAdminDistributorSettlement({
+      settlementId: "settlement-1",
+      amount: 10,
+      financialAccountId: "treasury-1",
+      externalPaymentReference: " ".repeat(2),
+    }),
+    { code: "INVALID_EXTERNAL_PAYMENT_REFERENCE" },
+  );
+});
 
 test("1. Self-Delivery State Machine enforces sequential status progression", () => {
   // From assigned -> Dispatched
@@ -791,8 +858,10 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   assert.equal(res.success, true);
   assert.equal(res.settlementRequest.amount, 100);
   assert.equal(res.settlementRequest.status, "PENDING");
-  assert.equal(payableCreated, true);
-  assert.equal(requestAccountingPosted, true);
+  assert.equal(res.settlementRequest.metadata.settlementBasis, "LEGACY_EARNINGS_RECONCILIATION_REQUIRED");
+  assert.equal(payableCreated, false);
+  assert.equal(requestAccountingPosted, false);
+  assert.match(res.message, /historical earnings are reconciled/);
 
   const replay = await submitDistributorSettlementRequest({
     distributorId: "dist-1",
@@ -834,6 +903,33 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
       amount: 500, // exceeds available 113.00
     }),
     { code: "INSUFFICIENT_SETTLEMENT_BALANCE" }
+  );
+});
+
+test("Admin cannot pay a request-only distributor payable until earning documents are reconciled", async () => {
+  const client = {
+    $transaction: async (callback) => callback({
+      distributorSettlementRequest: {
+        findUnique: async () => ({
+          id: "legacy-request-1",
+          distributorId: "dist-1",
+          amount: 25,
+          metadata: { settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" },
+          distributor: { id: "dist-1", name: "Kathmandu Hub" },
+        }),
+      },
+    }),
+  };
+
+  await assert.rejects(
+    executeAdminDistributorSettlement({
+      settlementId: "legacy-request-1",
+      amount: 25,
+      financialAccountId: "fa-1",
+      externalPaymentReference: "BANK-REF-LEGACY",
+      client,
+    }),
+    { code: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED" },
   );
 });
 
@@ -915,9 +1011,16 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     settlementId: "set-req-1",
     amount: 40,
     financialAccountId: "fa-1",
+    externalPaymentReference: "BANK-TRANSFER-001",
     idempotencyKey: "settlement-payment-1",
     adminNotes: "First partial bank transfer.",
     adminAccountId: "admin-1",
+    validatePayoutAccount: async () => ({ id: "gl-bank", accountCode: "1120" }),
+    loadCashPosition: async () => ({
+      outstandingReceivable: "250.00",
+      pendingRemittance: "50.00",
+      availableToRemit: "200.00",
+    }),
     postPaymentAccounting: async ({ idempotencyKey }) => {
       paymentAccountingKeys.push(idempotencyKey);
     },
@@ -1024,9 +1127,16 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
       settlementId: settlement.id,
       amount: 120,
       financialAccountId: "fa-1",
+      externalPaymentReference: "BANK-TRANSFER-SUBLEDGER-001",
       idempotencyKey: "settlement-subledger-payment-1",
       adminAccountId: "admin-1",
       client,
+      validatePayoutAccount: async () => ({ id: "gl-bank", accountCode: "1120" }),
+      loadCashPosition: async () => ({
+        outstandingReceivable: "300.00",
+        pendingRemittance: "0.00",
+        availableToRemit: "300.00",
+      }),
       postPaymentAccounting: async (args) => {
         paymentJournalArguments = args;
         return { id: "payment-journal-1" };
@@ -1037,6 +1147,8 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
 
     assert.equal(result.success, true);
     assert.equal(result.settlement.status, "SETTLED");
+    assert.equal(result.codExposureWarning.outstandingReceivable, "300.00");
+    assert.equal(result.requiresCodRemittanceReview, true);
     assert.deepEqual(requestedSourceTypes, ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"]);
     assert.equal(documents[0].remainingAmount.toString(), "0");
     assert.equal(documents[0].status, "PAID");
@@ -1045,18 +1157,25 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     assert.equal(balance, 380);
     assert.equal(paymentJournalArguments.payableAccountCode, "2190");
     assert.equal(paymentJournalArguments.accountingPartyId, "party-1");
+    assert.equal(paymentJournalArguments.cashAccountId, "gl-bank");
+    assert.equal(cashTransactions.get("settlement-subledger-payment-1").amount, 120);
     assert.equal(allocations.size, 2);
   });
 
   assert.equal(res.success, true);
   assert.equal(res.settlement.status, "PARTIALLY_PAID");
   assert.equal(res.settlement.paidAmount, 40);
+  assert.equal(res.settlement.externalPaymentReference, "BANK-TRANSFER-001");
   assert.equal(res.payable.remainingBalance, 60);
+  assert.equal(res.codExposureWarning.outstandingReceivable, "250.00");
+  assert.equal(res.requiresCodRemittanceReview, true);
+  assert.equal(cashTransactions.get("settlement-payment-1").amount, 40);
 
   const replay = await executeAdminDistributorSettlement({
     settlementId: "set-req-1",
     amount: 40,
     financialAccountId: "fa-1",
+    externalPaymentReference: "BANK-TRANSFER-001",
     idempotencyKey: "settlement-payment-1",
     postPaymentAccounting: async ({ idempotencyKey }) => {
       paymentAccountingKeys.push(idempotencyKey);
@@ -1065,11 +1184,24 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
   assert.equal(replay.isReplay, true);
   assert.equal(replay.settlement.paidAmount, 40);
   assert.equal(cashTxCount, 1);
+  assert.equal(cashTransactions.get("settlement-payment-1").externalPaymentReference, "BANK-TRANSFER-001");
   await assert.rejects(
     executeAdminDistributorSettlement({
       settlementId: "set-req-1",
       amount: 39,
       financialAccountId: "fa-1",
+      externalPaymentReference: "BANK-TRANSFER-001",
+      idempotencyKey: "settlement-payment-1",
+      postPaymentAccounting: async () => {},
+    }),
+    { code: "IDEMPOTENCY_KEY_REUSED" }
+  );
+  await assert.rejects(
+    executeAdminDistributorSettlement({
+      settlementId: "set-req-1",
+      amount: 40,
+      financialAccountId: "fa-1",
+      externalPaymentReference: "DIFFERENT-TRANSFER-REFERENCE",
       idempotencyKey: "settlement-payment-1",
       postPaymentAccounting: async () => {},
     }),
@@ -1080,9 +1212,16 @@ test("8. executeAdminDistributorSettlement records partial and final payout agai
     settlementId: "set-req-1",
     amount: 60,
     financialAccountId: "fa-1",
+    externalPaymentReference: "BANK-TRANSFER-002",
     idempotencyKey: "settlement-payment-2",
     adminNotes: "Final bank transfer.",
     adminAccountId: "admin-1",
+    validatePayoutAccount: async () => ({ id: "gl-bank", accountCode: "1120" }),
+    loadCashPosition: async () => ({
+      outstandingReceivable: "0.00",
+      pendingRemittance: "0.00",
+      availableToRemit: "0.00",
+    }),
     postPaymentAccounting: async ({ idempotencyKey }) => {
       paymentAccountingKeys.push(idempotencyKey);
     },

@@ -6,9 +6,11 @@ import { recordSystemAudit } from "./auditService.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { allocatePaymentToDocuments } from "./accountingSubledgerService.js";
 import {
-  postDistributorSettlementRequestAccounting,
   postSupplierPaymentAccounting,
 } from "./accountingPostingEngine.js";
+import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
+import { getDistributorCashPosition } from "./distributorCashSettlementService.js";
+import { validateTreasuryPayoutAccount } from "./treasuryAccountingService.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -381,7 +383,6 @@ export const submitDistributorSettlementRequest = async ({
   notes = null,
   idempotencyKey = null,
   requestedByAccountId = null,
-  postRequestAccounting = postDistributorSettlementRequestAccounting,
   client = prisma,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
@@ -507,35 +508,14 @@ export const submitDistributorSettlementRequest = async ({
           },
         });
       } else {
-        const payable = await tx.accountPayable.create({
-          data: {
-            title: `Distributor settlement request ${created.id.slice(-8)}`,
-            payeeName: created.distributor.name,
-            category: "DISTRIBUTOR_SETTLEMENT",
-            referenceType: "DISTRIBUTOR_SETTLEMENT",
-            referenceId: created.id,
-            totalAmount: numAmount,
-            paidAmount: 0,
-            remainingBalance: numAmount,
-            status: "UNPAID",
-            priority: "MEDIUM",
-            notes: normalizedNotes || "Distributor requested settlement.",
-          },
-        });
         await tx.distributorSettlementRequest.update({
           where: { id: created.id },
           data: {
             metadata: {
-              accountPayableId: payable.id,
-              settlementBasis: "LEGACY_REQUEST_ACCRUAL",
+              settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
               statementSnapshot,
             },
           },
-        });
-        await postRequestAccounting({
-          settlement: created,
-          distributorName: created.distributor.name,
-          client: tx,
         });
       }
       return {
@@ -546,7 +526,7 @@ export const submitDistributorSettlementRequest = async ({
               earningDocumentIds: earningDocuments.map((document) => document.id),
               statementSnapshot,
             }
-          : { settlementBasis: "LEGACY_REQUEST_ACCRUAL", statementSnapshot },
+          : { settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED", statementSnapshot },
       };
     });
   } catch (error) {
@@ -570,7 +550,9 @@ export const submitDistributorSettlementRequest = async ({
     success: true,
     message: settlementRequest.isReplay
       ? "Settlement request already submitted."
-      : "Settlement request submitted successfully to Admin.",
+      : settlementRequest.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED"
+        ? "Settlement request recorded, but Admin payment is blocked until historical earnings are reconciled to accounting documents."
+        : "Settlement request submitted successfully to Admin.",
     settlementRequest,
     ...(settlementRequest.isReplay ? { isReplay: true } : {}),
   };
@@ -583,12 +565,15 @@ export const executeAdminDistributorSettlement = async ({
   settlementId = null,
   amount = null,
   financialAccountId = null,
+  externalPaymentReference = null,
   idempotencyKey = null,
   adminNotes = null,
   adminAccountId = null,
   postPaymentAccounting = postSupplierPaymentAccounting,
   allocateAccountingPayment = allocatePaymentToDocuments,
   resolveAccountingParty = ensureAccountingParty,
+  validatePayoutAccount = validateTreasuryPayoutAccount,
+  loadCashPosition = getDistributorCashPosition,
   writeAudit = recordSystemAudit,
   client = prisma,
 } = {}) => {
@@ -599,6 +584,7 @@ export const executeAdminDistributorSettlement = async ({
     throw fail("Select a valid current cash, bank, or wallet account to pay this settlement.", 400, "INVALID_FINANCIAL_ACCOUNT");
   }
   const settleAmount = parseMoney(amount, "Settlement payment amount");
+  const normalizedExternalPaymentReference = requireExternalPaymentReference(externalPaymentReference);
   const normalizedNotes = validateOptionalText(adminNotes, "Admin notes", 1000);
   const normalizedKey = idempotencyKey == null ? null : validateOptionalText(idempotencyKey, "Idempotency key", 191);
   const now = new Date();
@@ -609,6 +595,13 @@ export const executeAdminDistributorSettlement = async ({
       include: { distributor: true },
     });
     if (!targetSettlement) throw fail("Distributor settlement request not found.", 404);
+    if (targetSettlement.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED") {
+      throw fail(
+        "This request has no matched distributor earning documents. Reconcile and backfill the historical earnings before paying it.",
+        409,
+        "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
+      );
+    }
     if (targetSettlement.metadata?.settlementBasis === "ACCOUNTING_SUBLEDGER") {
       if (!normalizedKey) {
         throw fail("An idempotency key is required for subledger-backed distributor payouts.", 400, "IDEMPOTENCY_KEY_REQUIRED");
@@ -618,7 +611,8 @@ export const executeAdminDistributorSettlement = async ({
       if (existingPayment) {
         if (existingPayment.referenceId !== settlementId ||
             Number(existingPayment.amount) !== settleAmount ||
-            existingPayment.fromAccountId !== financialAccountId) {
+            existingPayment.fromAccountId !== financialAccountId ||
+            existingPayment.externalPaymentReference !== normalizedExternalPaymentReference) {
           throw fail("This idempotency key was already used with different payment details.", 409, "IDEMPOTENCY_KEY_REUSED");
         }
         return {
@@ -663,18 +657,22 @@ export const executeAdminDistributorSettlement = async ({
 
       const financialAccount = await tx.financialAccount.findUnique({
         where: { id: financialAccountId },
-        include: { accountingAccount: { select: { accountType: true, normalBalance: true } } },
       });
-      if (
-        !financialAccount ||
-        financialAccount.status !== "ACTIVE" ||
-        !["CASH", "BANK", "WALLET"].includes(String(financialAccount.accountType).toUpperCase()) ||
-        (financialAccount.accountingAccountId &&
-          (financialAccount.accountingAccount?.accountType !== "ASSET" ||
-            financialAccount.accountingAccount?.normalBalance !== "DEBIT"))
-      ) {
-        throw fail("Selected active treasury account was not found or is not mapped to a debit-balance asset.", 409, "INVALID_TREASURY_ACCOUNT");
+      let accountingAccount;
+      try {
+        accountingAccount = await validatePayoutAccount(financialAccount, tx);
+      } catch (error) {
+        throw fail(error.message, error.statusCode || 409, "INVALID_TREASURY_ACCOUNT");
       }
+      const cashPosition = await loadCashPosition({ distributorId: targetSettlement.distributorId, client: tx });
+      const codExposureWarning = Number(cashPosition.outstandingReceivable) > 0
+        ? {
+            outstandingReceivable: cashPosition.outstandingReceivable,
+            pendingRemittance: cashPosition.pendingRemittance,
+            availableToRemit: cashPosition.availableToRemit,
+            message: "Outstanding distributor COD is tracked separately and is not netted from this service-earning payout.",
+          }
+        : null;
       const treasuryUpdate = await tx.financialAccount.updateMany({
         where: {
           id: financialAccount.id,
@@ -696,6 +694,7 @@ export const executeAdminDistributorSettlement = async ({
           category: "SUPPLIER_PAYMENT",
           partyName: targetSettlement.distributor.name,
           referenceId: settlementId,
+          externalPaymentReference: normalizedExternalPaymentReference,
           description: `Distributor settlement payout for ${targetSettlement.distributor.name}`,
         },
       });
@@ -704,7 +703,7 @@ export const executeAdminDistributorSettlement = async ({
         payeeName: targetSettlement.distributor.name,
         amount: settleAmount,
         settlementAmount: settleAmount,
-        cashAccountId: financialAccount.accountingAccountId || null,
+        cashAccountId: accountingAccount.id,
         fromAccountType: financialAccount.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2190",
         accountingPartyId: party.id,
@@ -743,6 +742,7 @@ export const executeAdminDistributorSettlement = async ({
           adminNotes: normalizedNotes || targetSettlement.adminNotes,
           reviewedBy: adminAccountId,
           financialAccountId,
+          externalPaymentReference: normalizedExternalPaymentReference,
           settledAt: settlementIsFullyPaid ? now : targetSettlement.settledAt,
         },
       });
@@ -766,14 +766,20 @@ export const executeAdminDistributorSettlement = async ({
             paidAmount: paidToDate,
             distributorId: targetSettlement.distributorId,
             financialAccountId,
+            externalPaymentReference: normalizedExternalPaymentReference,
             accountingDocumentIds: allocation.allocations.map((item) => item.documentId),
+            codExposureWarning,
           },
         },
         { client: tx },
       );
       return {
         success: true,
-        message: `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
+        message: codExposureWarning
+          ? `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}. Outstanding COD exposure remains separate and was not netted.`
+          : `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
+        codExposureWarning,
+        requiresCodRemittanceReview: Boolean(codExposureWarning),
         settlement: finalizedSettlement,
         payable: { amount: targetSettlement.amount, paidAmount: paidToDate, remainingBalance: requestOutstanding - settleAmount },
       };
@@ -803,7 +809,8 @@ export const executeAdminDistributorSettlement = async ({
         }
         if (
           Number(existingPayment.amount) !== settleAmount ||
-          existingPayment.fromAccountId !== financialAccountId
+          existingPayment.fromAccountId !== financialAccountId ||
+          existingPayment.externalPaymentReference !== normalizedExternalPaymentReference
         ) {
           throw fail("This idempotency key was already used with different payment details.", 409, "IDEMPOTENCY_KEY_REUSED");
         }
@@ -825,22 +832,22 @@ export const executeAdminDistributorSettlement = async ({
 
     const financialAccount = await tx.financialAccount.findUnique({
       where: { id: financialAccountId },
-      include: { accountingAccount: { select: { accountType: true, normalBalance: true } } },
     });
-    if (
-      !financialAccount ||
-      financialAccount.status !== "ACTIVE" ||
-      !["CASH", "BANK", "WALLET"].includes(String(financialAccount.accountType).toUpperCase())
-    ) {
-      throw fail("Selected active treasury account was not found.", 404);
+    let accountingAccount;
+    try {
+      accountingAccount = await validatePayoutAccount(financialAccount, tx);
+    } catch (error) {
+      throw fail(error.message, error.statusCode || 409, "INVALID_TREASURY_ACCOUNT");
     }
-    if (
-      financialAccount.accountingAccountId &&
-      (financialAccount.accountingAccount?.accountType !== "ASSET" ||
-        financialAccount.accountingAccount?.normalBalance !== "DEBIT")
-    ) {
-      throw fail("The selected treasury account must map to a debit-balance asset account.", 409, "INVALID_TREASURY_GL_MAPPING");
-    }
+    const cashPosition = await loadCashPosition({ distributorId: targetSettlement.distributorId, client: tx });
+    const codExposureWarning = Number(cashPosition.outstandingReceivable) > 0
+      ? {
+          outstandingReceivable: cashPosition.outstandingReceivable,
+          pendingRemittance: cashPosition.pendingRemittance,
+          availableToRemit: cashPosition.availableToRemit,
+          message: "Outstanding distributor COD is tracked separately and is not netted from this service-earning payout.",
+        }
+      : null;
     if (Number(financialAccount.currentBalance) < settleAmount) {
       throw fail(
         `Insufficient balance in ${financialAccount.accountName} (Balance: Rs. ${Number(financialAccount.currentBalance).toFixed(2)}) to pay Rs. ${settleAmount.toFixed(2)}.`,
@@ -861,6 +868,7 @@ export const executeAdminDistributorSettlement = async ({
       settlementAmount: settleAmount,
       fromAccountId: financialAccount.id,
       accountName: financialAccount.accountName,
+      externalPaymentReference: normalizedExternalPaymentReference,
       notes: normalizedNotes || "Distributor settlement payout.",
     };
     history = [...history, historyEntry];
@@ -878,6 +886,7 @@ export const executeAdminDistributorSettlement = async ({
         category: "SUPPLIER_PAYMENT",
         partyName: targetSettlement.distributor.name,
         referenceId: payable.id,
+        externalPaymentReference: normalizedExternalPaymentReference,
         description: `Distributor settlement payout for ${targetSettlement.distributor.name}`,
       },
     });
@@ -900,6 +909,7 @@ export const executeAdminDistributorSettlement = async ({
         adminNotes: normalizedNotes || targetSettlement.adminNotes,
         reviewedBy: adminAccountId,
         financialAccountId,
+        externalPaymentReference: normalizedExternalPaymentReference,
         settledAt: settlementIsFullyPaid ? now : targetSettlement.settledAt,
       },
       include: {
@@ -911,7 +921,7 @@ export const executeAdminDistributorSettlement = async ({
       payeeName: targetSettlement.distributor.name,
       amount: settleAmount,
       settlementAmount: settleAmount,
-      cashAccountId: financialAccount.accountingAccountId || null,
+      cashAccountId: accountingAccount.id,
       fromAccountType: financialAccount.accountType === "CASH" ? "CASH" : "BANK",
       payableAccountCode: "2110",
       idempotencyKey: historyEntry.idempotencyKey,
@@ -931,13 +941,19 @@ export const executeAdminDistributorSettlement = async ({
           paidAmount: paidToDate,
           distributorId: targetSettlement.distributorId,
           financialAccountId,
+          externalPaymentReference: normalizedExternalPaymentReference,
+          codExposureWarning,
         },
       },
       { client: tx },
     );
     return {
       success: true,
-      message: `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
+      message: codExposureWarning
+        ? `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}. Outstanding COD exposure remains separate and was not netted.`
+        : `Distributor settlement payment of Rs. ${settleAmount.toLocaleString()} recorded from ${financialAccount.accountName}.`,
+      codExposureWarning,
+      requiresCodRemittanceReview: Boolean(codExposureWarning),
       settlement: finalizedSettlement,
       payable: { ...payable, paidAmount: newPaidAmount, remainingBalance: newRemainingBalance },
     };

@@ -88,7 +88,16 @@ export const consumeDistributorOrderInventory = async ({
         idempotencyKey: { startsWith: `ORDER_FULFILLMENT:${assignmentId}:${sku.id}:` },
       },
       include: {
-        productionCostLayer: { select: { unitCogs: true, unitDeliveryCost: true } },
+        productionCostLayer: {
+          select: {
+            manufacturerId: true,
+            unitCogs: true,
+            unitVatAmount: true,
+            vatInvoiceVerified: true,
+            manufacturerPayableRecognizedAtProduction: true,
+            unitDeliveryCost: true,
+          },
+        },
       },
     });
     if (priorMovements.length) {
@@ -100,7 +109,13 @@ export const consumeDistributorOrderInventory = async ({
         movement.productionCostLayerId && movement.productionCostLayer
           ? [{
               quantity: movement.quantity,
+              costLayerId: movement.productionCostLayerId,
+              manufacturerId: movement.productionCostLayer.manufacturerId,
+              manufacturerPayableRecognizedAtProduction:
+                movement.productionCostLayer.manufacturerPayableRecognizedAtProduction === true,
               unitCogs: String(movement.productionCostLayer.unitCogs),
+              unitVatAmount: String(movement.productionCostLayer.unitVatAmount || 0),
+              vatInvoiceVerified: movement.productionCostLayer.vatInvoiceVerified === true,
               unitDeliveryCost: String(movement.productionCostLayer.unitDeliveryCost),
             }]
           : []
@@ -155,7 +170,16 @@ export const consumeDistributorOrderInventory = async ({
         },
         include: {
           productionCostLayer: {
-            select: { id: true, unitCogs: true, unitDeliveryCost: true, createdAt: true },
+            select: {
+              id: true,
+              manufacturerId: true,
+              unitCogs: true,
+              unitVatAmount: true,
+              vatInvoiceVerified: true,
+              manufacturerPayableRecognizedAtProduction: true,
+              unitDeliveryCost: true,
+              createdAt: true,
+            },
           },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -190,7 +214,13 @@ export const consumeDistributorOrderInventory = async ({
         });
         costAllocations.push({
           quantity: allocatedQuantity,
+          costLayerId: entry.layer.id,
+          manufacturerId: entry.layer.manufacturerId,
+          manufacturerPayableRecognizedAtProduction:
+            entry.layer.manufacturerPayableRecognizedAtProduction === true,
           unitCogs: String(entry.layer.unitCogs),
+          unitVatAmount: String(entry.layer.unitVatAmount || 0),
+          vatInvoiceVerified: entry.layer.vatInvoiceVerified === true,
           unitDeliveryCost: String(entry.layer.unitDeliveryCost),
         });
         costedRemaining -= allocatedQuantity;

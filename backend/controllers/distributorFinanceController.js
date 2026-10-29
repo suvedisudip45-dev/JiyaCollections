@@ -12,6 +12,7 @@ import { recordSystemAudit } from "../services/auditService.js";
 import { getDistributorBonusPlans, saveDistributorBonusPlan } from "../services/distributorBonusService.js";
 import {
   getDistributorCashPosition,
+  getDistributorCashPositions,
   listDistributorRemittances,
   listDistributorSettlementOffsets,
   netDistributorRefundPayable,
@@ -261,7 +262,7 @@ export const adminExecuteSettlement = async (req, res) => {
       });
     }
     const settlementId = req.params.id || req.body.settlementId || req.body.id || null;
-    const { amount, financialAccountId, adminNotes, notes } = req.body;
+    const { amount, financialAccountId, externalPaymentReference, adminNotes, notes } = req.body;
 
     const adminAccountId = req.auth?.accountId || req.auth?.userId || req.adminId || null;
 
@@ -269,6 +270,7 @@ export const adminExecuteSettlement = async (req, res) => {
       settlementId,
       amount,
       financialAccountId,
+      externalPaymentReference,
       adminNotes: adminNotes || notes,
       idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
       adminAccountId,
@@ -338,10 +340,27 @@ export const listAdminDistributorSettlements = async (req, res) => {
       }),
       prisma.distributorSettlementRequest.count({ where }),
     ]);
+    const cashPositions = await getDistributorCashPositions({
+      distributorIds: [...new Set(settlements.map((settlement) => settlement.distributorId))],
+    });
+    const settlementsWithCashWarnings = settlements.map((settlement) => {
+      const position = cashPositions.get(settlement.distributorId);
+      return {
+        ...settlement,
+        codExposureWarning: Number(position?.outstandingReceivable || 0) > 0
+          ? {
+              outstandingReceivable: position.outstandingReceivable,
+              pendingRemittance: position.pendingRemittance,
+              availableToRemit: position.availableToRemit,
+              message: "Outstanding COD is tracked separately and is not netted from distributor service earnings.",
+            }
+          : null,
+      };
+    });
 
     return res.status(200).json({
       success: true,
-      settlements,
+      settlements: settlementsWithCashWarnings,
       pagination: {
         page: numPage,
         limit: numLimit,

@@ -93,6 +93,7 @@ export const summarizeManufacturerProductionDashboard = ({
       "PRE_CHECK_PASSED",
       "APPROVED",
       "IN_PRODUCTION",
+      "PENDING_ADMIN_ACCEPTANCE",
       "POST_CHECK_FAILED",
     ].includes(request.status)) {
       activeBatches += 1;

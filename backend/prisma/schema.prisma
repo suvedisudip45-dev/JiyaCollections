@@ -1044,6 +1044,7 @@ model FinancialAccount {
 model CashTransaction {
   id             String            @id @default(uuid())
   idempotencyKey String?           @unique @db.VarChar(191)
+  externalPaymentReference String? @db.VarChar(191)
   date           DateTime          @default(now())
   amount         Float
   type           String // INFLOW, OUTFLOW, TRANSFER
@@ -2023,6 +2024,7 @@ model DistributorSettlementRequest {
   distributorId       String
   amount              Decimal  @db.Decimal(20, 2)
   paidAmount          Decimal  @default(0) @db.Decimal(20, 2)
+  externalPaymentReference String? @db.VarChar(191)
   grossEarnings       Decimal  @default(0) @db.Decimal(20, 2)
   incentives          Decimal  @default(0) @db.Decimal(20, 2)
   bonuses             Decimal  @default(0) @db.Decimal(20, 2)
@@ -2833,7 +2835,7 @@ model ManufacturerProductionRequest {
   manufacturerId             String
   productId                  String
   productName                String
-  status                     String   @default("PENDING_MANUFACTURER_QUOTE") // PENDING_MANUFACTURER_QUOTE | PENDING_ADMIN_APPROVAL | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
+  status                     String   @default("PENDING_MANUFACTURER_QUOTE") // PENDING_MANUFACTURER_QUOTE | PENDING_ADMIN_APPROVAL | PRE_CHECK_FAILED | PRE_CHECK_PASSED | POST_CHECK_FAILED | PENDING_ADMIN_ACCEPTANCE | REJECTED | APPROVED | IN_PRODUCTION | COMPLETED | CANCELLED
   proposedUnitCogs            Decimal? @db.Decimal(20, 2)
   minimumOrderQuantity        Int
   proposedDeliveryCost        Decimal  @default(0) @db.Decimal(20, 2) // Batch-total production other cost for costTermsVersion 2
@@ -2859,6 +2861,10 @@ model ManufacturerProductionRequest {
   manufacturerNote           String?  @db.Text
   adminNote                  String?  @db.Text
   reviewedBy                 String?
+  productionReviewDecision   String?  @db.VarChar(16)
+  productionReviewedBy       String?
+  productionReviewedAt       DateTime?
+  productionReviewNote       String?  @db.Text
   requestedBy                String?
   requestedAt                DateTime @default(now())
   reviewedAt                 DateTime?
@@ -2899,6 +2905,7 @@ model ManufacturerSettlementRequest {
   requestedBy         String?
   reviewedBy          String?
   financialAccountId  String?
+  externalPaymentReference String? @db.VarChar(191)
   idempotencyKey      String?  @unique @db.VarChar(191)
   requestedAt         DateTime @default(now())
   paidAt              DateTime?
@@ -2924,6 +2931,7 @@ model ManufacturerInventoryCostLayer {
   consumedQuantity  Int      @default(0)
   unitCogs          Decimal  @db.Decimal(30, 14)
   unitVatAmount     Decimal  @default(0) @db.Decimal(30, 14)
+  manufacturerPayableRecognizedAtProduction Boolean @default(false)
   vatTreatment      String   @default("EXEMPT") @db.VarChar(24)
   vatRate           Decimal  @default(13) @db.Decimal(5, 2)
   vatInvoiceVerified Boolean @default(false)

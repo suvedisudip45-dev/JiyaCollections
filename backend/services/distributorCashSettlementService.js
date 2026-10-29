@@ -108,6 +108,71 @@ export const getDistributorCashPosition = async ({ distributorId, client = prism
   };
 };
 
+export const getDistributorCashPositions = async ({ distributorIds = [], client = prisma } = {}) => {
+  const ids = [...new Set(distributorIds.filter((id) => typeof id === "string" && id.trim()))];
+  if (!ids.length) return new Map();
+  const parties = await client.accountingParty.findMany({
+    where: { partyType: "DISTRIBUTOR", sourceEntityId: { in: ids } },
+    select: { id: true, sourceEntityId: true },
+  });
+  if (!parties.length) {
+    return new Map(ids.map((id) => [id, {
+      outstandingReceivable: "0.00",
+      pendingRemittance: "0.00",
+      refundPayable: "0.00",
+      availableToRemit: "0.00",
+      availableToOffset: "0.00",
+    }]));
+  }
+  const partyIdToDistributorId = new Map(parties.map((party) => [party.id, party.sourceEntityId]));
+  const [documentBalances, pendingBatches] = await Promise.all([
+    client.accountingDocument.groupBy({
+      by: ["partyId", "side", "sourceType"],
+      where: {
+        partyId: { in: parties.map((party) => party.id) },
+        status: { in: ["OPEN", "PARTIALLY_PAID"] },
+        sourceType: { in: ["DISTRIBUTOR_COD_SALE", "DISTRIBUTOR_CUSTOMER_REFUND"] },
+      },
+      _sum: { remainingAmount: true },
+    }),
+    client.distributorRemittanceBatch.groupBy({
+      by: ["distributorId"],
+      where: { distributorId: { in: ids }, status: "PENDING_REVIEW" },
+      _sum: { amount: true },
+    }),
+  ]);
+  const balances = new Map(ids.map((id) => [id, {
+    outstanding: new Prisma.Decimal(0),
+    refund: new Prisma.Decimal(0),
+    pending: new Prisma.Decimal(0),
+  }]));
+  for (const document of documentBalances) {
+    const distributorId = partyIdToDistributorId.get(document.partyId);
+    const balance = balances.get(distributorId);
+    if (!balance) continue;
+    const amount = new Prisma.Decimal(String(document._sum.remainingAmount || 0));
+    if (document.side === "RECEIVABLE" && document.sourceType === "DISTRIBUTOR_COD_SALE") {
+      balance.outstanding = balance.outstanding.plus(amount);
+    } else if (document.side === "PAYABLE" && document.sourceType === "DISTRIBUTOR_CUSTOMER_REFUND") {
+      balance.refund = balance.refund.plus(amount);
+    }
+  }
+  for (const batch of pendingBatches) {
+    const balance = balances.get(batch.distributorId);
+    if (balance) balance.pending = new Prisma.Decimal(String(batch._sum.amount || 0));
+  }
+  return new Map([...balances].map(([id, balance]) => {
+    const available = Prisma.Decimal.max(balance.outstanding.minus(balance.pending), 0);
+    return [id, {
+      outstandingReceivable: balance.outstanding.toFixed(2),
+      pendingRemittance: balance.pending.toFixed(2),
+      refundPayable: balance.refund.toFixed(2),
+      availableToRemit: available.toFixed(2),
+      availableToOffset: Prisma.Decimal.min(available, balance.refund).toFixed(2),
+    }];
+  }));
+};
+
 export const listDistributorSettlementOffsets = async ({ distributorId, take = 50, client = prisma } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.");
   if (!Number.isInteger(Number(take)) || Number(take) < 1 || Number(take) > 100) {

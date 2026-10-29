@@ -20,9 +20,9 @@ import {
 import { requestManufacturerDistributorAccess } from "../controllers/distributorController.js";
 import { dispatchStockTransferRequest } from "../controllers/stockTransferController.js";
 import {
-  completeProduction,
   createAdminProductionRequest,
   submitManufacturerProductionQuote,
+  submitProductionForAdminAcceptance,
   startProduction,
   submitPreProductionChecklist,
 } from "../controllers/manufacturerProductionController.js";
@@ -105,7 +105,7 @@ manufacturerRouter.patch(
   authenticate,
   authorize("manufacturer:production_manage"),
   setManufacturerContext,
-  completeProduction,
+  submitProductionForAdminAcceptance,
 );
 manufacturerRouter.get(
   "/finance/dashboard",

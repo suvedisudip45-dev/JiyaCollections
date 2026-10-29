@@ -133,6 +133,7 @@ export const getAdminManufacturerFinance = async (req, res) => {
         outstandingPayable: summary.outstandingPayable,
         productionOutstanding: summary.productionOutstanding,
         logisticsOutstanding: summary.logisticsOutstanding,
+        supplierCreditOutstanding: summary.supplierCreditOutstanding,
         receivables: {
           total: Number(receivableTotals?._sum.originalAmount || 0),
           outstanding: Number(receivableTotals?._sum.remainingAmount || 0),

@@ -76,6 +76,8 @@ Treasury accounts are not allowed to be random cash buckets. The project enforce
 
 This prevents a common accounting failure: using a receivable or held-payment account as if it were cash.
 
+Manufacturer, distributor, and generic payable payouts additionally require an active NPR Treasury account whose GL mapping matches its type. An unmapped, inactive, wrong-currency, or mismatched account is blocked. The payout journal credits the mapped GL account; it must not guess a cash/bank account code.
+
 ### 4.2 Required setup steps
 
 1. Open the Treasury section.
@@ -289,7 +291,9 @@ The system intentionally blocks or warns on these patterns:
 
 ### 9.1 AP and AR are document-ledger based
 
-The system is designed so that actual open payables and receivables reconcile to control accounts. In this project, the older legacy flows remain compatibility-oriented until the full document cutover is finished.
+The system is designed so that actual open payables and receivables reconcile to control accounts. Manufacturer production bills are created when delivered goods trigger payable recognition; manufacturer payments allocate to those open bills. A confirmed return creates a supplier credit note only when the original delivery bill exists. Older manufacturer journals remain a legacy balance until reconciled.
+
+New distributor settlement requests do not create an AP from the amount requested. Requests backed by distributor earning documents are linked to those documents. Requests without matching earning documents are marked for reconciliation and cannot be paid until historical earnings are backfilled/reconciled. Pre-existing request-accrual AP records remain on the compatibility path pending controlled migration.
 
 ### 9.2 Safe patterns
 
@@ -309,6 +313,8 @@ Do not mark a receivable or payable as cleared based only on a UI toggle or a pa
 ### 10.1 COD receivable
 
 COD is not cash. The carrier has collected customer funds, but the money is still due to the company as a receivable until settlement is confirmed.
+
+Outstanding distributor COD is displayed as a separate exposure warning on Admin service-settlement views and payout results. Distributor service earnings are paid gross against their own payable documents; COD is not automatically netted from that payout. Remittance verification or an explicitly approved offset workflow is required to clear the COD receivable.
 
 ### 10.2 NCM settlement rule
 

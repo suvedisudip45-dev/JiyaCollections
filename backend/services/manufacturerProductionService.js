@@ -181,8 +181,12 @@ export const allocateProductionLayersForOrderItem = async ({
     allocations.push({
       allocationId: allocation.id,
       costLayerId: layer.id,
+      manufacturerId: layer.manufacturerId || manufacturerId,
+      manufacturerPayableRecognizedAtProduction: layer.manufacturerPayableRecognizedAtProduction === true,
       quantity: take,
       unitCogs: layer.unitCogs.toFixed(14),
+      unitVatAmount: layer.unitVatAmount?.toFixed(14) ?? "0.00000000000000",
+      vatInvoiceVerified: layer.vatInvoiceVerified === true,
       unitDeliveryCost: layer.unitDeliveryCost.toFixed(2),
     });
     remaining -= take;

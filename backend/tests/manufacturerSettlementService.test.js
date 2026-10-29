@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Prisma } from "@prisma/client";
 import {
+  allocateManufacturerPaymentToDocuments,
   getManufacturerSettlementSummary,
   normalizeSettlementRequest,
   reconcileManufacturerLogisticsShipmentPayments,
 } from "../services/manufacturerSettlementService.js";
 
-test("manufacturer settlement summary combines payable journals and all settlement totals", async () => {
+test("manufacturer settlement summary uses recognized payable journals and all settlement totals", async () => {
   const client = {
     manufacturer: {
       findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }),
@@ -75,13 +76,155 @@ test("manufacturer settlement summary combines payable journals and all settleme
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 102);
+  assert.equal(summary.totalManufacturedGoodsValue, 100);
   assert.equal(summary.pendingSettlementAmount, 25);
   assert.equal(summary.completedPayments, 12);
   assert.equal(summary.productionOutstanding, 90);
   assert.equal(summary.logisticsOutstanding, 3);
   assert.equal(summary.productionPayableAvailable, 70);
   assert.equal(summary.logisticsPayableAvailable, 0);
+});
+
+test("manufacturer settlement summary uses open delivery bills and nets supplier credit notes", async () => {
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    manufacturerSettlementRequest: {
+      findMany: async () => [],
+      groupBy: async () => [],
+    },
+    account: { findUnique: async () => ({ id: "payable-account" }) },
+    accountingDocument: {
+      findMany: async () => [
+        {
+          side: "PAYABLE",
+          sourceType: "MANUFACTURER_DELIVERY_COGS",
+          sourceId: "order-1",
+          originalAmount: new Prisma.Decimal("100"),
+          allocatedAmount: new Prisma.Decimal("40"),
+          remainingAmount: new Prisma.Decimal("60"),
+          status: "PARTIALLY_PAID",
+        },
+        {
+          side: "RECEIVABLE",
+          sourceType: "MANUFACTURER_DELIVERY_RETURN",
+          sourceId: "return-1",
+          originalAmount: new Prisma.Decimal("10"),
+          allocatedAmount: new Prisma.Decimal("0"),
+          remainingAmount: new Prisma.Decimal("10"),
+          status: "OPEN",
+        },
+      ],
+    },
+    journalLine: {
+      findMany: async () => [
+        {
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("100"),
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "DELIVERY_SALE", sourceId: "order-1" },
+        },
+        {
+          debit: new Prisma.Decimal("40"),
+          credit: new Prisma.Decimal("0"),
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "SUPPLIER_PAYMENT", sourceId: "payment-1" },
+        },
+      ],
+    },
+  };
+
+  const summary = await getManufacturerSettlementSummary("mfg-1", { client });
+
+  assert.equal(summary.totalManufacturedGoodsValue, 100);
+  assert.equal(summary.productionOutstanding, 50);
+  assert.equal(summary.supplierCreditOutstanding, 10);
+  assert.equal(summary.productionPayableAvailable, 50);
+});
+
+test("manufacturer settlement summary reduces legacy delivery payables for returns without a bill", async () => {
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    manufacturerSettlementRequest: {
+      findMany: async () => [],
+      groupBy: async () => [],
+    },
+    account: { findUnique: async () => ({ id: "payable-account" }) },
+    journalLine: {
+      findMany: async () => [
+        {
+          debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("100"),
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "DELIVERY_SALE", sourceId: "order-legacy" },
+        },
+        {
+          debit: new Prisma.Decimal("25"),
+          credit: new Prisma.Decimal("0"),
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "DELIVERY_RETURN", sourceId: "return-legacy" },
+        },
+      ],
+    },
+  };
+
+  const summary = await getManufacturerSettlementSummary("mfg-1", { client });
+
+  assert.equal(summary.totalManufacturedGoodsValue, 75);
+  assert.equal(summary.productionOutstanding, 75);
+});
+
+test("manufacturer payout allocations apply to open delivery bills and leave legacy balance explicit", async () => {
+  const updates = [];
+  const allocations = [];
+  const document = {
+    id: "bill-1",
+    allocatedAmount: new Prisma.Decimal("0"),
+    remainingAmount: new Prisma.Decimal("75"),
+    status: "OPEN",
+  };
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    accountingParty: {
+      upsert: async () => ({ id: "party-1" }),
+    },
+    accountingDocument: {
+      findMany: async () => [document],
+      updateMany: async ({ where, data }) => {
+        updates.push({ where, data });
+        return { count: 1 };
+      },
+    },
+    accountingAllocation: {
+      findUnique: async () => null,
+      create: async ({ data }) => {
+        const allocation = { id: `allocation-${allocations.length + 1}`, ...data };
+        allocations.push(allocation);
+        return allocation;
+      },
+    },
+  };
+
+  const result = await allocateManufacturerPaymentToDocuments({
+    manufacturerId: "mfg-1",
+    amount: "100",
+    journalEntryId: "journal-1",
+    idempotencyKey: "payout-1",
+    client,
+  });
+
+  assert.equal(result.totalAllocated.toFixed(2), "75.00");
+  assert.equal(result.unallocatedAmount.toFixed(2), "25.00");
+  assert.equal(allocations[0].documentId, "bill-1");
+  assert.equal(allocations[0].amount.toFixed(2), "75.00");
+  assert.equal(updates[0].data.remainingAmount.toFixed(2), "0.00");
 });
 
 test("paid logistics settlements reconcile shipment freight oldest-first and expose partial balances", async () => {

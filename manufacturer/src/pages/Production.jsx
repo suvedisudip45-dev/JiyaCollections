@@ -12,6 +12,7 @@ const statusStyle = {
   PRE_CHECK_PASSED: "bg-emerald-50 text-emerald-800 border-emerald-200",
   PRE_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
   IN_PRODUCTION: "bg-indigo-50 text-indigo-800 border-indigo-200",
+  PENDING_ADMIN_ACCEPTANCE: "bg-amber-50 text-amber-800 border-amber-200",
   POST_CHECK_FAILED: "bg-rose-50 text-rose-800 border-rose-200",
   COMPLETED: "bg-emerald-50 text-emerald-800 border-emerald-200",
   REJECTED: "bg-rose-50 text-rose-800 border-rose-200",
@@ -156,6 +157,7 @@ const Production = () => {
                 "PRE_CHECK_PASSED",
                 "PRE_CHECK_FAILED",
                 "IN_PRODUCTION",
+                "PENDING_ADMIN_ACCEPTANCE",
                 "POST_CHECK_FAILED",
                 "COMPLETED",
               ].includes(request.status);
@@ -269,10 +271,20 @@ const Production = () => {
                     {["IN_PRODUCTION", "POST_CHECK_FAILED"].includes(request.status) && (
                       <button onClick={() => setPostCheckRequest(request)} className="flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-1.5 text-xs font-bold text-white">
                         <CheckCircle2 className="h-3.5 w-3.5" />
-                        {request.status === "POST_CHECK_FAILED" ? "Retry QA & Receive Stock" : "Complete QA & Receive Stock"}
+                        {request.status === "POST_CHECK_FAILED" ? "Retry QA & Submit" : "Complete QA & Submit"}
                       </button>
                     )}
                   </div>
+                  {request.status === "PENDING_ADMIN_ACCEPTANCE" && (
+                    <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      Final inspection is awaiting Admin acceptance. Do not dispatch these units; stock is not available until accepted.
+                    </p>
+                  )}
+                  {request.status === "POST_CHECK_FAILED" && request.productionReviewDecision === "REJECT" && (
+                    <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">
+                      Admin requested rework before accepting these units. {request.productionReviewNote || ""}
+                    </p>
+                  )}
                 </article>
               );
             })}

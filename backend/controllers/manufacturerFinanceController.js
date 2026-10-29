@@ -3,8 +3,11 @@ import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { postSupplierPaymentAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
+import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
 import {
   getManufacturerSettlementSummary,
+  allocateManufacturerPaymentToDocuments,
   normalizeSettlementRequest,
   reconcileManufacturerLogisticsShipmentPayments,
 } from "../services/manufacturerSettlementService.js";
@@ -31,6 +34,7 @@ export const getManufacturerFinanceDashboard = async (req, res) => {
         pendingSettlements: summary.pendingSettlementAmount,
         completedPayments: summary.completedPayments,
         outstandingPayable: summary.outstandingPayable,
+        supplierCreditOutstanding: summary.supplierCreditOutstanding,
         settlements: summary.settlements,
       },
     });
@@ -128,6 +132,7 @@ export const payManufacturerSettlement = async (req, res) => {
     const { id } = req.params;
     const financialAccountId = String(req.body.financialAccountId || "").trim();
     if (!financialAccountId) return res.status(400).json({ success: false, message: "Source financial account is required." });
+    const externalPaymentReference = requireExternalPaymentReference(req.body.externalPaymentReference);
     const result = await prisma.$transaction(async (tx) => {
       const request = await tx.manufacturerSettlementRequest.findUnique({
         where: { id },
@@ -137,17 +142,11 @@ export const payManufacturerSettlement = async (req, res) => {
       if (request.status !== "PENDING") throw Object.assign(new Error("Only pending settlement requests can be paid."), { statusCode: 409 });
       const account = await tx.financialAccount.findUnique({
         where: { id: financialAccountId },
-        include: { accountingAccount: { select: { accountType: true, normalBalance: true } } },
       });
       if (!account || account.status !== "ACTIVE" || !["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())) {
         throw Object.assign(new Error("An active cash, bank, or wallet account is required."), { statusCode: 404 });
       }
-      if (
-        account.accountingAccountId &&
-        (account.accountingAccount?.accountType !== "ASSET" || account.accountingAccount?.normalBalance !== "DEBIT")
-      ) {
-        throw Object.assign(new Error("The selected treasury account must map to a debit-balance asset account."), { statusCode: 409 });
-      }
+      const accountingAccount = await validateTreasuryPayoutAccount(account, tx);
       const amount = Number(request.amount);
       const summary = await getManufacturerSettlementSummary(request.manufacturerId, { client: tx });
       if (!summary) throw Object.assign(new Error("Manufacturer profile not found."), { statusCode: 404 });
@@ -173,6 +172,7 @@ export const payManufacturerSettlement = async (req, res) => {
           category: "SUPPLIER_PAYMENT",
           partyName: request.manufacturer.name,
           referenceId: request.manufacturerId,
+          externalPaymentReference,
           description: `${request.requestType} settlement ${request.id} paid to ${request.manufacturer.name}`,
         },
       });
@@ -183,13 +183,23 @@ export const payManufacturerSettlement = async (req, res) => {
         settlementAmount: amount,
         fromAccountType: account.accountType === "CASH" ? "CASH" : "BANK",
         payableAccountCode: "2160",
-        cashAccountId: account.accountingAccountId || null,
+        cashAccountId: accountingAccount.id,
         supplierId: request.manufacturerId,
         idempotencyKey: `SUPPLIER_PAYMENT:${idempotencyKey}`,
         referenceNumber: `MFG-SET-${request.id.slice(-8).toUpperCase()}`,
         client: tx,
       });
       if (!journal) throw new Error("Accounting journal could not be posted for the settlement.");
+      const documentAllocation = request.requestType === "PRODUCTION"
+        ? await allocateManufacturerPaymentToDocuments({
+          manufacturerId: request.manufacturerId,
+          amount,
+          journalEntryId: journal.id,
+          idempotencyKey: `MFG-SETTLEMENT-ALLOCATION:${request.id}`,
+          notes: `Production settlement ${request.id}`,
+          client: tx,
+        })
+        : null;
 
       const updated = await tx.manufacturerSettlementRequest.updateMany({
         where: { id: request.id, status: "PENDING" },
@@ -197,6 +207,7 @@ export const payManufacturerSettlement = async (req, res) => {
           status: "PAID",
           reviewedBy: req.auth?.accountId || null,
           financialAccountId: account.id,
+          externalPaymentReference,
           paidAt: new Date(),
         },
       });
@@ -216,7 +227,12 @@ export const payManufacturerSettlement = async (req, res) => {
           status: "PAID",
           amount: amount.toFixed(2),
           financialAccountId: account.id,
+          externalPaymentReference,
           journalEntryId: journal.id,
+          documentAllocation: documentAllocation && {
+            allocatedAmount: documentAllocation.totalAllocated.toFixed(2),
+            unallocatedLegacyAmount: documentAllocation.unallocatedAmount.toFixed(2),
+          },
           freightSettlementReconciliation: freightSettlementReconciliation && {
             allocatedPaidAmount: freightSettlementReconciliation.allocatedPaidAmount.toFixed(2),
             unreconciledPaidAmount: freightSettlementReconciliation.unreconciledPaidAmount.toFixed(2),
@@ -229,16 +245,21 @@ export const payManufacturerSettlement = async (req, res) => {
         journalEntryId: journal.id,
         amount,
         accountBalance: updatedAccount.currentBalance,
+        externalPaymentReference,
+        documentAllocation,
         freightSettlementReconciliation,
       };
     }, { isolationLevel: "Serializable" });
     const hasUnreconciledFreight = result.freightSettlementReconciliation?.unreconciledPaidAmount.greaterThan(0);
+    const hasUnallocatedLegacyPayment = result.documentAllocation?.unallocatedAmount.greaterThan(0);
     return res.json({
       success: true,
       message: hasUnreconciledFreight
         ? "Manufacturer settlement paid and journaled, but part of the logistics payment could not be matched to dispatched local freight."
+        : hasUnallocatedLegacyPayment
+          ? "Manufacturer settlement paid and journaled. Part of the payment applies to legacy payable balances not represented by delivery bills."
         : "Manufacturer settlement paid and recorded in the accounting journal.",
-      reconciliationRequired: Boolean(hasUnreconciledFreight),
+      reconciliationRequired: Boolean(hasUnreconciledFreight || hasUnallocatedLegacyPayment),
       ...result,
     });
   } catch (error) {

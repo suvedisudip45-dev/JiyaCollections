@@ -50,6 +50,7 @@ const createComprehensiveHarness = () => {
     entries: [],
     documents: [],
     vatRateVersions: [],
+    costLayers: [],
   };
 
   const client = {
@@ -106,6 +107,12 @@ const createComprehensiveHarness = () => {
       },
     },
     accountingDocument: {
+      findFirst: async ({ where }) => state.documents.find((document) =>
+        document.partyId === where.partyId &&
+        document.side === where.side &&
+        document.sourceType === where.sourceType &&
+        document.sourceId === where.sourceId
+      ) || null,
       upsert: async ({ where, create, include }) => {
         let document = state.documents.find((entry) => entry.idempotencyKey === where.idempotencyKey);
         if (!document) {
@@ -166,6 +173,9 @@ const createComprehensiveHarness = () => {
     },
     manufacturer: {
       findUnique: async ({ where }) => ({ id: where.id, name: "Alpha Textiles" }),
+    },
+    manufacturerInventoryCostLayer: {
+      findMany: async ({ where }) => state.costLayers.filter((layer) => where.id.in.includes(layer.id)),
     },
     distributor: {
       findUnique: async ({ where }) => ({ id: where.id, name: "Distributor One" }),
@@ -302,8 +312,15 @@ test("verified distributor-paid customer refund creates balanced GL and distribu
   assert.equal(state.documents[0].originalAmount.toFixed(2), "900.00");
 });
 
-test("delivery accounting does not multiply batch logistics overhead across sold orders", async () => {
-  const { client } = createComprehensiveHarness();
+test("delivery accounting resolves historical production recognition and does not duplicate manufacturer AP", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.costLayers.push({
+    id: "layer-legacy-recognized",
+    manufacturerId: "mfg-001",
+    unitVatAmount: new Prisma.Decimal("0.00"),
+    vatInvoiceVerified: false,
+    manufacturerPayableRecognizedAtProduction: true,
+  });
   const order = {
     id: "ord-production-005",
     userId: "user-cust-005",
@@ -314,7 +331,12 @@ test("delivery accounting does not multiply batch logistics overhead across sold
     items: [{
       productId: "prod-001",
       quantity: 2,
-      productionCostAllocations: [{ quantity: 2, unitCogs: "100.00", unitDeliveryCost: "10.00" }],
+      productionCostAllocations: [{
+        quantity: 2,
+        costLayerId: "layer-legacy-recognized",
+        unitCogs: "100.00",
+        unitDeliveryCost: "10.00",
+      }],
       legacyCostQuantity: 0,
     }],
   };
@@ -326,7 +348,43 @@ test("delivery accounting does not multiply batch logistics overhead across sold
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
   assert.equal(cogsLine.debit.toFixed(2), "200.00");
   assert.equal(inventoryLine.credit.toFixed(2), "200.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "2160"), false);
   assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
+});
+
+test("delivery recognizes new production-layer COGS, verified input VAT, and payable exactly once", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const order = {
+    id: "ord-production-new-verified-005",
+    amount: 452,
+    paymentMethod: "ONLINE_BANK",
+    items: [{
+      quantity: 2,
+      legacyCostQuantity: 0,
+      productionCostAllocations: [{
+        costLayerId: "layer-new-verified",
+        quantity: 2,
+        manufacturerId: "mfg-001",
+        manufacturerPayableRecognizedAtProduction: false,
+        unitCogs: "100.00",
+        unitVatAmount: "13.00",
+        vatInvoiceVerified: true,
+      }],
+    }],
+  };
+
+  const first = await postDeliveredOrderAccounting(order, { client });
+  const second = await postDeliveredOrderAccounting(order, { client });
+
+  assert.equal(first.id, second.id);
+  assert.equal(state.entries.length, 1);
+  assert.equal(state.documents.length, 1);
+  assert.equal(state.documents[0].originalAmount.toFixed(2), "226.00");
+  assert.equal(first.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "200.00");
+  assert.equal(first.lines.find((line) => line.account.accountCode === "1150").debit.toFixed(2), "26.00");
+  assert.equal(first.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "226.00");
+  assert.equal(first.lines.some((line) => line.account.accountCode === "1140"), false);
+  assert.equal(first.totalDebit.toFixed(2), first.totalCredit.toFixed(2));
 });
 
 test("new manufacturer production layers flow through distributor delivery into P&L COGS", async () => {
@@ -357,7 +415,11 @@ test("new manufacturer production layers flow through distributor delivery into 
           productionCostLayerId: "layer-a",
           productionCostLayer: {
             id: "layer-a",
+            manufacturerId: "mfg-001",
             unitCogs: "100.00",
+            unitVatAmount: "0.00",
+            vatInvoiceVerified: false,
+            manufacturerPayableRecognizedAtProduction: false,
             unitDeliveryCost: "10.00",
             createdAt: new Date("2026-01-01T00:00:00Z"),
           },
@@ -369,7 +431,11 @@ test("new manufacturer production layers flow through distributor delivery into 
           productionCostLayerId: "layer-b",
           productionCostLayer: {
             id: "layer-b",
+            manufacturerId: "mfg-001",
             unitCogs: "125.00",
+            unitVatAmount: "0.00",
+            vatInvoiceVerified: false,
+            manufacturerPayableRecognizedAtProduction: false,
             unitDeliveryCost: "15.00",
             createdAt: new Date("2026-02-01T00:00:00Z"),
           },
@@ -406,8 +472,10 @@ test("new manufacturer production layers flow through distributor delivery into 
 
   const cogsLine = journal.lines.find((line) => line.account.accountCode === "5100");
   const inventoryLine = journal.lines.find((line) => line.account.accountCode === "1140");
+  const payableLine = journal.lines.find((line) => line.account.accountCode === "2160");
   assert.equal(cogsLine.debit.toFixed(2), "225.00");
-  assert.equal(inventoryLine.credit.toFixed(2), "225.00");
+  assert.equal(inventoryLine, undefined);
+  assert.equal(payableLine.credit.toFixed(2), "225.00");
   assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
@@ -707,7 +775,14 @@ test("NCM remittance rejects carrier fees greater than collected COD", async () 
 });
 
 test("confirmed delivery return reverses sales revenue, output VAT, and manufacturer AP", async () => {
-  const { client } = createComprehensiveHarness();
+  const { client, state } = createComprehensiveHarness();
+  state.documents.push({
+    id: "bill-return-legacy",
+    partyId: "party-1",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_DELIVERY_COGS",
+    sourceId: "ord-ret-004",
+  });
 
   const mockOrder = {
     id: "ord-ret-004",
@@ -753,6 +828,11 @@ test("confirmed delivery return reverses sales revenue, output VAT, and manufact
   assert.equal(codClearLine.credit.toFixed(2), "11300.00");
   assert.equal(mfgApReversal.debit.toFixed(2), "6000.00");
   assert.equal(cogsReversal.credit.toFixed(2), "6000.00");
+  const supplierCredit = state.documents.find((document) => document.documentType === "CREDIT_NOTE");
+  assert.ok(supplierCredit);
+  assert.equal(supplierCredit.side, "RECEIVABLE");
+  assert.equal(supplierCredit.sourceType, "MANUFACTURER_DELIVERY_RETURN");
+  assert.equal(supplierCredit.originalAmount.toFixed(2), "6000.00");
 });
 
 test("production-layer return restores inventory without reversing batch freight overhead per order", async () => {
@@ -767,7 +847,13 @@ test("production-layer return restores inventory without reversing batch freight
     items: [{
       productId: "prod-001",
       quantity: 2,
-      productionCostAllocations: [{ quantity: 2, unitCogs: "100.00", unitDeliveryCost: "10.00" }],
+      productionCostAllocations: [{
+        quantity: 2,
+        costLayerId: "layer-return-legacy",
+        manufacturerPayableRecognizedAtProduction: true,
+        unitCogs: "100.00",
+        unitDeliveryCost: "10.00",
+      }],
       legacyCostQuantity: 0,
     }],
   });
@@ -784,6 +870,49 @@ test("production-layer return restores inventory without reversing batch freight
   assert.equal(journal.lines.some((line) => line.account.accountCode === "6430"), false);
   assert.equal(inventoryRestock.debit.toFixed(2), "200.00");
   assert.equal(cogsReversal.credit.toFixed(2), "200.00");
+});
+
+test("return reverses delivery-recognized production payable, COGS, and input VAT", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.documents.push({
+    id: "bill-return-production",
+    partyId: "party-1",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_DELIVERY_COGS",
+    sourceId: "ord-production-return-new-007",
+  });
+  client.order.findUnique = async () => ({
+    id: "ord-production-return-new-007",
+    amount: 452,
+    paymentMethod: "ONLINE_BANK",
+    manufacturerId: "mfg-001",
+    items: [{
+      quantity: 2,
+      legacyCostQuantity: 0,
+      productionCostAllocations: [{
+        costLayerId: "layer-return-new",
+        quantity: 2,
+        manufacturerId: "mfg-001",
+        manufacturerPayableRecognizedAtProduction: false,
+        unitCogs: "100.00",
+        unitVatAmount: "13.00",
+        vatInvoiceVerified: true,
+      }],
+    }],
+  });
+
+  const journal = await postConfirmedDeliveryReturnAccounting({
+    returnRecord: { id: "ret-production-new-007", orderId: "ord-production-return-new-007" },
+    client,
+  });
+
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").debit.toFixed(2), "226.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "5100").credit.toFixed(2), "200.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1150").credit.toFixed(2), "26.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1140"), false);
+  const supplierCredit = state.documents.find((document) => document.documentType === "CREDIT_NOTE");
+  assert.equal(supplierCredit.originalAmount.toFixed(2), "226.00");
 });
 
 test("marketing CPA redemption posts marketing expense and partner payable", async () => {

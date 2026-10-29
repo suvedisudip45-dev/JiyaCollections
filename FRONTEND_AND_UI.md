@@ -199,6 +199,7 @@ The application exposes modules such as:
 - `/distributors/:distributorId` Finance includes a COD receivable/remittance panel with transfer evidence, Admin verification/rejection, and separate refund-payable reporting.
 - `/journal-entries`, `/general-ledger`, `/trial-balance`, `/fiscal-periods`, `/accounting-health`
 - `/payables` displays distributor settlement requests with the payable balance and lets an authorized Admin make full or partial payment from a selected treasury account.
+- `/distributor-applications` shows a COD receivable/pending-remittance warning beside Admin service-settlement requests; the payout is gross and COD is not automatically netted. Requests lacking earning documents are labeled reconciliation-required and do not expose the normal pay action.
 - `/add`, `/list`, `/inventory`, `/cogs`, `/special-offers`
 - `/create-order`, `/orders`, `/product-analytics`, `/order-assignments`, `/delivery-monitor`, `/ncm-deliveries`, `/self-deliveries`, `/ncm-tools`
 - In `/order-assignments`, Admins with `order:control` can manually assign failed, unassigned online orders and reroute an existing distributor assignment before acceptance or delivery handoff. Both dialogs require an active distributor and a reason; rerouting atomically transfers the exact stock reservation, and backend validation does not silently substitute another hub.

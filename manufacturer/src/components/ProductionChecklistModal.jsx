@@ -216,7 +216,7 @@ export const PostProductionChecklistModal = ({ request, token, onClose, onSucces
         },
         { headers: { token } }
       );
-      toast.success(response.data.message || "Post-production inspection completed!");
+      toast.success(response.data.message || "Final inspection submitted for Admin acceptance.");
       onSuccess?.();
       onClose();
     } catch (err) {
