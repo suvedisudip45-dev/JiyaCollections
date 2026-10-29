@@ -2,11 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   calculateOrderGiftEligibility,
+  adjustAdminDistributorGiftStock,
+  archiveGiftCatalog,
+  archiveOrderValueGiftRule,
+  assignGiftToDistributor,
+  cancelPendingAdminDistributorGiftAllocation,
   autoAssignGiftForCheckout,
   bindGiftRewardsToCheckout,
   createGiftSkuFromName,
   createPendingGiftEntitlement,
   getDistributorGiftInventory,
+  listAdminDistributorGiftStock,
   getDistributorGiftOptions,
   isExactGiftValue,
   getManufacturerGiftOptions,
@@ -18,6 +24,7 @@ import {
   replaceAdminOrderGift,
   respondToDistributorGiftAllocation,
   saveGiftCatalog,
+  saveLoyaltyTierConfig,
 } from "../services/giftService.js";
 import { claimCustomerReward } from "../services/marketingCardCustomerService.js";
 
@@ -92,6 +99,361 @@ test("catalog value cannot change while the gift is assigned to an unfulfilled o
     saveGiftCatalog({ id: "gift-1", name: "Gift", priceValue: 500, category: "GENERAL" }, client),
     /cannot change while it is assigned to an unfulfilled order/
   );
+});
+
+test("admin gift catalog create and archive mutations write audit events", async () => {
+  const audits = [];
+  let archived = false;
+  const client = {
+    giftCatalog: {
+      findUnique: async ({ where }) => where.id
+        ? { id: "gift-1", name: "Gift box", sku: "GFT-GIFT-BOX", priceValue: 200, category: "GENERAL", isActive: true }
+        : null,
+      upsert: async ({ create }) => ({ id: "gift-1", ...create }),
+      update: async () => { archived = true; return { id: "gift-1", isActive: false }; },
+    },
+    systemAuditOutbox: {
+      create: async ({ data }) => { audits.push(data.event); return { id: `audit-${audits.length}` }; },
+    },
+  };
+  const actorContext = { actorId: "admin-1", actorRole: "ADMIN" };
+
+  await saveGiftCatalog({
+    name: "Gift box",
+    priceValue: 200,
+    category: "GENERAL",
+  }, client, actorContext);
+  const result = await archiveGiftCatalog({ giftId: "gift-1", client, actorContext });
+
+  assert.equal(archived, true);
+  assert.equal(result.isActive, false);
+  assert.deepEqual(audits.map(({ action }) => action), ["GIFT_CATALOG_CREATED", "GIFT_CATALOG_ARCHIVED"]);
+  assert.ok(audits.every(({ actorId }) => actorId === "admin-1"));
+});
+
+test("admin order-value gift rules can be archived without changing loyalty tiers", async () => {
+  let updates = 0;
+  const audits = [];
+  const activeRule = {
+    id: "rule-1",
+    tierName: "Orders over 5000",
+    triggerType: "ORDER_VALUE",
+    minSpendThreshold: 5000,
+    giftTargetValue: 300,
+    isActive: true,
+  };
+  const tx = {
+    loyaltyTierConfig: {
+      findUnique: async ({ where }) => where.id === "loyalty-tier"
+        ? { id: "loyalty-tier", triggerType: "LOYALTY" }
+        : activeRule,
+      update: async ({ data }) => {
+        updates += 1;
+        return { ...activeRule, ...data };
+      },
+    },
+    systemAuditOutbox: { create: async ({ data }) => { audits.push(data.event); return { id: "audit-1" }; } },
+  };
+  const updatedRule = await saveLoyaltyTierConfig({
+    id: "rule-1",
+    tierName: "Orders over 6000",
+    minSpendThreshold: 6000,
+    giftTargetValue: 350,
+  }, tx, { actorId: "admin-1" });
+  assert.equal(updatedRule.tierName, "Orders over 6000");
+  const archived = await archiveOrderValueGiftRule({
+    ruleId: "rule-1",
+    actorContext: { actorId: "admin-1" },
+    client: tx,
+  });
+  assert.equal(archived.isActive, false);
+  assert.deepEqual(audits.map(({ action }) => action), [
+    "ORDER_VALUE_GIFT_RULE_UPDATED",
+    "ORDER_VALUE_GIFT_RULE_ARCHIVED",
+  ]);
+  await assert.rejects(
+    archiveOrderValueGiftRule({ ruleId: "loyalty-tier", client: tx }),
+    /Order-value gift rule not found/
+  );
+  await assert.rejects(
+    saveLoyaltyTierConfig({
+      id: "loyalty-tier",
+      tierName: "Gold",
+      minSpendThreshold: 1000,
+      giftTargetValue: 200,
+    }, tx),
+    /Only order-value gift rules can be edited/
+  );
+  assert.equal(updates, 2);
+});
+
+test("admin order-value rule cannot overwrite a loyalty tier with a matching name", async () => {
+  let auditWritten = false;
+  const client = {
+    loyaltyTierConfig: {
+      findUnique: async () => ({ id: "loyalty-1", triggerType: "LOYALTY", tierName: "Gold" }),
+      update: async () => { throw new Error("Unexpected loyalty tier update."); },
+      create: async () => { throw new Error("Unexpected rule creation."); },
+    },
+    systemAuditOutbox: { create: async () => { auditWritten = true; } },
+  };
+
+  await assert.rejects(
+    saveLoyaltyTierConfig({
+      tierName: "Gold",
+      minSpendThreshold: 5000,
+      giftTargetValue: 300,
+    }, client),
+    /already used by a loyalty tier/
+  );
+  assert.equal(auditWritten, false);
+});
+
+test("admin distributor gift distribution writes a matching audit event", async () => {
+  let audit;
+  const inventory = {
+    id: "stock-1",
+    status: "PENDING_ACCEPTANCE",
+    notes: "Admin distributed gift inventory to distributor.",
+  };
+  const tx = {
+    distributorGiftInventory: { create: async () => inventory },
+    distributorGiftMovementLog: { create: async () => ({}) },
+    systemAuditOutbox: { create: async ({ data }) => { audit = data.event; return { id: "audit-1" }; } },
+  };
+  const client = {
+    giftCatalog: { findUnique: async () => ({ id: "gift-1", isActive: true }) },
+    distributor: { findFirst: async () => ({ id: "distributor-1" }) },
+    $transaction: async (callback) => callback(tx),
+  };
+
+  await assignGiftToDistributor({
+    distributorId: "distributor-1",
+    giftId: "gift-1",
+    quantity: 3,
+    actorContext: { actorId: "admin-1" },
+    client,
+  });
+
+  assert.equal(audit.action, "DISTRIBUTOR_GIFT_STOCK_DISTRIBUTED");
+  assert.equal(audit.afterState.quantitySent, 3);
+  assert.equal(audit.actorId, "admin-1");
+});
+
+test("admin cancellation preserves history and only cancels pending, unreserved stock", async () => {
+  const movementEntries = [];
+  let audit;
+  let pendingStock = {
+    id: "stock-1",
+    distributorId: "distributor-1",
+    giftId: "gift-1",
+    status: "PENDING_ACCEPTANCE",
+    quantitySent: 4,
+    quantityAvailable: 4,
+    quantityReserved: 0,
+    receivedQuantity: null,
+    notes: "Admin assigned.",
+  };
+  const tx = {
+    distributorGiftInventory: {
+      findUnique: async () => pendingStock,
+      updateMany: async ({ where, data }) => {
+        assert.equal(where.status, "PENDING_ACCEPTANCE");
+        assert.equal(where.quantityReserved, 0);
+        pendingStock = { ...pendingStock, ...data };
+        return { count: 1 };
+      },
+    },
+    distributorGiftMovementLog: { create: async ({ data }) => { movementEntries.push(data); return data; } },
+    systemAuditOutbox: { create: async ({ data }) => { audit = data.event; return { id: "audit-1" }; } },
+  };
+  const result = await cancelPendingAdminDistributorGiftAllocation({
+    inventoryId: "stock-1",
+    reason: "Dispatch was created in error.",
+    actorContext: { actorId: "admin-1" },
+    client: { $transaction: async (callback) => callback(tx) },
+  });
+
+  assert.equal(result.status, "CANCELLED");
+  assert.equal(result.quantityAvailable, 0);
+  assert.equal(movementEntries[0].movementType, "CANCELLED");
+  assert.equal(movementEntries[0].quantity, 4);
+  assert.match(movementEntries[0].notes, /created in error/);
+  assert.equal(audit.action, "DISTRIBUTOR_GIFT_ALLOCATION_CANCELLED");
+  assert.equal(audit.afterState.status, "CANCELLED");
+  assert.match(audit.afterState.cancellationReason, /created in error/);
+});
+
+test("admin cancellation rejects acknowledged stock and races without writing history", async () => {
+  let writes = 0;
+  const tx = {
+    distributorGiftInventory: {
+      findUnique: async () => ({
+        id: "stock-1",
+        distributorId: "distributor-1",
+        giftId: "gift-1",
+        status: "ACCEPTED",
+        quantitySent: 4,
+        quantityAvailable: 4,
+        quantityReserved: 0,
+      }),
+      updateMany: async () => { writes += 1; return { count: 0 }; },
+    },
+    distributorGiftMovementLog: { create: async () => { writes += 1; } },
+    systemAuditOutbox: { create: async () => { writes += 1; } },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  await assert.rejects(
+    cancelPendingAdminDistributorGiftAllocation({
+      inventoryId: "stock-1",
+      reason: "Wrong allocation.",
+      client,
+    }),
+    /Only pending distributor gift allocations/
+  );
+  assert.equal(writes, 0);
+
+  tx.distributorGiftInventory.findUnique = async () => ({
+    id: "stock-1",
+    distributorId: "distributor-1",
+    giftId: "gift-1",
+    status: "PENDING_ACCEPTANCE",
+    quantitySent: 4,
+    quantityAvailable: 4,
+    quantityReserved: 0,
+  });
+  tx.distributorGiftInventory.updateMany = async () => ({ count: 0 });
+  await assert.rejects(
+    cancelPendingAdminDistributorGiftAllocation({
+      inventoryId: "stock-1",
+      reason: "Wrong allocation.",
+      client,
+    }),
+    (error) => error.code === "GIFT_ALLOCATION_CHANGED"
+  );
+  assert.equal(writes, 0);
+});
+
+test("admin gift stock adjustments preserve reservations and record movement plus audit", async () => {
+  let stock = {
+    id: "stock-1",
+    distributorId: "distributor-1",
+    giftId: "gift-1",
+    status: "ACCEPTED",
+    quantityAvailable: 5,
+    quantityReserved: 2,
+  };
+  let movement;
+  let audit;
+  const tx = {
+    distributorGiftInventory: {
+      findUnique: async () => stock,
+      updateMany: async ({ where, data }) => {
+        assert.equal(where.quantityAvailable, 5);
+        assert.equal(where.quantityReserved, 2);
+        stock = { ...stock, quantityAvailable: stock.quantityAvailable + data.quantityAvailable.increment };
+        return { count: 1 };
+      },
+    },
+    distributorGiftMovementLog: { create: async ({ data }) => { movement = data; return data; } },
+    systemAuditOutbox: { create: async ({ data }) => { audit = data.event; return { id: "audit-1" }; } },
+  };
+  const client = { $transaction: async (callback) => callback(tx) };
+
+  const result = await adjustAdminDistributorGiftStock({
+    inventoryId: "stock-1",
+    adjustment: -3,
+    reason: "Physical count confirmed three fewer units.",
+    actorContext: { actorId: "admin-1", actorRole: "ADMIN" },
+    client,
+  });
+
+  assert.equal(result.quantityAvailable, 2);
+  assert.equal(result.quantityReserved, 2);
+  assert.equal(movement.movementType, "ADJUSTED");
+  assert.equal(movement.quantity, -3);
+  assert.equal(movement.notes, "Physical count confirmed three fewer units.");
+  assert.equal(audit.action, "DISTRIBUTOR_GIFT_STOCK_ADJUSTED");
+  assert.equal(audit.actorId, "admin-1");
+});
+
+test("admin gift stock listing is paginated and validates page size", async () => {
+  let stockQuery;
+  const client = {
+    distributorGiftInventory: {
+      findMany: async (query) => { stockQuery = query; return [{ id: "stock-51" }]; },
+      count: async () => 101,
+    },
+  };
+  const result = await listAdminDistributorGiftStock({ page: 2, pageSize: 50 }, client);
+
+  assert.equal(stockQuery.skip, 50);
+  assert.equal(stockQuery.take, 50);
+  assert.deepEqual(result, { inventory: [{ id: "stock-51" }], total: 101, page: 2, pageSize: 50 });
+  await assert.rejects(listAdminDistributorGiftStock({ page: 1, pageSize: 101 }, client), /between 1 and 100/);
+});
+
+test("admin gift stock adjustment requires a reason and cannot reduce below zero", async () => {
+  let transactionStarted = false;
+  const client = { $transaction: async (callback) => { transactionStarted = true; return callback({}); } };
+  await assert.rejects(
+    adjustAdminDistributorGiftStock({ inventoryId: "stock-1", adjustment: -1, reason: " ", client }),
+    /reason is required/
+  );
+  assert.equal(transactionStarted, false);
+
+  const tx = {
+    distributorGiftInventory: {
+      findUnique: async () => ({
+        id: "stock-1",
+        distributorId: "distributor-1",
+        giftId: "gift-1",
+        status: "ACCEPTED",
+        quantityAvailable: 1,
+        quantityReserved: 3,
+      }),
+    },
+  };
+  await assert.rejects(
+    adjustAdminDistributorGiftStock({
+      inventoryId: "stock-1",
+      adjustment: -2,
+      reason: "Correcting count.",
+      client: { $transaction: async (callback) => callback(tx) },
+    }),
+    /cannot reduce available stock below zero/
+  );
+});
+
+test("admin gift stock adjustment rejects a concurrent stock change without writing movement", async () => {
+  let movementWritten = false;
+  const tx = {
+    distributorGiftInventory: {
+      findUnique: async () => ({
+        id: "stock-1",
+        distributorId: "distributor-1",
+        giftId: "gift-1",
+        status: "ACCEPTED",
+        quantityAvailable: 4,
+        quantityReserved: 1,
+      }),
+      updateMany: async () => ({ count: 0 }),
+    },
+    distributorGiftMovementLog: { create: async () => { movementWritten = true; } },
+    systemAuditOutbox: { create: async () => { throw new Error("Unexpected audit write."); } },
+  };
+
+  await assert.rejects(
+    adjustAdminDistributorGiftStock({
+      inventoryId: "stock-1",
+      adjustment: 1,
+      reason: "Physical count correction.",
+      client: { $transaction: async (callback) => callback(tx) },
+    }),
+    (error) => error.code === "GIFT_STOCK_CHANGED"
+  );
+  assert.equal(movementWritten, false);
 });
 
 test("manufacturer gift options are limited to the order's own hub and eligible value", async () => {

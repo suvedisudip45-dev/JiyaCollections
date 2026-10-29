@@ -473,7 +473,7 @@ export const bindGiftRewardsToCheckout = async ({
   return reserved.count === 1 ? pending.id : null;
 };
 
-export const saveGiftCatalog = async (payload = {}, client = prisma) => {
+export const saveGiftCatalog = async (payload = {}, client = prisma, actorContext = {}) => {
   const name = String(payload.name || "").trim();
   const skuBase = createGiftSkuFromName(name);
   const category = normalizeGiftCategory(payload.category);
@@ -497,7 +497,18 @@ export const saveGiftCatalog = async (payload = {}, client = prisma) => {
   if (!Number.isFinite(safePayload.priceValue) || safePayload.priceValue <= 0) throw new Error("Gift value must be greater than zero.");
 
   if (payload.id) {
-    const existing = await client.giftCatalog.findUnique({ where: { id: payload.id }, select: { priceValue: true } });
+    const existing = await client.giftCatalog.findUnique({
+      where: { id: payload.id },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        priceValue: true,
+        category: true,
+        description: true,
+        isActive: true,
+      },
+    });
     if (!existing) throw new Error("Gift not found.");
     if (!isExactGiftValue(existing.priceValue, safePayload.priceValue)) {
       const activeAssignments = await client.order.count({
@@ -510,25 +521,60 @@ export const saveGiftCatalog = async (payload = {}, client = prisma) => {
         throw new Error("Gift value cannot change while it is assigned to an unfulfilled order. Use the order gift replacement action instead.");
       }
     }
-    return client.giftCatalog.update({
+    const gift = await client.giftCatalog.update({
       where: { id: payload.id },
       data: safePayload,
     });
+    await recordSystemAudit(actorContext, {
+      action: "GIFT_CATALOG_UPDATED",
+      entityType: "GiftCatalog",
+      entityId: gift.id,
+      beforeState: existing,
+      afterState: safePayload,
+    }, { client });
+    return gift;
   }
 
-  return client.giftCatalog.upsert({
+  const gift = await client.giftCatalog.upsert({
     where: { sku: safePayload.sku },
     update: safePayload,
     create: safePayload,
   });
+  await recordSystemAudit(actorContext, {
+    action: "GIFT_CATALOG_CREATED",
+    entityType: "GiftCatalog",
+    entityId: gift.id,
+    beforeState: {},
+    afterState: safePayload,
+  }, { client });
+  return gift;
 };
 
-export const listLoyaltyTierConfigs = async () => prisma.loyaltyTierConfig.findMany({
+export const archiveGiftCatalog = async ({ giftId, actorContext = {}, client = prisma }) => {
+  const gift = await client.giftCatalog.findUnique({
+    where: { id: giftId },
+    select: { id: true, name: true, sku: true, priceValue: true, category: true, isActive: true },
+  });
+  if (!gift) throw new Error("Gift not found.");
+  if (gift.isActive) {
+    await client.giftCatalog.update({ where: { id: giftId }, data: { isActive: false } });
+    await recordSystemAudit(actorContext, {
+      action: "GIFT_CATALOG_ARCHIVED",
+      entityType: "GiftCatalog",
+      entityId: giftId,
+      beforeState: gift,
+      afterState: { ...gift, isActive: false },
+    }, { client });
+  }
+  return { ...gift, isActive: false };
+};
+
+export const listLoyaltyTierConfigs = async (client = prisma) => client.loyaltyTierConfig.findMany({
   where: { triggerType: "ORDER_VALUE" },
   orderBy: { minSpendThreshold: "asc" },
 });
 
-export const saveLoyaltyTierConfig = async (payload = {}) => {
+export const saveLoyaltyTierConfig = async (payload = {}, client = prisma, actorContext = {}) => {
   const data = {
     tierName: String(payload.tierName || "").trim(),
     triggerType: "ORDER_VALUE",
@@ -544,18 +590,61 @@ export const saveLoyaltyTierConfig = async (payload = {}) => {
   }
   if (!Number.isFinite(data.giftTargetValue) || data.giftTargetValue <= 0) throw new Error("Exact gift value must be greater than zero.");
 
+  let existing;
   if (payload.id) {
-    return prisma.loyaltyTierConfig.update({
+    existing = await client.loyaltyTierConfig.findUnique({ where: { id: payload.id } });
+    if (!existing || existing.triggerType !== "ORDER_VALUE") {
+      throw new Error("Only order-value gift rules can be edited here.");
+    }
+    const config = await client.loyaltyTierConfig.update({
       where: { id: payload.id },
       data,
     });
+    await recordSystemAudit(actorContext, {
+      action: "ORDER_VALUE_GIFT_RULE_UPDATED",
+      entityType: "LoyaltyTierConfig",
+      entityId: config.id,
+      beforeState: existing,
+      afterState: data,
+    }, { client });
+    return config;
   }
 
-  return prisma.loyaltyTierConfig.upsert({
-    where: { tierName: data.tierName },
-    update: data,
-    create: data,
+  existing = await client.loyaltyTierConfig.findUnique({ where: { tierName: data.tierName } });
+  if (existing && existing.triggerType !== "ORDER_VALUE") {
+    throw new Error("This name is already used by a loyalty tier.");
+  }
+  const config = existing
+    ? await client.loyaltyTierConfig.update({ where: { id: existing.id }, data })
+    : await client.loyaltyTierConfig.create({ data });
+  await recordSystemAudit(actorContext, {
+    action: existing ? "ORDER_VALUE_GIFT_RULE_UPDATED" : "ORDER_VALUE_GIFT_RULE_CREATED",
+    entityType: "LoyaltyTierConfig",
+    entityId: config.id,
+    beforeState: existing || {},
+    afterState: data,
+  }, { client });
+  return config;
+};
+
+export const archiveOrderValueGiftRule = async ({ ruleId, actorContext = {}, client = prisma }) => {
+  const rule = await client.loyaltyTierConfig.findUnique({ where: { id: ruleId } });
+  if (!rule || rule.triggerType !== "ORDER_VALUE") {
+    throw new Error("Order-value gift rule not found.");
+  }
+  if (!rule.isActive) return rule;
+  const archived = await client.loyaltyTierConfig.update({
+    where: { id: ruleId },
+    data: { isActive: false },
   });
+  await recordSystemAudit(actorContext, {
+    action: "ORDER_VALUE_GIFT_RULE_ARCHIVED",
+    entityType: "LoyaltyTierConfig",
+    entityId: ruleId,
+    beforeState: rule,
+    afterState: archived,
+  }, { client });
+  return archived;
 };
 
 export const assignGiftToManufacturer = async ({ manufacturerId, giftId, quantity = 1, notes = "" }) => {
@@ -599,20 +688,27 @@ export const getManufacturerGiftInventory = async (manufacturerId) => prisma.man
   orderBy: { createdAt: "desc" },
 });
 
-export const assignGiftToDistributor = async ({ distributorId, giftId, quantity = 1, notes = "" }) => {
+export const assignGiftToDistributor = async ({
+  distributorId,
+  giftId,
+  quantity = 1,
+  notes = "",
+  actorContext = {},
+  client = prisma,
+}) => {
   if (!distributorId || !giftId) throw new Error("Distributor and gift are required.");
   const normalizedQuantity = Number(quantity);
   if (!Number.isSafeInteger(normalizedQuantity) || normalizedQuantity < 1) {
     throw new Error("Gift quantity must be a positive whole number.");
   }
   const [gift, distributor] = await Promise.all([
-    prisma.giftCatalog.findUnique({ where: { id: giftId } }),
-    prisma.distributor.findFirst({ where: { id: distributorId, status: "ACTIVE", isActive: true }, select: { id: true } }),
+    client.giftCatalog.findUnique({ where: { id: giftId } }),
+    client.distributor.findFirst({ where: { id: distributorId, status: "ACTIVE", isActive: true }, select: { id: true } }),
   ]);
   if (!gift || !gift.isActive) throw new Error("An active catalog gift is required.");
   if (!distributor) throw new Error("An active distributor profile is required.");
 
-  return prisma.$transaction(async (tx) => {
+  return client.$transaction(async (tx) => {
     const inventory = await tx.distributorGiftInventory.create({
       data: {
         distributorId,
@@ -632,7 +728,94 @@ export const assignGiftToDistributor = async ({ distributorId, giftId, quantity 
         notes: notes || "Admin distributed gift inventory to distributor.",
       },
     });
+    await recordSystemAudit(actorContext, {
+      action: "DISTRIBUTOR_GIFT_STOCK_DISTRIBUTED",
+      entityType: "DistributorGiftInventory",
+      entityId: inventory.id,
+      beforeState: {},
+      afterState: {
+        distributorId,
+        giftId,
+        quantitySent: normalizedQuantity,
+        status: inventory.status,
+        notes: inventory.notes,
+      },
+    }, { client: tx });
     return inventory;
+  });
+};
+
+export const cancelPendingAdminDistributorGiftAllocation = async ({
+  inventoryId,
+  reason,
+  actorContext = {},
+  client = prisma,
+}) => {
+  const notes = String(reason || "").trim();
+  if (!inventoryId) throw new Error("Gift stock inventory is required.");
+  if (notes.length < 3 || notes.length > 500) {
+    throw new Error("Cancellation reason must be between 3 and 500 characters.");
+  }
+
+  return client.$transaction(async (tx) => {
+    const inventory = await tx.distributorGiftInventory.findUnique({
+      where: { id: inventoryId },
+      select: {
+        id: true,
+        distributorId: true,
+        giftId: true,
+        status: true,
+        quantitySent: true,
+        quantityAvailable: true,
+        quantityReserved: true,
+        receivedQuantity: true,
+        notes: true,
+      },
+    });
+    if (!inventory || inventory.status !== "PENDING_ACCEPTANCE") {
+      throw new Error("Only pending distributor gift allocations can be cancelled.");
+    }
+    if (Number(inventory.quantityReserved) !== 0) {
+      throw new Error("An allocation with reserved gifts cannot be cancelled.");
+    }
+    const updated = await tx.distributorGiftInventory.updateMany({
+      where: {
+        id: inventoryId,
+        status: "PENDING_ACCEPTANCE",
+        quantityReserved: 0,
+      },
+      data: { status: "CANCELLED", quantityAvailable: 0 },
+    });
+    if (updated.count !== 1) {
+      throw Object.assign(new Error("This allocation was already accepted or changed. Refresh stock and try again."), {
+        code: "GIFT_ALLOCATION_CHANGED",
+        statusCode: 409,
+      });
+    }
+
+    const updatedInventory = await tx.distributorGiftInventory.findUnique({ where: { id: inventoryId } });
+    await tx.distributorGiftMovementLog.create({
+      data: {
+        distributorId: inventory.distributorId,
+        giftId: inventory.giftId,
+        movementType: "CANCELLED",
+        quantity: inventory.quantitySent,
+        notes: `Admin cancelled pending allocation: ${notes}`,
+      },
+    });
+    await recordSystemAudit(actorContext, {
+      action: "DISTRIBUTOR_GIFT_ALLOCATION_CANCELLED",
+      entityType: "DistributorGiftInventory",
+      entityId: inventoryId,
+      beforeState: inventory,
+      afterState: {
+        ...inventory,
+        status: "CANCELLED",
+        quantityAvailable: 0,
+        cancellationReason: notes,
+      },
+    }, { client: tx });
+    return updatedInventory;
   });
 };
 
@@ -645,24 +828,132 @@ export const getDistributorGiftInventory = async (distributorId, client = prisma
   });
 };
 
-export const listAdminDistributorGiftStock = async () => prisma.distributorGiftInventory.findMany({
-  select: {
-    id: true,
-    distributorId: true,
-    giftId: true,
-    quantitySent: true,
-    quantityAvailable: true,
-    quantityReserved: true,
-    receivedQuantity: true,
-    status: true,
-    notes: true,
-    createdAt: true,
-    gift: { select: { id: true, name: true, sku: true, priceValue: true, category: true } },
-    distributor: { select: { id: true, name: true, district: true, province: true } },
-  },
-  orderBy: { createdAt: "desc" },
-  take: 200,
-});
+export const listAdminDistributorGiftStock = async ({ page = 1, pageSize = 50 } = {}, client = prisma) => {
+  const normalizedPage = Number(page);
+  const normalizedPageSize = Number(pageSize);
+  if (!Number.isSafeInteger(normalizedPage) || normalizedPage < 1) {
+    throw new Error("Gift stock page must be a positive whole number.");
+  }
+  if (!Number.isSafeInteger(normalizedPageSize) || normalizedPageSize < 1 || normalizedPageSize > 100) {
+    throw new Error("Gift stock page size must be between 1 and 100.");
+  }
+  const skip = (normalizedPage - 1) * normalizedPageSize;
+  if (!Number.isSafeInteger(skip)) throw new Error("Gift stock page is outside the supported range.");
+  const where = {};
+  const [inventory, total] = await Promise.all([
+    client.distributorGiftInventory.findMany({
+      where,
+      select: {
+        id: true,
+        distributorId: true,
+        giftId: true,
+        quantitySent: true,
+        quantityAvailable: true,
+        quantityReserved: true,
+        receivedQuantity: true,
+        status: true,
+        notes: true,
+        createdAt: true,
+        gift: { select: { id: true, name: true, sku: true, priceValue: true, category: true } },
+        distributor: { select: { id: true, name: true, district: true, province: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: normalizedPageSize,
+    }),
+    client.distributorGiftInventory.count({ where }),
+  ]);
+  return { inventory, total, page: normalizedPage, pageSize: normalizedPageSize };
+};
+
+export const adjustAdminDistributorGiftStock = async ({
+  inventoryId,
+  adjustment,
+  reason,
+  actorContext = {},
+  client = prisma,
+}) => {
+  const delta = Number(adjustment);
+  const notes = String(reason || "").trim();
+  if (!inventoryId) throw new Error("Gift stock inventory is required.");
+  if (!Number.isSafeInteger(delta) || delta === 0) {
+    throw new Error("Stock adjustment must be a non-zero whole number.");
+  }
+  if (!notes) throw new Error("A reason is required for gift stock adjustments.");
+  if (notes.length < 3) throw new Error("Gift stock adjustment reasons must be at least 3 characters.");
+  if (notes.length > 500) throw new Error("Gift stock adjustment reasons cannot exceed 500 characters.");
+
+  return client.$transaction(async (tx) => {
+    const inventory = await tx.distributorGiftInventory.findUnique({
+      where: { id: inventoryId },
+      select: {
+        id: true,
+        distributorId: true,
+        giftId: true,
+        status: true,
+        quantityAvailable: true,
+        quantityReserved: true,
+      },
+    });
+    if (!inventory || inventory.status !== "ACCEPTED") {
+      throw new Error("Only acknowledged distributor gift stock can be adjusted.");
+    }
+    const quantityAvailable = Number(inventory.quantityAvailable);
+    const quantityReserved = Number(inventory.quantityReserved);
+    if (!Number.isSafeInteger(quantityAvailable) || !Number.isSafeInteger(quantityReserved)) {
+      throw new Error("Gift stock contains invalid quantity data.");
+    }
+    const adjustedQuantity = quantityAvailable + delta;
+    if (adjustedQuantity < 0) {
+      throw new Error("The adjustment cannot reduce available stock below zero or affect reserved gifts.");
+    }
+    if (!Number.isSafeInteger(adjustedQuantity) || adjustedQuantity > 2147483647) {
+      throw new Error("Adjusted gift stock exceeds the supported quantity range.");
+    }
+
+    const updated = await tx.distributorGiftInventory.updateMany({
+      where: {
+        id: inventoryId,
+        status: "ACCEPTED",
+        quantityAvailable,
+        quantityReserved,
+      },
+      data: { quantityAvailable: { increment: delta } },
+    });
+    if (updated.count !== 1) {
+      throw Object.assign(new Error("Gift stock changed while adjusting. Refresh and try again."), {
+        code: "GIFT_STOCK_CHANGED",
+        statusCode: 409,
+      });
+    }
+
+    await tx.distributorGiftMovementLog.create({
+      data: {
+        distributorId: inventory.distributorId,
+        giftId: inventory.giftId,
+        movementType: "ADJUSTED",
+        quantity: delta,
+        notes,
+      },
+    });
+    const updatedInventory = await tx.distributorGiftInventory.findUnique({
+      where: { id: inventoryId },
+    });
+    await recordSystemAudit(actorContext, {
+      action: "DISTRIBUTOR_GIFT_STOCK_ADJUSTED",
+      entityType: "DistributorGiftInventory",
+      entityId: inventoryId,
+      beforeState: { quantityAvailable, quantityReserved },
+      afterState: {
+        quantityAvailable: adjustedQuantity,
+        quantityReserved,
+        adjustment: delta,
+        reason: notes,
+      },
+    }, { client: tx });
+    return updatedInventory;
+  });
+};
 
 export const listAdminGiftAssignments = async () => {
   const orders = await prisma.order.findMany({

@@ -2,14 +2,18 @@ import { prisma } from "../config/db.js";
 import {
   listGiftCatalog,
   saveGiftCatalog,
+  archiveGiftCatalog,
   listLoyaltyTierConfigs,
   saveLoyaltyTierConfig,
+  archiveOrderValueGiftRule,
   assignGiftToDistributor,
+  cancelPendingAdminDistributorGiftAllocation,
   getEligibleManufacturerGiftOptions,
   getDistributorGiftOptions,
   getManufacturerGiftInventory,
   getDistributorGiftInventory,
   listAdminDistributorGiftStock,
+  adjustAdminDistributorGiftStock,
   listAdminGiftAssignments,
   getAdminOrderGiftOptions,
   replaceAdminOrderGift,
@@ -24,6 +28,15 @@ const sendGiftError = (res, error) => res.status(error.statusCode || (error.code
   ...(error.code ? { code: error.code } : {}),
 });
 
+const getAdminActorContext = (req) => ({
+  actorId: req.auth?.accountId || null,
+  actorRole: req.auth?.role || "ADMIN",
+  portalSource: req.auth?.role || "ADMIN",
+  ipAddress: req.ip || null,
+  userAgent: req.headers["user-agent"] || null,
+  correlationId: req.correlationId || null,
+});
+
 export const getGiftCatalog = async (req, res) => {
   try {
     const gifts = await listGiftCatalog({ includeInactive: req.query.includeInactive === "true" });
@@ -33,10 +46,47 @@ export const getGiftCatalog = async (req, res) => {
   }
 };
 
-export const getAdminGiftStock = async (_req, res) => {
+export const getAdminGiftStock = async (req, res) => {
   try {
-    const inventory = await listAdminDistributorGiftStock();
-    return res.json({ success: true, inventory });
+    const stock = await listAdminDistributorGiftStock({
+      page: req.query.page === undefined ? 1 : Number(req.query.page),
+      pageSize: req.query.pageSize === undefined ? 50 : Number(req.query.pageSize),
+    });
+    return res.json({ success: true, ...stock });
+  } catch (error) {
+    return sendGiftError(res, error);
+  }
+};
+
+export const adjustAdminGiftStock = async (req, res) => {
+  try {
+    const inventory = await adjustAdminDistributorGiftStock({
+      inventoryId: req.params.inventoryId,
+      adjustment: req.body?.adjustment,
+      reason: req.body?.reason,
+      actorContext: {
+        actorId: req.auth?.accountId || null,
+        actorRole: req.auth?.role || "ADMIN",
+        portalSource: req.auth?.role || "ADMIN",
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.json({ success: true, message: "Gift stock adjusted and recorded.", inventory });
+  } catch (error) {
+    return sendGiftError(res, error);
+  }
+};
+
+export const cancelAdminGiftAllocation = async (req, res) => {
+  try {
+    const inventory = await cancelPendingAdminDistributorGiftAllocation({
+      inventoryId: req.params.inventoryId,
+      reason: req.body?.reason,
+      actorContext: getAdminActorContext(req),
+    });
+    return res.json({ success: true, message: "Pending distributor gift allocation cancelled.", inventory });
   } catch (error) {
     return sendGiftError(res, error);
   }
@@ -65,14 +115,7 @@ export const updateAdminOrderGift = async (req, res) => {
     const order = await replaceAdminOrderGift({
       orderId: req.params.orderId,
       inventoryId: req.body?.inventoryId,
-      actorContext: {
-        actorId: req.auth?.accountId || null,
-        actorRole: req.auth?.role || "ADMIN",
-        portalSource: req.auth?.role || "ADMIN",
-        ipAddress: req.ip || null,
-        userAgent: req.headers["user-agent"] || null,
-        correlationId: req.correlationId || null,
-      },
+      actorContext: getAdminActorContext(req),
     });
     return res.json({ success: true, message: "Order gift updated before packing.", order });
   } catch (error) {
@@ -82,19 +125,25 @@ export const updateAdminOrderGift = async (req, res) => {
 
 export const saveGiftEntry = async (req, res) => {
   try {
-    const gift = await saveGiftCatalog(req.body || {});
-    res.json({ success: true, message: "Gift catalog item saved.", gift });
+    const actorContext = getAdminActorContext(req);
+    const gift = await prisma.$transaction((tx) => saveGiftCatalog(req.body || {}, tx, actorContext));
+    return res.json({ success: true, message: "Gift catalog item saved.", gift });
   } catch (error) {
-    res.json({ success: false, message: error.message });
+    return sendGiftError(res, error);
   }
 };
 
 export const deleteGiftEntry = async (req, res) => {
   try {
-    await prisma.giftCatalog.update({ where: { id: req.params.id }, data: { isActive: false } });
-    res.json({ success: true, message: "Gift catalog item archived." });
+    const actorContext = getAdminActorContext(req);
+    const gift = await prisma.$transaction((tx) => archiveGiftCatalog({
+      giftId: req.params.id,
+      actorContext,
+      client: tx,
+    }));
+    return res.json({ success: true, message: "Gift catalog item archived.", gift });
   } catch (error) {
-    res.json({ success: false, message: error.message });
+    return sendGiftError(res, error);
   }
 };
 
@@ -109,19 +158,36 @@ export const getTierConfigs = async (req, res) => {
 
 export const saveTierConfig = async (req, res) => {
   try {
-    const config = await saveLoyaltyTierConfig(req.body || {});
-    res.json({ success: true, message: "Gift tier configuration saved.", config });
+    const actorContext = getAdminActorContext(req);
+    const config = await prisma.$transaction((tx) => saveLoyaltyTierConfig(req.body || {}, tx, actorContext));
+    return res.json({ success: true, message: "Gift tier configuration saved.", config });
   } catch (error) {
-    res.json({ success: false, message: error.message });
+    return sendGiftError(res, error);
+  }
+};
+
+export const archiveTierConfig = async (req, res) => {
+  try {
+    const config = await prisma.$transaction((tx) => archiveOrderValueGiftRule({
+      ruleId: req.params.id,
+      actorContext: getAdminActorContext(req),
+      client: tx,
+    }));
+    return res.json({ success: true, message: "Order-value gift rule archived.", config });
+  } catch (error) {
+    return sendGiftError(res, error);
   }
 };
 
 export const createDistributorGiftDistribution = async (req, res) => {
   try {
-    const inventory = await assignGiftToDistributor(req.body || {});
-    res.json({ success: true, message: "Gift stock assigned to distributor.", inventory });
+    const inventory = await assignGiftToDistributor({
+      ...(req.body || {}),
+      actorContext: getAdminActorContext(req),
+    });
+    return res.json({ success: true, message: "Gift stock assigned to distributor.", inventory });
   } catch (error) {
-    res.json({ success: false, message: error.message });
+    return sendGiftError(res, error);
   }
 };
 

@@ -29,6 +29,8 @@ const GiftPromotions = ({ token }) => {
   const [tiers, setTiers] = useState([]);
   const [distributors, setDistributors] = useState([]);
   const [stock, setStock] = useState([]);
+  const [stockPage, setStockPage] = useState(1);
+  const [stockTotal, setStockTotal] = useState(0);
   const [assignedOrders, setAssignedOrders] = useState([]);
   const [giftForm, setGiftForm] = useState(initialGift);
   const [tierForm, setTierForm] = useState(initialTier);
@@ -36,6 +38,8 @@ const GiftPromotions = ({ token }) => {
   const [giftOptions, setGiftOptions] = useState(null);
   const [giftOptionsLoadingId, setGiftOptionsLoadingId] = useState("");
   const [selectedGiftInventoryId, setSelectedGiftInventoryId] = useState("");
+  const [stockAdjustment, setStockAdjustment] = useState(null);
+  const [allocationCancellation, setAllocationCancellation] = useState(null);
 
   const fetchData = useCallback(async () => {
     if (!token) return;
@@ -46,12 +50,13 @@ const GiftPromotions = ({ token }) => {
         axios.get(`${backendUrl}/api/admin/gifts/catalog?includeInactive=true`, { headers: { token } }),
         axios.get(`${backendUrl}/api/admin/gifts/tiers`, { headers: { token } }),
         axios.get(`${backendUrl}/api/admin/distributor-applications/coverage`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/admin/gifts/stock`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/admin/gifts/stock?page=${stockPage}&pageSize=50`, { headers: { token } }),
         axios.get(`${backendUrl}/api/admin/gifts/orders`, { headers: { token } }),
       ]);
       setGifts(giftResponse.data.gifts || []);
       setTiers(tierResponse.data.tiers || []);
       setStock(stockResponse.data.inventory || []);
+      setStockTotal(Number(stockResponse.data.total || 0));
       setAssignedOrders(assignedResponse.data.orders || []);
       setDistributors((distributorResponse.data.distributors || [])
         .filter((distributor) => distributor.status === "ACTIVE" && distributor.isActive));
@@ -62,7 +67,7 @@ const GiftPromotions = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [stockPage, token]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -126,6 +131,30 @@ const GiftPromotions = ({ token }) => {
     }
   };
 
+  const toggleTierActive = async (tier) => {
+    if (tier.isActive && !window.confirm(`Archive the "${tier.tierName}" order-value gift rule?`)) return;
+    setSaving(true);
+    try {
+      const response = tier.isActive
+        ? await axios.delete(`${backendUrl}/api/admin/gifts/tiers/${tier.id}`, { headers: { token } })
+        : await axios.post(`${backendUrl}/api/admin/gifts/tiers`, {
+          id: tier.id,
+          tierName: tier.tierName,
+          minSpendThreshold: Number(tier.minSpendThreshold),
+          giftTargetValue: Number(tier.giftTargetValue),
+          description: tier.description || "",
+          isActive: true,
+        }, { headers: { token } });
+      if (!response.data.success) throw new Error(response.data.message || "Could not update gift rule.");
+      toast.success(tier.isActive ? "Gift rule archived." : "Gift rule reactivated.");
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Could not update gift rule.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const distributeStock = async (event) => {
     event.preventDefault();
     setSaving(true);
@@ -179,6 +208,48 @@ const GiftPromotions = ({ token }) => {
     }
   };
 
+  const adjustGiftStock = async (event) => {
+    event.preventDefault();
+    if (!stockAdjustment) return;
+    setSaving(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/admin/gifts/stock/${stockAdjustment.id}/adjust`,
+        { adjustment: Number(stockAdjustment.adjustment), reason: stockAdjustment.reason },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Unable to adjust gift stock.");
+      toast.success("Gift stock adjusted and recorded.");
+      setStockAdjustment(null);
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to adjust gift stock.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const cancelGiftAllocation = async (event) => {
+    event.preventDefault();
+    if (!allocationCancellation) return;
+    setSaving(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/admin/gifts/stock/${allocationCancellation.id}/cancel`,
+        { reason: allocationCancellation.reason },
+        { headers: { token } },
+      );
+      if (!response.data.success) throw new Error(response.data.message || "Unable to cancel gift allocation.");
+      toast.success("Pending gift allocation cancelled.");
+      setAllocationCancellation(null);
+      await fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Unable to cancel gift allocation.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const tabContent = () => {
     if (activeTab === "catalog") return (
       <div className="grid gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
@@ -216,7 +287,7 @@ const GiftPromotions = ({ token }) => {
         </form>
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
           <div className="border-b border-slate-100 px-4 py-3"><h2 className="font-bold text-slate-900">Configured triggers</h2></div>
-          {tiers.length ? <div className="divide-y divide-slate-100">{tiers.map((tier) => <div key={tier.id} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-4"><div className="min-w-36 flex-1"><p className="text-sm font-bold text-slate-900">{tier.tierName}</p>{tier.description && <p className="mt-1 text-xs text-slate-500">{tier.description}</p>}</div><div><p className="text-[10px] font-bold uppercase text-slate-400">Order from</p><p className="text-sm font-semibold text-slate-800">{currency}{Number(tier.minSpendThreshold).toLocaleString()}</p></div><div><p className="text-[10px] font-bold uppercase text-slate-400">Exact gift value</p><p className="text-sm font-semibold text-emerald-800">{currency}{Number(tier.giftTargetValue).toLocaleString()}</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${tier.isActive ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>{tier.isActive ? "ACTIVE" : "PAUSED"}</span><button type="button" title="Edit rule" onClick={() => setTierForm({ id: tier.id, tierName: tier.tierName, minSpendThreshold: String(tier.minSpendThreshold || ""), giftTargetValue: String(tier.giftTargetValue || ""), description: tier.description || "", isActive: Boolean(tier.isActive) })} className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900"><Pencil className="h-4 w-4" /></button></div>)}</div> : <EmptyState text="No order-value rules configured yet." />}
+          {tiers.length ? <div className="divide-y divide-slate-100">{tiers.map((tier) => <div key={tier.id} className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-4"><div className="min-w-36 flex-1"><p className="text-sm font-bold text-slate-900">{tier.tierName}</p>{tier.description && <p className="mt-1 text-xs text-slate-500">{tier.description}</p>}</div><div><p className="text-[10px] font-bold uppercase text-slate-400">Order from</p><p className="text-sm font-semibold text-slate-800">{currency}{Number(tier.minSpendThreshold).toLocaleString()}</p></div><div><p className="text-[10px] font-bold uppercase text-slate-400">Exact gift value</p><p className="text-sm font-semibold text-emerald-800">{currency}{Number(tier.giftTargetValue).toLocaleString()}</p></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${tier.isActive ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>{tier.isActive ? "ACTIVE" : "PAUSED"}</span><button type="button" title="Edit rule" onClick={() => setTierForm({ id: tier.id, tierName: tier.tierName, minSpendThreshold: String(tier.minSpendThreshold || ""), giftTargetValue: String(tier.giftTargetValue || ""), description: tier.description || "", isActive: Boolean(tier.isActive) })} className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900"><Pencil className="h-4 w-4" /></button><button type="button" disabled={saving} onClick={() => toggleTierActive(tier)} className={`rounded-md border px-3 py-1.5 text-xs font-semibold disabled:opacity-50 ${tier.isActive ? "border-rose-200 text-rose-700 hover:bg-rose-50" : "border-emerald-200 text-emerald-800 hover:bg-emerald-50"}`}>{tier.isActive ? "Archive" : "Reactivate"}</button></div>)}</div> : <EmptyState text="No order-value rules configured yet." />}
         </section>
       </div>
     );
@@ -232,8 +303,9 @@ const GiftPromotions = ({ token }) => {
         </form>
         <div className="rounded-xl border border-dashed border-slate-300 bg-white p-5"><div className="flex h-full min-h-48 flex-col justify-center"><Archive className="h-8 w-8 text-emerald-700" /><h2 className="mt-3 font-bold text-slate-900">Hub stock lifecycle</h2><p className="mt-1 max-w-md text-sm leading-6 text-slate-600">A distribution starts as pending. The distributor confirms the quantity actually received; only acknowledged stock is eligible for automatic gift selection.</p><p className="mt-3 text-xs font-semibold text-slate-500">Catalog {gifts.filter((gift) => gift.isActive).length} active · {distributors.length} active hubs</p></div></div>
         <section className="overflow-hidden rounded-xl border border-slate-200 bg-white lg:col-span-2">
-          <div className="border-b border-slate-100 px-4 py-3"><h2 className="font-bold text-slate-900">Distributed stock <span className="ml-1 text-xs font-medium text-slate-400">{stock.length}</span></h2></div>
-          {stock.length ? <div className="divide-y divide-slate-100">{stock.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-xs"><span className="min-w-36 flex-1 font-semibold text-slate-900">{item.gift?.name} · {item.distributor?.name}</span><span className="text-slate-600">{item.distributor?.district || "District not set"}, {item.distributor?.province || "Province not set"}</span><span>Sent <strong>{item.quantitySent}</strong></span><span>Received <strong>{item.receivedQuantity ?? "—"}</strong></span><span>Available <strong>{item.status === "ACCEPTED" ? item.quantityAvailable : 0}</strong></span><span>Reserved <strong>{item.status === "ACCEPTED" ? item.quantityReserved : 0}</strong></span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${item.status === "ACCEPTED" ? "bg-emerald-50 text-emerald-800" : item.status === "PENDING_ACCEPTANCE" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{String(item.status).replaceAll("_", " ")}</span></div>)}</div> : <EmptyState text="No distributor gift stock has been assigned." />}
+          <div className="border-b border-slate-100 px-4 py-3"><h2 className="font-bold text-slate-900">Distributed stock <span className="ml-1 text-xs font-medium text-slate-400">{stockTotal}</span></h2><p className="mt-1 text-xs text-slate-500">Adjust acknowledged counts with a required reason. Reserved units cannot be reduced.</p></div>
+          {stock.length ? <div className="divide-y divide-slate-100">{stock.map((item) => <div key={item.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-xs"><span className="min-w-36 flex-1 font-semibold text-slate-900">{item.gift?.name} · {item.distributor?.name}</span><span className="text-slate-600">{item.distributor?.district || "District not set"}, {item.distributor?.province || "Province not set"}</span><span>Sent <strong>{item.quantitySent}</strong></span><span>Received <strong>{item.receivedQuantity ?? "—"}</strong></span><span>Available <strong>{item.status === "ACCEPTED" ? item.quantityAvailable : 0}</strong></span><span>Reserved <strong>{item.status === "ACCEPTED" ? item.quantityReserved : 0}</strong></span><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${item.status === "ACCEPTED" ? "bg-emerald-50 text-emerald-800" : item.status === "PENDING_ACCEPTANCE" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>{String(item.status).replaceAll("_", " ")}</span>{item.status === "ACCEPTED" && <button type="button" onClick={() => setStockAdjustment({ id: item.id, giftName: item.gift?.name, distributorName: item.distributor?.name, available: item.quantityAvailable, adjustment: "", reason: "" })} className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2 py-1.5 font-semibold text-slate-700 hover:bg-slate-50"><Pencil className="h-3 w-3" /> Adjust</button>}{item.status === "PENDING_ACCEPTANCE" && <button type="button" onClick={() => setAllocationCancellation({ id: item.id, giftName: item.gift?.name, distributorName: item.distributor?.name, reason: "" })} className="inline-flex items-center gap-1 rounded-md border border-rose-200 px-2 py-1.5 font-semibold text-rose-700 hover:bg-rose-50"><Trash2 className="h-3 w-3" /> Cancel dispatch</button>}</div>)}</div> : <EmptyState text="No distributor gift stock has been assigned." />}
+          {stockTotal > 50 && <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-xs text-slate-600"><span>Page {stockPage} of {Math.ceil(stockTotal / 50)} · {stockTotal} stock records</span><div className="flex gap-2"><button type="button" disabled={stockPage <= 1 || loading} onClick={() => setStockPage((page) => page - 1)} className="rounded-md border border-slate-300 px-3 py-1.5 font-semibold disabled:opacity-40">Previous</button><button type="button" disabled={stockPage >= Math.ceil(stockTotal / 50) || loading} onClick={() => setStockPage((page) => page + 1)} className="rounded-md border border-slate-300 px-3 py-1.5 font-semibold disabled:opacity-40">Next</button></div></div>}
         </section>
       </div>
     );
@@ -275,6 +347,23 @@ const GiftPromotions = ({ token }) => {
           <label className="block text-xs font-semibold text-slate-700">Accepted gift stock at this distributor<select required value={selectedGiftInventoryId} onChange={(event) => setSelectedGiftInventoryId(event.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm"><option value="">Select an exact-value replacement</option>{giftOptions.options.map((option) => <option key={option.inventoryId} value={option.inventoryId}>{option.name} · {currency}{Number(option.priceValue).toLocaleString()} · {option.quantityAvailable} available</option>)}</select></label>
           {!giftOptions.options.length && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">No other exact-value gift is currently available. The existing reservation remains unchanged.</p>}
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setGiftOptions(null)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Cancel</button><button type="submit" disabled={saving || !selectedGiftInventoryId} className="rounded-lg bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Save replacement</button></div>
+        </form>
+      </div>}
+      {stockAdjustment && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="gift-stock-adjustment-title">
+        <form onSubmit={adjustGiftStock} className="w-full max-w-md space-y-4 rounded-xl bg-white p-5 shadow-xl">
+          <div className="flex items-start justify-between gap-3"><div><h2 id="gift-stock-adjustment-title" className="font-bold text-slate-900">Adjust acknowledged stock</h2><p className="mt-1 text-xs text-slate-500">{stockAdjustment.giftName} · {stockAdjustment.distributorName} · {stockAdjustment.available} available</p></div><button type="button" onClick={() => setStockAdjustment(null)} aria-label="Close" className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100">×</button></div>
+          <label className="block text-xs font-semibold text-slate-700">Quantity change<input required type="number" step="1" value={stockAdjustment.adjustment} onChange={(event) => setStockAdjustment({ ...stockAdjustment, adjustment: event.target.value })} placeholder="Use a negative number to reduce stock" className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm" /></label>
+          <label className="block text-xs font-semibold text-slate-700">Reason<textarea required minLength="3" maxLength="500" rows="3" value={stockAdjustment.reason} onChange={(event) => setStockAdjustment({ ...stockAdjustment, reason: event.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm" /></label>
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">Reserved gifts are protected. The adjustment and reason are written to the inventory movement and admin audit history.</p>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setStockAdjustment(null)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Cancel</button><button type="submit" disabled={saving || !Number.isSafeInteger(Number(stockAdjustment.adjustment)) || Number(stockAdjustment.adjustment) === 0 || !stockAdjustment.reason.trim()} className="rounded-lg bg-slate-950 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Save adjustment</button></div>
+        </form>
+      </div>}
+      {allocationCancellation && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="gift-allocation-cancel-title">
+        <form onSubmit={cancelGiftAllocation} className="w-full max-w-md space-y-4 rounded-xl bg-white p-5 shadow-xl">
+          <div className="flex items-start justify-between gap-3"><div><h2 id="gift-allocation-cancel-title" className="font-bold text-slate-900">Cancel pending dispatch</h2><p className="mt-1 text-xs text-slate-500">{allocationCancellation.giftName} · {allocationCancellation.distributorName}</p></div><button type="button" onClick={() => setAllocationCancellation(null)} aria-label="Close" className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100">×</button></div>
+          <label className="block text-xs font-semibold text-slate-700">Cancellation reason<textarea required minLength="3" maxLength="500" rows="3" value={allocationCancellation.reason} onChange={(event) => setAllocationCancellation({ ...allocationCancellation, reason: event.target.value })} className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm" /></label>
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">Only unacknowledged allocations can be cancelled. The distributor receipt action and cancellation compete safely; the first valid update wins and the movement stays in history.</p>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setAllocationCancellation(null)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Keep dispatch</button><button type="submit" disabled={saving || allocationCancellation.reason.trim().length < 3} className="rounded-lg bg-rose-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">Cancel dispatch</button></div>
         </form>
       </div>}
     </div>

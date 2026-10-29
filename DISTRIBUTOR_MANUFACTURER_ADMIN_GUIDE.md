@@ -760,13 +760,27 @@ of exactly the same value at the same distributor. Catalog value edits are
 blocked while that gift is attached to an unfulfilled order. Manufacturer gift
 records are retained for history, but new gift allocation and customer-order
 fulfillment are distributor-scoped.
+Admins can also reconcile acknowledged distributor stock with a non-zero whole
+number adjustment and a required reason. Adjustments change available units
+only, cannot reduce stock below zero or alter reserved units, and write both an
+inventory movement and an admin audit event in the same transaction. Stock
+records are server-paginated so the Admin view is not limited to the newest
+200 allocations. Catalog creation, updates and archival, order-value rule
+changes, distributor stock dispatch, stock adjustments, and order gift
+replacements are recorded in the system audit outbox in the same transaction
+as their corresponding data changes.
+An Admin can cancel an unacknowledged distributor allocation with a reason;
+the cancellation is conditional on the allocation still being pending and
+unreserved, and it remains visible in stock and movement history.
 
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /admin/gifts/catalog`, `POST /admin/gifts/catalog`, `DELETE /admin/gifts/catalog/:id` | Admin | `loyalty:level_manage` | Maintain catalog. |
-| `GET/POST /admin/gifts/tiers` | Admin | `loyalty:level_manage` | Maintain loyalty tier rules. |
+| `GET/POST /admin/gifts/tiers`, `DELETE /admin/gifts/tiers/:id` | Admin | `loyalty:level_manage` | Maintain, archive, and reactivate order-value gift rules; deletion is soft archival. |
 | `POST /admin/gifts/assign-distributor` | Admin | `loyalty:level_manage` | Allocate gifts to distributor inventory. |
 | `GET /admin/gifts/stock` | Admin | `loyalty:level_manage` | Review sent, acknowledged, available, and reserved counts. |
+| `POST /admin/gifts/stock/:inventoryId/adjust` | Admin | `loyalty:level_manage` | Reconcile acknowledged available stock with a required reason and audit trail. |
+| `POST /admin/gifts/stock/:inventoryId/cancel` | Admin | `loyalty:level_manage` | Cancel a pending, unreserved distribution with a required reason. |
 | `GET /admin/gifts/orders` | Admin | `loyalty:level_manage` | Review eligible un-packed gift assignments. |
 | `GET /admin/gifts/orders/:orderId/options`, `PUT /admin/gifts/orders/:orderId/gift` | Admin | `loyalty:level_manage` | Replace an assigned gift with same-value accepted stock before packing. |
 | `GET /distributor/gifts/inbound` | Distributor | `distributor:hub_gifts_read` | View allocations awaiting/recorded by distributor. |

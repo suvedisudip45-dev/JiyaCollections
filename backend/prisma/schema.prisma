@@ -889,7 +889,7 @@ model DistributorGiftMovementLog {
   distributorId  String
   giftId         String
   orderId        String?
-  movementType   String      @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | REJECTED
+  movementType   String      @default("ALLOCATED") // ALLOCATED | RESERVED | DEDUCTED | RESTOCKED | LOST | REJECTED | ADJUSTED | CANCELLED
   quantity       Int         @default(0)
   notes          String?     @db.Text
   createdAt      DateTime    @default(now())
