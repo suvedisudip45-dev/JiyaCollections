@@ -2945,6 +2945,7 @@ export const getPayablesAndReceivables = async (req, res) => {
       supplierCashOutflows,
       recentSettlementTransactions,
       settlementReversions,
+      distributorSettlementRequests,
     ] = await Promise.all([
       prisma.accountPayable.findMany({
         orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
@@ -3002,6 +3003,11 @@ export const getPayablesAndReceivables = async (req, res) => {
       prisma.settlementReversion.findMany({
         orderBy: { revertedAt: "desc" },
         take: 100,
+      }),
+      prisma.distributorSettlementRequest.findMany({
+        where: { status: { in: ["PENDING", "PARTIALLY_PAID"] } },
+        include: { distributor: { select: { id: true, name: true } } },
+        orderBy: { requestedAt: "desc" },
       }),
     ]);
 
@@ -3088,6 +3094,76 @@ export const getPayablesAndReceivables = async (req, res) => {
 
     // Merge stored payables and direct-sale COGS payables.
     const payables = [...storedPayables];
+
+    const subledgerSettlementRequests = distributorSettlementRequests.filter(
+      (request) => request.metadata?.settlementBasis === "ACCOUNTING_SUBLEDGER",
+    );
+    const reservedEarningDocumentIds = [...new Set(
+      subledgerSettlementRequests.flatMap((request) =>
+        Array.isArray(request.metadata?.earningDocumentIds) ? request.metadata.earningDocumentIds : []
+      ),
+    )];
+    const reservedEarningDocuments = reservedEarningDocumentIds.length
+      ? await prisma.accountingDocument.findMany({
+          where: {
+            id: { in: reservedEarningDocumentIds },
+            side: "PAYABLE",
+            sourceType: { in: ["DISTRIBUTOR_SERVICE_EARNING", "DISTRIBUTOR_TARGET_BONUS"] },
+            status: { in: ["OPEN", "PARTIALLY_PAID"] },
+          },
+          select: {
+            id: true,
+            remainingAmount: true,
+            party: { select: { sourceEntityId: true } },
+          },
+        })
+      : [];
+    const earningDocumentBalances = new Map(
+      reservedEarningDocuments.map((document) => [document.id, {
+        remainingAmount: Number(document.remainingAmount || 0),
+        distributorId: document.party?.sourceEntityId,
+      }]),
+    );
+    for (const request of subledgerSettlementRequests) {
+      if (payables.some((payable) =>
+        payable.referenceType === "DISTRIBUTOR_SETTLEMENT" && payable.referenceId === request.id
+      )) continue;
+      const requestRemaining = Math.max(0, Number(request.amount || 0) - Number(request.paidAmount || 0));
+      const earningDocumentIds = Array.isArray(request.metadata?.earningDocumentIds)
+        ? request.metadata.earningDocumentIds
+        : [];
+      const availableDocuments = earningDocumentIds.reduce(
+        (sum, documentId) => {
+          const document = earningDocumentBalances.get(documentId);
+          return sum + (document?.distributorId === request.distributorId ? document.remainingAmount : 0);
+        },
+        0,
+      );
+      const remainingBalance = Math.min(requestRemaining, availableDocuments);
+      if (remainingBalance <= 0) continue;
+
+      const vatMode = request.metadata?.statementSnapshot?.vatMode || "WITH_VAT";
+      payables.push({
+        id: request.id,
+        title: `Distributor Settlement - ${request.distributor?.name || request.distributorId}`,
+        payeeName: request.distributor?.name || `Distributor ${request.distributorId}`,
+        category: "DISTRIBUTOR_SETTLEMENT",
+        referenceType: "DISTRIBUTOR_SETTLEMENT",
+        referenceId: request.id,
+        totalAmount: Number(request.amount),
+        paidAmount: Number(request.paidAmount || 0),
+        remainingBalance,
+        dueDate: null,
+        invoiceNumber: `DIST-SET-${request.id.slice(0, 8).toUpperCase()}`,
+        status: Number(request.paidAmount || 0) > 0 ? "PARTIALLY_PAID" : "UNPAID",
+        priority: "HIGH",
+        notes: `Distributor requested settlement ${vatMode === "WITHOUT_VAT" ? "without VAT" : "with VAT"}.`,
+        settlementHistory: [],
+        createdAt: request.requestedAt,
+        updatedAt: request.updatedAt,
+        settlementVatMode: vatMode,
+      });
+    }
 
     manufacturers.forEach((m) => {
       const totalCogs = Number((mfgCogsMap[m.id] || 0).toFixed(2));
@@ -4023,7 +4099,28 @@ export const settlePayable = async (req, res) => {
 
     let payable = await prisma.accountPayable.findUnique({ where: { id: payableId } });
     if (!payable) {
-      return res.json({ success: false, message: "Payable record not found" });
+      const distributorSettlement = await prisma.distributorSettlementRequest.findUnique({
+        where: { id: payableId },
+      });
+      if (!distributorSettlement) {
+        return res.status(404).json({ success: false, message: "Payable record not found" });
+      }
+      if (adjustmentType !== "NONE" || adjustmentAmount !== 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Distributor settlement requests cannot be paid with an unapproved discount or fine.",
+        });
+      }
+      const result = await initiateAdminDistributorSettlement({
+        settlementId: distributorSettlement.id,
+        amount,
+        financialAccountId: fromAccountId,
+        externalPaymentReference: requireExternalPaymentReference(externalPaymentReference),
+        idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"] || null,
+        adminNotes: notes,
+        adminAccountId,
+      });
+      return res.status(result.isReplay ? 200 : 201).json(result);
     }
 
     if (payable.referenceType === "MANUFACTURER_COGS" && payable.referenceId) {

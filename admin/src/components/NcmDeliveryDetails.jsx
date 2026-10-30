@@ -28,6 +28,7 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
   const [commentText, setCommentText] = useState("");
   const [reconciliationNote, setReconciliationNote] = useState("");
   const [branches, setBranches] = useState([]);
+  const [ncmPricingForm, setNcmPricingForm] = useState({ chargeBeforeDiscount: "", discountAmount: "0", note: "" });
   const [redirectForm, setRedirectForm] = useState({ name: "", phone: "", address: "", destination: "", cod_charge: "" });
 
   const loadDetails = useCallback(async () => {
@@ -37,6 +38,11 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to load NCM delivery.");
       const value = response.data.delivery;
       setDelivery(value);
+      setNcmPricingForm((current) => ({
+        ...current,
+        chargeBeforeDiscount: value.ncmDeliveryChargeBeforeDiscount ?? value.ncmDeliveryCharge ?? "",
+        discountAmount: String(value.ncmDeliveryDiscount ?? 0),
+      }));
       const address = value.order?.address && typeof value.order.address === "object" ? value.order.address : {};
       setRedirectForm((current) => ({
         ...current,
@@ -180,6 +186,25 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
     }
   };
 
+  const recordNcmPricing = async (event) => {
+    event.preventDefault();
+    setBusy("pricing");
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/delivery/admin/ncm/deliveries/${recordId}/pricing`,
+        ncmPricingForm,
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "NCM pricing could not be recorded.");
+      toast.success(response.data.message || "NCM pricing recorded.");
+      await loadDetails();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "NCM pricing could not be recorded.");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const address = delivery?.order?.address && typeof delivery.order.address === "object" ? delivery.order.address : {};
   const settlement = delivery?.financialSettlement;
 
@@ -271,7 +296,10 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
               <Info label="Payment method" value={delivery.order?.paymentMethod} />
               <Info label="Address" value={address.address || address.street} />
               <Info label="COD amount" value={delivery.codAmount} />
-              <Info label="Delivery charge" value={delivery.ncmDeliveryCharge ?? delivery.customerDeliveryCharge} />
+              <Info label="Customer delivery charge" value={delivery.customerDeliveryCharge} />
+              <Info label="NCM charge before discount" value={delivery.ncmDeliveryChargeBeforeDiscount ?? delivery.ncmDeliveryCharge} />
+              <Info label="NCM discount" value={delivery.ncmDeliveryDiscount ?? 0} />
+              <Info label="Net NCM carrier fee" value={delivery.ncmDeliveryCharge} />
               <Info label="Package" value={`${delivery.packageWeight || 0} kg · ${delivery.packageDescription || "—"}`} />
             </div>
           </section>
@@ -352,11 +380,66 @@ const NcmDeliveryDetails = ({ token, recordId, row, onClose }) => {
                 <Info label="Expected COD" value={settlement.codExpected} />
                 <Info label="Collected COD" value={settlement.codCollected} />
                 <Info label="Expected delivery fee" value={settlement.deliveryFeeExpected} />
-                <Info label="Actual delivery fee" value={settlement.deliveryFeeActual} />
+                <Info label="NCM discount" value={settlement.deliveryFeeDiscount ?? 0} />
+                <Info label="Net actual carrier fee" value={settlement.deliveryFeeActual} />
                 <Info label="Settled" value={formatDate(settlement.settledAt)} />
                 <Info label="Variance reason" value={settlement.varianceReason} />
               </div>
             ) : <p className="mt-2 text-xs text-slate-500">No local settlement record has been created for this delivery.</p>}
+            <form onSubmit={recordNcmPricing} className="mt-4 space-y-3 border-t border-slate-100 pt-4">
+              <p className="text-xs text-slate-600">
+                Record the gross carrier charge and NCM discount from its order details. This changes carrier cost and remittance only; the customer delivery charge remains unchanged.
+              </p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="text-xs font-medium text-slate-600">
+                  NCM charge before discount
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    required
+                    value={ncmPricingForm.chargeBeforeDiscount}
+                    onChange={(event) => setNcmPricingForm((current) => ({ ...current, chargeBeforeDiscount: event.target.value }))}
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+                <label className="text-xs font-medium text-slate-600">
+                  NCM discount
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    required
+                    value={ncmPricingForm.discountAmount}
+                    onChange={(event) => setNcmPricingForm((current) => ({ ...current, discountAmount: event.target.value }))}
+                    className={`${inputClass} mt-1`}
+                  />
+                </label>
+              </div>
+              <label className="block text-xs font-medium text-slate-600">
+                Evidence note
+                <textarea
+                  value={ncmPricingForm.note}
+                  onChange={(event) => setNcmPricingForm((current) => ({ ...current, note: event.target.value }))}
+                  minLength={10}
+                  maxLength={1000}
+                  rows={2}
+                  required
+                  className={`${inputClass} mt-1`}
+                  placeholder="Record the NCM order details or other evidence checked."
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={busy !== "" || settlement?.settlementState === "SETTLED"}
+                className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                {busy === "pricing" ? "Saving…" : "Save NCM discount"}
+              </button>
+              {settlement?.settlementState === "SETTLED" && (
+                <p className="text-xs text-amber-700">This remittance is settled; carrier pricing is locked.</p>
+              )}
+            </form>
           </section>
 
           <section className="rounded-lg border border-slate-200 p-4">

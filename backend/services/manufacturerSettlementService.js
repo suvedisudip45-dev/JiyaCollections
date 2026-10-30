@@ -31,7 +31,7 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
       ? client.accountingDocument.findMany({
           where: {
             party: { is: { partyType: "MANUFACTURER", sourceEntityId: manufacturerId } },
-            sourceType: { in: ["MANUFACTURER_DELIVERY_COGS", "MANUFACTURER_DELIVERY_RETURN"] },
+            sourceType: { in: ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS", "MANUFACTURER_DELIVERY_RETURN"] },
             side: { in: ["PAYABLE", "RECEIVABLE"] },
           },
           select: {
@@ -66,11 +66,15 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   let unattributedLegacyLineCount = 0;
   const documentedProductionSources = new Set(
     manufacturerDocuments
-      .filter((document) => document.side === "PAYABLE" && document.sourceType === "MANUFACTURER_DELIVERY_COGS")
+      .filter((document) =>
+        document.side === "PAYABLE" &&
+        ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS"].includes(document.sourceType)
+      )
       .map((document) => document.sourceId)
   );
   const productionBills = manufacturerDocuments.filter((document) =>
-    document.side === "PAYABLE" && document.sourceType === "MANUFACTURER_DELIVERY_COGS"
+    document.side === "PAYABLE" &&
+    ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS"].includes(document.sourceType)
   );
   const supplierCredits = manufacturerDocuments.filter((document) =>
     document.side === "RECEIVABLE" && document.sourceType === "MANUFACTURER_DELIVERY_RETURN"
@@ -93,7 +97,8 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
     if (!isManufacturerLine(line, manufacturer)) continue;
     const sourceType = line.journalEntry?.sourceType;
     const netPayable = Number(line.credit || 0) - Number(line.debit || 0);
-    if (sourceType === "MANUFACTURER_PRODUCTION" ||
+    if ((sourceType === "MANUFACTURER_PRODUCTION" &&
+         !documentedProductionSources.has(line.journalEntry?.sourceId)) ||
         (sourceType === "DELIVERY_SALE" && !documentedProductionSources.has(line.journalEntry?.sourceId))) {
       legacyProductionRecognized += netPayable;
     }
@@ -158,6 +163,7 @@ export const allocateManufacturerPaymentToDocuments = async ({
   amount,
   journalEntryId,
   idempotencyKey,
+  sourceTypes = ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS"],
   notes = null,
   client = prisma,
 }) => {
@@ -179,7 +185,7 @@ export const allocateManufacturerPaymentToDocuments = async ({
     where: {
       partyId: party.id,
       side: "PAYABLE",
-      sourceType: "MANUFACTURER_DELIVERY_COGS",
+      sourceType: { in: sourceTypes },
       status: { in: ["OPEN", "PARTIALLY_PAID"] },
     },
     orderBy: [{ issueDate: "asc" }, { createdAt: "asc" }],
@@ -205,7 +211,7 @@ export const allocateManufacturerPaymentToDocuments = async ({
     amount: allocationAmount,
     journalEntryId,
     targetDocumentIds: documents.map((document) => document.id),
-    sourceTypes: ["MANUFACTURER_DELIVERY_COGS"],
+    sourceTypes,
     idempotencyKey,
     notes: notes || `Manufacturer payout allocation ${idempotencyKey}`,
   }, { client });

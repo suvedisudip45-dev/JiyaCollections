@@ -3,7 +3,7 @@ import test from "node:test";
 import { prisma } from "../config/db.js";
 import { isBeforeNcmHandoff } from "../services/orderCancellationService.js";
 import { calculateCustomerReturnRefundPolicy, decideCustomerReturnRequest, nextCustomerReturnNcmState, resolveCustomerReturnNcmState, returnItemsFromOrder } from "../services/customerReturnWorkflowService.js";
-import { buildExchangeNcmReturnComment, decideCustomerExchangeRequest, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
+import { buildExchangeNcmReturnComment, decideCustomerExchangeRequest, listAdminExchangeRequests, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
 import { resolveReturnExchangeRoute } from "../services/returnExchangeRouting.js";
 import {
   createReturnExchangeSettlementPayable,
@@ -195,6 +195,55 @@ test("admin exchange DTO serializes BigInt order timestamps as strings", () => {
   assert.doesNotThrow(() => JSON.stringify(dto));
 });
 
+test("admin exchange requests resolve accounting period and fiscal year by their foreign keys", async (t) => {
+  const request = {
+    id: "exchange-1",
+    customerId: "customer-1",
+    exchangeJournalEntryId: "journal-1",
+    order: { id: "order-1", date: 1790863117000n },
+  };
+  stubMethod(t, prisma, "$transaction", async (queries) => Promise.all(queries));
+  stubMethod(t, prisma.orderExchangeRequest, "findMany", async (args) => {
+    if (args.select?.customerId) {
+      return [{ customerId: "customer-1", items: [] }];
+    }
+    return [request];
+  });
+  stubMethod(t, prisma.orderExchangeRequest, "count", async () => 1);
+  stubMethod(t, prisma.customerReturn, "findMany", async () => []);
+  stubMethod(t, prisma.journalEntry, "findMany", async ({ select }) => {
+    assert.equal(select.accountingPeriodId, true);
+    assert.equal(select.fiscalYearId, true);
+    assert.equal(select.accountingPeriod, undefined);
+    assert.equal(select.fiscalYear, undefined);
+    return [{
+      id: "journal-1",
+      journalNumber: "JE-2026-00001",
+      transactionDate: new Date("2026-10-30T00:00:00.000Z"),
+      accountingPeriodId: "period-1",
+      fiscalYearId: "fiscal-year-1",
+    }];
+  });
+  stubMethod(t, prisma.accountingPeriod, "findMany", async () => [
+    { id: "period-1", periodName: "2026-10" },
+  ]);
+  stubMethod(t, prisma.fiscalYear, "findMany", async () => [
+    { id: "fiscal-year-1", name: "2083/2084" },
+  ]);
+
+  const result = await listAdminExchangeRequests({});
+  assert.equal(result.total, 1);
+  assert.equal(result.requests[0].journalEntry.journalNumber, "JE-2026-00001");
+  assert.deepEqual(result.requests[0].journalEntry.accountingPeriod, {
+    id: "period-1",
+    periodName: "2026-10",
+  });
+  assert.deepEqual(result.requests[0].journalEntry.fiscalYear, {
+    id: "fiscal-year-1",
+    name: "2083/2084",
+  });
+});
+
 test("return requests cannot exceed purchased and previously returned quantities", () => {
   const orderItems = [{ productId: "p1", name: "Top", size: "M", color: "Black", quantity: 2, purchasedUnitPrice: 100 }];
   const item = { productId: "p1", size: "M", color: "Black", quantity: 1 };
@@ -252,11 +301,40 @@ test("exchange replacement quantities match requested return quantities", () => 
 
   assert.equal(replacement[0].size, "M");
   assert.equal(replacement[0].color, "Black");
+  assert.equal(replacement[0].unitCostPrice, null);
   assert.throws(() => snapshotReplacementItems({
     orderItems,
     requestedItems,
     replacementItems: [{ productId: "p1", size: "M", color: "Black", quantity: 2 }],
   }), { code: "EXCHANGE_REPLACEMENT_QUANTITY_MISMATCH" });
+});
+
+test("different-product exchange snapshots the active catalog cost at request time", () => {
+  const replacement = snapshotReplacementItems({
+    orderItems: [],
+    requestedItems: [{ productId: "old-product", quantity: 1, unitPrice: 100 }],
+    replacementItems: [{ productId: "new-product", size: "M", color: "Black", quantity: 1 }],
+    catalogProducts: new Map([["new-product", {
+      id: "new-product",
+      name: "Jacket",
+      price: 250,
+      costPrice: 120,
+    }]]),
+  });
+
+  assert.equal(replacement[0].unitPrice, 250);
+  assert.equal(replacement[0].unitCostPrice, 120);
+  assert.throws(() => snapshotReplacementItems({
+    orderItems: [],
+    requestedItems: [{ productId: "old-product", quantity: 1, unitPrice: 100 }],
+    replacementItems: [{ productId: "new-product", size: "M", color: "Black", quantity: 1 }],
+    catalogProducts: new Map([["new-product", {
+      id: "new-product",
+      name: "Jacket",
+      price: 250,
+      costPrice: null,
+    }]]),
+  }), { code: "EXCHANGE_COST_SNAPSHOT_MISSING" });
 });
 
 test("exchange return comment carries the cause and replacement plan to NCM", () => {

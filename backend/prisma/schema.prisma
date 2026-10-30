@@ -1266,6 +1266,8 @@ model CustomerReturn {
   inspectionResult  String?  @db.VarChar(64)
   inspectionEvidenceUrl String? @db.Text
   completedAt       DateTime?
+  accountingJournalEntryId String? @db.VarChar(191)
+  taxCreditNoteNumber String? @db.VarChar(128)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   events            CustomerReturnEvent[]
@@ -1291,6 +1293,7 @@ model OrderExchangeRequest {
   customerPhone             String?                   @default("")
   manufacturerId            String?
   distributorId             String?
+  settlementDistributorId   String?
   deliveryRoute             String?                   @db.VarChar(32)
   manufacturerName          String?
   cardId                    String?
@@ -1298,7 +1301,17 @@ model OrderExchangeRequest {
   reasonDetails             String?                   @db.Text
   items                     Json
   replacementItems          Json?
-  priceDifference            Float                     @default(0)
+  exchangeType              String                    @default("VARIANT_SWAP") @db.VarChar(32)
+  warrantyClaim             Boolean                   @default(false)
+  warrantyReason            String?                   @db.VarChar(100)
+  originalTotalValue        Decimal                   @default(0) @db.Decimal(20, 2)
+  replacementTotalValue     Decimal                   @default(0) @db.Decimal(20, 2)
+  priceDifference           Decimal                   @default(0) @db.Decimal(20, 2)
+  priceDifferenceSettlement String                    @default("NOT_APPLICABLE") @db.VarChar(32)
+  priceDifferenceCodAmount  Decimal                   @default(0) @db.Decimal(20, 2)
+  exchangeJournalEntryId    String?                   @db.VarChar(191)
+  scrapJournalEntryId       String?                   @db.VarChar(191)
+  taxCreditNoteNumber       String?                   @db.VarChar(128)
   status                    String                    @default("REQUESTED")
   decisionActorId           String?
   decisionReason            String?                   @db.Text
@@ -1332,6 +1345,7 @@ model OrderExchangeRequest {
   card                      MarketingCard?            @relation(fields: [cardId], references: [id], onDelete: SetNull)
   events                    OrderExchangeEvent[]
   ncmAttempts               ReturnExchangeNcmAttempt[]
+  distributorCashEvents     DistributorCashEvent[]
 
   @@index([customerId, createdAt])
   @@index([orderId, status])
@@ -1916,9 +1930,10 @@ model DistributorCashEvent {
   distributorId         String
   orderId               String?
   customerReturnId      String?
+  orderExchangeRequestId String?
   remittanceBatchId     String?
   accountingDocumentId  String?
-  eventType             String   @db.VarChar(32) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | APPROVED_ADJUSTMENT
+  eventType             String   @db.VarChar(32) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | EXCHANGE_UPGRADE_COLLECTION | EXCHANGE_DOWNGRADE_REFUND | APPROVED_ADJUSTMENT
   amount                Decimal  @db.Decimal(20, 2)
   status                String   @default("PENDING_VERIFICATION") @db.VarChar(24) // PENDING_VERIFICATION | VERIFIED | POSTED | REJECTED
   paymentMethod         String?  @db.VarChar(32)
@@ -1937,12 +1952,14 @@ model DistributorCashEvent {
   distributor           Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   order                 Order? @relation(fields: [orderId], references: [id], onDelete: Restrict)
   customerReturn        CustomerReturn? @relation(fields: [customerReturnId], references: [id], onDelete: Restrict)
+  orderExchangeRequest  OrderExchangeRequest? @relation(fields: [orderExchangeRequestId], references: [id], onDelete: Restrict)
   remittanceBatch       DistributorRemittanceBatch? @relation(fields: [remittanceBatchId], references: [id], onDelete: Restrict)
   accountingDocument    AccountingDocument? @relation(fields: [accountingDocumentId], references: [id], onDelete: Restrict)
 
   @@index([distributorId, eventType, status, occurredAt], map: "DistributorCashEvent_distributor_event_status_time_idx")
   @@index([orderId, eventType, status])
   @@index([customerReturnId, eventType, status])
+  @@index([orderExchangeRequestId, eventType, status])
   @@index([remittanceBatchId])
   @@index([accountingDocumentId, status])
 }
@@ -2620,6 +2637,7 @@ model MarketingBenefit {
   description      String?                      @db.Text
   benefitType      String                       @default("CUSTOM")
   value            Float                        @default(0)
+  maxDiscountAmount Float?
   percentage       Float                        @default(0) // Percentage of customer cards (e.g. 10 for 10% of customers)
   quantity         Int                          @default(0) // Fixed number of cards allocated for this benefit
   assignedQuantity Int                          @default(0) // Number of cards assigned this benefit during generation
@@ -3093,6 +3111,8 @@ model DeliveryOrder {
   itemAmount             Float           @default(0)
   customerDeliveryCharge Float           @default(0)
   ncmDeliveryCharge      Float?
+  ncmDeliveryChargeBeforeDiscount Float?
+  ncmDeliveryDiscount    Float           @default(0)
   codAmount              Float           @default(0)
   ncmOrderId             Int?            @unique
   vendorReference        String          @unique
@@ -3227,6 +3247,7 @@ model DeliveryFinancialSettlement {
   codCollected        Float     @default(0)
   deliveryFeeExpected Float     @default(0)
   deliveryFeeActual   Float     @default(0)
+  deliveryFeeDiscount Float     @default(0)
   otherAdjustments    Float     @default(0)
   manufacturerPayable Float     @default(0)
   platformReceivable  Float     @default(0)

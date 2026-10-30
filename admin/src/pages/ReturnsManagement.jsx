@@ -448,6 +448,33 @@ const ReturnsManagement = ({ token }) => {
                         <td className="p-3 text-center">
                           {ret.deliveryRoute === "DISTRIBUTOR" && (
                             <div className="flex min-w-52 flex-col items-center gap-2">
+                              <div className="w-full rounded-md border border-violet-100 bg-violet-50 px-2.5 py-2 text-left">
+                                <p className="text-[9px] font-bold uppercase tracking-wide text-violet-700">Assigned distributor</p>
+                                {ret.assignedDistributor?.distributor ? (
+                                  <>
+                                    <p className="mt-1 text-[11px] font-bold text-slate-900">{ret.assignedDistributor.distributor.name}</p>
+                                    <p className="text-[10px] text-slate-600">
+                                      {[ret.assignedDistributor.distributor.district, ret.assignedDistributor.distributor.province]
+                                        .filter(Boolean)
+                                        .join(", ") || ret.assignedDistributor.distributor.city || "Location unavailable"}
+                                    </p>
+                                    {ret.assignedDistributor.distributor.phone && (
+                                      <p className="text-[10px] text-slate-600">Phone: {ret.assignedDistributor.distributor.phone}</p>
+                                    )}
+                                    <p className="mt-1 text-[9px] font-semibold text-violet-800">
+                                      {[ret.assignedDistributor.deliveryType, ret.assignedDistributor.status]
+                                        .filter(Boolean)
+                                        .map((value) => String(value).replace(/_/g, " "))
+                                        .join(" · ")}
+                                    </p>
+                                    {ret.assignedDistributor.returnedAt && (
+                                      <p className="text-[9px] text-slate-500">Return received: {new Date(ret.assignedDistributor.returnedAt).toLocaleDateString()}</p>
+                                    )}
+                                  </>
+                                ) : (
+                                  <p className="mt-1 text-[10px] text-slate-500">Distributor assignment details unavailable.</p>
+                                )}
+                              </div>
                               {ret.inspectionEvidenceUrl && (
                                 <a
                                   href={ret.inspectionEvidenceUrl}
@@ -495,15 +522,16 @@ const ReturnsManagement = ({ token }) => {
                                   </button>
                                 </div>
                               )}
-                              {ret.distributorCashEvents[0].status === "POSTED" &&
+                              {ret.distributorCashEvents?.[0]?.status === "POSTED" &&
                                 Number(ret.distributorCashEvents[0].accountingDocument?.remainingAmount || 0) > 0 && (
                                   <>
                                     <select
                                       value={refundPayoutAccounts[ret.id] || ""}
                                       onChange={(event) => setRefundPayoutAccounts((current) => ({ ...current, [ret.id]: event.target.value }))}
                                       className="max-w-52 rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px]"
+                                      aria-label="Company treasury account to pay the distributor refund"
                                     >
-                                      <option value="">Select payout account</option>
+                                      <option value="">Select company payout account</option>
                                       {accounts.filter((account) =>
                                         account.status === "ACTIVE" &&
                                         account.currency === "NPR" &&

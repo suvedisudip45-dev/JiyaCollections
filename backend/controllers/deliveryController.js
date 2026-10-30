@@ -488,11 +488,12 @@ export const getRecentSystemLogs = async (_req, res) => {
 
 export const adminSettlementSummary = async (_req, res) => {
     const [settlements, deliveries] = await Promise.all([
-      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeExpected: true, deliveryFeeActual: true, settlementState: true } }),
+      prisma.deliveryFinancialSettlement.findMany({ select: { codExpected: true, codCollected: true, deliveryFeeExpected: true, deliveryFeeActual: true, deliveryFeeDiscount: true, settlementState: true } }),
       prisma.deliveryOrder.findMany({ select: { customerDeliveryCharge: true, ncmDeliveryCharge: true, state: true } }),
     ]);
     const totalDeliveryChargeExpected = deliveries.reduce((sum, item) => sum + Number(item.customerDeliveryCharge || 0), 0);
     const totalCarrierFees = settlements.reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
+    const totalCarrierDiscounts = settlements.reduce((sum, item) => sum + Number(item.deliveryFeeDiscount || 0), 0);
     const totalDeliveryChargePaid = settlements
       .filter((item) => item.settlementState === "SETTLED")
       .reduce((sum, item) => sum + Number(item.deliveryFeeActual || 0), 0);
@@ -502,6 +503,7 @@ export const adminSettlementSummary = async (_req, res) => {
       success: true,
       summary: {
         totalDeliveryChargeExpected,
+        totalCarrierDiscounts,
         totalDeliveryChargePaid,
         deliveryChargeToPay: Math.max(0, totalCarrierFees - totalDeliveryChargePaid),
         codExpected,

@@ -33,6 +33,7 @@ import {
   listAdminSelfDeliveryDistributorsForAdmin,
   listAdminNcmDeliveryRecords,
   listAdminSelfDeliveryRecords,
+  recordAdminNcmDeliveryPricingController,
 } from "../controllers/adminDeliveryMonitoringController.js";
 import {
   getNcmAdminAssignedBranches,
@@ -80,6 +81,7 @@ deliveryRouter.get("/customer/:id", authenticate, authorize("customer:delivery_r
 deliveryRouter.get("/admin", authenticate, authorize("delivery:admin_list"), adminListDeliveries);
 deliveryRouter.get("/admin/ncm/deliveries", authenticate, authorize("delivery:admin_list"), listAdminNcmDeliveryRecords);
 deliveryRouter.get("/admin/ncm/deliveries/:id", authenticate, authorize("delivery:admin_detail"), getAdminNcmDeliveryRecord);
+deliveryRouter.post("/admin/ncm/deliveries/:deliveryId/pricing", authenticate, authorize("delivery:reconcile"), recordAdminNcmDeliveryPricingController);
 deliveryRouter.get("/admin/self-deliveries", authenticate, authorize("delivery:admin_list"), listAdminSelfDeliveryRecords);
 deliveryRouter.get("/admin/self-deliveries/distributors", authenticate, authorize("delivery:admin_list"), listAdminSelfDeliveryDistributorsForAdmin);
 deliveryRouter.get("/admin/self-deliveries/:id", authenticate, authorize("delivery:admin_detail"), getAdminSelfDeliveryRecord);

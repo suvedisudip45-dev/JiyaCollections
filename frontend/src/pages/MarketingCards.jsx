@@ -506,7 +506,7 @@ const MarketingCards = () => {
                   </h3>
                   <p className="mt-1 text-sm font-bold text-amber-800">
                     {scannedOfferResult.benefit.benefitType === "DISCOUNT"
-                      ? `${scannedOfferResult.benefit.value}% Discount Offer`
+                      ? `${scannedOfferResult.benefit.value}% Discount Offer${scannedOfferResult.benefit.maxDiscountAmount ? ` (up to Rs ${scannedOfferResult.benefit.maxDiscountAmount})` : ""}`
                       : scannedOfferResult.benefit.benefitType === "VOUCHER"
                       ? `Rs ${scannedOfferResult.benefit.value} Voucher`
                       : scannedOfferResult.benefit.value
@@ -662,7 +662,7 @@ const MarketingCards = () => {
                               <span className="text-sm font-black text-slate-900">{benefit.name}</span>
                             </div>
                             <span className="rounded-md bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-800 whitespace-nowrap">
-                              {benefit.benefitType === "DISCOUNT" ? `${benefit.value}% OFF` : `Rs ${benefit.value}`}
+                              {benefit.benefitType === "DISCOUNT" ? `${benefit.value}% OFF${benefit.maxDiscountAmount ? ` (up to Rs ${benefit.maxDiscountAmount})` : ""}` : `Rs ${benefit.value}`}
                             </span>
                           </div>
 

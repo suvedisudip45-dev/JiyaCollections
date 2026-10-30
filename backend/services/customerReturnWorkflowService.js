@@ -309,7 +309,94 @@ export const listAdminCustomerReturns = async ({ skip = 0, take = 30, status }) 
     }),
     prisma.customerReturn.count({ where }),
   ]);
-  return { returns, total };
+  const orderIds = [...new Set(returns.map((record) => record.orderId).filter(Boolean))];
+  const returnIds = returns.map((record) => record.id);
+  const [orders, assignments, journals] = await Promise.all([
+    orderIds.length ? prisma.order.findMany({
+      where: { id: { in: orderIds } },
+      select: { id: true, amount: true, date: true },
+    }) : [],
+    orderIds.length ? prisma.orderAssignment.findMany({
+      where: { orderId: { in: orderIds } },
+      select: {
+        orderId: true,
+        distributorId: true,
+        deliveryType: true,
+        status: true,
+        assignedAt: true,
+        deliveredAt: true,
+        returnedAt: true,
+        distributor: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            address: true,
+            city: true,
+            province: true,
+            district: true,
+          },
+        },
+      },
+    }) : [],
+    returnIds.length ? prisma.journalEntry.findMany({
+      where: {
+        sourceId: { in: returnIds },
+        sourceType: { in: ["SALES_RETURN", "DISTRIBUTOR_CUSTOMER_REFUND"] },
+      },
+      select: {
+        id: true,
+        sourceId: true,
+        journalNumber: true,
+        transactionDate: true,
+        accountingPeriodId: true,
+        fiscalYearId: true,
+      },
+      orderBy: { transactionDate: "desc" },
+    }) : [],
+  ]);
+  const accountingPeriodIds = [...new Set(journals.map((journal) => journal.accountingPeriodId).filter(Boolean))];
+  const fiscalYearIds = [...new Set(journals.map((journal) => journal.fiscalYearId).filter(Boolean))];
+  const [accountingPeriods, fiscalYears] = await Promise.all([
+    accountingPeriodIds.length
+      ? prisma.accountingPeriod.findMany({
+          where: { id: { in: accountingPeriodIds } },
+          select: { id: true, periodName: true },
+        })
+      : [],
+    fiscalYearIds.length
+      ? prisma.fiscalYear.findMany({
+          where: { id: { in: fiscalYearIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+  ]);
+  const accountingPeriodsById = new Map(accountingPeriods.map((period) => [period.id, period]));
+  const fiscalYearsById = new Map(fiscalYears.map((year) => [year.id, year]));
+  const ordersById = new Map(orders.map((order) => [order.id, {
+    ...order,
+    date: order.date == null ? order.date : String(order.date),
+  }]));
+  const assignmentsByOrderId = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
+  const journalsByReturnId = new Map();
+  for (const journal of journals) {
+    if (!journalsByReturnId.has(journal.sourceId)) {
+      journalsByReturnId.set(journal.sourceId, {
+        ...journal,
+        accountingPeriod: accountingPeriodsById.get(journal.accountingPeriodId) || null,
+        fiscalYear: fiscalYearsById.get(journal.fiscalYearId) || null,
+      });
+    }
+  }
+  return {
+    returns: returns.map((record) => ({
+      ...record,
+      order: ordersById.get(record.orderId) || null,
+      assignedDistributor: assignmentsByOrderId.get(record.orderId) || null,
+      journalEntry: journalsByReturnId.get(record.id) || null,
+    })),
+    total,
+  };
 };
 
 export const listManufacturerCustomerReturns = ({ manufacturerId, distributorId }) => {
@@ -674,6 +761,7 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
   }
 
   let restockedInventoryCost = 0;
+  let damagedInventoryCost = 0;
   const record = await prisma.$transaction(async (tx) => {
     const current = await tx.customerReturn.findUnique({ where: { id: returnId } });
     if (!current) throw fail("Return request not found.", "RETURN_NOT_FOUND", 404);
@@ -681,6 +769,12 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
     if (current.inspectedAt) throw fail("This return has already been inspected.", "RETURN_ALREADY_INSPECTED", 409);
 
     const items = parseArray(current.items);
+    if (inspection === "DAMAGED") {
+      damagedInventoryCost = items.reduce(
+        (total, item) => total + Number(item.unitCostPrice || 0) * Number(item.quantity || 0),
+        0,
+      );
+    }
     if (inspection === "RESTOCKABLE") {
       const originalOrder = await tx.order.findUnique({ where: { id: current.orderId }, select: { items: true } });
       const orderItems = parseArray(originalOrder?.items);
@@ -819,7 +913,8 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
         client: tx,
       });
     }
-    if (returnAccepted && current.deliveryRoute !== "DISTRIBUTOR") {
+    const approvedRefundAmount = Number(current.approvedRefundAmount ?? current.totalRefundAmount ?? 0);
+    if (returnAccepted && approvedRefundAmount > 0 && current.deliveryRoute !== "DISTRIBUTOR") {
       await tx.accountPayable.create({
         data: {
           title: `Customer Refund: RMA #${current.id.slice(0, 8)} (${current.customerName})`,
@@ -837,12 +932,23 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
       });
     }
     if (returnAccepted) await applyCollaborationReturnAdjustments({ orderId: current.orderId, items, returnedAt: now, client: tx });
+    let accountingJournalEntry = null;
     if (returnAccepted && current.deliveryRoute !== "DISTRIBUTOR") {
-      await postCustomerReturnAccounting({
+      accountingJournalEntry = await postCustomerReturnAccounting({
         ...updated,
         totalRefundAmount: updated.approvedRefundAmount ?? updated.totalRefundAmount,
         restockedInventoryCost: inspection === "RESTOCKABLE" ? restockedInventoryCost : 0,
+        damagedInventoryCost: inspection === "DAMAGED" ? damagedInventoryCost : 0,
       }, { recordAsPayable: true, client: tx });
+      if (accountingJournalEntry) {
+        await tx.customerReturn.update({
+          where: { id: current.id },
+          data: {
+            accountingJournalEntryId: accountingJournalEntry.id,
+            ...(approvedRefundAmount > 0 ? { taxCreditNoteNumber: `CN-${accountingJournalEntry.journalNumber}` } : {}),
+          },
+        });
+      }
     }
     await addReturnEvent(tx, {
       returnId: current.id,
@@ -870,7 +976,13 @@ export const inspectCustomerReturn = async ({ returnId, adminId, actorContext, r
         refundStatus: returnAccepted ? "PENDING" : "REJECTED",
       },
     }, { client: tx });
-    return updated;
+    return accountingJournalEntry
+      ? {
+          ...updated,
+          accountingJournalEntryId: accountingJournalEntry.id,
+          ...(approvedRefundAmount > 0 ? { taxCreditNoteNumber: `CN-${accountingJournalEntry.journalNumber}` } : {}),
+        }
+      : updated;
   }, { isolationLevel: "Serializable" });
 
   return record;

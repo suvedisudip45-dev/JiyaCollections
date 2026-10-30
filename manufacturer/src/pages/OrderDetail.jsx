@@ -35,6 +35,14 @@ const parseBoolean = (value) => {
   return ["true", "1", "yes", "y"].includes(String(value || "").trim().toLowerCase());
 };
 
+const isCampaignCardAttachable = (card) => {
+  const campaign = card?.campaign;
+  const now = Date.now();
+  return campaign?.status === "ACTIVE" &&
+    (!campaign.endsAt || new Date(campaign.endsAt).getTime() >= now) &&
+    (!campaign.cardExpiresAt || new Date(campaign.cardExpiresAt).getTime() >= now);
+};
+
 const OrderDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -192,7 +200,24 @@ const OrderDetail = () => {
     try {
       const res = await axios.get(`${backendUrl}/api/marketing-cards/distributor/cards?status=all`, { headers: { token } });
       const linked = (res.data.cards || []).find((card) => card.orderLink?.orderId === assignment.order.id);
-      setMarketingCard(linked || null);
+      if (!linked || isCampaignCardAttachable(linked)) {
+        setMarketingCard(linked || null);
+        return;
+      }
+
+      try {
+        const replacement = await axios.post(
+          `${backendUrl}/api/marketing-cards/distributor/orders/${assignment.order.id}/attach`,
+          {},
+          { headers: { token } }
+        );
+        if (!replacement.data.success) throw new Error(replacement.data.message || "Unable to attach a replacement marketing card.");
+        setMarketingCard(replacement.data.card);
+        toast.info("The previous campaign card is no longer valid. A card from an active campaign was attached.");
+      } catch (error) {
+        setMarketingCard(null);
+        toast.warning(error.response?.data?.message || error.message || "The previous campaign card expired. Attach a replacement card before continuing.");
+      }
     } catch (error) {
       setMarketingCard(null);
     }
@@ -312,6 +337,9 @@ const OrderDetail = () => {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to update status");
+      if (err.response?.data?.code === "MARKETING_CARD_REATTACH_REQUIRED") {
+        await fetchMarketingCardStatus();
+      }
     } finally {
       setActionLoading(false);
     }
@@ -1551,6 +1579,9 @@ const OrderDetail = () => {
         giftOptionsLoading={giftOptionsLoading}
         giftOptionsError={giftOptionsError}
         onRetryGiftOptions={fetchGiftOptions}
+        marketingCard={marketingCard}
+        marketingCardLoading={marketingCardLoading}
+        onAttachMarketingCard={handleAttachMarketingCard}
         currency={currency}
         busy={actionLoading}
         onClose={() => setChecklistModalOpen(false)}

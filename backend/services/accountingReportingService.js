@@ -70,11 +70,11 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
   const inputVat = balance("1150");
   const closingBalance = (code) => balance(code, closing);
 
-  const currentAssets = ["1110", "1120", "1130", "1140", "1150", "1160", "1170", "1180"]
+  const currentAssets = ["1110", "1120", "1130", "1140", "1150", "1160", "1170", "1180", "1190"]
     .reduce((total, code) => total + balance(code, closing), 0);
   const fixedAssets = ["1510", "1520", "1530", "1590"]
     .reduce((total, code) => total + balance(code, closing), 0);
-  const currentLiabilities = ["2110", "2120", "2130", "2140", "2150", "2160", "2170", "2180"]
+  const currentLiabilities = ["2110", "2120", "2130", "2140", "2150", "2160", "2170", "2180", "2190"]
     .reduce((total, code) => total + balance(code, closing), 0);
   const longTermLiabilities = balance("2510", closing);
   const totalAssets = currentAssets + fixedAssets;
@@ -105,6 +105,7 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       inventory: toAmount(toCents(closingBalance("1140"))),
       inputVatReceivable: toAmount(toCents(closingBalance("1150"))),
       codReceivable: toAmount(toCents(closingBalance("1170"))),
+      distributorCodReceivable: toAmount(toCents(closingBalance("1190"))),
       gatewayClearing: toAmount(toCents(closingBalance("1180"))),
       currentAssets: toAmount(toCents(currentAssets)),
       fixedAssets: toAmount(toCents(fixedAssets)),
@@ -114,6 +115,7 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       manufacturerPayable: toAmount(toCents(closingBalance("2160"))),
       marketingPartnerPayable: toAmount(toCents(closingBalance("2170"))),
       carrierPayable: toAmount(toCents(closingBalance("2180"))),
+      distributorPayable: toAmount(toCents(closingBalance("2190"))),
       currentLiabilities: toAmount(toCents(currentLiabilities)),
       longTermLiabilities: toAmount(toCents(longTermLiabilities)),
       totalLiabilities: toAmount(toCents(totalLiabilities)),

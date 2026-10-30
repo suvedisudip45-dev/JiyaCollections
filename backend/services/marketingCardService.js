@@ -11,15 +11,22 @@ const MAX_BATCH_SIZE = 5000;
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["ACTIVE"]);
 
 /** Returns true if the campaign is still accepting new card-to-order attachments (not expired/cancelled). */
-const isCampaignAcceptingOrders = (campaign) => {
+const isCampaignAcceptingOrders = (campaign, now = new Date()) => {
   if (!ACTIVE_CAMPAIGN_STATUSES.has(campaign.status)) return false;
-  if (campaign.endsAt && new Date() > new Date(campaign.endsAt)) return false;
+  if (campaign.endsAt && now > new Date(campaign.endsAt)) return false;
   return true;
 };
 
 /** Returns true if a card from this campaign can still be redeemed by a customer (card hasn't expired). */
 export const isCampaignCardRedeemable = (campaign) => {
   if (campaign.cardExpiresAt && new Date() > new Date(campaign.cardExpiresAt)) return false;
+  return true;
+};
+
+export const isMarketingCardAttachable = (card, now = new Date()) => {
+  const campaign = card?.campaign;
+  if (!campaign || !isCampaignAcceptingOrders(campaign, now)) return false;
+  if (campaign.cardExpiresAt && now > new Date(campaign.cardExpiresAt)) return false;
   return true;
 };
 
@@ -277,17 +284,31 @@ export const createCampaign = async ({
   const parsedCpaRate = Math.max(0, Number(cpaRate || 0));
   const parsedMaxScansPerCustomer = ownStore ? normalizeMaxScansPerCustomer(maxScansPerCustomer) : 1;
 
-  const campaignBenefits = (Array.isArray(benefits) ? benefits : []).filter((benefit) => String(benefit?.name || "").trim()).map((benefit) => ({
-    name: String(benefit.name).trim(),
-    description: benefit.description || null,
-    benefitType: String(benefit.benefitType || "CUSTOM").toUpperCase(),
-    value: Number(benefit.value || 0),
-    percentage: Number(benefit.percentage || 0),
-    quantity: Number(benefit.quantity || benefit.maxQuantity || 0),
-    terms: benefit.terms || null,
-    startsAt: benefit.startsAt ? new Date(benefit.startsAt) : null,
-    expiresAt: benefit.expiresAt ? new Date(benefit.expiresAt) : null,
-  }));
+  const campaignBenefits = (Array.isArray(benefits) ? benefits : []).filter((benefit) => String(benefit?.name || "").trim()).map((benefit) => {
+    const benefitType = String(benefit.benefitType || "CUSTOM").toUpperCase();
+    const rawMaxDiscountAmount = benefit.maxDiscountAmount;
+    const maxDiscountAmount = rawMaxDiscountAmount === undefined || rawMaxDiscountAmount === null || rawMaxDiscountAmount === ""
+      ? null
+      : Number(rawMaxDiscountAmount);
+    if (maxDiscountAmount !== null && (!Number.isFinite(maxDiscountAmount) || maxDiscountAmount <= 0)) {
+      throw new Error("Maximum discount must be greater than zero.");
+    }
+    if (maxDiscountAmount !== null && (!ownStore || benefitType !== "DISCOUNT")) {
+      throw new Error("Maximum discount is only available for Own Store percentage discounts.");
+    }
+    return {
+      name: String(benefit.name).trim(),
+      description: benefit.description || null,
+      benefitType,
+      value: Number(benefit.value || 0),
+      maxDiscountAmount,
+      percentage: Number(benefit.percentage || 0),
+      quantity: Number(benefit.quantity || benefit.maxQuantity || 0),
+      terms: benefit.terms || null,
+      startsAt: benefit.startsAt ? new Date(benefit.startsAt) : null,
+      expiresAt: benefit.expiresAt ? new Date(benefit.expiresAt) : null,
+    };
+  });
   if (campaignBenefits.some((benefit) => !Number.isFinite(benefit.value) || benefit.value < 0)) throw new Error("Benefit value must be a non-negative number.");
   return prisma.$transaction(async (tx) => {
     const campaignData = {
@@ -879,150 +900,188 @@ export const isCardOrderAssignmentOwner = ({ order, assignment, manufacturerId, 
   (!distributorId || !order.distributorId || order.distributorId === distributorId)
 );
 
-export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distributorId }) => prisma.$transaction(async (tx) => {
-  await expireCampaignCards({ db: tx });
-  const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
-  if (!order) throw new Error("Order not found or unauthorized.");
-  const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
-  if (!isCardOrderAssignmentOwner({ order, assignment, manufacturerId, distributorId })) {
-    throw new Error("Order not found or unauthorized.");
-  }
-  if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");
-  if (order.marketingCardOrder) return order.marketingCardOrder;
-
-  const inventory = await tx.marketingCard.findMany({
-    where: {
-      ...(manufacturerId
-        ? { assignedManufacturerId: manufacturerId, assignments: { some: { manufacturerId, status: "RECEIVED", receipt: { isNot: null } } } }
-        : { assignedDistributorId: distributorId }),
-      physicalStatus: "AVAILABLE",
-    },
-    select: { id: true, physicalStatus: true, campaign: true },
-    take: 500,
-  });
-
-  const now = new Date();
-  const orderAmount = Number(order.amount || 0);
-
-  // Extract clothing categories from order items
-  const parsedItems = (() => {
-    if (Array.isArray(order.items)) return order.items;
-    if (typeof order.items === "string") {
-      try { return JSON.parse(order.items); } catch { return []; }
-    }
-    return [];
-  })();
-
-  const orderCategories = new Set(
-    parsedItems
-      .flatMap((item) => [item.category, item.subCategory, item.name])
-      .filter(Boolean)
-      .map((str) => String(str).toLowerCase().trim())
-  );
-
-  let eligibleInventory = inventory.filter((card) => {
-    const c = card.campaign;
-    // Must be an active campaign
-    if (!ACTIVE_CAMPAIGN_STATUSES.has(c.status)) return false;
-    // Must not have passed the campaign end date (new attachments blocked after expiry)
-    if (c.endsAt && now > new Date(c.endsAt)) return false;
-    // Must meet Minimum Order Value (MOV)
-    if (c.minOrderValue && orderAmount < Number(c.minOrderValue)) return false;
-    // Must match order geography
-    return campaignMatchesOrder(c, order);
-  });
-
-  // Fall back to any active card already received at this hub if strict campaign filters have no match.
-  if (!eligibleInventory.length) {
-    const fallbackActive = inventory.filter((card) => {
-      const c = card.campaign;
-      return ACTIVE_CAMPAIGN_STATUSES.has(c.status) && (!c.endsAt || now <= new Date(c.endsAt));
+export const attachRandomCardToOrder = async ({ orderId, manufacturerId, distributorId }) => {
+  const existingLink = await prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { marketingCardOrder: { include: { card: { include: { campaign: true } } } } },
     });
-    if (!fallbackActive.length) {
-      const error = new Error("No received marketing cards match this order's active campaign, delivery geography, and minimum cart value. The campaign may have expired.");
-      error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+    if (!order) throw new Error("Order not found or unauthorized.");
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
+    if (!isCardOrderAssignmentOwner({ order, assignment, manufacturerId, distributorId })) {
+      throw new Error("Order not found or unauthorized.");
+    }
+    if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");
+
+    const link = order.marketingCardOrder;
+    if (!link) return null;
+    if (isMarketingCardAttachable(link.card)) return link;
+
+    const reason = link.card?.campaign?.status === "ACTIVE" &&
+      link.card.campaign.endsAt && new Date() > new Date(link.card.campaign.endsAt)
+      ? "CAMPAIGN_ENDED_BEFORE_ORDER_PLACEMENT"
+      : link.card?.campaign?.cardExpiresAt && new Date() > new Date(link.card.campaign.cardExpiresAt)
+        ? "CARD_EXPIRED_BEFORE_ORDER_PLACEMENT"
+        : "CAMPAIGN_NO_LONGER_ACTIVE";
+    const released = await tx.marketingCard.updateMany({
+      where: { id: link.cardId, physicalStatus: "ATTACHED" },
+      data: { physicalStatus: "CANCELLED", reservedAt: null, attachedAt: null },
+    });
+    if (released.count === 1) {
+      await addEvent(tx, {
+        cardId: link.cardId,
+        eventType: "CARD_RELEASED_AFTER_CAMPAIGN_INVALIDATION",
+        actorId: manufacturerId || distributorId,
+        actorRole: manufacturerId ? "MANUFACTURER" : "DISTRIBUTOR",
+        fromStatus: "ATTACHED",
+        toStatus: "CANCELLED",
+        referenceId: orderId,
+        metadata: { reason },
+      });
+    }
+    await tx.marketingCardOrder.delete({ where: { id: link.id } });
+    return null;
+  }, { isolationLevel: "Serializable" });
+
+  if (existingLink) return existingLink;
+
+  return prisma.$transaction(async (tx) => {
+    await expireCampaignCards({ db: tx });
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { marketingCardOrder: { include: { card: { include: { campaign: true } } } } },
+    });
+    if (!order) throw new Error("Order not found or unauthorized.");
+    const assignment = await tx.orderAssignment.findUnique({ where: { orderId } });
+    if (!isCardOrderAssignmentOwner({ order, assignment, manufacturerId, distributorId })) {
+      throw new Error("Order not found or unauthorized.");
+    }
+    if (!order.marketingCardRequired) throw new Error("This order does not require a marketing card.");
+    if (order.marketingCardOrder) {
+      if (isMarketingCardAttachable(order.marketingCardOrder.card)) return order.marketingCardOrder;
+      const error = new Error("The attached card is no longer valid. Retry attaching a replacement card.");
+      error.code = "MARKETING_CARD_REATTACH_REQUIRED";
       throw error;
     }
-    eligibleInventory = fallbackActive;
-  }
 
-  // Multi-tier Prioritized Allocation:
-  // Tiers prioritize Clothing Category match followed by Geography proximity:
-  // 1. CAT_DISTRICT    (Category Match + Local District)   -> Weight: 10
-  // 2. CAT_PROVINCE    (Category Match + Province Scope)   -> Weight: 8
-  // 3. CAT_NATIONWIDE  (Category Match + Nationwide Scope) -> Weight: 6
-  // 4. GEN_DISTRICT    (General / Broad + Local District)  -> Weight: 5
-  // 5. GEN_PROVINCE    (General / Broad + Province Scope)  -> Weight: 3
-  // 6. GEN_NATIONWIDE  (General / Broad + Nationwide)      -> Weight: 2
-  const candidateTiers = {
-    CAT_DISTRICT:   { tier: "CAT_DISTRICT",   weight: 10, cards: [] },
-    CAT_PROVINCE:   { tier: "CAT_PROVINCE",   weight: 8,  cards: [] },
-    CAT_NATIONWIDE: { tier: "CAT_NATIONWIDE", weight: 6,  cards: [] },
-    GEN_DISTRICT:   { tier: "GEN_DISTRICT",   weight: 5,  cards: [] },
-    GEN_PROVINCE:   { tier: "GEN_PROVINCE",   weight: 3,  cards: [] },
-    GEN_NATIONWIDE: { tier: "GEN_NATIONWIDE", weight: 2,  cards: [] },
-  };
+    const inventory = await tx.marketingCard.findMany({
+      where: {
+        ...(manufacturerId
+          ? { assignedManufacturerId: manufacturerId, assignments: { some: { manufacturerId, status: "RECEIVED", receipt: { isNot: null } } } }
+          : { assignedDistributorId: distributorId }),
+        physicalStatus: "AVAILABLE",
+      },
+      select: { id: true, physicalStatus: true, campaign: true },
+      take: 500,
+    });
 
-  for (const card of eligibleInventory) {
-    const c = card.campaign;
-    const catCheck = campaignMatchesCategory(c, orderCategories);
-    const isCatMatch = catCheck.isTargeted && catCheck.matches;
-    const scope = c.targetScopeType || "NATIONWIDE";
+    const now = new Date();
+    const orderAmount = Number(order.amount || 0);
+    const parsedItems = (() => {
+      if (Array.isArray(order.items)) return order.items;
+      if (typeof order.items === "string") {
+        try { return JSON.parse(order.items); } catch { return []; }
+      }
+      return [];
+    })();
 
-    if (isCatMatch) {
-      if (scope === "DISTRICT") candidateTiers.CAT_DISTRICT.cards.push(card);
-      else if (scope === "PROVINCE") candidateTiers.CAT_PROVINCE.cards.push(card);
-      else candidateTiers.CAT_NATIONWIDE.cards.push(card);
-    } else if (!catCheck.isTargeted) {
-      if (scope === "DISTRICT") candidateTiers.GEN_DISTRICT.cards.push(card);
-      else if (scope === "PROVINCE") candidateTiers.GEN_PROVINCE.cards.push(card);
-      else candidateTiers.GEN_NATIONWIDE.cards.push(card);
-    } else {
-      // Targeted to another category, fallback bucket
-      candidateTiers.GEN_NATIONWIDE.cards.push(card);
+    const orderCategories = new Set(
+      parsedItems
+        .flatMap((item) => [item.category, item.subCategory, item.name])
+        .filter(Boolean)
+        .map((str) => String(str).toLowerCase().trim())
+    );
+
+    let eligibleInventory = inventory.filter((card) => {
+      const c = card.campaign;
+      if (!isMarketingCardAttachable(card, now)) return false;
+      if (c.minOrderValue && orderAmount < Number(c.minOrderValue)) return false;
+      return campaignMatchesOrder(c, order);
+    });
+
+    if (!eligibleInventory.length) {
+      const fallbackActive = inventory.filter((card) => isMarketingCardAttachable(card, now));
+      if (!fallbackActive.length) {
+        const error = new Error("No received marketing cards from an active, unexpired campaign are available at this hub.");
+        error.code = "MARKETING_CARD_NOT_ELIGIBLE";
+        throw error;
+      }
+      eligibleInventory = fallbackActive;
     }
-  }
 
-  const activeTiers = Object.values(candidateTiers).filter((t) => t.cards.length > 0);
-  const totalWeight = activeTiers.reduce((sum, item) => sum + item.weight, 0);
-  let randomWeight = Math.random() * totalWeight;
-  let chosenTierCards = activeTiers[0].cards;
+    const candidateTiers = {
+      CAT_DISTRICT:   { tier: "CAT_DISTRICT",   weight: 10, cards: [] },
+      CAT_PROVINCE:   { tier: "CAT_PROVINCE",   weight: 8,  cards: [] },
+      CAT_NATIONWIDE: { tier: "CAT_NATIONWIDE", weight: 6,  cards: [] },
+      GEN_DISTRICT:   { tier: "GEN_DISTRICT",   weight: 5,  cards: [] },
+      GEN_PROVINCE:   { tier: "GEN_PROVINCE",   weight: 3,  cards: [] },
+      GEN_NATIONWIDE: { tier: "GEN_NATIONWIDE", weight: 2,  cards: [] },
+    };
 
-  for (const item of activeTiers) {
-    if (randomWeight < item.weight) {
-      chosenTierCards = item.cards;
-      break;
+    for (const card of eligibleInventory) {
+      const c = card.campaign;
+      const catCheck = campaignMatchesCategory(c, orderCategories);
+      const isCatMatch = catCheck.isTargeted && catCheck.matches;
+      const scope = c.targetScopeType || "NATIONWIDE";
+
+      if (isCatMatch) {
+        if (scope === "DISTRICT") candidateTiers.CAT_DISTRICT.cards.push(card);
+        else if (scope === "PROVINCE") candidateTiers.CAT_PROVINCE.cards.push(card);
+        else candidateTiers.CAT_NATIONWIDE.cards.push(card);
+      } else if (!catCheck.isTargeted) {
+        if (scope === "DISTRICT") candidateTiers.GEN_DISTRICT.cards.push(card);
+        else if (scope === "PROVINCE") candidateTiers.GEN_PROVINCE.cards.push(card);
+        else candidateTiers.GEN_NATIONWIDE.cards.push(card);
+      } else {
+        candidateTiers.GEN_NATIONWIDE.cards.push(card);
+      }
     }
-    randomWeight -= item.weight;
-  }
 
-  const selected = chosenTierCards[crypto.randomInt(chosenTierCards.length)];
-  const claimed = await tx.marketingCard.updateMany({
-    where: {
-      id: selected.id,
-      ...(manufacturerId ? { assignedManufacturerId: manufacturerId } : { assignedDistributorId: distributorId }),
-      physicalStatus: "AVAILABLE",
-    },
-    data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() },
-  });
-  if (claimed.count !== 1) throw new Error("Card inventory changed during attachment. Please retry.");
-  const link = await tx.marketingCardOrder.create({
-    data: { cardId: selected.id, orderId, manufacturerId: manufacturerId || null, distributorId: distributorId || null },
-  });
-  await addEvent(tx, {
-    cardId: selected.id,
-    eventType: "CARD_ATTACHED_TO_ORDER",
-    actorId: manufacturerId || distributorId,
-    actorRole: manufacturerId ? "MANUFACTURER" : "DISTRIBUTOR",
-    fromStatus: "AVAILABLE",
-    toStatus: "ATTACHED",
-    referenceId: orderId,
-  });
-  return tx.marketingCardOrder.findUnique({ where: { id: link.id }, include: { card: true } });
-}, { isolationLevel: "Serializable" });
+    const activeTiers = Object.values(candidateTiers).filter((t) => t.cards.length > 0);
+    const totalWeight = activeTiers.reduce((sum, item) => sum + item.weight, 0);
+    let randomWeight = Math.random() * totalWeight;
+    let chosenTierCards = activeTiers[0].cards;
+
+    for (const item of activeTiers) {
+      if (randomWeight < item.weight) {
+        chosenTierCards = item.cards;
+        break;
+      }
+      randomWeight -= item.weight;
+    }
+
+    const selected = chosenTierCards[crypto.randomInt(chosenTierCards.length)];
+    const claimed = await tx.marketingCard.updateMany({
+      where: {
+        id: selected.id,
+        ...(manufacturerId ? { assignedManufacturerId: manufacturerId } : { assignedDistributorId: distributorId }),
+        physicalStatus: "AVAILABLE",
+      },
+      data: { physicalStatus: "ATTACHED", reservedAt: new Date(), attachedAt: new Date() },
+    });
+    if (claimed.count !== 1) throw new Error("Card inventory changed during attachment. Please retry.");
+    const link = await tx.marketingCardOrder.create({
+      data: { cardId: selected.id, orderId, manufacturerId: manufacturerId || null, distributorId: distributorId || null },
+    });
+    await addEvent(tx, {
+      cardId: selected.id,
+      eventType: "CARD_ATTACHED_TO_ORDER",
+      actorId: manufacturerId || distributorId,
+      actorRole: manufacturerId ? "MANUFACTURER" : "DISTRIBUTOR",
+      fromStatus: "AVAILABLE",
+      toStatus: "ATTACHED",
+      referenceId: orderId,
+    });
+    return tx.marketingCardOrder.findUnique({ where: { id: link.id }, include: { card: true } });
+  }, { isolationLevel: "Serializable" });
+};
 
 export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufacturerId, distributorId }) => {
-  const order = await tx.order.findUnique({ where: { id: orderId }, include: { marketingCardOrder: true } });
+  const order = await tx.order.findUnique({
+    where: { id: orderId },
+    include: { marketingCardOrder: { include: { card: { include: { campaign: true } } } } },
+  });
   if (!order) throw new Error("Order not found or unauthorized.");
   if (manufacturerId && order.manufacturerId && order.manufacturerId !== manufacturerId) {
     throw new Error("Order not found or unauthorized.");
@@ -1035,6 +1094,11 @@ export const ensureOrderCardAttached = async ({ tx = prisma, orderId, manufactur
   if (order.marketingCardRequired && !order.marketingCardOrder) {
     const error = new Error("A marketing card must be attached before delivery handoff.");
     error.code = "MARKETING_CARD_REQUIRED";
+    throw error;
+  }
+  if (order.marketingCardRequired && !isMarketingCardAttachable(order.marketingCardOrder.card)) {
+    const error = new Error("The attached marketing card's campaign has ended or the card has expired. Attach a replacement from an active campaign before continuing.");
+    error.code = "MARKETING_CARD_REATTACH_REQUIRED";
     throw error;
   }
   return order.marketingCardOrder;

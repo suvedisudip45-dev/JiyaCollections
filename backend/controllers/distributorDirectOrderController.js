@@ -1,8 +1,11 @@
 import { prisma } from "../config/db.js";
-import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
+import { ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
 import { accrueCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
-import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
-import { syncProductStock } from "../services/stockSyncService.js";
+import {
+  postCustomerPaymentAccounting,
+  postDeliveredOrderAccounting,
+} from "../services/accountingPostingEngine.js";
+import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 
@@ -94,7 +97,7 @@ export const createDistributorDirectOrder = async (req, res) => {
     const productIds = [...new Set(lines.map((line) => line.productId))];
     const products = await prisma.product.findMany({
       where: { id: { in: productIds }, published: true, collaborationLink: null },
-      select: { id: true, name: true, image: true, category: true, subCategory: true, price: true },
+      select: { id: true, name: true, image: true, category: true, subCategory: true, price: true, costPrice: true },
     });
     if (products.length !== productIds.length) {
       return res.status(404).json({ success: false, message: "One or more products are unavailable for sale." });
@@ -145,6 +148,7 @@ export const createDistributorDirectOrder = async (req, res) => {
         quantity,
         price: unitPrice,
         originalUnitPrice: unitPrice,
+        costPrice: Number(product.costPrice) || 0,
         lineTotal: unitPrice * quantity,
       };
     });
@@ -212,7 +216,7 @@ export const createDistributorDirectOrder = async (req, res) => {
     }
 
     const order = await prisma.$transaction(async (tx) => {
-      const location = await ensureInventoryLocation(tx, {
+      await ensureInventoryLocation(tx, {
         kind: "DISTRIBUTOR",
         distributorId,
         name: `Distributor ${distributor.name}`,
@@ -250,29 +254,6 @@ export const createDistributorDirectOrder = async (req, res) => {
         },
       });
 
-      const quantitiesBySku = new Map();
-      for (const item of frozenItems) {
-        quantitiesBySku.set(item.inventorySkuId, (quantitiesBySku.get(item.inventorySkuId) || 0) + item.quantity);
-      }
-      for (const [inventorySkuId, quantity] of quantitiesBySku) {
-        await applyInventoryMovement(tx, {
-          inventorySkuId,
-          sourceLocationId: location.id,
-          quantity,
-          movementType: "FULFILLMENT",
-          referenceType: "DIRECT_DISTRIBUTOR_ORDER",
-          referenceId: created.id,
-          idempotencyKey: `distributor-direct-order:${created.id}:${inventorySkuId}`,
-          actorId: req.auth.accountId,
-          actorRole: "DISTRIBUTOR",
-          reason: `Direct distributor hub sale (${directOrderType}).`,
-        });
-      }
-      const productIds = new Set(frozenItems.map((item) => item.productId));
-      await Promise.all([...productIds].map((id) =>
-        syncProductStock(id, { client: tx, throwOnError: true })
-      ));
-
       const assignment = await tx.orderAssignment.create({
         data: {
           orderId: created.id,
@@ -288,8 +269,21 @@ export const createDistributorDirectOrder = async (req, res) => {
             : "Distributor direct phone order; fulfill directly to the customer.",
         },
       });
-      const finalized = { ...created, items: frozenItems, assignmentId: assignment.id };
-      await tx.order.update({ where: { id: created.id }, data: { assignmentId: assignment.id } });
+      const inventoryConsumption = await consumeDistributorOrderInventory({
+        tx,
+        orderId: created.id,
+        distributorId,
+        assignmentId: assignment.id,
+        items: frozenItems,
+        directSale: true,
+        actorId: req.auth.accountId,
+      });
+      const accountingItems = inventoryConsumption.accountingItems;
+      const finalized = { ...created, items: accountingItems, assignmentId: assignment.id };
+      await tx.order.update({
+        where: { id: created.id },
+        data: { assignmentId: assignment.id, items: accountingItems },
+      });
       if (isWalkIn) {
         await postDeliveredOrderAccounting({ order: finalized, client: tx });
         await accrueCollaborationSalesForOrder({ orderId: created.id, deliveredAt: acceptedAt, client: tx });
@@ -302,7 +296,7 @@ export const createDistributorDirectOrder = async (req, res) => {
       message: isWalkIn
         ? "Distributor hub walk-in sale completed and inventory updated."
         : "Distributor direct phone order created.",
-      order: { ...order, date: Number(order.date), address: parseJSON(order.address), items: frozenItems },
+      order: { ...order, date: Number(order.date), address: parseJSON(order.address), items: order.items },
       loyaltyApplied: loyaltyRewardApplied,
       loyaltyDiscountAmt: loyaltyDiscount,
     });
@@ -345,6 +339,17 @@ export const updateDistributorDirectOrderStatus = async (req, res) => {
       if (normalizedStatus === "Delivered" && order.status !== "Delivered") {
         await postDeliveredOrderAccounting({ order: updatedOrder, client: tx });
         await accrueCollaborationSalesForOrder({ orderId: order.id, deliveredAt: new Date(), client: tx });
+      } else if (order.status === "Delivered" && !order.payment && updatedOrder.payment) {
+        const paymentMethod = String(updatedOrder.paymentMethod || "CASH").toUpperCase();
+        await postCustomerPaymentAccounting({
+          orderId: order.id,
+          customerName: parseJSON(order.address, {}).firstName || "Direct distributor customer",
+          amount: Number(order.amount || 0),
+          settlementAmount: Number(order.amount || 0),
+          depositAccountCode: ["CASH", "COD"].includes(paymentMethod) ? "1110" : "1120",
+          idempotencyKey: `DISTRIBUTOR_DIRECT_PAYMENT:${order.id}`,
+          client: tx,
+        });
       }
       return updatedOrder;
     }, { isolationLevel: "Serializable" });

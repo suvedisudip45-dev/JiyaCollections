@@ -6,6 +6,7 @@ import {
   getKathmanduDateRange,
   listAdminNcmDeliveries,
   listAdminSelfDeliveryDistributors,
+  recordAdminNcmDeliveryPricing,
 } from "../services/adminDeliveryMonitoringService.js";
 
 const asISO = (value) => value.toISOString();
@@ -175,6 +176,50 @@ test("NCM detail serializes the order's BigInt timestamp as a number", async () 
   assert.doesNotThrow(() => JSON.stringify(result));
   assert.equal(result.delivery.order.date, Number(orderDate));
   assert.equal(result.delivery.order.createdAt, Number(orderDate));
+});
+
+test("recording an NCM discount reduces carrier cost without changing customer delivery charge", async () => {
+  const updates = [];
+  let auditEvent;
+  const client = {
+    $transaction: async (callback) => callback(client),
+    deliveryOrder: {
+      findUnique: async () => ({
+        id: "delivery-1",
+        orderId: "order-1",
+        ncmOrderId: 77,
+        customerDeliveryCharge: 199,
+      }),
+      update: async ({ data }) => ({
+        id: "delivery-1",
+        orderId: "order-1",
+        customerDeliveryCharge: 199,
+        ...data,
+      }),
+    },
+    deliveryFinancialSettlement: {
+      findUnique: async () => ({ id: "settlement-1", settlementState: "PENDING" }),
+      update: async ({ data }) => updates.push(data),
+    },
+    deliveryEvent: {
+      create: async ({ data }) => updates.push(data),
+    },
+  };
+  const result = await recordAdminNcmDeliveryPricing({
+    deliveryId: "delivery-1",
+    chargeBeforeDiscount: "199.00",
+    discountAmount: "39.80",
+    note: "Verified against NCM order details.",
+    actorAccountId: "admin-1",
+    client,
+    writeAudit: async (_actor, event) => { auditEvent = event; },
+  });
+
+  assert.equal(result.pricing.ncmDeliveryCharge, 159.2);
+  assert.equal(result.pricing.customerDeliveryCharge, 199);
+  assert.equal(updates[0].deliveryFeeActual, 159.2);
+  assert.equal(updates[0].deliveryFeeDiscount, 39.8);
+  assert.equal(auditEvent.action, "NCM_DELIVERY_PRICING_RECORDED");
 });
 
 test("self-delivery detail serializes the order's BigInt timestamp as a number", async () => {

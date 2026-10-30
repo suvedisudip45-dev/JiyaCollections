@@ -82,6 +82,7 @@ const DistributorFinanceDashboard = () => {
         `${backendUrl}/api/distributor/finance/ask-settlement`,
         {
           amount: num,
+          withVat,
           notes: askNotes.trim() || undefined,
         },
         { headers: { token } }
@@ -100,7 +101,7 @@ const DistributorFinanceDashboard = () => {
 
   const summary = statement?.summary || {};
   const transactions = statement?.transactions || [];
-  const settlementLineItems = transactions.filter((item) => ["DELIVERY", "RETURN", "BONUS"].includes(item.type));
+  const settlementLineItems = transactions.filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "BONUS"].includes(item.type));
   const settlementDeliveryCount = settlementLineItems.filter((item) => item.type === "DELIVERY").length;
   const cashPosition = statement?.cashPosition || {};
   const remittances = statement?.remittances || [];
@@ -420,7 +421,7 @@ const DistributorFinanceDashboard = () => {
                         className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
                           tx.type === "DELIVERY"
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                            : tx.type === "RETURN"
+                            : ["RETURN", "EXCHANGE"].includes(tx.type)
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
                             : tx.type === "BONUS"
                               ? "bg-purple-50 text-purple-700 border border-purple-200"
@@ -446,7 +447,7 @@ const DistributorFinanceDashboard = () => {
                               <tbody>{tx.statementSnapshot.lineItems.map((line, index) => (
                                 <tr key={`${line.referenceId}-${index}`} className="border-t border-[#dedbd3]">
                                   <td className="p-2">{line.type === "BONUS" ? `${line.referenceId} · ${line.eligibleDeliveryCount} deliveries` : `${line.type} · ${line.referenceId}`}</td>
-                                  <td className="p-2 text-right">{Number(line.deliveryCharge || line.returnCharge || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-right">{Number(line.deliveryCharge || line.returnCharge || line.exchangeCharge || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.incentiveAmount || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.bonusAmount || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.commissionDeduction || 0).toFixed(2)}</td>
@@ -459,7 +460,7 @@ const DistributorFinanceDashboard = () => {
                       )}
                     </td>
                     <td className="p-3 text-right font-medium text-[#171717]">
-                      {["DELIVERY", "RETURN"].includes(tx.type) ? `+${Number(tx.grossAmount || 0).toFixed(2)}` : "—"}
+                      {["DELIVERY", "RETURN", "EXCHANGE"].includes(tx.type) ? `+${Number(tx.grossAmount || 0).toFixed(2)}` : "—"}
                     </td>
                     <td className="p-3 text-right text-emerald-700 font-semibold">
                       {tx.incentiveAmount > 0 ? `+${tx.incentiveAmount.toFixed(2)}` : "—"}
@@ -533,7 +534,9 @@ const DistributorFinanceDashboard = () => {
                   className="w-full p-2.5 border border-[#dedbd3] rounded-xl text-sm font-bold focus:outline-none focus:border-[#171717]"
                   required
                 />
-                <p className="mt-1 text-[10px] text-[#575757]">Your request is limited to the available balance; pending settlement requests reduce this amount.</p>
+                <p className="mt-1 text-[10px] text-[#575757]">
+                  Requesting {withVat ? "with VAT" : "without VAT"}; pending requests reduce the available balance.
+                </p>
               </div>
 
               <div>

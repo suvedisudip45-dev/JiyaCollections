@@ -785,7 +785,7 @@ const placeOrder = async (req, res) => {
       ) {
         return res.status(409).json({ success: false, message: "This Own Store reward is no longer eligible for this order." });
       }
-      cardDiscount = calculateMarketingCardDiscount(benefit.benefitType, benefit.value, itemsTotal);
+      cardDiscount = calculateMarketingCardDiscount(benefit.benefitType, benefit.value, itemsTotal, benefit.maxDiscountAmount);
       if (cardDiscount === null) {
         return res.status(409).json({ success: false, message: "This card reward has an invalid discount configuration." });
       }
@@ -798,7 +798,10 @@ const placeOrder = async (req, res) => {
         campaignId: campaign.id,
         benefitId: benefit.id,
         benefitName: benefit.name,
-        ...(benefit.benefitType === "DISCOUNT" ? { discountPercentage: Number(benefit.value) } : {}),
+        ...(benefit.benefitType === "DISCOUNT" ? {
+          discountPercentage: Number(benefit.value),
+          ...(benefit.maxDiscountAmount !== null ? { maxDiscountAmount: Number(benefit.maxDiscountAmount) } : {}),
+        } : {}),
         ...(benefit.benefitType === "VOUCHER" ? { voucherValue: Number(benefit.value) } : {}),
         discountAmount: cardDiscount,
       };

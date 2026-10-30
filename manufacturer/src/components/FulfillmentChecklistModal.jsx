@@ -21,11 +21,16 @@ const DISTRIBUTOR_REQUIRED_CHECKS = [
   ["packagingMaterialsVerified", "Packaging materials and seal verified"],
 ];
 
-const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false, platformFeatures = { lettersEnabled: true, marketingCardsEnabled: true, loyaltyEnabled: true } }) => {
+const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, marketingCard, marketingCardLoading = false, onAttachMarketingCard, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false, platformFeatures = { lettersEnabled: true, marketingCardsEnabled: true, loyaltyEnabled: true } }) => {
   const [draft, setDraft] = useState(checklist);
   const [error, setError] = useState("");
   const requiredChecks = (isDistributor ? DISTRIBUTOR_REQUIRED_CHECKS : MANUFACTURER_REQUIRED_CHECKS)
     .filter(([key]) => platformFeatures.lettersEnabled || key !== "customerLetterIncluded");
+  const marketingCardRequired = isDistributor &&
+    platformFeatures.marketingCardsEnabled &&
+    assignment?.order?.marketingCardRequired !== false;
+  const attachedCardCode = marketingCard?.card?.cardCode || marketingCard?.cardCode || "";
+  const isMarketingCardAttached = Boolean(marketingCard && attachedCardCode);
 
   useEffect(() => {
     if (isOpen) {
@@ -42,10 +47,13 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
     (!giftOptions?.groupGiftAssigned ? giftOptions?.assignedGift : null);
   const hasAssignedGift = Boolean(assignedGift?.id);
   const hasGiftOpportunity = Boolean(isDistributor && giftOptions?.eligible && !giftOptions?.alreadyAssigned);
-  const totalRequired = requiredChecks.length + (hasAssignedGift ? 1 : 0);
-  const completedTotal = completedRequired + (hasAssignedGift && draft.catalogGiftIncluded ? 1 : 0);
+  const totalRequired = requiredChecks.length + (hasAssignedGift ? 1 : 0) + (marketingCardRequired ? 1 : 0);
+  const completedTotal = completedRequired +
+    (hasAssignedGift && draft.catalogGiftIncluded ? 1 : 0) +
+    (marketingCardRequired && isMarketingCardAttached ? 1 : 0);
   const allRequiredComplete = completedRequired === requiredChecks.length &&
-    (!hasAssignedGift || draft.catalogGiftIncluded === true);
+    (!hasAssignedGift || draft.catalogGiftIncluded === true) &&
+    (!marketingCardRequired || isMarketingCardAttached);
   const hasCustomPerk = platformFeatures.loyaltyEnabled && Boolean(benefits.customPerk);
 
   if (!isOpen) return null;
@@ -62,6 +70,10 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
     }
     if (giftOptionsError) {
       setError("Reload eligible gifts before completing this checklist.");
+      return;
+    }
+    if (marketingCardRequired && !isMarketingCardAttached) {
+      setError("Attach a marketing card from an active campaign before confirming this checklist.");
       return;
     }
     if (!allRequiredComplete) {
@@ -108,6 +120,35 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
                 <span>{label}</span>
               </label>
             ))}
+            {marketingCardRequired && (
+              <div className={`flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${
+                isMarketingCardAttached
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+                  : "border-amber-200 bg-amber-50 text-amber-950"
+              }`}>
+                <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${
+                  isMarketingCardAttached
+                    ? "border-emerald-600 bg-emerald-600 text-white"
+                    : "border-amber-300 bg-white"
+                }`}>
+                  {isMarketingCardAttached && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  Marketing partner card attached
+                  {isMarketingCardAttached && <span className="mt-0.5 block font-mono text-[10px]">{attachedCardCode}</span>}
+                </span>
+                {!isMarketingCardAttached && onAttachMarketingCard && (
+                  <button
+                    type="button"
+                    onClick={onAttachMarketingCard}
+                    disabled={busy || marketingCardLoading}
+                    className="rounded-lg bg-slate-950 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
+                  >
+                    {marketingCardLoading ? "Attaching..." : "Attach card"}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {(giftOptionsLoading || giftOptionsError || hasGiftOpportunity || giftOptions?.groupGiftAssigned || hasCustomPerk || (platformFeatures.lettersEnabled && benefits.handwrittenCard) || hasAssignedGift) && (

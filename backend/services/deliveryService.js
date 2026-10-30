@@ -7,6 +7,7 @@ import {
   getNcmBranchName,
   getNcmBranchRows,
   createCodTransferTicket,
+  extractNcmDeliveryPricing,
   getShippingRate,
   getOrderStatus,
   requestOrderReturn,
@@ -814,7 +815,12 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
       error.response = lastRateError?.response;
       throw error;
     }
-    const rateValue = Number(rate.data?.delivery_charge ?? rate.data?.charge ?? rate.data?.shipping_charge ?? 0);
+    const ncmPricing = extractNcmDeliveryPricing(rate, { allowGenericDiscount: true });
+    if (!ncmPricing) {
+      throw Object.assign(new Error("NCM returned no valid delivery charge for this route."), {
+        code: "NCM_RATE_INVALID",
+      });
+    }
     const ncmPayload = buildNcmOrderPayload({
       input,
       delivery,
@@ -876,6 +882,7 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
     const response = await createNcmOrder(ncmPayload);
     const ncmOrderId = Number(response.data?.orderid);
     if (!Number.isInteger(ncmOrderId)) throw new Error("NCM did not return a valid order ID");
+    const bookedPricing = extractNcmDeliveryPricing(response, { allowGenericDiscount: true }) || ncmPricing;
 
     const updated = await runTransaction(async (tx) => {
       const record = await tx.deliveryOrder.update({
@@ -886,8 +893,10 @@ export const submitDeliveryToNcm = async (deliveryId, { allowRetryAfterUnknown =
           ncmStatus: "Pickup Order Created",
           originBranchName: resolvedOrigin,
           destinationBranchName: resolvedDestination,
-          ncmDeliveryCharge: rateValue,
-          customerDeliveryCharge: rateValue,
+          ncmDeliveryCharge: bookedPricing.actualCharge,
+          ncmDeliveryChargeBeforeDiscount: bookedPricing.chargeBeforeDiscount,
+          ncmDeliveryDiscount: bookedPricing.discountAmount,
+          customerDeliveryCharge: Number(order.deliveryFee ?? bookedPricing.actualCharge),
           ncmCreatedAt: new Date(),
           lastSyncedAt: new Date(),
           nextSyncAt: null,
@@ -1154,10 +1163,16 @@ export const applyNcmStatus = async ({
         idempotencyKey: `NCM_STATUS:${eventKey}`,
       });
 
+      const ncmPricing = extractNcmDeliveryPricing(payload);
       const deliveryUpdateData = {
         ncmStatus: canonicalStatus,
         lastSyncedAt: new Date(),
         nextSyncAt: null,
+        ...(ncmPricing ? {
+          ncmDeliveryCharge: ncmPricing.actualCharge,
+          ncmDeliveryChargeBeforeDiscount: ncmPricing.chargeBeforeDiscount,
+          ncmDeliveryDiscount: ncmPricing.discountAmount,
+        } : {}),
         ...(shouldApplyStatus ? { state: deliveryState } : {}),
         ...(deliveryState === "PICKUP_CONFIRMED" && shouldApplyStatus
           ? { pickedUpAt: delivery.pickedUpAt || new Date() }
@@ -1253,7 +1268,8 @@ export const applyNcmStatus = async ({
             ncmOrderId: delivery.ncmOrderId,
             codExpected: 0,
             deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-            deliveryFeeActual: Number(delivery.ncmDeliveryCharge || 0),
+            deliveryFeeActual: ncmPricing?.actualCharge ?? Number(delivery.ncmDeliveryCharge ?? 0),
+            deliveryFeeDiscount: ncmPricing?.discountAmount ?? Number(delivery.ncmDeliveryDiscount || 0),
             settlementState: "RETURN_PENDING",
             varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
           },
@@ -1261,6 +1277,10 @@ export const applyNcmStatus = async ({
             codExpected: 0,
             settlementState: "RETURN_PENDING",
             varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
+            ...(ncmPricing ? {
+              deliveryFeeActual: ncmPricing.actualCharge,
+              deliveryFeeDiscount: ncmPricing.discountAmount,
+            } : {}),
           },
         });
       }
@@ -1274,12 +1294,18 @@ export const applyNcmStatus = async ({
             ncmOrderId: delivery.ncmOrderId,
             codExpected: delivery.codAmount,
             deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-            deliveryFeeActual: Number(delivery.ncmDeliveryCharge || delivery.customerDeliveryCharge || 0),
+            deliveryFeeActual: ncmPricing?.actualCharge
+              ?? Number(delivery.ncmDeliveryCharge ?? delivery.customerDeliveryCharge ?? 0),
+            deliveryFeeDiscount: ncmPricing?.discountAmount ?? Number(delivery.ncmDeliveryDiscount || 0),
             settlementState: "PENDING",
           },
           update: {
             codExpected: delivery.codAmount,
             ncmOrderId: delivery.ncmOrderId,
+            ...(ncmPricing ? {
+              deliveryFeeActual: ncmPricing.actualCharge,
+              deliveryFeeDiscount: ncmPricing.discountAmount,
+            } : {}),
           },
         }).catch((err) => {
           logger.warn("Financial settlement upsert notice", { error: err.message });
@@ -1621,7 +1647,8 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, distri
         ncmOrderId: delivery.ncmOrderId,
         codExpected: 0,
         deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-        deliveryFeeActual: Number(delivery.ncmDeliveryCharge || 0),
+        deliveryFeeActual: Number(delivery.ncmDeliveryCharge ?? 0),
+        deliveryFeeDiscount: Number(delivery.ncmDeliveryDiscount || 0),
         settlementState: "RETURN_PENDING",
         varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
       },

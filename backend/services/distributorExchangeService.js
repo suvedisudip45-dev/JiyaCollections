@@ -1,10 +1,8 @@
 import { prisma } from "../config/db.js";
 import { ensureInventoryLocation, applyInventoryMovement } from "./inventoryLedgerService.js";
 import { syncProductStock } from "./stockSyncService.js";
-import {
-  createReturnExchangeSettlementPayable,
-  postReturnExchangeSettlementAccounting,
-} from "./returnExchangeSettlementService.js";
+import { postOrderExchangeAccounting } from "./accountingPostingEngine.js";
+import { accrueDistributorServiceCharge } from "./distributorServiceEarningService.js";
 
 const parseArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -144,6 +142,8 @@ export const processDistributorExchange = async ({
   action,
   inspectedItems,
   notes,
+  accrueServiceCharge = accrueDistributorServiceCharge,
+  postExchangeAccounting = postOrderExchangeAccounting,
 }) => {
   const normalizedAction = String(action || "").trim().toUpperCase();
   if (!requestId || !distributorId || !actorId || !["RECEIVE_AND_INSPECT", "DISPATCH", "DELIVER"].includes(normalizedAction)) {
@@ -302,12 +302,29 @@ export const processDistributorExchange = async ({
         completedAt: now,
       },
     });
-    const logisticsPayable = await createReturnExchangeSettlementPayable(tx, updated, "EXCHANGE");
-    if (logisticsPayable) {
-      await postReturnExchangeSettlementAccounting({
-        operation: "EXCHANGE",
-        requestId: updated.id,
-        payable: logisticsPayable,
+    await postExchangeAccounting({ exchangeRequest: updated, client: tx });
+    if (updated.deliveryRoute === "DISTRIBUTOR" && Number(updated.logisticsSettlementAmount || 0) > 0) {
+      const assignment = await tx.orderAssignment.findFirst({
+        where: { orderId: updated.orderId, distributorId },
+        select: { id: true },
+      });
+      if (!assignment) {
+        throw fail("The distributor order assignment is missing for this completed exchange.", "EXCHANGE_ASSIGNMENT_MISSING", 409);
+      }
+      const distributor = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { id: true, name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found while recording the exchange service charge.", "DISTRIBUTOR_NOT_FOUND", 404);
+      await accrueServiceCharge({
+        distributorId,
+        distributorName: distributor.name,
+        assignmentId: assignment.id,
+        orderId: updated.orderId,
+        sourceId: updated.id,
+        serviceType: "EXCHANGE",
+        chargeAmount: updated.logisticsSettlementAmount,
+        effectiveAt: now,
         client: tx,
       });
     }

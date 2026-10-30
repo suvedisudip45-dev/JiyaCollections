@@ -180,6 +180,47 @@ test("shipping quote uses the probable stocked distributor's route", async (t) =
   });
 });
 
+test("shipping quote prefers the stocked hub registered in the customer district over an out-of-province coverage hub", async (t) => {
+  stubMethod(t, prisma.shippingConfig, "findFirst", async () => ({ ...config, routeOverrides: [] }));
+  stubExistingProducts(t);
+  stubMethod(t, prisma.distributor, "findMany", async () => [{
+    id: "remote-coverage-hub",
+    name: "Remote Coverage Hub",
+    district: "Kaski",
+    province: "Gandaki Province",
+    qualityRating: 5,
+    locations: [{ province: "Bagmati Province", district: "Kathmandu", isActive: true }],
+  }, {
+    id: "local-hub",
+    name: "Local Hub",
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    qualityRating: 2,
+    locations: [],
+  }]);
+  stubMethod(t, prisma.inventoryBalance, "findMany", async () => [{
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "remote-coverage-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }, {
+    quantityOnHand: 5,
+    reservedQuantity: 0,
+    location: { distributorId: "local-hub" },
+    inventorySku: { productId: "product-1", sizeKey: "medium", colorKey: "navy" },
+  }]);
+
+  const quote = await resolveDistrictShippingFee({
+    district: "Kathmandu",
+    province: "Bagmati Province",
+    items: [{ productId: "product-1", size: "Medium", color: "Navy", quantity: 1 }],
+  });
+
+  assert.equal(quote.probableDistributor.id, "local-hub");
+  assert.equal(quote.fee, 50);
+  assert.equal(quote.rateTier, "SAME_DISTRICT");
+});
+
 test("shipping quote offers configured door-to-door and door-to-hub prices for a remote same-province distributor", async (t) => {
   stubMethod(t, prisma.shippingConfig, "findFirst", async () => ({ ...config, routeOverrides: [] }));
   stubExistingProducts(t);

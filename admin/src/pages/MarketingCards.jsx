@@ -1106,6 +1106,21 @@ const MarketingCards = ({ token }) => {
                               <label className="text-[11px] font-bold uppercase text-slate-500">Reward Value</label>
                               <input type="number" min="0" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={offer.value} onChange={(e) => updateOffer(index, "value", Number(e.target.value))} />
                             </div>
+                            {campaign.isOwnStore && offer.benefitType === "DISCOUNT" && (
+                              <div className="sm:col-span-3">
+                                <label className="text-[11px] font-bold uppercase text-slate-500">Maximum Discount (Rs)</label>
+                                <input
+                                  type="number"
+                                  min="0.01"
+                                  step="0.01"
+                                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                                  placeholder="No limit"
+                                  value={offer.maxDiscountAmount ?? ""}
+                                  onChange={(e) => updateOffer(index, "maxDiscountAmount", e.target.value === "" ? null : Number(e.target.value))}
+                                />
+                                <p className="mt-1 text-[10px] text-slate-500">Optional cap for the percentage discount.</p>
+                              </div>
+                            )}
                             <div className="sm:col-span-4">
                               <label className="text-[11px] font-bold uppercase text-slate-500">Distribution Mode</label>
                               <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={offer.allocationMode} onChange={(e) => updateOffer(index, "allocationMode", e.target.value)}>
@@ -1300,6 +1315,7 @@ const MarketingCards = ({ token }) => {
                       if (campaign.targetScopeType === "PROVINCE" && !campaign.targetProvince) return toast.error("Please select a target province.");
                       if (campaign.targetScopeType === "DISTRICT" && !campaign.targetDistrict) return toast.error("Please select a target district.");
                       if (campaign.offers.length === 0 || campaign.offers.some((o) => !o.name.trim())) return toast.error("Please name all offers.");
+                      if (campaign.isOwnStore && campaign.offers.some((offer) => offer.benefitType === "DISCOUNT" && offer.maxDiscountAmount !== null && offer.maxDiscountAmount !== undefined && (!Number.isFinite(Number(offer.maxDiscountAmount)) || Number(offer.maxDiscountAmount) <= 0))) return toast.error("Maximum discount must be greater than zero.");
                       if (campaign.adMediaType !== "NONE" && !campaign.adMediaUrl) return toast.error("Please upload the selected promo media.");
                       if (totalPct > 100) return toast.error("Total percentage cannot exceed 100%.");
                       if (campaign.isOwnStore && (!Number.isInteger(Number(campaign.maxScansPerCustomer)) || Number(campaign.maxScansPerCustomer) < 1 || Number(campaign.maxScansPerCustomer) > 5000)) return toast.error("Own Store campaign cap must be an integer between 1 and 5000.");
@@ -1311,7 +1327,7 @@ const MarketingCards = ({ token }) => {
                         const minExpiry = new Date(end.getTime() + 86400000);
                         if (expiry < minExpiry) return toast.error("Card expiry date must be at least 1 day after the campaign end date.");
                       }
-                      const formattedBenefits = campaign.offers.map((o) => ({ name: o.name.trim(), description: o.description || null, benefitType: o.benefitType, value: Number(o.value || 0), percentage: o.allocationMode === "PERCENTAGE" ? Number(o.percentage || 0) : 0, quantity: o.allocationMode === "QUANTITY" ? Number(o.quantity || 0) : 0, terms: o.terms || null, expiresAt: o.expiresAt || null }));
+                      const formattedBenefits = campaign.offers.map((o) => ({ name: o.name.trim(), description: o.description || null, benefitType: o.benefitType, value: Number(o.value || 0), ...(campaign.isOwnStore && o.benefitType === "DISCOUNT" && o.maxDiscountAmount ? { maxDiscountAmount: Number(o.maxDiscountAmount) } : {}), percentage: o.allocationMode === "PERCENTAGE" ? Number(o.percentage || 0) : 0, quantity: o.allocationMode === "QUANTITY" ? Number(o.quantity || 0) : 0, terms: o.terms || null, expiresAt: o.expiresAt || null }));
                       const payload = {
                         isOwnStore: campaign.isOwnStore,
                         maxScansPerCustomer: campaign.isOwnStore ? Number(campaign.maxScansPerCustomer) : 1,

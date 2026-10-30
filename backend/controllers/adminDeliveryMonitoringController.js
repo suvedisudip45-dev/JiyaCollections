@@ -4,6 +4,7 @@ import {
   listAdminNcmDeliveries,
   listAdminSelfDeliveries,
   listAdminSelfDeliveryDistributors,
+  recordAdminNcmDeliveryPricing,
 } from "../services/adminDeliveryMonitoringService.js";
 
 const sendFailure = (res, error, fallbackMessage) =>
@@ -28,6 +29,21 @@ export const getAdminNcmDeliveryRecord = async (req, res) => {
     return res.json(result);
   } catch (error) {
     return sendFailure(res, error, "Failed to load NCM delivery details.");
+  }
+};
+
+export const recordAdminNcmDeliveryPricingController = async (req, res) => {
+  try {
+    const result = await recordAdminNcmDeliveryPricing({
+      deliveryId: req.params.deliveryId,
+      chargeBeforeDiscount: req.body?.chargeBeforeDiscount,
+      discountAmount: req.body?.discountAmount,
+      note: req.body?.note,
+      actorAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.json(result);
+  } catch (error) {
+    return sendFailure(res, error, "Failed to record NCM delivery pricing.");
   }
 };
 

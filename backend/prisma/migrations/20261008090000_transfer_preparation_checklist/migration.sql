@@ -1,2 +1,0 @@
--- No-op: the transfer preparation checklist fields were added by
--- 20261008085000_transfer_preparation_checklist.

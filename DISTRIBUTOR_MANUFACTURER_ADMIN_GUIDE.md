@@ -79,7 +79,9 @@ and a JPG/PNG image of the refund evidence in Self-Delivery Management. Return
 inspection also requires a JPG/PNG photo of the returned goods. Admin verification completes
 the return and creates a distributor payable. Rejected evidence reopens the
 refund task. The Admin Returns page can settle that payable from an active NPR
-treasury account; payout is recorded separately from COD remittance. If both
+treasury account and displays the distributor assigned to the order, its
+delivery status, and return-received date beside the refund evidence; payout is
+recorded separately from COD remittance. If both
 verified refund payable and COD receivable are open, an Admin can explicitly
 approve a partial or full offset in distributor Finance detail. The maximum
 excludes pending remittance submissions and cannot exceed either open balance.
@@ -235,19 +237,18 @@ service-area districts remain managed separately.
   and profiles.
 - New automatic customer-order allocation requires an active distributor with
   a valid registered province/district shipping origin and every requested SKU
-  variant available in its distributor inventory balances. Service-area
-  coverage determines customer proximity, but is not a substitute for the
-  registered origin used to calculate shipment rates.
-  Candidates are prioritized by exact configured service-district coverage.
-  If a distributor has no configured service areas, its registered
-  province/district is used as its coverage. If no stocked candidate covers the
-  customer, allocation falls back by same registered district, matching NCM
-  pickup branch, same province, and finally nationwide. Within each tier,
-  higher distributor quality rating wins, then rating count, then a stable ID
-  tie-break. Routing uses only province, district, and NCM branch; it does not
-  infer proximity from street addresses or free-form city names. Assignment
-  and stock reservation are committed transactionally; no manufacturer is a
-  fallback hub.
+  variant available in its distributor inventory balances. The registered
+  district is preferred first so a local stocked hub is not displaced by a
+  remote hub that merely lists the customer district as a service area.
+  Candidates then fall back by exact configured service-district coverage
+  (or registered province/district when no service areas are configured),
+  matching NCM pickup branch, same province, and finally nationwide. Within
+  each tier, higher distributor quality rating wins, then rating count, then a
+  stable ID tie-break. Service-area coverage does not replace the registered
+  origin used to calculate shipment rates. Routing uses only province,
+  district, and NCM branch; it does not infer proximity from street addresses
+  or free-form city names. Assignment and stock reservation are committed
+  transactionally; no manufacturer is a fallback hub.
 - Configure a distributor's exact service districts in the
   **Service-area coverage** tab under Distributor Management. The
   `GET /api/admin/distributor-applications/coverage` endpoint returns active
@@ -625,6 +626,7 @@ transfer flow:
      - Admin-approved self-delivery exchanges are listed for the original distributor hub and reserve replacement stock from its platform-owned inventory ledger. The distributor must receive and inspect the returned items before dispatching the replacement; dispatched stock is consumed from its reservation and the exchange is closed only after the distributor confirms delivery.
      - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. The approved customer return record and accounting are updated automatically.
      - Admin Shipping Rate Settings include separate company-paid settlement rates for NCM and distributor returns and exchanges. The selected rate is fixed on admin approval; when the return or exchange logistics complete, the system records the payable against NCM or the original distributor. These amounts do not affect customer shipping charges or overwrite reported NCM charges.
+     - Return and exchange completion posts the sales/VAT and cost adjustments in the current accounting period and stores the journal and credit-note references on the case. Distributor-paid exchange downgrades remain distributor payables for settlement; distributor exchange upgrades remain COD receivables. For an NCM-delivered exchange, the original assigned distributor handles any nonzero price difference separately from NCM transport. The distributor submits exact-amount payment evidence and a JPG/PNG screenshot in Self-Delivery Management; Admin verifies or rejects it in the Exchange Requests panel. Rejected evidence can be corrected and resubmitted. Verification records the evidence status but does not itself clear the distributor receivable/payable. The NCM exchange-create request accepts `pk` only and does not transmit a COD amount.
    - Admins can enter the same package details used by the fulfillment workflow
      from Order Assignments and request NCM booking for a distributor-assigned
      order. The confirmed NCM order and carrier webhook events are stored in
@@ -636,9 +638,10 @@ transfer flow:
    - Admin configures additive monthly completed-self-delivery bonus tiers through `POST /api/admin/distributor-rates/bonus-plans`. Only full Kathmandu-time calendar months covered by the plan qualify. Each reached tier adds its configured amount, and closed periods are accrued idempotently when a distributor requests settlement.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
 10. Distributor Financial Dashboard & Accounting:
-   - `GET /api/distributor/finance/statement`: Itemized self-delivery charges, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. New deliveries use immutable per-delivery `DistributorServiceEarning` snapshots.
-   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations. The request stores a statement snapshot with delivery-level charges and monthly bonus qualification details.
-   - If matching earning documents are absent, the request is stored as reconciliation-required without creating AP from the requested amount; Admin payout is blocked until legacy earnings are reconciled. Existing legacy request-accrual records remain on the compatibility path pending controlled migration.
+   - `GET /api/distributor/finance/statement`: Itemized self-delivery, return, and exchange charges, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. A later return does not reverse an already-completed delivery earning; the Rate Card return charge is an additional distributor earning, and a completed distributor exchange settlement is included in the distributor's net settlement. The separately configured company-paid return logistics settlement remains its own payable. New service charges use immutable `DistributorServiceEarning` snapshots.
+   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations. The selected VAT toggle is recorded on the request; a request made without VAT has zero VAT and is capped at the non-VAT balance. Requests are exposed as distributor settlement payables only when backed by open earning documents.
+   - Before creating a new request, missing delivery earnings are accrued from completed self-delivery assignments using the rate card effective at delivery; missing return charges are accrued from completed returns. Older requests without accounting documents remain reconciliation-required: Admin can explicitly backfill only earnings supported by completed delivery/return records, then link the resulting documents. No payable is created from a requested amount alone.
+   - Open, subledger-backed distributor settlement requests are displayed in Payables & Receivables and can be paid through the standard distributor payout lifecycle. A non-VAT request excludes VAT from the requested amount; any VAT portion on its source earning documents is not paid by that request.
    - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Active NPR Treasury mapping to the matching GL account is required. The Admin settlement list displays outstanding COD and pending-remittance warnings; service earnings are paid gross and COD is not silently netted. Rate-card revisions create new versions; closing an approved card preserves history.
    - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
@@ -667,7 +670,7 @@ Relevant endpoints:
 | `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
-| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings; closed-period target bonuses are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. Requests without earning documents are marked reconciliation-required and do not create AP. |
+| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings, choosing whether VAT is included. Closed-period target bonuses and missing completed delivery/return earnings are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. Requests without verified earning documents remain reconciliation-required and are not paid. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
@@ -730,6 +733,14 @@ Their route permissions are declared in `backend/routes/manufacturerRoute.js`.
 - Freight has a `freightSettlementStatus` on the shipment, initially
   `PENDING_ADMIN_SETTLEMENT`; manufacturer settlement payments update this
   state and the cumulative paid freight amount.
+- Dispatched manufacturer-paid local freight posts to GL 6430/2160 and creates
+  an idempotent payable bill linked to the shipment. Logistics payouts allocate
+  to these bills; Accounting Health shows the source-scoped journal-to-bill
+  match while leaving legacy and other manufacturer payable balances flagged.
+- Accepted production receipt posts inventory/VAT/manufacturer payable and
+  creates an idempotent bill linked to the production request. Accounting Health
+  separately checks posted production payable journals against those bills;
+  this does not clear historical or other manufacturer payable gaps.
 - NCM freight quotes/charges are platform/admin settlement amounts only. NCM
   return status, return reason, carrier status, carrier payment status, and
   event timeline are visible in the admin, distributor, and manufacturer stock
@@ -810,8 +821,8 @@ creation, and distributor-owned assignment are transactional. No
 |---|---|---|---|
 | `GET /api/distributor/inventory` | Distributor | `distributor:inventory_read` | Read available ledger stock at the active hub. |
 | `GET /api/distributor/orders/direct` | Distributor | `distributor:direct_order_read` | List the active hub's direct orders. |
-| `POST /api/distributor/orders/direct` | Distributor | `distributor:direct_order_create` | Create direct order and deduct the active hub's ledger stock transactionally. |
-| `PATCH /api/distributor/orders/direct/status` | Distributor | `distributor:direct_order_status_update` | Update an order owned by the active distributor. |
+| `POST /api/distributor/orders/direct` | Distributor | `distributor:direct_order_create` | Create a direct order, snapshot FIFO inventory cost allocations, and deduct the active hub's unreserved ledger stock transactionally. |
+| `PATCH /api/distributor/orders/direct/status` | Distributor | `distributor:direct_order_status_update` | Update an order owned by the active distributor; delivered sales post allocated COGS and payment confirmations clear customer receivables. |
 
 ### Marketing cards
 

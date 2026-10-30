@@ -4,6 +4,7 @@ import { recordSystemAudit } from "../services/auditService.js";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
+import { postManufacturerProductionAccounting } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   calculateProductionUnitCost,
@@ -709,6 +710,7 @@ export const completeProduction = async (req, res) => {
           quantity: goodQuantity,
           unitCogs: fullyLoadedUnitCogs,
           unitVatAmount: productionCost.vatAmount,
+          manufacturerPayableRecognizedAtProduction: true,
           vatTreatment: productionCost.vatTreatment,
           vatRate: productionCost.vatRate,
           vatInvoiceVerified: request.approvedVatInvoiceVerified,
@@ -763,11 +765,22 @@ export const completeProduction = async (req, res) => {
       const recoverableInputVat = productionCost.recoverableVat
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      const acceptedAt = new Date();
+      await postManufacturerProductionAccounting({
+        productionRequest: request,
+        manufacturer: request.manufacturer,
+        goodQuantity: productionQuantity,
+        inventoryValue: productionCogs,
+        recoverableInputVat,
+        transactionDate: acceptedAt,
+        createdBy: req.auth?.accountId || "system",
+        client: tx,
+      });
       const completionClaim = await tx.manufacturerProductionRequest.updateMany({
         where: { id: request.id, status: "PRODUCTION_REVIEW_IN_PROGRESS" },
         data: {
           status: "COMPLETED",
-          completedAt: new Date(),
+          completedAt: acceptedAt,
           postProductionChecklist: checklist,
           postProductionCheckedAt: new Date(),
           productionReviewDecision: decision,

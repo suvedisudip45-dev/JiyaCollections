@@ -188,6 +188,7 @@ const safeCard = (linkOrWrapper) => {
           description: benefit.description,
           benefitType: benefit.benefitType,
           value: benefit.value,
+          maxDiscountAmount: benefit.maxDiscountAmount,
           terms: benefit.terms,
           startsAt: benefit.startsAt,
           expiresAt: benefit.expiresAt,
@@ -412,6 +413,7 @@ export const listClaimedCustomerRewards = async (customerId) => {
         name: benefit.name,
         benefitType: benefit.benefitType,
         value: benefit.value,
+        maxDiscountAmount: benefit.maxDiscountAmount,
         description: benefit.description,
         terms: benefit.terms,
         expiresAt: benefit.expiresAt,
@@ -680,6 +682,7 @@ export const verifyCustomerQr = async ({ customerId, cardCode, token }) => {
           description: benefit.description,
           benefitType: benefit.benefitType,
           value: benefit.value,
+          maxDiscountAmount: benefit.maxDiscountAmount,
           terms: benefit.terms,
           expiresAt: benefit.expiresAt,
         }

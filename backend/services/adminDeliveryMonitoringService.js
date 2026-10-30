@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "./auditService.js";
 
 const KATHMANDU_OFFSET_MS = 345 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -22,6 +24,14 @@ const SELF_DELIVERY_STATUSES = [
 
 const serviceError = (message, statusCode = 400, code = "INVALID_DELIVERY_FILTER") =>
   Object.assign(new Error(message), { statusCode, code });
+
+const parseNcmPrice = (value, label) => {
+  const raw = String(value ?? "").trim();
+  if (!/^\d{1,12}(?:\.\d{1,2})?$/.test(raw)) {
+    throw serviceError(`${label} must be a non-negative amount with no more than two decimal places.`, 400, "INVALID_NCM_PRICING");
+  }
+  return Number(raw);
+};
 
 const datePartsInKathmandu = (value) => {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -313,6 +323,8 @@ export const getAdminNcmDeliveryDetails = async (deliveryId, client = prisma) =>
       itemAmount: true,
       customerDeliveryCharge: true,
       ncmDeliveryCharge: true,
+      ncmDeliveryChargeBeforeDiscount: true,
+      ncmDeliveryDiscount: true,
       codAmount: true,
       ncmOrderId: true,
       vendorReference: true,
@@ -425,6 +437,7 @@ export const getAdminNcmDeliveryDetails = async (deliveryId, client = prisma) =>
         codCollected: true,
         deliveryFeeExpected: true,
         deliveryFeeActual: true,
+        deliveryFeeDiscount: true,
         otherAdjustments: true,
         manufacturerPayable: true,
         platformReceivable: true,
@@ -458,6 +471,118 @@ export const getAdminNcmDeliveryDetails = async (deliveryId, client = prisma) =>
       distributorReview,
     },
   };
+};
+
+export const recordAdminNcmDeliveryPricing = async ({
+    deliveryId,
+    chargeBeforeDiscount,
+    discountAmount,
+    note,
+    actorAccountId = null,
+    client = prisma,
+    writeAudit = recordSystemAudit,
+  } = {}) => {
+    if (typeof deliveryId !== "string" || !deliveryId.trim() || deliveryId.length > 191) {
+      throw serviceError("A valid NCM delivery ID is required.", 400, "INVALID_DELIVERY_ID");
+    }
+    const gross = parseNcmPrice(chargeBeforeDiscount, "NCM delivery charge before discount");
+    const discount = parseNcmPrice(discountAmount, "NCM delivery discount");
+    const normalizedNote = String(note || "").trim();
+    if (normalizedNote.length < 10 || normalizedNote.length > 1000) {
+      throw serviceError("Add an evidence note between 10 and 1000 characters.", 400, "NCM_PRICING_NOTE_REQUIRED");
+    }
+    if (discount > gross) {
+      throw serviceError("NCM discount cannot exceed the delivery charge before discount.", 400, "INVALID_NCM_PRICING");
+    }
+    const net = Number((gross - discount).toFixed(2));
+    const execute = async (tx) => {
+      const delivery = await tx.deliveryOrder.findUnique({
+        where: { id: deliveryId },
+        select: {
+          id: true,
+          orderId: true,
+          ncmOrderId: true,
+          customerDeliveryCharge: true,
+        },
+      });
+      if (!delivery) throw serviceError("NCM delivery not found.", 404, "NCM_DELIVERY_NOT_FOUND");
+      const settlement = await tx.deliveryFinancialSettlement.findUnique({
+        where: { deliveryOrderId: delivery.id },
+        select: { id: true, settlementState: true },
+      });
+      if (settlement?.settlementState === "SETTLED") {
+        throw serviceError("Carrier pricing cannot be changed after its COD remittance has been settled.", 409, "NCM_SETTLEMENT_ALREADY_CLOSED");
+      }
+
+      const updatedDelivery = await tx.deliveryOrder.update({
+        where: { id: delivery.id },
+        data: {
+          ncmDeliveryChargeBeforeDiscount: gross,
+          ncmDeliveryDiscount: discount,
+          ncmDeliveryCharge: net,
+        },
+        select: {
+          id: true,
+          orderId: true,
+          customerDeliveryCharge: true,
+          ncmDeliveryChargeBeforeDiscount: true,
+          ncmDeliveryDiscount: true,
+          ncmDeliveryCharge: true,
+        },
+      });
+      if (settlement) {
+        await tx.deliveryFinancialSettlement.update({
+          where: { deliveryOrderId: delivery.id },
+          data: {
+            deliveryFeeActual: net,
+            deliveryFeeDiscount: discount,
+          },
+        });
+      }
+      await tx.deliveryEvent.create({
+        data: {
+          deliveryOrderId: delivery.id,
+          orderId: delivery.orderId,
+          source: "ADMIN",
+          eventType: "NCM_PRICING_RECORDED",
+          ncmStatus: null,
+          actorId: actorAccountId,
+          payloadJson: {
+            chargeBeforeDiscount: gross,
+            discountAmount: discount,
+            actualCharge: net,
+            customerDeliveryCharge: Number(delivery.customerDeliveryCharge || 0),
+            note: normalizedNote,
+          },
+          idempotencyKey: `NCM_PRICING_RECORDED:${delivery.id}:${randomUUID()}`,
+        },
+      });
+      await writeAudit(
+        { actorId: actorAccountId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "NCM_DELIVERY_PRICING_RECORDED",
+          entityType: "DeliveryOrder",
+          entityId: delivery.id,
+          beforeState: {},
+          afterState: {
+            chargeBeforeDiscount: gross,
+            discountAmount: discount,
+            actualCharge: net,
+            customerDeliveryCharge: Number(delivery.customerDeliveryCharge || 0),
+            note: normalizedNote,
+          },
+        },
+        { client: tx },
+      );
+      return {
+        success: true,
+        pricing: updatedDelivery,
+        message: "NCM carrier charge and discount recorded. The customer delivery charge was not changed.",
+      };
+    };
+    return typeof client.$transaction === "function"
+      ? client.$transaction(execute, { isolationLevel: "Serializable" })
+      : execute(client);
 };
 
 const buildSelfDeliveryWhere = ({ distributorId, range, statuses, search }) => {

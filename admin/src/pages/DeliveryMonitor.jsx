@@ -112,6 +112,7 @@ const DeliveryMonitor = ({ token }) => {
   const [filter, setFilter] = useState("all");
   const [settlementSummary, setSettlementSummary] = useState({
     totalDeliveryChargeExpected: 0,
+    totalCarrierDiscounts: 0,
     totalDeliveryChargePaid: 0,
     deliveryChargeToPay: 0,
     codExpected: 0,
@@ -331,10 +332,11 @@ const DeliveryMonitor = ({ token }) => {
 
       <NcmWebhookMockPanel />
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
         {[
           ["Delivery charges paid", settlementSummary.totalDeliveryChargePaid, "Settled carrier fees"],
           ["Delivery charges to pay", settlementSummary.deliveryChargeToPay, "Unsettled carrier fees"],
+          ["NCM discounts", settlementSummary.totalCarrierDiscounts, "Reduced carrier cost"],
           ["COD received to date", settlementSummary.codReceived, "Confirmed by NCM"],
           ["COD to be received", settlementSummary.codToReceive, `${settlementSummary.pendingSettlements || 0} open settlement(s)`],
         ].map(([label, value, note]) => (

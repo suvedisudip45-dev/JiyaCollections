@@ -182,3 +182,47 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
   assert.equal(ledgerEntries[0].movementType, "FULFILLMENT");
   assert.equal(ledgerEntries[0].referenceType, "EXCHANGE");
 });
+
+test("completed distributor exchange accrues its configured settlement into distributor earnings", async (t) => {
+  const exchange = {
+    id: "exchange-1",
+    orderId: "order-1",
+    distributorId: "dist-1",
+    deliveryRoute: "DISTRIBUTOR",
+    logisticsSettlementAmount: 50,
+    status: "IN_PROGRESS",
+    replacementStatus: "DISPATCHED",
+    replacementStockConsumedAt: new Date(),
+  };
+  const serviceCharges = [];
+  const tx = {
+    orderExchangeRequest: {
+      findFirst: async () => exchange,
+      update: async ({ data }) => ({ ...exchange, ...data }),
+    },
+    orderAssignment: {
+      findFirst: async () => ({ id: "assignment-1" }),
+    },
+    distributor: {
+      findUnique: async () => ({ id: "dist-1", name: "Distributor One" }),
+    },
+    orderExchangeEvent: { create: async () => ({}) },
+  };
+  stubMethod(t, prisma, "$transaction", (callback) => callback(tx));
+
+  const result = await processDistributorExchange({
+    requestId: "exchange-1",
+    distributorId: "dist-1",
+    actorId: "account-1",
+    action: "DELIVER",
+    postExchangeAccounting: async () => ({ id: "exchange-journal-1" }),
+    accrueServiceCharge: async (charge) => serviceCharges.push(charge),
+  });
+
+  assert.equal(result.status, "COMPLETED");
+  assert.equal(serviceCharges.length, 1);
+  assert.equal(serviceCharges[0].serviceType, "EXCHANGE");
+  assert.equal(serviceCharges[0].chargeAmount, 50);
+  assert.equal(serviceCharges[0].sourceId, "exchange-1");
+  assert.equal(serviceCharges[0].assignmentId, "assignment-1");
+});

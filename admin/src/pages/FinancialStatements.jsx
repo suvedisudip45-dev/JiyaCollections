@@ -131,6 +131,7 @@ const FinancialStatements = ({ token }) => {
     bank: 0,
     accountsReceivable: 0,
     codReceivable: 0,
+    distributorCodReceivable: 0,
     gatewayClearing: 0,
     inventory: 0,
     inputVat: 0,
@@ -149,6 +150,7 @@ const FinancialStatements = ({ token }) => {
   const bsCurrentLiab = rtBs.liabilities?.currentLiabilities || {
     accountsPayable: 0,
     manufacturerPayable: 0,
+    distributorPayable: 0,
     marketingPartnerPayable: 0,
     carrierPayable: 0,
     outputVat: 0,
@@ -488,6 +490,10 @@ const FinancialStatements = ({ token }) => {
                     <span className="font-mono">Rs {Number(bsCurrentAssets.codReceivable || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>COD Receivable from Distributor (Account 1190)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentAssets.distributorCodReceivable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Payment Gateway Clearing (Account 1180)</span>
                     <span className="font-mono">Rs {Number(bsCurrentAssets.gatewayClearing || 0).toLocaleString()}</span>
                   </div>
@@ -553,6 +559,10 @@ const FinancialStatements = ({ token }) => {
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Manufacturer Payable (Account 2160)</span>
                     <span className="font-mono">Rs {Number(bsCurrentLiab.manufacturerPayable || 0).toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Distributor Payable (Account 2190)</span>
+                    <span className="font-mono">Rs {Number(bsCurrentLiab.distributorPayable || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Marketing Partner Payable (Account 2170)</span>

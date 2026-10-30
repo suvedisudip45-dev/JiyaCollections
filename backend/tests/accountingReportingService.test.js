@@ -23,6 +23,8 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
       line("1150", "DEBIT", "50.00", 0, "2026-10-05T10:00:00.000Z"),
       line("1140", "DEBIT", "15200.00", 0, "2026-09-01T10:00:00.000Z"),
       line("2160", "CREDIT", 0, "17200.00", "2026-09-01T10:00:00.000Z"),
+      line("1190", "DEBIT", "1500.00", 0, "2026-10-07T10:00:00.000Z"),
+      line("2190", "CREDIT", 0, "600.00", "2026-10-07T10:00:00.000Z"),
     ],
   });
 
@@ -33,10 +35,12 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
   assert.equal(snapshot.vat.outputVat, 276.11);
   assert.equal(snapshot.vat.inputVat, 50);
   assert.equal(snapshot.vat.netVatPayable, 226.11);
-  assert.equal(snapshot.balanceSheet.totalAssets, 15250);
-  assert.equal(snapshot.balanceSheet.totalLiabilities, 17476.11);
+  assert.equal(snapshot.balanceSheet.totalAssets, 16750);
+  assert.equal(snapshot.balanceSheet.totalLiabilities, 18076.11);
   assert.equal(snapshot.balanceSheet.inventory, 15200);
+  assert.equal(snapshot.balanceSheet.distributorCodReceivable, 1500);
   assert.equal(snapshot.balanceSheet.manufacturerPayable, 17200);
+  assert.equal(snapshot.balanceSheet.distributorPayable, 600);
   assert.equal(snapshot.periodAccounts["4100"].balance, 2400);
   assert.equal(snapshot.closingAccounts["4100"].balance, 3400);
 });

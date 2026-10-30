@@ -227,19 +227,32 @@ export const getPartnerCampaignDetail = async ({ partnerId, campaignId }) => {
 export const getPartnerCards = async ({ partnerId, campaignId, status, page = 1, limit = 50 } = {}) => {
   await expireCampaignCards();
   const skip = (Number(page) - 1) * Number(limit);
+  const now = new Date();
   const where = {
     partnerId,
     ...(campaignId ? { campaignId } : {}),
-    ...(status && status !== "all" ? { physicalStatus: status } : {}),
+    ...(status === "EXPIRED"
+      ? {
+          campaign: {
+            OR: [
+              { status: "EXPIRED" },
+              { endsAt: { lt: now } },
+              { cardExpiresAt: { lt: now } },
+            ],
+          },
+        }
+      : status && status !== "all"
+        ? { physicalStatus: status }
+        : {}),
   };
-  return Promise.all([
+  const [cards, total] = await Promise.all([
     prisma.marketingCard.findMany({
       where,
       orderBy: { createdAt: "desc" },
       skip,
       take: Number(limit),
       include: {
-        campaign: { select: { id: true, name: true, targetScopeType: true, targetProvince: true, targetDistrict: true } },
+        campaign: { select: { id: true, name: true, status: true, endsAt: true, cardExpiresAt: true, targetScopeType: true, targetProvince: true, targetDistrict: true } },
         customerLinks: { select: { id: true, status: true, linkedAt: true, activatedAt: true } },
         benefitRedemptions: { select: { id: true, status: true, redeemedAt: true } },
         assignedManufacturer: { select: { id: true, name: true, city: true } },
@@ -247,7 +260,19 @@ export const getPartnerCards = async ({ partnerId, campaignId, status, page = 1,
     }),
     prisma.marketingCard.count({ where }),
   ]);
+  return [
+    cards.map((card) => ({
+      ...card,
+      dashboardCategory: isPartnerCardExpired(card.campaign, now) ? "EXPIRED" : card.physicalStatus,
+    })),
+    total,
+  ];
 };
+
+const isPartnerCardExpired = (campaign, now) =>
+  campaign?.status === "EXPIRED" ||
+  Boolean(campaign?.endsAt && new Date(campaign.endsAt) < now) ||
+  Boolean(campaign?.cardExpiresAt && new Date(campaign.cardExpiresAt) < now);
 
 export const getPartnerCardDetail = async ({ partnerId, cardId }) => {
   await expireCampaignCards();

@@ -191,6 +191,7 @@ test("completed production receipt creates one canonical cost layer and factory 
     color: "Black",
     quantity: 5,
     unitCogs: "10.00",
+    manufacturerPayableRecognizedAtProduction: true,
     unitDeliveryCost: "3.00",
     actorId: "account-1",
     actorRole: "MANUFACTURER",
@@ -199,6 +200,7 @@ test("completed production receipt creates one canonical cost layer and factory 
   const first = await receiveCompletedProductionLine(input);
   assert.equal(first.replayed, false);
   assert.equal(first.costLayer.inventorySkuId, "sku-1");
+  assert.equal(first.costLayer.manufacturerPayableRecognizedAtProduction, true);
   assert.equal(entries.size, 1);
   assert.equal(costLayers.size, 1);
   assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 5);
@@ -208,6 +210,10 @@ test("completed production receipt creates one canonical cost layer and factory 
   assert.equal(entries.size, 1);
   assert.equal(costLayers.size, 1);
   assert.equal(balances.get(balanceKey("factory-1", "sku-1")).quantityOnHand, 5);
+  await assert.rejects(
+    receiveCompletedProductionLine({ ...input, manufacturerPayableRecognizedAtProduction: false }),
+    (error) => error.code === "PRODUCTION_RECEIPT_CONFLICT",
+  );
 });
 
 test("ledger reconciliation reports source/destination balances and COGS-only valuation", () => {

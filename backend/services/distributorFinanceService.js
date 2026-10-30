@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
+import {
+  accrueDistributorDeliveryEarning,
+  accrueDistributorServiceCharge,
+} from "./distributorServiceEarningService.js";
 import { accrueClosedDistributorBonuses, getClosedDistributorBonusPreview } from "./distributorBonusService.js";
 import { recordSystemAudit } from "./auditService.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
@@ -60,6 +64,103 @@ const validateOptionalText = (value, label, maxLength) => {
   return text || null;
 };
 
+const accrueUnrecordedReturnCharges = async ({
+  distributorId,
+  distributorName,
+  client,
+  accrueServiceCharge = accrueDistributorServiceCharge,
+}) => {
+  if (!client.distributorServiceEarning) return;
+  const returnedAssignments = await client.orderAssignment.findMany({
+    where: {
+      distributorId,
+      deliveryType: { in: ["SELF_DELIVERY", "self_delivery"] },
+      status: { in: ["returned", "Returned"] },
+    },
+    select: { id: true, orderId: true, returnedAt: true, assignedAt: true },
+  });
+  if (!returnedAssignments.length) return;
+  const assignmentIds = returnedAssignments.map((assignment) => assignment.id);
+  const existingEarnings = await client.distributorServiceEarning.findMany({
+    where: {
+      distributorId,
+      serviceType: "RETURN",
+      assignmentId: { in: assignmentIds },
+    },
+    select: { assignmentId: true },
+  });
+  const existingAssignmentIds = new Set(existingEarnings.map((earning) => earning.assignmentId));
+  const ncmDeliveries = await client.deliveryOrder.findMany({
+    where: { orderId: { in: returnedAssignments.map((assignment) => assignment.orderId) } },
+    select: { orderId: true },
+  });
+  const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
+
+  for (const assignment of returnedAssignments) {
+    if (existingAssignmentIds.has(assignment.id) || ncmOrderIds.has(assignment.orderId)) continue;
+    const effectiveAt = assignment.returnedAt || assignment.assignedAt || new Date();
+    const rateCard = await resolveActiveRateCard({ distributorId, effectiveAt, client });
+    await accrueServiceCharge({
+      distributorId,
+      distributorName,
+      assignmentId: assignment.id,
+      orderId: assignment.orderId,
+      sourceId: assignment.id,
+      rateCardId: rateCard.rateCardId || null,
+      serviceType: "RETURN",
+      chargeAmount: rateCard.returnCharge,
+      vatRate: rateCard.vatRate,
+      effectiveAt,
+      client,
+    });
+  }
+};
+
+const accrueUnrecordedDeliveryEarnings = async ({
+  distributorId,
+  distributorName,
+  client,
+  accrueDelivery = accrueDistributorDeliveryEarning,
+}) => {
+  if (!client.distributorServiceEarning) return;
+  const assignments = await client.orderAssignment.findMany({
+    where: {
+      distributorId,
+      deliveryType: { in: ["SELF_DELIVERY", "self_delivery"] },
+      status: { in: ["delivered", "Delivered", "returned", "Returned"] },
+    },
+    select: { id: true, orderId: true, deliveredAt: true, assignedAt: true },
+  });
+  if (!assignments.length) return;
+
+  const existingEarnings = await client.distributorServiceEarning.findMany({
+    where: {
+      distributorId,
+      serviceType: "DELIVERY",
+      assignmentId: { in: assignments.map((assignment) => assignment.id) },
+    },
+    select: { assignmentId: true },
+  });
+  const existingAssignmentIds = new Set(existingEarnings.map((earning) => earning.assignmentId));
+  const ncmDeliveries = await client.deliveryOrder.findMany({
+    where: { orderId: { in: assignments.map((assignment) => assignment.orderId) } },
+    select: { orderId: true },
+  });
+  const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
+
+  for (const assignment of assignments) {
+    if (existingAssignmentIds.has(assignment.id) || ncmOrderIds.has(assignment.orderId)) continue;
+    await accrueDelivery({
+      distributorId,
+      distributorName,
+      assignmentId: assignment.id,
+      orderId: assignment.orderId,
+      effectiveAt: assignment.deliveredAt || assignment.assignedAt || new Date(),
+      client,
+    });
+  }
+};
+
 export const initiateAdminDistributorSettlement = async ({
   settlementId,
   amount,
@@ -68,6 +169,9 @@ export const initiateAdminDistributorSettlement = async ({
   idempotencyKey,
   adminNotes = null,
   adminAccountId = null,
+  resolveAccountingParty = ensureAccountingParty,
+  validatePayoutAccount = validateTreasuryPayoutAccount,
+  writeAudit = recordSystemAudit,
   client = prisma,
 } = {}) => {
   if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
@@ -146,7 +250,7 @@ export const initiateAdminDistributorSettlement = async ({
       throw fail("Payout exceeds the unreserved, verified distributor payable.", 409, "PAYOUT_EXCEEDS_PAYABLE");
     }
     const account = await tx.financialAccount.findUnique({ where: { id: financialAccountId } });
-    await validateTreasuryPayoutAccount(account, tx);
+    await validatePayoutAccount(account, tx);
     return { availableAmount };
   };
 
@@ -160,6 +264,7 @@ export const initiateAdminDistributorSettlement = async ({
     initiatedByAccountId: adminAccountId,
     notes: adminNotes,
     validateTarget,
+    writeAudit,
     client,
   });
 };
@@ -255,7 +360,7 @@ export const getDistributorFinancialStatement = async ({
     where: {
       distributorId,
       deliveryType: { in: ["SELF_DELIVERY", "self_delivery"] },
-      status: { in: ["delivered", "Delivered"] },
+      status: { in: ["delivered", "Delivered", "returned", "Returned"] },
       ...(Object.keys(dateFilter).length ? { deliveredAt: dateFilter } : {}),
     },
     include: {
@@ -318,20 +423,34 @@ export const getDistributorFinancialStatement = async ({
     ? await client.distributorServiceEarning.findMany({
         where: {
           distributorId,
-          serviceType: "DELIVERY",
+          serviceType: { in: ["DELIVERY", "RETURN", "EXCHANGE"] },
           ...(Object.keys(dateFilter).length ? { effectiveAt: dateFilter } : {}),
         },
         orderBy: { effectiveAt: "desc" },
       })
     : [];
-  const earningByAssignment = new Map(serviceEarnings.map((earning) => [earning.assignmentId, earning]));
+  const earningByAssignment = new Map(
+    serviceEarnings
+      .filter((earning) => earning.serviceType === "DELIVERY")
+      .map((earning) => [earning.assignmentId, earning])
+  );
+  const returnEarningByAssignment = new Map(
+    serviceEarnings
+      .filter((earning) => earning.serviceType === "RETURN")
+      .map((earning) => [earning.assignmentId, earning])
+  );
+  const exchangeEarnings = serviceEarnings.filter((earning) => earning.serviceType === "EXCHANGE");
 
   let grossDeliveryEarnings = 0;
   let earnedIncentives = 0;
   let adminDiscountsApplied = 0;
   let returnFeesEarned = 0;
+  let exchangeFeesEarned = 0;
   let snapshottedDeliverySubtotal = 0;
+  let snapshottedServiceSubtotal = 0;
   let snapshottedVatAmount = 0;
+  let legacyReturnFees = 0;
+  let legacyReturnVatAmount = 0;
   let earnedBonuses = 0;
   const itemizedTransactions = [];
 
@@ -428,21 +547,66 @@ export const getDistributorFinancialStatement = async ({
 
   // Itemize returns
   for (const assignment of returnedAssignments) {
-    const returnFee = Number(rateCard.returnCharge || 0);
+    const earning = returnEarningByAssignment.get(assignment.id);
+    const effectiveAt = assignment.returnedAt || assignment.assignedAt;
+    const returnRateCard = earning
+      ? null
+      : await resolveActiveRateCard({ distributorId, effectiveAt: effectiveAt || new Date(), client });
+    const returnFee = Number(earning?.otherCharges ?? returnRateCard?.returnCharge ?? 0);
     returnFeesEarned += returnFee;
+    if (earning) {
+      snapshottedServiceSubtotal += returnFee;
+      snapshottedVatAmount += Number(earning.vatAmount || 0);
+    } else {
+      legacyReturnFees += returnFee;
+      legacyReturnVatAmount += returnFee * Number(returnRateCard?.vatRate ?? vatRate) / 100;
+    }
 
     itemizedTransactions.push({
-      id: `tx-ret-${assignment.id}`,
+      id: `tx-ret-${earning?.id || assignment.id}`,
       type: "RETURN",
       referenceId: assignment.orderId,
-      date: assignment.returnedAt || assignment.assignedAt,
+      date: earning?.effectiveAt || effectiveAt,
       description: `Customer return QA processed for Order ${assignment.orderId.slice(0, 8)}`,
       grossAmount: Number(returnFee.toFixed(2)),
       incentiveAmount: 0,
       discountChargeAmount: 0,
-      netAmount: Number(returnFee.toFixed(2)),
+      netAmount: Number(earning?.payableAmount ?? returnFee),
+      vatAmount: Number(earning?.vatAmount || 0),
       orderAmount: 0,
       paymentMethod: "N/A",
+      earningId: earning?.id,
+      assignmentId: assignment.id,
+      accountingDocumentId: earning?.accountingDocumentId,
+      journalEntryId: earning?.journalEntryId,
+      rateCardId: earning?.rateCardId,
+      isRateSnapshotted: Boolean(earning),
+    });
+  }
+
+  for (const earning of exchangeEarnings) {
+    const exchangeFee = Number(earning.otherCharges || 0);
+    exchangeFeesEarned += exchangeFee;
+    snapshottedServiceSubtotal += exchangeFee;
+    snapshottedVatAmount += Number(earning.vatAmount || 0);
+    itemizedTransactions.push({
+      id: `tx-exchange-${earning.id}`,
+      type: "EXCHANGE",
+      referenceId: earning.orderId,
+      date: earning.effectiveAt,
+      description: `Distributor exchange completed for Order ${earning.orderId.slice(0, 8)}`,
+      grossAmount: Number(exchangeFee.toFixed(2)),
+      incentiveAmount: 0,
+      discountChargeAmount: 0,
+      netAmount: Number(earning.payableAmount),
+      vatAmount: Number(earning.vatAmount || 0),
+      orderAmount: 0,
+      paymentMethod: "N/A",
+      earningId: earning.id,
+      assignmentId: earning.assignmentId,
+      accountingDocumentId: earning.accountingDocumentId,
+      journalEntryId: earning.journalEntryId,
+      isRateSnapshotted: true,
     });
   }
 
@@ -491,10 +655,11 @@ export const getDistributorFinancialStatement = async ({
 
   // Compute subtotal before VAT
   const subtotalBeforeVat = Number(
-    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned - adminDiscountsApplied).toFixed(2)
+    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned + exchangeFeesEarned - adminDiscountsApplied).toFixed(2)
   );
-  const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal);
-  const vatAmount = Number((legacyDeliverySubtotal * (vatRate / 100) + snapshottedVatAmount).toFixed(2));
+  const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal - snapshottedServiceSubtotal);
+  const taxableLegacySubtotal = Math.max(0, legacyDeliverySubtotal - legacyReturnFees);
+  const vatAmount = Number((taxableLegacySubtotal * (vatRate / 100) + legacyReturnVatAmount + snapshottedVatAmount).toFixed(2));
   const totalWithVat = Number((subtotalBeforeVat + vatAmount).toFixed(2));
   const totalWithoutVat = subtotalBeforeVat;
 
@@ -512,6 +677,7 @@ export const getDistributorFinancialStatement = async ({
       earnedIncentives: Number(earnedIncentives.toFixed(2)),
       earnedBonuses: Number(earnedBonuses.toFixed(2)),
       returnFeesEarned: Number(returnFeesEarned.toFixed(2)),
+      exchangeFeesEarned: Number(exchangeFeesEarned.toFixed(2)),
       adminDiscountsApplied: Number(adminDiscountsApplied.toFixed(2)),
       subtotalBeforeVat,
       vatRate,
@@ -537,12 +703,17 @@ export const getDistributorFinancialStatement = async ({
 export const submitDistributorSettlementRequest = async ({
   distributorId,
   amount,
+  withVat = true,
   notes = null,
   idempotencyKey = null,
   requestedByAccountId = null,
   client = prisma,
+  accrueDelivery = accrueDistributorDeliveryEarning,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
+  if (typeof withVat !== "boolean") {
+    throw fail("VAT mode must be selected as true or false.", 400, "INVALID_VAT_MODE");
+  }
 
   const numAmount = parseMoney(amount, "Settlement amount");
   const normalizedNotes = validateOptionalText(notes, "Settlement notes", 1000);
@@ -559,7 +730,12 @@ export const submitDistributorSettlementRequest = async ({
         where: { idempotencyKey: key },
       });
       if (existing) {
-        if (existing.distributorId !== distributorId || Number(existing.amount) !== numAmount) {
+        const existingVatMode = existing.metadata?.statementSnapshot?.vatMode;
+        if (
+          existing.distributorId !== distributorId ||
+          Number(existing.amount) !== numAmount ||
+          (existingVatMode && existingVatMode !== (withVat ? "WITH_VAT" : "WITHOUT_VAT"))
+        ) {
           throw fail("This idempotency key was already used for a different settlement request.", 409, "IDEMPOTENCY_KEY_REUSED");
         }
         return { ...existing, isReplay: true };
@@ -575,7 +751,18 @@ export const submitDistributorSettlementRequest = async ({
         distributorName: distributor.name,
         client: tx,
       });
-      const statement = await getDistributorFinancialStatement({ distributorId, withVat: true, client: tx });
+      await accrueUnrecordedDeliveryEarnings({
+        distributorId,
+        distributorName: distributor.name,
+        client: tx,
+        accrueDelivery,
+      });
+      await accrueUnrecordedReturnCharges({
+        distributorId,
+        distributorName: distributor.name,
+        client: tx,
+      });
+      const statement = await getDistributorFinancialStatement({ distributorId, withVat, client: tx });
       const availableBalance = statement.summary.netPayableBalance;
       if (numAmount > availableBalance) {
         throw fail(
@@ -593,7 +780,7 @@ export const submitDistributorSettlementRequest = async ({
           incentives: statement.summary.earnedIncentives,
           bonuses: statement.summary.earnedBonuses,
           discountsApplied: statement.summary.adminDiscountsApplied,
-          vatAmount: statement.summary.vatAmount,
+          vatAmount: withVat ? statement.summary.vatAmount : 0,
           netPayable: numAmount,
           status: "PENDING",
           notes: normalizedNotes,
@@ -627,10 +814,12 @@ export const submitDistributorSettlementRequest = async ({
       }
       const openSourceIds = new Set(earningDocuments.map((document) => document.sourceId));
       const settlementLineItems = statement.transactions
-        .filter((item) => ["DELIVERY", "RETURN", "BONUS"].includes(item.type))
-        .filter((item) => item.type === "RETURN" || !item.earningId || openSourceIds.has(item.earningId));
+        .filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "BONUS"].includes(item.type))
+        .filter((item) => !item.earningId || openSourceIds.has(item.earningId));
       const statementSnapshot = {
         createdAt: new Date().toISOString(),
+        vatMode: withVat ? "WITH_VAT" : "WITHOUT_VAT",
+        vatIncluded: withVat,
         requestedAmount: numAmount,
         availableBalance: statement.summary.netPayableBalance,
         summary: statement.summary,
@@ -642,11 +831,13 @@ export const submitDistributorSettlementRequest = async ({
             description: item.description,
             earningId: item.earningId || null,
             accountingDocumentId: item.accountingDocumentId || null,
+            assignmentId: item.assignmentId || null,
             quantity: item.type === "DELIVERY" ? 1 : undefined,
             deliveryCharge: item.type === "DELIVERY" ? item.grossAmount : 0,
             incentiveAmount: item.incentiveAmount || 0,
             bonusAmount: item.bonusAmount || 0,
             returnCharge: item.type === "RETURN" ? item.grossAmount : 0,
+            exchangeCharge: item.type === "EXCHANGE" ? item.grossAmount : 0,
             commissionDeduction: item.discountChargeAmount || 0,
             netAmount: item.netAmount,
             eligibleDeliveryCount: item.eligibleDeliveryCount,
@@ -724,14 +915,17 @@ export const resolveDistributorSettlementReconciliation = async ({
   reviewNotes,
   reviewerAccountId,
   writeAudit = recordSystemAudit,
+  backfillBonuses = accrueClosedDistributorBonuses,
+  backfillDeliveryEarning = accrueDistributorDeliveryEarning,
+  backfillServiceCharge = accrueDistributorServiceCharge,
   client = prisma,
 } = {}) => {
   if (typeof settlementId !== "string" || !settlementId.trim() || settlementId.length > 191) {
     throw fail("A valid settlement request ID is required.", 400, "INVALID_SETTLEMENT_ID");
   }
   const normalizedDecision = String(decision || "").trim().toUpperCase();
-  if (!["RECONCILE", "REJECT"].includes(normalizedDecision)) {
-    throw fail("Decision must be RECONCILE or REJECT.", 400, "INVALID_RECONCILIATION_DECISION");
+  if (!["RECONCILE", "REJECT", "BACKFILL"].includes(normalizedDecision)) {
+    throw fail("Decision must be RECONCILE, REJECT, or BACKFILL.", 400, "INVALID_RECONCILIATION_DECISION");
   }
   const normalizedNotes = validateOptionalText(reviewNotes, "Review notes", 1000);
   if (!normalizedNotes) {
@@ -764,7 +958,90 @@ export const resolveDistributorSettlementReconciliation = async ({
 
     let updatedMetadata = parseJSON(request.metadata, {});
     let verifiedDocuments = [];
-    if (normalizedDecision === "RECONCILE") {
+    let backfilledLineItems = [];
+    if (normalizedDecision === "BACKFILL") {
+      const distributor = request.distributor || await tx.distributor.findUnique({
+        where: { id: request.distributorId },
+        select: { id: true, name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found.", 404, "DISTRIBUTOR_NOT_FOUND");
+      await backfillBonuses({
+        distributorId: request.distributorId,
+        distributorName: distributor.name,
+        client: tx,
+      });
+      await accrueUnrecordedDeliveryEarnings({
+        distributorId: request.distributorId,
+        distributorName: distributor.name,
+        client: tx,
+        accrueDelivery: backfillDeliveryEarning,
+      });
+      await accrueUnrecordedReturnCharges({
+        distributorId: request.distributorId,
+        distributorName: distributor.name,
+        client: tx,
+        accrueServiceCharge: backfillServiceCharge,
+      });
+
+      const lineItems = Array.isArray(updatedMetadata.statementSnapshot?.lineItems)
+        ? updatedMetadata.statementSnapshot.lineItems
+        : [];
+      const orderIds = [...new Set(lineItems
+        .filter((item) => ["DELIVERY", "RETURN"].includes(item.type) && !item.earningId)
+        .map((item) => item.referenceId)
+        .filter(Boolean))];
+      const earnings = orderIds.length
+        ? await tx.distributorServiceEarning.findMany({
+            where: {
+              distributorId: request.distributorId,
+              orderId: { in: orderIds },
+              serviceType: { in: ["DELIVERY", "RETURN"] },
+            },
+            select: {
+              id: true,
+              orderId: true,
+              assignmentId: true,
+              serviceType: true,
+              accountingDocumentId: true,
+            },
+          })
+        : [];
+      const earningsByKey = new Map(
+        earnings.map((earning) => [`${earning.serviceType}:${earning.orderId}`, earning]),
+      );
+      backfilledLineItems = lineItems.map((item) => {
+        if (item.earningId || !["DELIVERY", "RETURN"].includes(item.type)) return item;
+        const earning = earningsByKey.get(`${item.type}:${item.referenceId}`);
+        return earning
+          ? {
+              ...item,
+              earningId: earning.id,
+              accountingDocumentId: earning.accountingDocumentId || null,
+              assignmentId: earning.assignmentId,
+              isRateSnapshotted: true,
+            }
+          : item;
+      });
+      const linkedEarningCount = backfilledLineItems.filter(
+        (item, index) => !lineItems[index].earningId && item.earningId,
+      ).length;
+      if (linkedEarningCount === 0) {
+        throw fail(
+          "No missing delivery or return earnings could be verified from completed distributor assignments.",
+          409,
+          "NO_VERIFIED_EARNINGS_TO_BACKFILL",
+        );
+      }
+      updatedMetadata = {
+        ...updatedMetadata,
+        statementSnapshot: {
+          ...updatedMetadata.statementSnapshot,
+          lineItems: backfilledLineItems,
+        },
+        earningsBackfilledAt: new Date().toISOString(),
+        earningsBackfilledBy: reviewerAccountId || null,
+      };
+    } else if (normalizedDecision === "RECONCILE") {
       verifiedDocuments = await tx.accountingDocument.findMany({
         where: {
           id: { in: earningDocumentIds },
@@ -837,7 +1114,9 @@ export const resolveDistributorSettlementReconciliation = async ({
       },
       data: normalizedDecision === "RECONCILE"
         ? { metadata: updatedMetadata, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null }
-        : { status: "REJECTED", metadata: { ...updatedMetadata, rejectedAt: new Date().toISOString(), rejectedBy: reviewerAccountId || null, rejectionNotes: normalizedNotes }, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null },
+        : normalizedDecision === "BACKFILL"
+          ? { metadata: updatedMetadata, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null }
+          : { status: "REJECTED", metadata: { ...updatedMetadata, rejectedAt: new Date().toISOString(), rejectedBy: reviewerAccountId || null, rejectionNotes: normalizedNotes }, adminNotes: normalizedNotes, reviewedBy: reviewerAccountId || null },
     });
     if (claim.count !== 1) {
       throw fail("Settlement request changed while reconciliation was being recorded. Refresh and retry.", 409, "SETTLEMENT_CONCURRENCY_CONFLICT");
@@ -848,14 +1127,18 @@ export const resolveDistributorSettlementReconciliation = async ({
       {
         action: normalizedDecision === "RECONCILE"
           ? "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_RESOLVED"
-          : "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_REJECTED",
+          : normalizedDecision === "BACKFILL"
+            ? "DISTRIBUTOR_SETTLEMENT_EARNINGS_BACKFILLED"
+            : "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_REJECTED",
         entityType: "DistributorSettlementRequest",
         entityId: request.id,
         beforeState: { status: request.status, settlementBasis: request.metadata?.settlementBasis },
         afterState: {
           status: normalizedDecision === "REJECT" ? "REJECTED" : request.status,
           settlementBasis: normalizedDecision === "RECONCILE" ? "ACCOUNTING_SUBLEDGER" : request.metadata?.settlementBasis,
-          earningDocumentIds: verifiedDocuments.map((document) => document.id),
+          earningDocumentIds: normalizedDecision === "BACKFILL"
+            ? [...new Set(backfilledLineItems.map((item) => item.accountingDocumentId).filter(Boolean))]
+            : verifiedDocuments.map((document) => document.id),
           reviewNotes: normalizedNotes,
         },
       },
@@ -865,6 +1148,11 @@ export const resolveDistributorSettlementReconciliation = async ({
     return {
       success: true,
       decision: normalizedDecision,
+      message: normalizedDecision === "RECONCILE"
+        ? "Verified earning documents linked to the settlement request."
+        : normalizedDecision === "BACKFILL"
+          ? "Missing earnings were created only for completed distributor delivery and return work. Review and link the resulting accounting documents before payout."
+          : "Unsupported settlement request rejected with an audited reason.",
       settlementRequest: {
         ...request,
         status: normalizedDecision === "REJECT" ? "REJECTED" : request.status,

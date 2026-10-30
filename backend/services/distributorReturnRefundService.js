@@ -324,7 +324,13 @@ export const reviewDistributorCustomerRefund = async ({
       });
       const returnClaim = await tx.customerReturn.updateMany({
         where: { id: returnId, lifecycleStatus: "DISTRIBUTOR_REFUND_REVIEW", refundStatus: "PROCESSING" },
-        data: { lifecycleStatus: "REFUNDED", refundStatus: "COMPLETED", completedAt: now },
+        data: {
+          lifecycleStatus: "REFUNDED",
+          refundStatus: "COMPLETED",
+          completedAt: now,
+          accountingJournalEntryId: journal.id,
+          taxCreditNoteNumber: `CN-${journal.journalNumber}`,
+        },
       });
       if (eventClaim.count !== 1 || returnClaim.count !== 1) {
         throw fail("Refund review changed concurrently.", 409, "RETURN_REFUND_CONFLICT");

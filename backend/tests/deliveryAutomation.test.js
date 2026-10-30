@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createExchangeOrder, createOrder, extractNcmCharge, extractNcmDeliveryPricing, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -426,6 +426,28 @@ test("NCM errors preserve partner response detail and carrier charges normalize"
   );
   assert.equal(extractNcmCharge({ data: { delivery_charge: "145.50" } }), 145.5);
   assert.equal(extractNcmCharge({ data: { delivery_charge: "unknown" } }), null);
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "199.00", delivery_discount: "39.80" },
+  }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "159.20", original_delivery_charge: "199.00", discount_amount: "39.80" },
+  }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.deepEqual(extractNcmDeliveryPricing({
+    data: { delivery_charge: "199.00", discount: "39.80" },
+  }, { allowGenericDiscount: true }), {
+    chargeBeforeDiscount: 199,
+    discountAmount: 39.8,
+    actualCharge: 159.2,
+  });
+  assert.equal(extractNcmDeliveryPricing({ data: { delivery_charge: "unknown" } }), null);
   assert.equal(getNcmResponseRejection({ success: false, detail: "Order is not eligible for return" }), "Order is not eligible for return");
   assert.equal(getNcmResponseRejection({ order: 4041, vendor_return: false, message: "Return was not marked" }), "Return was not marked");
   assert.equal(getNcmResponseRejection({ Message: "Exchange orders created" }), null);

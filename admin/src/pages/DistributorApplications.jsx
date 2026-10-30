@@ -184,9 +184,13 @@ const DistributorApplications = ({ token }) => {
         { headers: { token } },
       );
       if (!response.data?.success) throw new Error(response.data?.message || "Settlement reconciliation failed.");
-      toast.success(reconciliationDecision === "RECONCILE"
-        ? "Verified earning documents linked to the settlement request."
-        : "Unsupported settlement request rejected with an audit record.");
+      toast.success(response.data.message || (
+        reconciliationDecision === "RECONCILE"
+          ? "Verified earning documents linked to the settlement request."
+          : reconciliationDecision === "BACKFILL"
+            ? "Verified completed-work earnings were backfilled."
+            : "Unsupported settlement request rejected with an audit record."
+      ));
       setReconciliationRequest(null);
       await loadSettlements();
     } catch (requestError) {
@@ -941,7 +945,14 @@ const DistributorApplications = ({ token }) => {
                         <div>-Rs {req.chargesApplied} deductions</div>
                         <div className="text-slate-500">{req.metadata?.statementSnapshot?.lineItems?.filter((line) => line.type === "DELIVERY").length ?? "—"} delivery units</div>
                       </td>
-                      <td className="px-4 py-3 text-xs text-slate-600">Rs {req.vatAmount}</td>
+                      <td className="px-4 py-3 text-xs text-slate-600">
+                        Rs {Number(req.vatAmount || 0).toFixed(2)}
+                        {req.metadata?.statementSnapshot?.vatMode && (
+                          <div className="text-[10px] text-slate-500">
+                            {req.metadata.statementSnapshot.vatMode === "WITHOUT_VAT" ? "Excluded from request" : "Included in request"}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-emerald-700 font-bold">Rs {req.netPayable?.toLocaleString()}</td>
                       <td className="px-4 py-3">
                         <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
@@ -980,7 +991,7 @@ const DistributorApplications = ({ token }) => {
                           ) : <span className="text-xs font-medium text-amber-700">Finance permission required</span>
                         ) : req.status !== "SETTLED" && req.status !== "PAID" && req.status !== "REJECTED" && (
                           <button
-                            onClick={() => navigate("/payables")}
+                            onClick={() =>                             navigate(`/payables?search=${encodeURIComponent(req.distributor?.name || req.distributorId)}`)}
                             className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-xs font-semibold shadow-sm transition disabled:opacity-50"
                           >
                             Pay in Payables
@@ -1098,7 +1109,7 @@ const DistributorApplications = ({ token }) => {
                 <p className="mt-1 text-sm text-slate-600">
                   {reconciliationRequest.distributor?.name || reconciliationRequest.distributorId} · requested Rs {Number(reconciliationRequest.amount || 0).toFixed(2)}
                 </p>
-                <p className="mt-1 text-xs text-amber-700">Only link existing, open accounting earning documents. This action does not synthesize earnings.</p>
+                <p className="mt-1 text-xs text-amber-700">Backfill creates documents only from completed distributor delivery and return records; request amounts alone never create earnings.</p>
               </div>
               <button type="button" onClick={() => setReconciliationRequest(null)} className="text-sm font-semibold text-slate-500 hover:text-slate-900">Close</button>
             </div>
@@ -1110,14 +1121,21 @@ const DistributorApplications = ({ token }) => {
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
               >
                 <option value="RECONCILE">Reconcile to existing earning documents</option>
+                <option value="BACKFILL">Backfill missing earnings from completed work</option>
                 <option value="REJECT">Reject unsupported request</option>
               </select>
             </label>
-            {reconciliationDecision === "RECONCILE" && (
+            {["RECONCILE", "BACKFILL"].includes(reconciliationDecision) && (
               <fieldset className="space-y-2">
-                <legend className="text-sm font-semibold text-slate-700">Verified open earning documents</legend>
-                {(reconciliationRequest.reconciliationCandidates || []).length === 0 ? (
-                  <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">No eligible existing earning documents were found. Do not invent a backfill; investigate the source records first.</p>
+                <legend className="text-sm font-semibold text-slate-700">
+                  {reconciliationDecision === "BACKFILL" ? "Verified completed work" : "Verified open earning documents"}
+                </legend>
+                {reconciliationDecision === "BACKFILL" ? (
+                  <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">
+                    The system will use the historical rate card and verified completed self-delivery/return assignments. Review the created documents before reconciling for payout.
+                  </p>
+                ) : (reconciliationRequest.reconciliationCandidates || []).length === 0 ? (
+                  <p className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">No eligible existing earning documents were found. Investigate the source records before linking earnings.</p>
                 ) : (reconciliationRequest.reconciliationCandidates || []).map((document) => (
                   <label key={document.id} className="flex items-start gap-3 rounded-lg border border-slate-200 p-3 text-sm">
                     <input
@@ -1155,7 +1173,7 @@ const DistributorApplications = ({ token }) => {
                 disabled={savingReconciliation || (reconciliationDecision === "RECONCILE" && selectedEarningDocumentIds.length === 0)}
                 className={`rounded-lg px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 ${reconciliationDecision === "REJECT" ? "bg-rose-600 hover:bg-rose-700" : "bg-slate-900 hover:bg-black"}`}
               >
-                {savingReconciliation ? "Saving..." : reconciliationDecision === "REJECT" ? "Reject request" : "Link verified earnings"}
+                {savingReconciliation ? "Saving..." : reconciliationDecision === "REJECT" ? "Reject request" : reconciliationDecision === "BACKFILL" ? "Backfill verified work" : "Link verified earnings"}
               </button>
             </div>
           </form>

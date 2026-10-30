@@ -61,3 +61,17 @@ test("customer return only reverses inventory and COGS for a positive costed res
     assert.equal(lines.some(({ accountCode }) => ["1140", "5100"].includes(accountCode)), false);
   }
 });
+
+test("zero-refund return still records a costed inventory adjustment", () => {
+  const lines = buildCustomerReturnAccountingLines({
+    ...baseReturn,
+    totalRefund: 0,
+    vat: 0,
+    restockedInventoryCost: 25,
+  });
+
+  assert.deepEqual(lines.slice(-2).map(({ accountCode, debit, credit }) => ({ accountCode, debit, credit })), [
+    { accountCode: "1140", debit: 25, credit: 0 },
+    { accountCode: "5100", debit: 0, credit: 25 },
+  ]);
+});

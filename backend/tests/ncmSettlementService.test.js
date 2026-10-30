@@ -156,6 +156,40 @@ test("NCM batch posts a net receipt once and atomically claims and links every o
   assert.equal(harness.state.options.isolationLevel, "Serializable");
 });
 
+test("NCM discount reduces the carrier fee deduction without changing COD collected", async () => {
+  const harness = makeHarness({
+    settlements: [{
+      id: "discounted",
+      deliveryOrderId: "delivery-discounted",
+      settlementState: "PENDING",
+      codExpected: 1535,
+      codCollected: 1535,
+      deliveryFeeExpected: 199,
+      deliveryFeeActual: 159.2,
+      deliveryFeeDiscount: 39.8,
+      otherAdjustments: 0,
+      journalEntryId: null,
+    }],
+  });
+  const result = await confirmNcmSettlementBatch({
+    settlementIds: ["discounted"],
+    financialAccountId: "treasury-1",
+    client: harness.client,
+    settlementPoster: async (settlement) => {
+      harness.state.journals.push(settlement);
+      return { id: "discount-journal" };
+    },
+    carrierFeeAccrualPoster: async ({ feeAmount }) => {
+      assert.equal(feeAmount, "159.20");
+      return { id: "discount-fee-journal" };
+    },
+  });
+
+  assert.equal(result.totalCod, "1535.00");
+  assert.equal(result.totalFee, "159.20");
+  assert.equal(result.netDeposit, "1375.80");
+});
+
 test("NCM batch idempotency returns prior receipt and does not post cash twice", async () => {
   const firstHarness = makeHarness({ settlements: sampleSettlements() });
   const options = {

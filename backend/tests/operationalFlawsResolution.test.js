@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { prisma } from "../config/db.js";
 import {
   ensureStandardChartOfAccounts,
@@ -19,6 +20,30 @@ import {
   evaluateCustomerReturnAutoApproval,
 } from "../services/autoApprovalPolicyService.js";
 import { runSlaEscalationSweep } from "../workers/slaEscalationWorker.js";
+
+const isApprovedIntegrationDatabase = () => {
+  if (process.env.RUN_DATABASE_INTEGRATION_TESTS !== "1") {
+    console.log("Skipping database-backed operational flaw test; set RUN_DATABASE_INTEGRATION_TESTS=1 against an isolated test database to run it.");
+    return false;
+  }
+
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL must point to an isolated test database before running this test.");
+  }
+
+  let databaseName;
+  try {
+    databaseName = decodeURIComponent(new URL(databaseUrl).pathname.replace(/^\/+/, ""));
+  } catch {
+    throw new Error("DATABASE_URL must be a valid connection URL for an isolated test database.");
+  }
+
+  if (!/(^|[_-])test($|[_-])/i.test(databaseName)) {
+    throw new Error("Refusing to run database-backed operational tests unless the database name clearly identifies an isolated test database.");
+  }
+  return true;
+};
 
 const runTests = async () => {
   console.log("=================================================================");
@@ -65,23 +90,6 @@ const runTests = async () => {
     );
 
     // 1.2 Test Fiscal Year Closing & Retained Earnings Transfer
-    // Clean up any stale test journal entries or test fiscal years from prior runs
-    const staleEntries = await prisma.journalEntry.findMany({
-      where: {
-        OR: [
-          { sourceId: { startsWith: "FY-" } },
-          { description: { contains: "Fiscal Closing" } },
-        ],
-      },
-      select: { id: true },
-    });
-    if (staleEntries.length > 0) {
-      const entryIds = staleEntries.map((e) => e.id);
-      await prisma.journalLine.deleteMany({ where: { journalEntryId: { in: entryIds } } });
-      await prisma.journalEntry.deleteMany({ where: { id: { in: entryIds } } });
-    }
-    await prisma.fiscalYear.deleteMany({ where: { name: { startsWith: "FY-TEST-" } } });
-
     const testFyName = `FY-TEST-${Date.now()}`;
     const testFy = await prisma.fiscalYear.create({
       data: {
@@ -140,9 +148,6 @@ const runTests = async () => {
     });
     assert(reopenResult.success, "reopenFiscalYear executed successfully");
     assert(reopenResult.fiscalYear.status === "OPEN", "FiscalYear status restored to OPEN");
-
-    // Clean up test FY
-    await prisma.fiscalYear.delete({ where: { id: testFy.id } });
 
     // =================================================================
     // SECTION 2: Courier Resiliency & Agnostic Adapter (Flaw 2)
@@ -241,4 +246,8 @@ const runTests = async () => {
   }
 };
 
-runTests();
+if (isApprovedIntegrationDatabase()) {
+  runTests();
+} else {
+  await prisma.$disconnect();
+}

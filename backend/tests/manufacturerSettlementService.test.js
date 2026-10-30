@@ -106,6 +106,15 @@ test("manufacturer settlement summary reports supplier credits separately from g
       findMany: async () => [
         {
           side: "PAYABLE",
+          sourceType: "MANUFACTURER_PRODUCTION",
+          sourceId: "production-1",
+          originalAmount: new Prisma.Decimal("50"),
+          allocatedAmount: new Prisma.Decimal("0"),
+          remainingAmount: new Prisma.Decimal("50"),
+          status: "OPEN",
+        },
+        {
+          side: "PAYABLE",
           sourceType: "MANUFACTURER_DELIVERY_COGS",
           sourceId: "order-1",
           originalAmount: new Prisma.Decimal("100"),
@@ -128,6 +137,14 @@ test("manufacturer settlement summary reports supplier credits separately from g
       findMany: async () => [
         {
           debit: new Prisma.Decimal("0"),
+          credit: new Prisma.Decimal("50"),
+          supplierId: "mfg-1",
+          supplierName: "Textile Co",
+          accountingParty: null,
+          journalEntry: { sourceType: "MANUFACTURER_PRODUCTION", sourceId: "production-1" },
+        },
+        {
+          debit: new Prisma.Decimal("0"),
           credit: new Prisma.Decimal("100"),
           supplierId: "mfg-1",
           supplierName: "Textile Co",
@@ -148,11 +165,11 @@ test("manufacturer settlement summary reports supplier credits separately from g
 
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
-  assert.equal(summary.totalManufacturedGoodsValue, 100);
-  assert.equal(summary.productionOutstanding, 60);
+  assert.equal(summary.totalManufacturedGoodsValue, 150);
+  assert.equal(summary.productionOutstanding, 110);
   assert.equal(summary.supplierCreditOutstanding, 10);
   assert.equal(summary.supplierCreditsRequireExplicitApplication, true);
-  assert.equal(summary.productionPayableAvailable, 60);
+  assert.equal(summary.productionPayableAvailable, 110);
 });
 
 test("manufacturer settlement summary does not attribute another manufacturer by matching name", async () => {
@@ -229,7 +246,7 @@ test("manufacturer settlement summary reduces legacy delivery payables for retur
   assert.equal(summary.productionOutstanding, 75);
 });
 
-test("manufacturer payout allocations apply to open delivery bills and leave legacy balance explicit", async () => {
+test("manufacturer payout allocations apply to open production and delivery bills", async () => {
   const updates = [];
   const allocations = [];
   const document = {
@@ -244,7 +261,10 @@ test("manufacturer payout allocations apply to open delivery bills and leave leg
       upsert: async () => ({ id: "party-1" }),
     },
     accountingDocument: {
-      findMany: async () => [document],
+      findMany: async ({ where }) => {
+        assert.deepEqual(where.sourceType.in, ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS"]);
+        return [document];
+      },
       updateMany: async ({ where, data }) => {
         updates.push({ where, data });
         return { count: 1 };
@@ -273,6 +293,47 @@ test("manufacturer payout allocations apply to open delivery bills and leave leg
   assert.equal(allocations[0].documentId, "bill-1");
   assert.equal(allocations[0].amount.toFixed(2), "75.00");
   assert.equal(updates[0].data.remainingAmount.toFixed(2), "0.00");
+});
+
+test("manufacturer logistics payout allocation is limited to freight documents", async () => {
+  const document = {
+    id: "freight-bill-1",
+    allocatedAmount: new Prisma.Decimal("0"),
+    remainingAmount: new Prisma.Decimal("75"),
+    status: "OPEN",
+  };
+  const allocationRows = [];
+  const client = {
+    manufacturer: { findUnique: async () => ({ id: "mfg-1", name: "Textile Co" }) },
+    accountingParty: { upsert: async () => ({ id: "party-1" }) },
+    accountingDocument: {
+      findMany: async ({ where }) => {
+        assert.deepEqual(where.sourceType.in, ["MANUFACTURER_LOGISTICS"]);
+        return [document];
+      },
+      updateMany: async () => ({ count: 1 }),
+    },
+    accountingAllocation: {
+      findUnique: async () => null,
+      create: async ({ data }) => {
+        allocationRows.push(data);
+        return data;
+      },
+    },
+  };
+
+  const result = await allocateManufacturerPaymentToDocuments({
+    manufacturerId: "mfg-1",
+    amount: "100",
+    journalEntryId: "journal-logistics-1",
+    idempotencyKey: "logistics-payout-1",
+    sourceTypes: ["MANUFACTURER_LOGISTICS"],
+    client,
+  });
+
+  assert.equal(result.totalAllocated.toFixed(2), "75.00");
+  assert.equal(result.unallocatedAmount.toFixed(2), "25.00");
+  assert.equal(allocationRows[0].documentId, "freight-bill-1");
 });
 
 test("paid logistics settlements reconcile shipment freight oldest-first and expose partial balances", async () => {

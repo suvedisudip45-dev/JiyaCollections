@@ -1,0 +1,14 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e7]: AC
+    - heading "Admin Panel" [level=1] [ref=e8]
+    - paragraph [ref=e9]: Aama Clothings Management Console
+  - generic [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]: Email Address
+      - textbox "your@email.com" [ref=e13]
+    - generic [ref=e14]:
+      - generic [ref=e15]: Password
+      - textbox "Enter your password" [ref=e16]
+    - button "Continue" [ref=e17] [cursor=pointer]
+  - paragraph [ref=e18]: Credentials encrypted with AES-256 in transit

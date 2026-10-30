@@ -7,6 +7,12 @@ test("percentage card discounts apply to the eligible item subtotal", () => {
   assert.equal(calculateMarketingCardDiscount("DISCOUNT", 20, 100), 20);
 });
 
+test("percentage card discounts respect an optional maximum discount amount", () => {
+  assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, 3000, 500), 300);
+  assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, 6000, 500), 500);
+  assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, 300, 500), 30);
+});
+
 test("fixed-value voucher discounts reduce only the item subtotal", () => {
   const itemSubtotal = 1200;
   const deliveryFee = 150;
@@ -23,6 +29,8 @@ test("invalid reward values, percentages, and subtotals are rejected", () => {
   assert.equal(calculateMarketingCardDiscount("VOUCHER", 0, 1000), null);
   assert.equal(calculateMarketingCardDiscount("VOUCHER", Number.NaN, 1000), null);
   assert.equal(calculateMarketingCardDiscount("DISCOUNT", 101, 1000), null);
+  assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, 1000, 0), null);
+  assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, 1000, Number.NaN), null);
   assert.equal(calculateMarketingCardDiscount("DISCOUNT", 10, -1), null);
   assert.equal(calculateMarketingCardDiscount("GIFT", 500, 1000), null);
 });

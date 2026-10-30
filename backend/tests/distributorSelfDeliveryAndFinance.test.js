@@ -18,6 +18,7 @@ import {
 import {
   getDistributorFinancialStatement,
   submitDistributorSettlementRequest,
+  initiateAdminDistributorSettlement,
   executeAdminDistributorSettlement,
   resolveDistributorSettlementReconciliation,
 } from "../services/distributorFinanceService.js";
@@ -30,6 +31,66 @@ const stubMethod = (t, target, name, implementation) => {
     target[name] = original;
   });
 };
+
+test("Admin payout initiation resolves the accounting party for subledger-backed settlements", async () => {
+  let partyUpsertArgs;
+  const client = {
+    $transaction: async (callback) => callback(client),
+    distributorSettlementRequest: {
+      findUnique: async () => ({
+        id: "settlement-1",
+        distributorId: "distributor-1",
+        distributor: { id: "distributor-1", name: "Test Distributor" },
+        status: "PENDING",
+        amount: "150.00",
+        paidAmount: "0.00",
+        metadata: {
+          settlementBasis: "ACCOUNTING_SUBLEDGER",
+          earningDocumentIds: ["earning-document-1"],
+        },
+      }),
+    },
+    financialPayout: {
+      findUnique: async () => null,
+      aggregate: async () => ({ _sum: { amount: null } }),
+      create: async ({ data }) => ({ ...data, id: "payout-1" }),
+    },
+    accountingParty: {
+      upsert: async (args) => {
+        partyUpsertArgs = args;
+        return { id: "party-1" };
+      },
+    },
+    accountingDocument: {
+      findMany: async () => [{ remainingAmount: "150.00" }],
+    },
+    financialAccount: {
+      findUnique: async () => ({
+        id: "treasury-1",
+        status: "ACTIVE",
+        accountType: "BANK",
+        currentBalance: "1000.00",
+        reservedBalance: "0.00",
+      }),
+      updateMany: async () => ({ count: 1 }),
+    },
+  };
+
+  const result = await initiateAdminDistributorSettlement({
+    settlementId: "settlement-1",
+    amount: "150.00",
+    financialAccountId: "treasury-1",
+    idempotencyKey: "settlement-payout-1",
+    client,
+    validatePayoutAccount: async () => ({ id: "bank-gl-account" }),
+    writeAudit: async () => {},
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.payout.id, "payout-1");
+  assert.equal(partyUpsertArgs.where.partyType_sourceEntityId.partyType, "DISTRIBUTOR");
+  assert.equal(partyUpsertArgs.where.partyType_sourceEntityId.sourceEntityId, "distributor-1");
+});
 
 test("Admin service-settlement cash warnings aggregate distributor COD and pending remittances", async () => {
   const positions = await getDistributorCashPositions({
@@ -549,6 +610,8 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
 
   const movements = [];
   const discrepancies = [];
+  const createdLocations = [];
+  const serviceCharges = [];
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.customerReturn, "findFirst", async () => ({
@@ -568,7 +631,14 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   stubMethod(t, prisma, "$transaction", async (cb) =>
     cb({
       inventoryLocation: {
-        findFirst: async ({ where }) => (where.kind === "DISTRIBUTOR" ? mockStockLoc : mockDamagedLoc),
+        findFirst: async () => null,
+        create: async ({ data }) => {
+          createdLocations.push(data);
+          return {
+            id: data.kind === "DISTRIBUTOR" ? mockStockLoc.id : mockDamagedLoc.id,
+            ...data,
+          };
+        },
       },
       inventorySku: {
         findFirst: async ({ where }) => (where.productId === "prod-1" ? mockSku1 : mockSku2),
@@ -591,6 +661,10 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
       customerReturn: {
         updateMany: async () => ({ count: 1 }),
         update: async ({ data }) => ({ id: "return-1", ...data }),
+      },
+      distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
+      distributorDeliveryChargeNegotiation: {
+        findFirst: async () => ({ id: "rate-1", deliveryCharge: 100, returnCharge: 50, vatRate: 13, vatInclusive: false }),
       },
       customerReturnEvent: { create: async () => ({ id: "event-1" }) },
       orderAssignment: {
@@ -615,6 +689,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     damageType: "STITCH_DAMAGE",
     damageNotes: "Torn collar seam on arrival",
     inspectionEvidenceUrl: "https://res.cloudinary.com/demo/return-photo.png",
+    accrueServiceCharge: async (charge) => serviceCharges.push(charge),
   });
 
   assert.equal(res.success, true);
@@ -627,8 +702,23 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   assert.equal(movements.length, 2);
   assert.equal(movements.find((m) => m.movementType === "RETURN").destinationLocationId, "loc-stock");
   assert.equal(movements.find((m) => m.movementType === "DAMAGE").destinationLocationId, "loc-damaged");
+  assert.deepEqual(createdLocations.map(({ name }) => name), [
+    "Distributor dist-1 stock",
+    "Distributor dist-1 damaged stock",
+  ]);
   assert.equal(discrepancies.length, 1);
-  assert.equal(discrepancies[0].damageType, "STITCH_DAMAGE");
+  assert.equal(discrepancies[0].discrepancyType, "STITCH_DAMAGE");
+  assert.equal(discrepancies[0].inventoryLocationId, "loc-damaged");
+  assert.equal(discrepancies[0].custodyStage, "DISTRIBUTOR_RETURN");
+  assert.equal(discrepancies[0].reportedBy, null);
+  assert.deepEqual(discrepancies[0].evidence, ["https://res.cloudinary.com/demo/return-photo.png"]);
+  assert.equal(discrepancies[0].idempotencyKey, "DISTRIBUTOR_RETURN_DAMAGE:return-1:sku-2");
+  assert.equal(serviceCharges.length, 1);
+  assert.equal(serviceCharges[0].serviceType, "RETURN");
+  assert.equal(serviceCharges[0].sourceId, "return-1");
+  assert.equal(serviceCharges[0].assignmentId, "assign-1");
+  assert.equal(serviceCharges[0].chargeAmount, 50);
+  assert.equal(serviceCharges[0].vatRate, 13);
 });
 
 test("self-delivery return QA requires an admin-approved return request", async (t) => {
@@ -704,6 +794,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     { id: "a-1", orderId: "o-1", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
     { id: "a-2", orderId: "o-2", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
     { id: "a-4", orderId: "o-4", deliveryType: "SELF_DELIVERY", status: "delivered", deliveredAt: new Date() },
+    { id: "a-3", orderId: "o-3", deliveryType: "SELF_DELIVERY", status: "returned", deliveredAt: new Date(), returnedAt: new Date() },
     { id: "a-ncm", orderId: "o-ncm", deliveryType: "NCM", status: "delivered", deliveredAt: new Date() },
   ];
   const returned = [
@@ -741,7 +832,32 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     { id: "o-2", amount: 2000, paymentMethod: "COD" },
     { id: "o-4", amount: 3000, paymentMethod: "COD" },
   ]);
-  stubMethod(t, prisma.distributorServiceEarning, "findMany", async () => []);
+  stubMethod(t, prisma.distributorServiceEarning, "findMany", async () => [
+    {
+      id: "return-earning-1",
+      serviceType: "RETURN",
+      assignmentId: "a-3",
+      orderId: "o-3",
+      effectiveAt: new Date(),
+      otherCharges: 50,
+      vatAmount: 6.5,
+      payableAmount: 56.5,
+      accountingDocumentId: "return-doc-1",
+      journalEntryId: "return-je-1",
+    },
+    {
+      id: "exchange-earning-1",
+      serviceType: "EXCHANGE",
+      assignmentId: "a-2",
+      orderId: "o-2",
+      effectiveAt: new Date(),
+      otherCharges: 25,
+      vatAmount: 0,
+      payableAmount: 25,
+      accountingDocumentId: "exchange-doc-1",
+      journalEntryId: "exchange-je-1",
+    },
+  ]);
   stubMethod(t, prisma.distributorBonusPlan, "findMany", async () => []);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => settlements);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
@@ -753,29 +869,45 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   });
 
   // Calculations:
-  // Deliveries: 2 * 100 = 200 gross
+  // Deliveries: 2 delivered + 1 later returned, all 3 earned 100 = 300 gross
   // Per-delivery incentives are disabled for new earnings.
-  // Returns: 1 * 50 = 50
-  // Admin Commission/Discount: 2 * 10 = 20
-  // Subtotal before VAT = 200 + 50 - 20 = 230
-  // 13% VAT = 230 * 0.13 = 29.90
-  // Total With VAT = 259.90
+  // Return and exchange charges are separate from completed delivery earnings.
+  // Admin Commission/Discount: 3 * 10 = 30
+  // Subtotal before VAT = 300 + 50 return + 25 exchange - 30 = 345
+  // VAT = 270 legacy delivery subtotal * 0.13 + 6.50 snapshotted return VAT = 41.60
+  // Total With VAT = 386.60
   // Settled Paid = 100
-  // Net Payable = 259.90 - 100 paid - 20 pending = 139.90
-  assert.equal(statementWithVat.summary.grossDeliveryEarnings, 200);
+  // Net Payable = 386.60 - 100 paid - 20 pending = 266.60
+  assert.equal(statementWithVat.summary.grossDeliveryEarnings, 300);
   assert.equal(statementWithVat.summary.earnedIncentives, 0);
   assert.equal(statementWithVat.summary.returnFeesEarned, 50);
-  assert.equal(statementWithVat.summary.adminDiscountsApplied, 20);
-  assert.equal(statementWithVat.summary.subtotalBeforeVat, 230);
-  assert.equal(statementWithVat.summary.vatAmount, 29.90);
-  assert.equal(statementWithVat.summary.totalWithVat, 259.90);
-  assert.equal(statementWithVat.summary.totalWithoutVat, 230);
+  assert.equal(statementWithVat.summary.exchangeFeesEarned, 25);
+  assert.equal(statementWithVat.summary.adminDiscountsApplied, 30);
+  assert.equal(statementWithVat.summary.subtotalBeforeVat, 345);
+  assert.equal(statementWithVat.summary.vatAmount, 41.60);
+  assert.equal(statementWithVat.summary.totalWithVat, 386.60);
+  assert.equal(statementWithVat.summary.totalWithoutVat, 345);
   assert.equal(statementWithVat.summary.totalSettledPaid, 100);
-  assert.equal(statementWithVat.summary.netPayableBalance, 139.90);
-  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 159.90);
+  assert.equal(statementWithVat.summary.netPayableBalance, 266.60);
+  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 286.60);
   assert.equal(statementWithVat.summary.pendingSettlementAmount, 20);
   assert.equal(statementWithVat.vatMode, "WITH_VAT");
-  assert.equal(statementWithVat.transactions.length, 5); // 2 self-deliveries + 1 return + 2 settlements
+  assert.equal(statementWithVat.transactions.length, 7); // 3 deliveries + return + exchange + 2 settlements
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "DELIVERY").length, 3);
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "RETURN").length, 1);
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "EXCHANGE").length, 1);
+  assert.equal(
+    statementWithVat.transactions.find((item) => item.type === "DELIVERY" && item.referenceId === "o-3").grossAmount,
+    100,
+  );
+  assert.equal(
+    statementWithVat.transactions.find((item) => item.type === "RETURN" && item.referenceId === "o-3").netAmount,
+    56.5,
+  );
+  assert.equal(
+    statementWithVat.transactions.find((item) => item.type === "EXCHANGE" && item.referenceId === "o-2").netAmount,
+    25,
+  );
 
   // 2. Without VAT View
   const statementWithoutVat = await getDistributorFinancialStatement({
@@ -783,7 +915,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     withVat: false,
   });
   assert.equal(statementWithoutVat.vatMode, "WITHOUT_VAT");
-  assert.equal(statementWithoutVat.summary.netPayableBalance, 110); // 230 - 100 paid - 20 pending
+  assert.equal(statementWithoutVat.summary.netPayableBalance, 225); // 345 - 100 paid - 20 pending
 });
 
 test("7. submitDistributorSettlementRequest creates pending request and guards against exceeding balance", async (t) => {
@@ -844,12 +976,13 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
     },
   }));
 
-  // Available balance: 100 + 13% VAT = 113.00
+  // The selected non-VAT mode caps this request at the Rs. 100 earnings balance.
 
   // 1. Success request within balance
   const res = await submitDistributorSettlementRequest({
     distributorId: "dist-1",
     amount: 100,
+    withVat: false,
     notes: "Weekly payout request",
     idempotencyKey: "settlement-request-1",
     postRequestAccounting: async () => {
@@ -858,8 +991,11 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   });
   assert.equal(res.success, true);
   assert.equal(res.settlementRequest.amount, 100);
+  assert.equal(res.settlementRequest.vatAmount, 0);
   assert.equal(res.settlementRequest.status, "PENDING");
   assert.equal(res.settlementRequest.metadata.settlementBasis, "LEGACY_EARNINGS_RECONCILIATION_REQUIRED");
+  assert.equal(res.settlementRequest.metadata.statementSnapshot.vatMode, "WITHOUT_VAT");
+  assert.equal(res.settlementRequest.metadata.statementSnapshot.vatIncluded, false);
   assert.equal(payableCreated, false);
   assert.equal(requestAccountingPosted, false);
   assert.match(res.message, /historical earnings are reconciled/);
@@ -867,6 +1003,7 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   const replay = await submitDistributorSettlementRequest({
     distributorId: "dist-1",
     amount: 100,
+    withVat: false,
     idempotencyKey: "settlement-request-1",
   });
   assert.equal(replay.isReplay, true);
@@ -983,6 +1120,71 @@ test("Admin reconciliation links only verified open earnings and audits the reso
   assert.deepEqual(result.settlementRequest.metadata.earningDocumentIds, ["document-1"]);
   assert.equal(update.data.metadata.reconciledBy, "admin-1");
   assert.equal(auditPayload.action, "DISTRIBUTOR_SETTLEMENT_RECONCILIATION_RESOLVED");
+});
+
+test("Admin can backfill a pending legacy settlement from verified completed delivery records", async () => {
+  const request = {
+    id: "legacy-request-backfill",
+    distributorId: "dist-1",
+    amount: new Prisma.Decimal("100.00"),
+    paidAmount: new Prisma.Decimal("0"),
+    status: "PENDING",
+    metadata: {
+      settlementBasis: "LEGACY_EARNINGS_RECONCILIATION_REQUIRED",
+      statementSnapshot: {
+        lineItems: [{ type: "DELIVERY", referenceId: "order-1", netAmount: 100 }],
+      },
+    },
+    distributor: { id: "dist-1", name: "Kathmandu Hub" },
+  };
+  let update;
+  const earning = {
+    id: "earning-delivery-1",
+    orderId: "order-1",
+    assignmentId: "assignment-1",
+    serviceType: "DELIVERY",
+    accountingDocumentId: "document-delivery-1",
+  };
+  const client = {
+    $transaction: async (callback) => callback({
+      distributorSettlementRequest: {
+        findUnique: async () => request,
+        updateMany: async (args) => {
+          update = args;
+          return { count: 1 };
+        },
+      },
+      orderAssignment: {
+        findMany: async ({ where }) => where.status.in.includes("delivered")
+          ? [{ id: "assignment-1", orderId: "order-1", deliveredAt: new Date(), assignedAt: new Date() }]
+          : [],
+      },
+      deliveryOrder: { findMany: async () => [] },
+      distributorServiceEarning: {
+        findMany: async ({ where }) => where.orderId
+          ? [earning]
+          : [],
+      },
+    }),
+  };
+
+  const result = await resolveDistributorSettlementReconciliation({
+    settlementId: request.id,
+    decision: "BACKFILL",
+    reviewNotes: "Backfill from completed distributor delivery.",
+    reviewerAccountId: "admin-1",
+    backfillBonuses: async () => {},
+    backfillDeliveryEarning: async () => {},
+    backfillServiceCharge: async () => {},
+    writeAudit: async () => {},
+    client,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.settlementRequest.metadata.settlementBasis, "LEGACY_EARNINGS_RECONCILIATION_REQUIRED");
+  assert.equal(result.settlementRequest.metadata.statementSnapshot.lineItems[0].earningId, earning.id);
+  assert.equal(result.settlementRequest.metadata.statementSnapshot.lineItems[0].accountingDocumentId, "document-delivery-1");
+  assert.equal(update.data.metadata.earningsBackfilledBy, "admin-1");
 });
 
 test("Admin may reject an unsupported legacy settlement request with an audited reason", async () => {

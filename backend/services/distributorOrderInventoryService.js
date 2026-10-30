@@ -46,6 +46,7 @@ export const consumeDistributorOrderInventory = async ({
   distributorId,
   assignmentId,
   items,
+  directSale = false,
   actorId = null,
   actorRole = "DISTRIBUTOR",
 }) => {
@@ -69,6 +70,7 @@ export const consumeDistributorOrderInventory = async ({
 
   const affectedProductIds = new Set();
   const allocationsBySku = new Map();
+  const movementReferenceType = directSale ? "DIRECT_DISTRIBUTOR_ORDER" : "ORDER";
   for (const { productId, sizeKey, colorKey, quantity } of quantities.values()) {
     const itemSkuKey = skuKeyFor(productId, sizeKey, colorKey);
     const sku = await tx.inventorySku.findUnique({
@@ -82,10 +84,14 @@ export const consumeDistributorOrderInventory = async ({
     const priorMovements = await tx.inventoryLedgerEntry.findMany({
       where: {
         inventorySkuId: sku.id,
-        referenceType: "ORDER",
+        referenceType: movementReferenceType,
         referenceId: orderId,
         movementType: "FULFILLMENT",
-        idempotencyKey: { startsWith: `ORDER_FULFILLMENT:${assignmentId}:${sku.id}:` },
+        idempotencyKey: {
+          startsWith: directSale
+            ? `DIRECT_DISTRIBUTOR_ORDER:${orderId}:${sku.id}:`
+            : `ORDER_FULFILLMENT:${assignmentId}:${sku.id}:`,
+        },
       },
       include: {
         productionCostLayer: {
@@ -139,11 +145,18 @@ export const consumeDistributorOrderInventory = async ({
     let remaining = quantity;
     const costAllocations = [];
     for (const balance of balances) {
-      const consumeQuantity = Math.min(remaining, balance.reservedQuantity);
+      const availableQuantity = directSale
+        ? Math.max(0, balance.quantityOnHand - balance.reservedQuantity)
+        : balance.reservedQuantity;
+      const consumeQuantity = Math.min(remaining, availableQuantity);
       if (!consumeQuantity) continue;
-      const idempotencyKey = `ORDER_FULFILLMENT:${assignmentId}:${sku.id}:${balance.locationId}`;
+      const idempotencyKey = directSale
+        ? `DIRECT_DISTRIBUTOR_ORDER:${orderId}:${sku.id}:${balance.locationId}`
+        : `ORDER_FULFILLMENT:${assignmentId}:${sku.id}:${balance.locationId}`;
       if (balance.quantityOnHand < consumeQuantity) {
-        throw new Error("Reserved distributor stock is below the order quantity.");
+        throw new Error(directSale
+          ? "Available distributor stock is below the direct sale quantity."
+          : "Reserved distributor stock is below the order quantity.");
       }
       const updated = await tx.inventoryBalance.updateMany({
         where: {
@@ -153,7 +166,7 @@ export const consumeDistributorOrderInventory = async ({
         },
         data: {
           quantityOnHand: { decrement: consumeQuantity },
-          reservedQuantity: { decrement: consumeQuantity },
+          ...(directSale ? {} : { reservedQuantity: { decrement: consumeQuantity } }),
         },
       });
       if (updated.count !== 1) {
@@ -238,7 +251,7 @@ export const consumeDistributorOrderInventory = async ({
             quantity: movement.quantity,
             movementType: "FULFILLMENT",
             inventoryOwner: "PLATFORM",
-            referenceType: "ORDER",
+            referenceType: movementReferenceType,
             referenceId: orderId,
             productionCostLayerId: movement.productionCostLayerId,
             idempotencyKey: movement.productionCostLayerId
@@ -246,14 +259,18 @@ export const consumeDistributorOrderInventory = async ({
               : `${idempotencyKey}:uncosted`,
             actorId,
             actorRole,
-            reason: `Distributor fulfillment for Order ${orderId}`,
+            reason: directSale
+              ? `Distributor direct hub sale for Order ${orderId}`
+              : `Distributor fulfillment for Order ${orderId}`,
           },
         });
       }
       remaining -= consumeQuantity;
     }
     if (remaining) {
-      throw new Error(`Distributor reservation is insufficient for product ${productId}.`);
+      throw new Error(directSale
+        ? `Available distributor stock is insufficient for product ${productId}.`
+        : `Distributor reservation is insufficient for product ${productId}.`);
     }
     allocationsBySku.set(itemSkuKey, costAllocations);
     affectedProductIds.add(productId);

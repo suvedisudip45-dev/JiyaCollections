@@ -317,9 +317,9 @@ const selectDistributorForOrder = async ({
     getCoverageLocations(distributor).some((serviceLocation) => serviceLocation.province === location.province) ||
     canonicalizeNepalLocation(distributor.province, distributor.district)?.province === location.province;
 
-  const coverageCandidates = routeableDistributors.filter(hasExactCoverage);
-  const districtCandidates = routeableDistributors.filter((distributor) =>
-    !hasExactCoverage(distributor) && hasDistrictMatch(distributor)
+  const districtCandidates = routeableDistributors.filter(hasDistrictMatch);
+  const coverageCandidates = routeableDistributors.filter((distributor) =>
+    !hasDistrictMatch(distributor) && hasExactCoverage(distributor)
   );
   const branchCandidates = routeableDistributors.filter((distributor) =>
     !hasExactCoverage(distributor) && !hasDistrictMatch(distributor) && hasBranchMatch(distributor)
@@ -339,8 +339,8 @@ const selectDistributorForOrder = async ({
   const candidateTiers = forcePreferredDistributorId
     ? [["admin-selected distributor", [forcedDistributor]]]
     : [
-    ["service-area coverage", coverageCandidates],
     ["same district", districtCandidates],
+    ["service-area coverage", coverageCandidates],
     ["NCM branch", branchCandidates],
     ["same province", provinceCandidates],
     ["review-ranked nationwide", nationwideCandidates],
@@ -1550,7 +1550,7 @@ const updateAssignmentStatus = async (req, res) => {
           });
         } catch (error) {
           error.code = error.code || "MARKETING_CARD_VALIDATION_FAILED";
-          error.cardValidationStatusCode = error.code === "MARKETING_CARD_REQUIRED" ? 409 : 400;
+          error.cardValidationStatusCode = ["MARKETING_CARD_REQUIRED", "MARKETING_CARD_REATTACH_REQUIRED"].includes(error.code) ? 409 : 400;
           throw error;
         }
       }

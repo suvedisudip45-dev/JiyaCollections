@@ -1191,7 +1191,9 @@ const PlaceOrder = () => {
                                 selectedCardReward?.benefit?.benefitType === "VOUCHER"
                                   ? `Rs ${selectedCardReward.benefit.value} off`
                                   : `${selectedCardReward?.benefit?.value}% off`
-                              }
+                              }{selectedCardReward?.benefit?.benefitType === "DISCOUNT" && selectedCardReward.benefit.maxDiscountAmount
+                                ? ` (up to Rs ${selectedCardReward.benefit.maxDiscountAmount})`
+                                : ""}
                             </span>
                           </span>
                           {rewardChoice === "CARD" && <span className="text-xs font-bold text-orange-700">Selected</span>}
@@ -1212,7 +1214,7 @@ const PlaceOrder = () => {
                                 {reward.benefit.name} — {
                                   reward.benefit.benefitType === "VOUCHER"
                                     ? `Rs ${reward.benefit.value} off`
-                                    : `${reward.benefit.value}% off`
+                                    : `${reward.benefit.value}% off${reward.benefit.maxDiscountAmount ? ` (up to Rs ${reward.benefit.maxDiscountAmount})` : ""}`
                                 }
                               </option>
                             ))}

@@ -223,6 +223,14 @@ export const askDistributorSettlement = async (req, res) => {
     }
 
     const { amount, notes } = req.body;
+    const withVat = req.body.withVat === undefined ? true : req.body.withVat;
+    if (typeof withVat !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "withVat must be true or false.",
+        code: "INVALID_VAT_MODE",
+      });
+    }
     const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || null;
     if (amount === undefined || amount === null) {
       return res.status(400).json({
@@ -235,6 +243,7 @@ export const askDistributorSettlement = async (req, res) => {
     const result = await submitDistributorSettlementRequest({
       distributorId,
       amount,
+      withVat,
       notes,
       idempotencyKey,
       requestedByAccountId,

@@ -1,2 +1,0 @@
--- No-op: distributor review fields and the DistributorReview table were
--- created by 20261008220000_distributor_customer_reviews.

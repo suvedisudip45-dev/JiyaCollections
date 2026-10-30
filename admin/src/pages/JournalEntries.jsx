@@ -29,7 +29,7 @@ const JournalEntries = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [sourceTypeFilter, setSourceTypeFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [expandedEntryId, setExpandedEntryId] = useState(null);

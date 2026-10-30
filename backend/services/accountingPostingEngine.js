@@ -486,6 +486,168 @@ const hydrateProductionCostRecognitionMode = async (items, client) => {
   }
 };
 
+export const postManufacturerProductionAccounting = async ({
+  productionRequest,
+  manufacturer,
+  goodQuantity,
+  inventoryValue,
+  recoverableInputVat = 0,
+  transactionDate = new Date(),
+  createdBy = "system",
+  client = prisma,
+} = {}) => {
+  if (!productionRequest?.id || !manufacturer?.id || productionRequest.manufacturerId !== manufacturer.id) {
+    throw new Error("A production request and its matching manufacturer are required for accounting.");
+  }
+  if (!Number.isInteger(goodQuantity) || goodQuantity < 0) {
+    throw new Error("Good production quantity must be a non-negative whole number.");
+  }
+  if (goodQuantity === 0) return null;
+
+  const inventoryAmount = new Prisma.Decimal(String(inventoryValue))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const inputVatAmount = new Prisma.Decimal(String(recoverableInputVat || 0))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (
+    !inventoryAmount.isFinite() || !inventoryAmount.greaterThan(0) ||
+    !inputVatAmount.isFinite() || inputVatAmount.isNegative()
+  ) {
+    throw new Error("Production inventory and recoverable VAT amounts must be valid non-negative values.");
+  }
+
+  const manufacturerRecord = await client.manufacturer.findUnique({
+    where: { id: manufacturer.id },
+    select: { id: true, name: true },
+  });
+  if (!manufacturerRecord) throw new Error("Manufacturer was not found for production accounting.");
+  const party = await ensureAccountingParty({
+    partyType: "MANUFACTURER",
+    sourceEntityId: manufacturer.id,
+    displayName: manufacturerRecord.name || `Manufacturer (${manufacturer.id.slice(-6)})`,
+  }, { client });
+
+  const payableAmount = inventoryAmount.plus(inputVatAmount)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const idempotencyKey = `MANUFACTURER_PRODUCTION:${productionRequest.id}`;
+  const documentHash = crypto.createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 24).toUpperCase();
+  const lines = [
+    {
+      mappingKey: "INVENTORY",
+      debit: inventoryAmount,
+      credit: 0,
+      description: `Accepted good production inventory for request ${productionRequest.id}`,
+    },
+    ...(inputVatAmount.greaterThan(0) ? [{
+      mappingKey: "INPUT_VAT_RECEIVABLE",
+      debit: inputVatAmount,
+      credit: 0,
+      description: `Verified manufacturer input VAT for production request ${productionRequest.id}`,
+      supplierId: manufacturer.id,
+      accountingPartyId: party.id,
+    }] : []),
+    {
+      mappingKey: "MANUFACTURER_PAYABLE",
+      debit: 0,
+      credit: payableAmount,
+      description: `Manufacturer payable for accepted production request ${productionRequest.id}`,
+      supplierId: manufacturer.id,
+      accountingPartyId: party.id,
+    },
+  ];
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: productionRequest.id,
+    idempotencyKey,
+    referenceNumber: `MFG-PROD-${productionRequest.id.slice(-6)}`,
+    description: `Accepted production receipt and manufacturer payable for request ${productionRequest.id}`,
+    createdBy,
+    lines,
+    afterPost: async (tx) => {
+      await createAccountingDocument({
+        documentType: "BILL",
+        documentNumber: `MFG-PROD-${documentHash}`,
+        partyId: party.id,
+        side: "PAYABLE",
+        sourceType: "MANUFACTURER_PRODUCTION",
+        sourceId: productionRequest.id,
+        amount: payableAmount,
+        issueDate: transactionDate,
+        idempotencyKey,
+        notes: `Manufacturer payable for accepted production request ${productionRequest.id}.`,
+      }, { client: tx });
+    },
+    client,
+  });
+};
+
+export const postManufacturerLogisticsAccounting = async ({
+  shipment,
+  transfer,
+  freightCharge,
+  transactionDate = new Date(),
+  createdBy = "system",
+  client = prisma,
+} = {}) => {
+  const amount = new Prisma.Decimal(String(freightCharge ?? ""));
+  if (!shipment?.id || !transfer?.id || !transfer?.manufacturerId || !transfer?.manufacturer?.name) {
+    throw new Error("A dispatched shipment, transfer, and manufacturer are required for freight accounting.");
+  }
+  if (!amount.isFinite() || !amount.greaterThan(0)) {
+    throw new Error("Manufacturer-paid local freight must be a valid amount greater than zero.");
+  }
+  const party = await ensureAccountingParty({
+    partyType: "MANUFACTURER",
+    sourceEntityId: transfer.manufacturerId,
+    displayName: transfer.manufacturer.name,
+  }, { client });
+  const idempotencyKey = `MANUFACTURER_LOGISTICS:TRANSFER:${shipment.id}`;
+  const documentHash = crypto.createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 24).toUpperCase();
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "MANUFACTURER_LOGISTICS",
+    sourceId: shipment.id,
+    idempotencyKey,
+    referenceNumber: `MFG-LOG-${shipment.id.slice(-8).toUpperCase()}`,
+    description: `Manufacturer-paid logistics for stock transfer ${transfer.id}`,
+    createdBy,
+    lines: [
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: amount,
+        credit: 0,
+        description: `Local logistics expense for stock transfer ${transfer.id}`,
+        supplierId: transfer.manufacturerId,
+        supplierName: transfer.manufacturer.name,
+        accountingPartyId: party.id,
+      },
+      {
+        mappingKey: "MANUFACTURER_PAYABLE",
+        debit: 0,
+        credit: amount,
+        description: `Local logistics payable to ${transfer.manufacturer.name}`,
+        supplierId: transfer.manufacturerId,
+        accountingPartyId: party.id,
+      },
+    ],
+    afterPost: async (tx) => createAccountingDocument({
+      documentType: "BILL",
+      documentNumber: `MFG-LOG-${documentHash}`,
+      partyId: party.id,
+      side: "PAYABLE",
+      sourceType: "MANUFACTURER_LOGISTICS",
+      sourceId: shipment.id,
+      amount,
+      issueDate: transactionDate,
+      idempotencyKey,
+      notes: `Manufacturer-paid local freight for stock transfer ${transfer.id}.`,
+    }, { client: tx }),
+    client,
+  });
+};
+
 export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => {
   const client = opts.client || prisma;
   const order = orderOrParams.order || orderOrParams;
@@ -520,7 +682,10 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
 
   await hydrateProductionCostRecognitionMode(items, client);
 
+  const saleChannel = classifySaleChannel(order);
+  const isDirectDistributorSale = saleChannel === "DISTRIBUTOR_DIRECT";
   const manufacturerCosts = new Map();
+  let directLegacyInventoryCogs = new Prisma.Decimal(0);
   const fallbackManufacturerId = order.manufacturerId || deliveryOrder?.manufacturerId ||
     items.find((item) => item?.manufacturerId)?.manufacturerId ||
     items.flatMap((item) => item?.productionCostAllocations || [])
@@ -535,6 +700,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         inventoryRecognizedCogs: new Prisma.Decimal(0),
         legacyGrossCogs: new Prisma.Decimal(0),
         legacyInputVat: new Prisma.Decimal(0),
+        legacyDeliveryOverhead: new Prisma.Decimal(0),
         party: null,
       });
     }
@@ -548,6 +714,9 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         const allocationQty = new Prisma.Decimal(String(allocation.quantity || 0));
         const unitCogs = new Prisma.Decimal(String(allocation.unitCogs || 0));
         const costs = getManufacturerCosts(allocation.manufacturerId || manufacturerId);
+        costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+          new Prisma.Decimal(String(allocation.unitDeliveryCost || 0)).mul(allocationQty)
+        );
         if (allocation.manufacturerPayableRecognizedAtProduction === true) {
           costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.plus(unitCogs.mul(allocationQty));
         } else {
@@ -569,14 +738,34 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         item.costPrice ??
         0
       ));
-      getManufacturerCosts(manufacturerId).legacyGrossCogs =
-        getManufacturerCosts(manufacturerId).legacyGrossCogs.plus(legacyUnitCost.mul(legacyQty));
+      const costs = getManufacturerCosts(manufacturerId);
+      const directLegacyUnitCost = item.legacyInventoryUnitCogs ?? item.costPrice;
+      if (isDirectDistributorSale && directLegacyUnitCost !== undefined && directLegacyUnitCost !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(directLegacyUnitCost)).mul(legacyQty)
+        );
+      } else {
+        costs.legacyGrossCogs = costs.legacyGrossCogs.plus(legacyUnitCost.mul(legacyQty));
+      }
+      costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+        new Prisma.Decimal(String(item.unitDeliveryCost ?? item.approvedDeliveryCost ?? 0)).mul(legacyQty)
+      );
     } else {
       const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
         ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
         : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
       const costs = getManufacturerCosts(manufacturerId);
-      costs.legacyGrossCogs = costs.legacyGrossCogs.plus(unitCost.mul(qty));
+      const directLegacyUnitCost = item.legacyInventoryUnitCogs ?? item.costPrice;
+      if (isDirectDistributorSale && directLegacyUnitCost !== undefined && directLegacyUnitCost !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(directLegacyUnitCost)).mul(qty)
+        );
+      } else {
+        costs.legacyGrossCogs = costs.legacyGrossCogs.plus(unitCost.mul(qty));
+      }
+      costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.plus(
+        new Prisma.Decimal(String(item.unitDeliveryCost ?? item.approvedDeliveryCost ?? 0)).mul(qty)
+      );
     }
   }
 
@@ -586,17 +775,26 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     costs.productionInputVat = costs.productionInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.legacyGrossCogs = costs.legacyGrossCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     if (hasValidTaxInvoice && costs.legacyGrossCogs.greaterThan(0)) {
       const netLegacyCost = costs.legacyGrossCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       costs.legacyInputVat = costs.legacyGrossCogs.minus(netLegacyCost);
     }
   }
 
-  const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
+  directLegacyInventoryCogs = directLegacyInventoryCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const paymentMethod = String(order.paymentMethod || "COD").toUpperCase();
+  const isCod = paymentMethod === "COD";
   const collectionDistributorId = isCod ? String(order.collectionDistributorId || "").trim() : "";
-  const tenderMappingKey = isCod
-    ? collectionDistributorId ? "DISTRIBUTOR_COD_RECEIVABLE" : "NCM_COD_RECEIVABLE"
-    : "BANK";
+  const tenderMappingKey = isDirectDistributorSale
+    ? order.payment !== true
+      ? "CUSTOMER_RECEIVABLE_CONTROL"
+      : ["CASH", "COD"].includes(paymentMethod)
+        ? "CASH_ON_HAND"
+        : "BANK"
+    : isCod
+      ? collectionDistributorId ? "DISTRIBUTOR_COD_RECEIVABLE" : "NCM_COD_RECEIVABLE"
+      : "BANK";
 
   let customerParty = null;
   if (order.userId) {
@@ -637,13 +835,20 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
       displayName: mfg?.name || `Manufacturer (${costs.manufacturerId.slice(-6)})`,
     }, { client });
   }
+  if ([...manufacturerCosts.values()].some((costs) =>
+    costs.legacyDeliveryOverhead.greaterThan(0) && !costs.party
+  )) {
+    throw new Error("Legacy delivery/other cost requires a manufacturer accounting party.");
+  }
 
   const lines = [
     {
       mappingKey: tenderMappingKey,
       debit: grossAmount,
       credit: 0,
-      description: `Receivable/Tender for Order #${order.id.slice(-6)}`,
+      description: isDirectDistributorSale && order.payment !== true
+        ? `Customer receivable for direct distributor Order #${order.id.slice(-6)}`
+        : `Receivable/Tender for Order #${order.id.slice(-6)}`,
       customerId: collectionDistributorParty || ncmParty ? null : order.userId,
       accountingPartyId: collectionDistributorParty?.id || ncmParty?.id || customerParty?.id,
     },
@@ -704,16 +909,43 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         accountingPartyId: costs.party?.id,
       });
     }
-    if (manufacturerPayable.greaterThan(0)) {
+    if (costs.legacyDeliveryOverhead.greaterThan(0)) {
+      lines.push({
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: costs.legacyDeliveryOverhead,
+        credit: 0,
+        description: `Legacy delivery/other cost for delivered Order #${order.id.slice(-6)}`,
+        accountingPartyId: costs.party?.id,
+      });
+    }
+    const totalManufacturerPayable = manufacturerPayable.plus(costs.legacyDeliveryOverhead);
+    if (totalManufacturerPayable.greaterThan(0)) {
       lines.push({
         mappingKey: "MANUFACTURER_PAYABLE",
         debit: 0,
-        credit: manufacturerPayable,
+        credit: totalManufacturerPayable,
         description: `Manufacturer payable recognized on delivery of Order #${order.id.slice(-6)}`,
         supplierId: costs.manufacturerId,
         accountingPartyId: costs.party?.id,
       });
     }
+  }
+
+  if (directLegacyInventoryCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "COGS",
+        debit: directLegacyInventoryCogs,
+        credit: 0,
+        description: `Legacy hub inventory COGS for direct Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "INVENTORY",
+        debit: 0,
+        credit: directLegacyInventoryCogs,
+        description: `Legacy hub inventory reduction for direct Order #${order.id.slice(-6)}`,
+      },
+    );
   }
 
   const transactionDate = order.deliveredAt || deliveryOrder?.deliveredAt || new Date();
@@ -751,7 +983,8 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         if (!costs.party) continue;
         const amount = costs.productionCogs
           .plus(costs.productionInputVat)
-          .plus(costs.legacyGrossCogs);
+          .plus(costs.legacyGrossCogs)
+          .plus(costs.legacyDeliveryOverhead);
         if (!amount.greaterThan(0)) continue;
         const key = `MANUFACTURER_DELIVERY_COGS:${order.id}:${costs.manufacturerId}`;
         const documentHash = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24).toUpperCase();
@@ -808,10 +1041,12 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   await hydrateProductionCostRecognitionMode(items, client);
 
   let totalAgreedCogs = new Prisma.Decimal(0);
+  let directLegacyInventoryCogs = new Prisma.Decimal(0);
   let productionLayerCogs = new Prisma.Decimal(0);
   let productionLayerInputVat = new Prisma.Decimal(0);
   let productionInventoryRecognizedCogs = new Prisma.Decimal(0);
   let legacyManufacturerCogs = new Prisma.Decimal(0);
+  const isDirectDistributorSale = classifySaleChannel(order) === "DISTRIBUTOR_DIRECT";
   for (const item of items) {
     const qty = new Prisma.Decimal(String(item.quantity || 1));
     if (Array.isArray(item.productionCostAllocations)) {
@@ -839,14 +1074,27 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         item.costPrice ??
         0
       ));
-      legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQuantity));
+      if (isDirectDistributorSale && item.costPrice !== undefined && item.costPrice !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(item.costPrice)).mul(legacyQuantity)
+        );
+      } else {
+        legacyManufacturerCogs = legacyManufacturerCogs.plus(legacyUnitCost.mul(legacyQuantity));
+      }
     } else {
       const unitCost = item.agreedUnitCogsVatInclusiveAtAcceptance !== undefined && item.agreedUnitCogsVatInclusiveAtAcceptance !== null
         ? new Prisma.Decimal(String(item.agreedUnitCogsVatInclusiveAtAcceptance))
         : (item.costPrice ? new Prisma.Decimal(String(item.costPrice)) : new Prisma.Decimal(0));
-      legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+      if (isDirectDistributorSale && item.costPrice !== undefined && item.costPrice !== null) {
+        directLegacyInventoryCogs = directLegacyInventoryCogs.plus(
+          new Prisma.Decimal(String(item.costPrice)).mul(qty)
+        );
+      } else {
+        legacyManufacturerCogs = legacyManufacturerCogs.plus(unitCost.mul(qty));
+      }
     }
   }
+  directLegacyInventoryCogs = directLegacyInventoryCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   productionLayerCogs = productionLayerCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   productionLayerInputVat = productionLayerInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   productionInventoryRecognizedCogs = productionInventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -854,6 +1102,7 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   totalAgreedCogs = productionLayerCogs
     .plus(productionInventoryRecognizedCogs)
     .plus(legacyManufacturerCogs)
+    .plus(directLegacyInventoryCogs)
     .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const isDirect = classifySaleChannel(order) === "MANUFACTURER_DIRECT";
@@ -872,8 +1121,15 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
     }
   }
 
-  const isCod = String(order.paymentMethod || "COD").toUpperCase() === "COD";
-  const tenderMappingKey = isCod ? "NCM_COD_RECEIVABLE" : "BANK";
+  const paymentMethod = String(order.paymentMethod || "COD").toUpperCase();
+  const isCod = paymentMethod === "COD";
+  const tenderMappingKey = isDirectDistributorSale
+    ? order.payment !== true
+      ? "CUSTOMER_RECEIVABLE_CONTROL"
+      : ["CASH", "COD"].includes(paymentMethod)
+        ? "CASH_ON_HAND"
+        : "BANK"
+    : isCod ? "NCM_COD_RECEIVABLE" : "BANK";
 
   const manufacturerId = returnRecord.manufacturerId || order.manufacturerId ||
     items.find((item) => item?.manufacturerId)?.manufacturerId ||
@@ -926,6 +1182,23 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         description: `Reverse COGS for returned Order #${order.id.slice(-6)}`,
         accountingPartyId: manufacturerParty?.id,
       }
+    );
+  }
+
+  if (directLegacyInventoryCogs.greaterThan(0)) {
+    lines.push(
+      {
+        mappingKey: "INVENTORY",
+        debit: directLegacyInventoryCogs,
+        credit: 0,
+        description: `Restore legacy hub inventory for returned Order #${order.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: directLegacyInventoryCogs,
+        description: `Reverse legacy hub inventory COGS for returned Order #${order.id.slice(-6)}`,
+      },
     );
   }
 
@@ -1601,6 +1874,7 @@ export const buildCustomerReturnAccountingLines = ({
   refundMethod,
   treasuryGlAccountId,
   restockedInventoryCost,
+  damagedInventoryCost,
 }) => {
   const netReturn = Number((totalRefund - vat).toFixed(2));
   const creditAccount = isPayable ? "2110" : refundMethod === "BANK_TRANSFER" ? "1120" : refundMethod === "CASH" ? "1110" : "2140";
@@ -1644,6 +1918,23 @@ export const buildCustomerReturnAccountingLines = ({
       },
     );
   }
+  const damagedCost = Number(damagedInventoryCost);
+  if (Number.isFinite(damagedCost) && damagedCost > 0) {
+    lines.push(
+      {
+        accountCode: "5500",
+        debit: damagedCost,
+        credit: 0,
+        description: `Scrap loss for damaged return RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+      {
+        accountCode: "5100",
+        debit: 0,
+        credit: damagedCost,
+        description: `Relieve sold COGS for damaged return RMA #${returnId ? returnId.slice(-6) : ""}`,
+      },
+    );
+  }
   return lines;
 };
 
@@ -1664,14 +1955,16 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
     const returnId = returnOrParams.returnId || returnOrParams.id;
     const customerName = returnOrParams.customerName || "Customer";
     const totalRefund = Number(returnOrParams.totalRefundAmount || returnOrParams.refundAmount || 0);
-    if (totalRefund <= 0) return null;
+    if (!Number.isFinite(totalRefund) || totalRefund < 0) {
+      throw new Error("Customer return refund amount must be a non-negative finite amount.");
+    }
 
     let vat = returnOrParams.vatRefunded;
     if (vat === undefined || vat === null) {
       const sourceOrder = returnOrParams.orderId
         ? await client.order.findUnique({ where: { id: returnOrParams.orderId }, select: { date: true } })
         : null;
-      const transactionDate = sourceOrder?.date ?? returnOrParams.returnDate ?? new Date();
+      const transactionDate = sourceOrder?.date ?? returnOrParams.inspectedAt ?? returnOrParams.completedAt ?? new Date();
       const vatRate = await resolveVatRatePercent(transactionDate, { client });
       const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
       vat = new Prisma.Decimal(String(totalRefund)).minus(
@@ -1679,6 +1972,9 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
       ).toNumber();
     }
     vat = Number(vat);
+    if (!Number.isFinite(vat) || vat < 0 || vat > totalRefund) {
+      throw new Error("Customer return VAT adjustment must be between zero and the refund amount.");
+    }
     const isPayable = opts.recordAsPayable !== undefined ? opts.recordAsPayable : returnOrParams.refundMethod === "PAYABLE";
     const refundMethod = returnOrParams.refundMethod || (isPayable ? "PAYABLE" : "CASH");
     const selectedTreasuryAccountId = opts.refundFromAccountId || returnOrParams.refundFromAccountId;
@@ -1695,10 +1991,14 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
       refundMethod,
       treasuryGlAccountId,
       restockedInventoryCost: returnOrParams.restockedInventoryCost,
+      damagedInventoryCost: returnOrParams.damagedInventoryCost,
     });
+    const hasInventoryAdjustment = Number(returnOrParams.restockedInventoryCost) > 0
+      || Number(returnOrParams.damagedInventoryCost) > 0;
+    if (totalRefund === 0 && !hasInventoryAdjustment) return null;
 
     return await postJournalEntry({
-      transactionDate: returnOrParams.returnDate ? new Date(returnOrParams.returnDate) : new Date(),
+      transactionDate: new Date(returnOrParams.inspectedAt || returnOrParams.completedAt || new Date()),
       sourceType: "SALES_RETURN",
       sourceId: returnId,
       idempotencyKey: `SALES_RETURN:${returnId}`,
@@ -1748,6 +2048,12 @@ export const postDistributorCustomerRefundAccounting = async ({
     const quantity = new Prisma.Decimal(String(item.quantity || 0));
     return total.plus(unitCost.mul(quantity));
   }, new Prisma.Decimal(0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const damagedInventoryCost = items.reduce((total, item) => {
+    if (String(item.condition || "").toUpperCase() !== "DAMAGED") return total;
+    const unitCost = new Prisma.Decimal(String(item.unitCostPrice || 0));
+    const quantity = new Prisma.Decimal(String(item.quantity || 0));
+    return total.plus(unitCost.mul(quantity));
+  }, new Prisma.Decimal(0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 
   const lines = [
     {
@@ -1787,6 +2093,22 @@ export const postDistributorCustomerRefundAccounting = async ({
       },
     );
   }
+  if (damagedInventoryCost.greaterThan(0)) {
+    lines.push(
+      {
+        accountCode: "5500",
+        debit: damagedInventoryCost,
+        credit: 0,
+        description: `Write off damaged returned inventory for RMA #${returnRecord.id.slice(-6)}`,
+      },
+      {
+        mappingKey: "COGS",
+        debit: 0,
+        credit: damagedInventoryCost,
+        description: `Relieve sold COGS for damaged RMA #${returnRecord.id.slice(-6)}`,
+      },
+    );
+  }
 
   const transactionDate = returnRecord.completedAt || returnRecord.inspectedAt || new Date();
   return postJournalEntry({
@@ -1811,6 +2133,365 @@ export const postDistributorCustomerRefundAccounting = async ({
       notes: `Admin-verified customer refund paid by distributor for RMA ${returnRecord.id}.`,
     }, { client: tx }),
   });
+};
+
+export const postOrderExchangeAccounting = async ({ exchangeRequest, client = prisma } = {}) => {
+  if (!exchangeRequest?.id || !exchangeRequest.orderId) {
+    throw new Error("Order exchange accounting requires a persisted exchange request.");
+  }
+  const order = await client.order.findUnique({
+    where: { id: exchangeRequest.orderId },
+    select: { id: true, userId: true, date: true },
+  });
+  if (!order) throw new Error("The original order for this exchange could not be found.");
+
+  const returnedItems = parseItemsForAccounting(exchangeRequest.items);
+  const replacementItems = parseItemsForAccounting(exchangeRequest.replacementItems);
+  if (!returnedItems.length || !replacementItems.length) {
+    throw new Error("Exchange accounting requires returned and replacement item snapshots.");
+  }
+  const totalOf = (items) => items.reduce(
+    (total, item) => total.plus(new Prisma.Decimal(String(item.unitPrice ?? 0)).mul(Number(item.quantity || 0))),
+    new Prisma.Decimal(0),
+  ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const originalGross = totalOf(returnedItems);
+  const replacementGross = totalOf(replacementItems);
+  const recordedOriginal = new Prisma.Decimal(String(exchangeRequest.originalTotalValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const recordedReplacement = new Prisma.Decimal(String(exchangeRequest.replacementTotalValue || 0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (
+    (!recordedOriginal.isZero() && !recordedOriginal.equals(originalGross)) ||
+    (!recordedReplacement.isZero() && !recordedReplacement.equals(replacementGross))
+  ) {
+    throw new Error("Exchange value snapshots do not match the recorded item prices.");
+  }
+
+  const transactionDate = new Date();
+  const originalDate = new Date(Number(order.date));
+  if (Number.isNaN(originalDate.getTime())) throw new Error("The original order date is invalid for VAT reversal.");
+  const [originalVatRate, replacementVatRate] = await Promise.all([
+    resolveVatRatePercent(originalDate, { client }),
+    resolveVatRatePercent(transactionDate, { client }),
+  ]);
+  const vatForGross = (gross, rate) => {
+    const net = gross.div(new Prisma.Decimal(1).plus(rate.div(100)))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    return { net, vat: gross.minus(net) };
+  };
+  const originalAmounts = vatForGross(originalGross, originalVatRate);
+  const replacementAmounts = vatForGross(replacementGross, replacementVatRate);
+  const revenueChange = replacementAmounts.net.minus(originalAmounts.net)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const vatChange = replacementAmounts.vat.minus(originalAmounts.vat)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const grossChange = replacementGross.minus(originalGross)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+
+  const lines = [];
+  const exchangeItemKey = (item) => JSON.stringify([
+    String(item.productId || ""),
+    String(item.size || "Standard").trim().replace(/\s+/g, " ").toLowerCase(),
+    String(item.color || "Standard").trim().replace(/\s+/g, " ").toLowerCase(),
+  ]);
+  const addSignedLine = (mappingKey, amount, description, productId = null, customerId = null, customerName = "") => {
+    const value = new Prisma.Decimal(String(amount)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (value.isZero()) return;
+    lines.push({
+      mappingKey,
+      debit: value.isNegative() ? value.abs() : new Prisma.Decimal(0),
+      credit: value.isPositive() ? value : new Prisma.Decimal(0),
+      description,
+      productId,
+      customerId,
+      customerName,
+    });
+  };
+  const customer = await client.user.findUnique({
+    where: { id: order.userId },
+    select: { name: true },
+  });
+  const customerName = customer?.name || "Customer";
+  if (revenueChange.isPositive()) {
+    lines.push({
+      mappingKey: "PRODUCT_SALES_REVENUE",
+      debit: 0,
+      credit: revenueChange,
+      description: `Exchange product revenue increase for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (revenueChange.isNegative()) {
+    lines.push({
+      mappingKey: "SALES_RETURNS",
+      debit: revenueChange.abs(),
+      credit: 0,
+      description: `Exchange price reduction for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  }
+  addSignedLine(
+    "OUTPUT_VAT_PAYABLE",
+    vatChange,
+    `Exchange VAT change for Order #${order.id.slice(-6)}`,
+    null,
+    order.userId,
+    customerName,
+  );
+
+  let distributorParty = null;
+  const isDistributorRoute = exchangeRequest.deliveryRoute === "DISTRIBUTOR";
+  const settlementDistributorId = isDistributorRoute
+    ? exchangeRequest.distributorId
+    : exchangeRequest.settlementDistributorId;
+  if (grossChange.isPositive() || grossChange.isNegative()) {
+    if (!settlementDistributorId) {
+      throw new Error("A distributor must be assigned to settle an exchange price difference.");
+    }
+    const distributor = await client.distributor.findUnique({
+      where: { id: settlementDistributorId },
+      select: { id: true, name: true },
+    });
+    if (!distributor) throw new Error("The distributor for this exchange accounting entry could not be found.");
+    distributorParty = await ensureAccountingParty({
+      partyType: "DISTRIBUTOR",
+      sourceEntityId: distributor.id,
+      displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
+    }, { client });
+  }
+
+  if (grossChange.isPositive() && distributorParty) {
+    lines.push({
+      mappingKey: "DISTRIBUTOR_COD_RECEIVABLE",
+      debit: grossChange,
+      credit: 0,
+      description: `Distributor-collected exchange upgrade amount for Order #${order.id.slice(-6)}`,
+      accountingPartyId: distributorParty?.id || null,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isPositive()) {
+    lines.push({
+      mappingKey: "NCM_COD_RECEIVABLE",
+      debit: grossChange,
+      credit: 0,
+      description: `Exchange price upgrade COD receivable for Order #${order.id.slice(-6)}`,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isNegative() && distributorParty) {
+    lines.push({
+      mappingKey: "DISTRIBUTOR_PAYABLE",
+      debit: 0,
+      credit: grossChange.abs(),
+      description: `Distributor-funded exchange downgrade refund for ${customerName}`,
+      accountingPartyId: distributorParty.id,
+      customerId: order.userId,
+      customerName,
+    });
+  } else if (grossChange.isNegative()) {
+    lines.push({
+      accountCode: "2110",
+      debit: 0,
+      credit: grossChange.abs(),
+      description: `Customer exchange downgrade refund payable for ${customerName}`,
+      customerId: order.userId,
+      customerName,
+    });
+  }
+
+  const events = await client.orderExchangeEvent.findMany({
+    where: {
+      exchangeRequestId: exchangeRequest.id,
+      eventType: "DISTRIBUTOR_RETURN_INSPECTED",
+    },
+    select: { metadata: true },
+    orderBy: { occurredAt: "desc" },
+  });
+  const inspectedItems = events.flatMap((event) =>
+    Array.isArray(event.metadata?.inspectedItems) ? event.metadata.inspectedItems : []
+  );
+  const inspectionByKey = new Map(inspectedItems.map((item) => [
+    exchangeItemKey(item),
+    String(item.condition || "").toUpperCase(),
+  ]));
+  const inspectionResult = String(exchangeRequest.inspectionResult || "").toUpperCase();
+  const fallbackCondition = inspectionResult === "RESTOCKABLE"
+    ? "GOOD"
+    : inspectionResult;
+  let hasScrap = false;
+  for (const item of returnedItems) {
+    const condition = inspectionByKey.get(exchangeItemKey(item))
+      || fallbackCondition;
+    if (!["GOOD", "RESTOCKABLE", "DAMAGED"].includes(condition)) continue;
+    const unitCost = item.unitCostPrice;
+    if (unitCost === null || unitCost === undefined || !new Prisma.Decimal(String(unitCost)).isFinite()) {
+      throw new Error(`The original cost snapshot is missing for returned product ${item.name || item.productId}.`);
+    }
+    const cost = new Prisma.Decimal(String(unitCost))
+      .mul(Number(item.quantity || 0))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (cost.isNegative()) throw new Error("Exchange item cost snapshots cannot be negative.");
+    if (condition === "DAMAGED") {
+      hasScrap = hasScrap || cost.greaterThan(0);
+      lines.push(
+        {
+          accountCode: "5500",
+          debit: cost,
+          credit: 0,
+          description: `Damaged exchange return scrap loss for ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+        {
+          mappingKey: "COGS",
+          debit: 0,
+          credit: cost,
+          description: `Relieve sold COGS for damaged exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+      );
+    } else {
+      lines.push(
+        {
+          mappingKey: "INVENTORY",
+          debit: cost,
+          credit: 0,
+          description: `Restock exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+        {
+          mappingKey: "COGS",
+          debit: 0,
+          credit: cost,
+          description: `Reverse COGS for exchange return ${item.name || item.productId}`,
+          productId: item.productId,
+        },
+      );
+    }
+  }
+  for (const item of replacementItems) {
+    const unitCost = item.unitCostPrice;
+    if (unitCost === null || unitCost === undefined || !new Prisma.Decimal(String(unitCost)).isFinite()) {
+      throw new Error(`The replacement catalog cost snapshot is missing for ${item.name || item.productId}.`);
+    }
+    const cost = new Prisma.Decimal(String(unitCost))
+      .mul(Number(item.quantity || 0))
+      .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (cost.isNegative()) throw new Error("Exchange item cost snapshots cannot be negative.");
+    lines.push(
+      {
+        mappingKey: "COGS",
+        debit: cost,
+        credit: 0,
+        description: `Recognize replacement COGS for ${item.name || item.productId}`,
+        productId: item.productId,
+      },
+      {
+        mappingKey: "INVENTORY",
+        debit: 0,
+        credit: cost,
+        description: `Relieve replacement inventory for ${item.name || item.productId}`,
+        productId: item.productId,
+      },
+    );
+  }
+
+  const totalDebits = lines.reduce((total, line) => total.plus(line.debit || 0), new Prisma.Decimal(0));
+  const totalCredits = lines.reduce((total, line) => total.plus(line.credit || 0), new Prisma.Decimal(0));
+  if (totalDebits.isZero() && totalCredits.isZero()) return null;
+
+  const sourceId = `EXCHANGE-${exchangeRequest.id}`;
+  const refundAmount = grossChange.isNegative() ? grossChange.abs() : new Prisma.Decimal(0);
+  const entry = await postJournalEntry({
+    transactionDate,
+    sourceType: "ORDER_EXCHANGE",
+    sourceId,
+    idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}`,
+    referenceNumber: `ORD-${order.id.slice(-6)}`,
+    description: `Return and exchange accounting for Order #${order.id.slice(-6)}`,
+    createdBy: "SYSTEM",
+    lines,
+    client,
+    afterPost: async (tx, postedEntry) => {
+      if (grossChange.isPositive() && distributorParty) {
+        const document = await createAccountingDocument({
+          documentType: "INVOICE",
+          documentNumber: `DEX-${crypto.createHash("sha256").update(exchangeRequest.id).digest("hex").slice(0, 24).toUpperCase()}`,
+          partyId: distributorParty.id,
+          side: "RECEIVABLE",
+          sourceType: "DISTRIBUTOR_COD_SALE",
+          sourceId,
+          amount: grossChange,
+          issueDate: transactionDate,
+          idempotencyKey: `DISTRIBUTOR_COD_SALE:${sourceId}`,
+          notes: `Distributor-collected exchange upgrade amount for Order ${order.id}.`,
+        }, { client: tx });
+        await tx.distributorCashEvent.updateMany({
+          where: {
+            orderExchangeRequestId: exchangeRequest.id,
+            eventType: "EXCHANGE_UPGRADE_COLLECTION",
+            status: { in: ["PENDING_VERIFICATION", "VERIFIED"] },
+          },
+          data: { accountingDocumentId: document.id, journalEntryId: postedEntry.id },
+        });
+      }
+      if (grossChange.isNegative() && distributorParty) {
+        const document = await createAccountingDocument({
+          documentType: "BILL",
+          documentNumber: `DEXR-${crypto.createHash("sha256").update(exchangeRequest.id).digest("hex").slice(0, 23).toUpperCase()}`,
+          partyId: distributorParty.id,
+          side: "PAYABLE",
+          sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+          sourceId,
+          amount: refundAmount,
+          issueDate: transactionDate,
+          idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${sourceId}`,
+          notes: `Distributor-paid customer exchange downgrade refund for Order ${order.id}.`,
+        }, { client: tx });
+        await tx.distributorCashEvent.updateMany({
+          where: {
+            orderExchangeRequestId: exchangeRequest.id,
+            eventType: "EXCHANGE_DOWNGRADE_REFUND",
+            status: { in: ["PENDING_VERIFICATION", "VERIFIED"] },
+          },
+          data: { accountingDocumentId: document.id, journalEntryId: postedEntry.id },
+        });
+      }
+      if (grossChange.isNegative() && !distributorParty) {
+        const existingPayable = await tx.accountPayable.findFirst({
+          where: { referenceType: "CUSTOMER_EXCHANGE_REFUND", referenceId: exchangeRequest.id },
+          select: { id: true },
+        });
+        if (!existingPayable) {
+          await tx.accountPayable.create({
+            data: {
+              title: `Customer exchange refund #${exchangeRequest.id.slice(0, 8)}`,
+              payeeName: customerName,
+              category: "OPERATING_EXPENSE",
+              referenceType: "CUSTOMER_EXCHANGE_REFUND",
+              referenceId: exchangeRequest.id,
+              totalAmount: refundAmount,
+              paidAmount: 0,
+              remainingBalance: refundAmount,
+              status: "UNPAID",
+              priority: "HIGH",
+              notes: `NCM-route exchange downgrade refund for Order ${order.id}.`,
+            },
+          });
+        }
+      }
+      return postedEntry;
+    },
+  });
+
+  await client.orderExchangeRequest.update({
+    where: { id: exchangeRequest.id },
+    data: {
+      exchangeJournalEntryId: entry.id,
+      ...(hasScrap ? { scrapJournalEntryId: entry.id } : {}),
+      ...(grossChange.isNegative() ? { taxCreditNoteNumber: `CN-${entry.journalNumber}` } : {}),
+    },
+  });
+  return entry;
 };
 
 const parseItemsForAccounting = (items) => {

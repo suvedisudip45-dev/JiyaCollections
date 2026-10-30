@@ -4,8 +4,7 @@ import { prisma } from "../config/db.js";
 import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
 import { buildManufacturerStockMovements } from "../services/manufacturerInventoryAudit.js";
 import { syncProductStock } from "../services/stockSyncService.js";
-import { ensureAccountingParty } from "../services/accountingPartyService.js";
-import { postJournalEntry } from "../services/accountingPostingEngine.js";
+import { postManufacturerLogisticsAccounting } from "../services/accountingPostingEngine.js";
 import {
   normalizeDistributorInboundChecklist,
   normalizeDistributorStockDecrease,
@@ -1033,37 +1032,12 @@ export const dispatchManualStockTransfer = async (req, res) => {
         include: { lines: true },
       });
       if (freightCharge?.greaterThan(0)) {
-        const party = await ensureAccountingParty({
-          partyType: "MANUFACTURER",
-          sourceEntityId: transfer.manufacturerId,
-          displayName: transfer.manufacturer.name,
-        }, { client: tx });
-        await postJournalEntry({
-          transactionDate: new Date(),
-          sourceType: "MANUFACTURER_LOGISTICS",
-          sourceId: shipment.id,
-          idempotencyKey: `MANUFACTURER_LOGISTICS:TRANSFER:${shipment.id}`,
-          referenceNumber: `MFG-LOG-${shipment.id.slice(-8).toUpperCase()}`,
-          description: `Manufacturer-paid logistics for stock transfer ${transfer.id}`,
-          lines: [
-            {
-              mappingKey: "DELIVERY_EXPENSE",
-              debit: freightCharge,
-              credit: 0,
-              description: `Local logistics expense for stock transfer ${transfer.id}`,
-              supplierId: transfer.manufacturerId,
-              supplierName: transfer.manufacturer.name,
-              accountingPartyId: party.id,
-            },
-            {
-              mappingKey: "MANUFACTURER_PAYABLE",
-              debit: 0,
-              credit: freightCharge,
-              description: `Local logistics payable to ${transfer.manufacturer.name}`,
-              supplierId: transfer.manufacturerId,
-              accountingPartyId: party.id,
-            },
-          ],
+        await postManufacturerLogisticsAccounting({
+          shipment: updatedShipment,
+          transfer,
+          freightCharge,
+          transactionDate: updatedShipment.dispatchedAt || new Date(),
+          createdBy: req.auth?.accountId || "system",
           client: tx,
         });
       }

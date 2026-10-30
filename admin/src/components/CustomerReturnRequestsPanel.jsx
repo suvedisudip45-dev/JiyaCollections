@@ -1,10 +1,15 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../App";
 
 const money = (value) => `${currency}${Number(value || 0).toLocaleString("en-NP")}`;
 const readable = (value) => String(value || "").replace(/_/g, " ");
+const formatOrderDate = (date) => date ? new Date(Number(date)).toLocaleDateString() : "Not recorded";
+const periodLabel = (journalEntry) => journalEntry
+  ? `${journalEntry.accountingPeriod?.periodName || "Period unavailable"}${journalEntry.fiscalYear?.name ? ` ${journalEntry.fiscalYear.name}` : ""}`
+  : null;
 
 const CustomerReturnRequestsPanel = ({ token }) => {
   const [returns, setReturns] = useState([]);
@@ -100,6 +105,26 @@ const CustomerReturnRequestsPanel = ({ token }) => {
                 <p><span className="text-slate-400">NCM original order ID</span><br /><span className="font-mono text-slate-800">{record.originalNcmOrderId || "Not linked"}</span></p>
                 <p><span className="text-slate-400">NCM-reported charge</span><br /><span className="font-semibold text-slate-800">{record.ncmDeliveryCharge == null ? "Not supplied by NCM" : `${money(record.ncmDeliveryCharge)} · ${record.ncmChargeSource === "ORDER_DETAIL" ? "order detail" : "return response"}`} · {record.ncmChargePayer}</span></p>
               </>}
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-[10px] font-bold uppercase text-slate-500">Financial &amp; accounting summary</p>
+              <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <p><span className="text-slate-400">Original invoice</span><br /><span className="font-semibold text-slate-800">{money(record.order?.amount)} · {formatOrderDate(record.order?.date)}</span></p>
+                <p><span className="text-slate-400">Approved return amount</span><br /><span className="font-semibold text-slate-800">{money(record.approvedRefundAmount ?? record.totalRefundAmount)}</span></p>
+                <p><span className="text-slate-400">Route / logistics</span><br /><span className="font-semibold text-slate-800">{isNcmRoute ? "NCM Courier" : isDistributorRoute ? "Distributor Self-Delivery" : "Unconfirmed"} · {money(record.ncmDeliveryCharge ?? record.logisticsSettlementAmount)}</span><br /><span className="text-slate-500">Payer: {isNcmRoute ? record.ncmChargePayer || "MERCHANT" : isDistributorRoute ? "MERCHANT" : "Unconfirmed"}</span></p>
+                <p><span className="text-slate-400">Refund status</span><br /><span className="font-semibold text-slate-800">{readable(record.refundStatus)}</span></p>
+              </div>
+              {record.journalEntry ? (
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 pt-2 text-xs">
+                  <Link to={`/journal-entries?search=${encodeURIComponent(record.journalEntry.journalNumber)}`} className="font-bold text-blue-700 underline">
+                    Journal {record.journalEntry.journalNumber}
+                  </Link>
+                  <span className="text-emerald-700">Posted to period: {periodLabel(record.journalEntry)}</span>
+                  {record.taxCreditNoteNumber && <span className="text-slate-600">Credit note: {record.taxCreditNoteNumber}</span>}
+                </div>
+              ) : (
+                <p className="mt-3 border-t border-slate-200 pt-2 text-xs font-semibold text-amber-800">Return accounting journal not posted yet.</p>
+              )}
             </div>
             <div className="space-y-1 text-xs text-slate-700">
               {items.map((item, index) => <p key={`${item.productId}-${index}`}>{item.name} · {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {item.quantity} · Refund estimate {money(item.refundAmount)}</p>)}

@@ -150,3 +150,129 @@ export const accrueDistributorDeliveryEarning = async ({
     },
   });
 };
+
+export const accrueDistributorServiceCharge = async ({
+  distributorId,
+  distributorName,
+  assignmentId,
+  orderId,
+  sourceId,
+  rateCardId = null,
+  serviceType,
+  chargeAmount,
+  vatRate = 0,
+  effectiveAt = new Date(),
+  client = prisma,
+  journalPoster = postJournalEntry,
+} = {}) => {
+  const normalizedType = String(serviceType || "").trim().toUpperCase();
+  if (!["RETURN", "EXCHANGE"].includes(normalizedType)) {
+    throw new Error("Distributor service charge must be a RETURN or EXCHANGE.");
+  }
+  if (!distributorId || !distributorName || !assignmentId || !orderId || !sourceId) {
+    throw new Error("Distributor, assignment, order, and service source details are required.");
+  }
+  if (!client.distributorServiceEarning) {
+    throw new Error("Distributor service earning storage is unavailable. Apply the pending Prisma migration first.");
+  }
+
+  const idempotencyKey = `DISTRIBUTOR_${normalizedType}_EARNING:${sourceId}`;
+  const prior = await client.distributorServiceEarning.findUnique({ where: { idempotencyKey } });
+  if (prior) {
+    if (prior.distributorId !== distributorId || prior.orderId !== orderId || prior.serviceType !== normalizedType) {
+      throw new Error("Service earning idempotency key is already associated with a different source.");
+    }
+    return prior;
+  }
+
+  const serviceCharge = money(chargeAmount, `${normalizedType} service charge`);
+  const normalizedVatRate = money(vatRate, "Distributor service VAT rate");
+  if (normalizedVatRate.greaterThan(100)) {
+    throw new Error("Distributor service VAT rate cannot exceed 100%.");
+  }
+  const vatAmount = serviceCharge.mul(normalizedVatRate).div(100)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const payableAmount = serviceCharge.plus(vatAmount)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const snapshot = {
+    serviceType: normalizedType,
+    serviceCharge: serviceCharge.toFixed(2),
+    rateCardId,
+    vatRate: normalizedVatRate.toFixed(2),
+    vatAmount: vatAmount.toFixed(2),
+    taxTreatment: "RATE_CARD_SERVICE_CHARGE",
+  };
+  const earning = await client.distributorServiceEarning.create({
+    data: {
+      distributorId,
+      assignmentId,
+      orderId,
+      serviceType: normalizedType,
+      idempotencyKey,
+      rateCardId,
+      effectiveAt,
+      deliveryCharge: new Prisma.Decimal(0),
+      incentiveAmount: new Prisma.Decimal(0),
+      commissionAmount: new Prisma.Decimal(0),
+      otherCharges: serviceCharge,
+      vatRate: normalizedVatRate,
+      vatAmount,
+      vatInvoiceVerified: false,
+      payableAmount,
+      snapshot,
+    },
+  });
+  if (payableAmount.isZero()) return earning;
+
+  const party = await ensureAccountingParty({
+    partyType: "DISTRIBUTOR",
+    sourceEntityId: distributorId,
+    displayName: distributorName,
+  }, { client });
+  const journal = await journalPoster({
+    transactionDate: effectiveAt,
+    sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+    sourceId: earning.id,
+    idempotencyKey,
+    referenceNumber: `DIST-${normalizedType}-${String(sourceId).slice(-8)}`,
+    description: `Distributor ${normalizedType.toLowerCase()} service earning for order ${orderId}`,
+    createdBy: "SYSTEM",
+    lines: [
+      {
+        mappingKey: "DELIVERY_EXPENSE",
+        debit: payableAmount,
+        credit: 0,
+        description: `Distributor ${normalizedType.toLowerCase()} service expense for order ${orderId}`,
+        accountingPartyId: party.id,
+      },
+      {
+        mappingKey: "DISTRIBUTOR_PAYABLE",
+        debit: 0,
+        credit: payableAmount,
+        description: `Distributor ${normalizedType.toLowerCase()} service payable for order ${orderId}`,
+        accountingPartyId: party.id,
+      },
+    ],
+    client,
+  });
+  const document = await createAccountingDocument({
+    documentType: "BILL",
+    documentNumber: `DIST-${normalizedType}-${earning.id}`,
+    partyId: party.id,
+    side: "PAYABLE",
+    sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+    sourceId: earning.id,
+    issueDate: effectiveAt,
+    amount: payableAmount,
+    idempotencyKey,
+    notes: JSON.stringify(snapshot),
+  }, { client });
+
+  return client.distributorServiceEarning.update({
+    where: { id: earning.id },
+    data: {
+      accountingDocumentId: document.id,
+      journalEntryId: journal.id,
+    },
+  });
+};

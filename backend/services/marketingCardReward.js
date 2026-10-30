@@ -1,4 +1,4 @@
-export const calculateMarketingCardDiscount = (benefitType, value, itemsSubtotal) => {
+export const calculateMarketingCardDiscount = (benefitType, value, itemsSubtotal, maxDiscountAmount = null) => {
   const type = String(benefitType || "").trim().toUpperCase();
   const rewardValue = Number(value);
   const subtotal = Number(itemsSubtotal);
@@ -8,7 +8,15 @@ export const calculateMarketingCardDiscount = (benefitType, value, itemsSubtotal
 
   if (type === "DISCOUNT") {
     if (rewardValue > 100) return null;
-    return Math.min(subtotal, Math.round(subtotal * rewardValue / 100));
+    if (
+      maxDiscountAmount !== null &&
+      maxDiscountAmount !== undefined &&
+      (!Number.isFinite(Number(maxDiscountAmount)) || Number(maxDiscountAmount) <= 0)
+    ) return null;
+    const discountCap = maxDiscountAmount === null || maxDiscountAmount === undefined
+      ? Infinity
+      : Number(maxDiscountAmount);
+    return Math.min(subtotal, Math.round(subtotal * rewardValue / 100), discountCap);
   }
 
   if (type === "VOUCHER") {

@@ -154,6 +154,23 @@ const registerUser = async (req, res) => {
       });
     }
 
+    const existingAccount = await prisma.authAccount.findFirst({
+      where: { OR: [{ email: cleanEmail }, { phone: normalizedPhone }] },
+      select: { email: true, phone: true },
+    });
+    if (existingAccount) {
+      if (existingAccount.phone === normalizedPhone) {
+        return res.status(409).json({
+          success: false,
+          message: "This mobile number is already registered. Please use a different number or sign in to your existing account.",
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email already exists. Please sign in or use a different email address.",
+      });
+    }
+
     const duplicatePhoneUser = await prisma.user.findFirst({
       where: {
         OR: [
@@ -245,8 +262,22 @@ const registerUser = async (req, res) => {
       },
     });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    if (error.code === "P2002") {
+      const target = Array.isArray(error.meta?.target)
+        ? error.meta.target.join(" ").toLowerCase()
+        : String(error.meta?.target || "").toLowerCase();
+      const message = target.includes("phone")
+        ? "This mobile number is already registered. Please use a different number or sign in to your existing account."
+        : target.includes("email")
+          ? "An account with this email already exists. Please sign in or use a different email address."
+          : "An account with these details already exists. Please check your email and mobile number.";
+      return res.status(409).json({ success: false, message });
+    }
+    console.error("Customer registration failed:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create your account right now. Please try again.",
+    });
   }
 };
 

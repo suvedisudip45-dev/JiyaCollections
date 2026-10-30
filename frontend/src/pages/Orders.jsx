@@ -72,6 +72,27 @@ const getOrderLineKey = (item, index) => `${getOrderItemKey(item)}|${index}`;
 const getInitialItemQuantities = (items = []) => Object.fromEntries(
   items.map((item, index) => [getOrderLineKey(item, index), index === 0 ? 1 : 0])
 );
+const parseArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
+  }
+};
+const getProductId = (product) => product?._id || product?.id || "";
+const getProductVariants = (product) => parseArray(product?.variants);
+const getAvailableVariantQuantity = (product, size, color) => {
+  const variants = getProductVariants(product);
+  if (!variants.length) return Math.max(0, Number(product?.stockQuantity || 0));
+  const variant = variants.find((item) =>
+    String(item.size || "").toLowerCase() === String(size || "").toLowerCase() &&
+    String(item.color || "").toLowerCase() === String(color || "").toLowerCase()
+  );
+  return Math.max(0, Number(variant?.quantity || 0));
+};
 
 const canCancelBeforeNcmHandoff = (order) => {
   const delivery = order.deliveryOrder || order.delivery || {};
@@ -126,6 +147,11 @@ const Orders = () => {
   const [exchangeReasonDetails, setExchangeReasonDetails] = useState("");
   const [exchangeQuantities, setExchangeQuantities] = useState({});
   const [replacementVariants, setReplacementVariants] = useState({});
+  const [exchangeMode, setExchangeMode] = useState("VARIANT_SWAP");
+  const [exchangeProductSearch, setExchangeProductSearch] = useState("");
+  const [exchangeProducts, setExchangeProducts] = useState([]);
+  const [exchangeProductsLoading, setExchangeProductsLoading] = useState(false);
+  const [replacementProducts, setReplacementProducts] = useState({});
   const [exchangeRequestKey, setExchangeRequestKey] = useState("");
   const [returnOrderTarget, setReturnOrderTarget] = useState(null);
   const [returnReason, setReturnReason] = useState("");
@@ -231,6 +257,40 @@ const Orders = () => {
     return () => clearInterval(interval);
   }, [token, backendUrl, page]);
 
+  useEffect(() => {
+    if (!exchangeOrderTarget || exchangeMode !== "DIFFERENT_PRODUCT" || exchangeProductSearch.trim().length < 2) {
+      setExchangeProducts([]);
+      setExchangeProductsLoading(false);
+      return undefined;
+    }
+    let active = true;
+    const timeout = setTimeout(async () => {
+      setExchangeProductsLoading(true);
+      try {
+        const response = await axios.get(`${backendUrl}/api/product/list`, {
+          headers: { token },
+          params: { search: exchangeProductSearch.trim(), limit: 20 },
+        });
+        if (active && response.data.success) setExchangeProducts(response.data.products || []);
+        else if (active) {
+          setExchangeProducts([]);
+          toast.error(response.data.message || "Unable to search replacement products");
+        }
+      } catch (error) {
+        if (active) {
+          setExchangeProducts([]);
+          toast.error(error.response?.data?.message || "Unable to search replacement products");
+        }
+      } finally {
+        if (active) setExchangeProductsLoading(false);
+      }
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+    };
+  }, [backendUrl, exchangeMode, exchangeOrderTarget, exchangeProductSearch, token]);
+
   const handlePageChange = (nextPage) => setPage(nextPage);
 
   const submitOrderCancellation = async (event) => {
@@ -282,6 +342,7 @@ const Orders = () => {
     if (!exchangeOrderTarget || actionLoading) return;
     const items = (exchangeOrderTarget.items || [])
       .map((item, index) => ({
+        lineKey: getOrderLineKey(item, index),
         productId: item.productId || item._id || item.id,
         size: item.size || "",
         color: item.color || "",
@@ -289,11 +350,21 @@ const Orders = () => {
       }))
       .filter((item) => item.quantity > 0);
     const replacementItems = items.map((item) => {
+      if (exchangeMode === "DIFFERENT_PRODUCT") {
+        const selection = replacementProducts[item.lineKey];
+        return {
+          productId: selection?.id || "",
+          size: selection?.size || "",
+          color: selection?.color || "",
+          quantity: item.quantity,
+        };
+      }
       const key = `${item.productId}|${item.size}|${item.color}`;
       const replacement = replacementVariants[key] || {};
       return { ...item, size: replacement.size ?? item.size, color: replacement.color ?? item.color };
     });
     if (!items.length) return toast.warn("Select at least one product quantity to exchange.");
+    if (replacementItems.some((item) => !item.productId)) return toast.warn("Choose an active replacement product for every selected item.");
     if (exchangeReasonCode === "OTHER" && exchangeReasonDetails.trim().length < 5) return toast.warn("Please explain the reason for your exchange request.");
 
     setActionLoading(true);
@@ -303,7 +374,7 @@ const Orders = () => {
         requestKey: exchangeRequestKey,
         reasonCode: exchangeReasonCode,
         reasonDetails: exchangeReasonDetails,
-        items,
+        items: items.map(({ lineKey, ...item }) => item),
         replacementItems,
       }, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Exchange request failed");
@@ -311,6 +382,9 @@ const Orders = () => {
       setExchangeOrderTarget(null);
       setExchangeReasonDetails("");
       setExchangeQuantities({});
+      setReplacementProducts({});
+      setExchangeProductSearch("");
+      setExchangeMode("VARIANT_SWAP");
       setExchangeRequestKey("");
       await loadOrderData(true);
     } catch (error) {
@@ -322,6 +396,10 @@ const Orders = () => {
 
   const openExchangeRequest = (order) => {
     setExchangeOrderTarget(order);
+    setExchangeMode("VARIANT_SWAP");
+    setExchangeProductSearch("");
+    setExchangeProducts([]);
+    setReplacementProducts({});
     setExchangeReasonCode("SIZE_OR_FIT");
     setExchangeReasonDetails("");
     setExchangeQuantities(getInitialItemQuantities(order.items || []));
@@ -582,6 +660,36 @@ const Orders = () => {
   const invoiceHasActiveReturn = invoiceReturns.some(
     (request) => !["REJECTED_BY_ADMIN", "REFUNDED", "INSPECTED_FAILED"].includes(request.lifecycleStatus)
   );
+  const exchangePriceSummary = useMemo(() => {
+    if (!exchangeOrderTarget) return { original: 0, replacement: 0, complete: false };
+    const selectedItems = (exchangeOrderTarget.items || [])
+      .map((item, index) => ({
+        item,
+        lineKey: getOrderLineKey(item, index),
+        quantity: Number(exchangeQuantities[getOrderLineKey(item, index)] || 0),
+      }))
+      .filter(({ quantity }) => quantity > 0);
+    const original = selectedItems.reduce((total, { item, quantity }) =>
+      total + Number(item.purchasedUnitPrice ?? item.price ?? 0) * quantity, 0);
+    if (exchangeMode !== "DIFFERENT_PRODUCT") {
+      return { original, replacement: original, complete: selectedItems.length > 0 };
+    }
+    const complete = selectedItems.every(({ lineKey }) => Boolean(replacementProducts[lineKey]?.id));
+    const replacement = selectedItems.reduce((total, { lineKey, quantity }) =>
+      total + Number(replacementProducts[lineKey]?.price || 0) * quantity, 0);
+    return { original, replacement, complete };
+  }, [exchangeOrderTarget, exchangeMode, exchangeQuantities, replacementProducts]);
+  const exchangePriceDifference = exchangePriceSummary.replacement - exchangePriceSummary.original;
+  const exchangeDeliveryDate = exchangeOrderTarget?.deliveryOrder?.deliveredAt || Number(exchangeOrderTarget?.date || 0);
+  const exchangeAgeDays = exchangeDeliveryDate
+    ? (Date.now() - new Date(exchangeDeliveryDate).getTime()) / (1000 * 60 * 60 * 24)
+    : Infinity;
+  const exchangeWarrantyAvailable = exchangeAgeDays >= 0 && exchangeAgeDays <= 90;
+  const exchangeRouteLabel = exchangeOrderTarget?.deliveryOrder?.ncmOrderId
+    ? "NCM courier"
+    : exchangeOrderTarget?.distributorDelivery?.deliveryType === "SELF_DELIVERY"
+      ? "Distributor self-delivery"
+      : "Delivery route confirmed during review";
 
   return (
     <div className="min-h-screen bg-slate-50/50 py-10 px-4 sm:px-6 lg:px-8 border-t">
@@ -860,6 +968,23 @@ const Orders = () => {
             </div>
             <p className="text-xs text-slate-600">The first product and its purchased size/color are selected by default. Set another product’s quantity to choose it; you can include multiple items. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">Your replacement variant is recorded and stock-checked. NCM&apos;s exchange endpoint accepts only the original order ID, so the admin must verify the generated replacement waybill matches your selected variant.</p>
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1">
+              <button type="button" onClick={() => setExchangeMode("VARIANT_SWAP")} className={`rounded-md px-2 py-2 text-xs font-bold ${exchangeMode === "VARIANT_SWAP" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>Exchange size/color</button>
+              <button type="button" onClick={() => setExchangeMode("DIFFERENT_PRODUCT")} className={`rounded-md px-2 py-2 text-xs font-bold ${exchangeMode === "DIFFERENT_PRODUCT" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}>Exchange for another product</button>
+            </div>
+            {exchangeWarrantyAvailable && (
+              <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-[11px] font-semibold text-violet-900">
+                3-Month Stitching &amp; Threading Warranty · Delivered {new Date(exchangeDeliveryDate).toLocaleDateString()}
+              </p>
+            )}
+            {exchangeMode === "DIFFERENT_PRODUCT" && (
+              <div className="space-y-2 rounded-lg border border-slate-200 p-3">
+                <label className="block text-xs font-semibold text-slate-700">Search active replacement products
+                  <input value={exchangeProductSearch} onChange={(event) => setExchangeProductSearch(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 font-normal" placeholder="Enter at least 2 characters" />
+                </label>
+                <p className="text-[10px] text-slate-500">{exchangeProductsLoading ? "Searching catalog..." : exchangeProductSearch.trim().length < 2 ? "Enter at least 2 characters to search." : exchangeProducts.length ? `${exchangeProducts.length} active product${exchangeProducts.length === 1 ? "" : "s"} found.` : "No active products found."} Availability shown is advisory; stock is checked again during review.</p>
+              </div>
+            )}
             <div className="space-y-2">
               {(exchangeOrderTarget.items || []).map((item, index) => {
                 const key = getOrderItemKey(item);
@@ -869,25 +994,89 @@ const Orders = () => {
                 const variants = Array.isArray(item.variants) ? item.variants : [];
                 const sizes = [...new Set([...(Array.isArray(item.sizes) ? item.sizes : variants.map((variant) => variant.size)), item.size].filter(Boolean))];
                 const colors = [...new Set([...(Array.isArray(item.colors) ? item.colors : variants.map((variant) => variant.color)), item.color].filter(Boolean))];
+                const replacementProduct = replacementProducts[lineKey];
+                const replacementProductVariants = getProductVariants(replacementProduct);
+                const replacementStock = getAvailableVariantQuantity(replacementProduct, replacementProduct?.size, replacementProduct?.color);
                 return (
                   <div key={`${key}-${index}`} className={`grid gap-3 rounded-lg border p-3 transition-colors sm:grid-cols-[1fr_92px] ${selected ? "border-blue-300 bg-blue-50/40" : "border-slate-200"}`}>
                     <div>
                       <p className="text-xs font-semibold text-slate-800">{item.name || "Product"}</p>
                       <p className="text-[11px] text-slate-500">Purchased {item.size || "One size"}{item.color ? ` · ${item.color}` : ""} · Qty {Number(item.quantity || 1)}</p>
-                      <div className="mt-2 grid grid-cols-2 gap-2">
+                      {exchangeMode === "VARIANT_SWAP" ? <div className="mt-2 grid grid-cols-2 gap-2">
                         <label className="text-[10px] font-semibold text-slate-500">Replacement size<select value={replacement.size} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, size: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">One size</option>{sizes.map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
                         <label className="text-[10px] font-semibold text-slate-500">Replacement color<select value={replacement.color} onChange={(event) => setReplacementVariants({ ...replacementVariants, [key]: { ...replacement, color: event.target.value } })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{colors.map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
-                      </div>
+                      </div> : (
+                        <div className="mt-2 space-y-2">
+                          <label className="block text-[10px] font-semibold text-slate-500">Replacement product
+                            <select value={replacementProduct?.id || ""} onChange={(event) => {
+                              const product = exchangeProducts.find((candidate) => getProductId(candidate) === event.target.value);
+                              if (!product) {
+                                setReplacementProducts((current) => ({ ...current, [lineKey]: null }));
+                                return;
+                              }
+                              const productVariants = getProductVariants(product);
+                              const defaultVariant = productVariants.find((variant) => Number(variant.quantity || 0) > 0) || productVariants[0] || {};
+                              setReplacementProducts((current) => ({
+                                ...current,
+                                [lineKey]: {
+                                  id: getProductId(product),
+                                  name: product.name,
+                                  price: Number(product.price || 0),
+                                  stockQuantity: Number(product.stockQuantity || 0),
+                                  size: defaultVariant.size || parseArray(product.sizes)[0] || "",
+                                  color: defaultVariant.color || parseArray(product.colors)[0] || "",
+                                  variants: product.variants,
+                                  sizes: product.sizes,
+                                  colors: product.colors,
+                                },
+                              }));
+                            }} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900">
+                              <option value="">Choose from search results</option>
+                              {exchangeProducts.map((product) => <option key={getProductId(product)} value={getProductId(product)}>{product.name} · {currency}{Number(product.price || 0).toLocaleString()} · stock {Number(product.stockQuantity || 0)}</option>)}
+                            </select>
+                          </label>
+                          {replacementProduct && (
+                            <>
+                              {replacementProductVariants.length ? (
+                                <label className="block text-[10px] font-semibold text-slate-500">Available size/color variants
+                                  <select value={replacementProductVariants.findIndex((variant) => variant.size === replacementProduct.size && variant.color === replacementProduct.color)} onChange={(event) => {
+                                    const nextVariant = replacementProductVariants[Number(event.target.value)];
+                                    if (nextVariant) setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], size: nextVariant.size || "", color: nextVariant.color || "" } }));
+                                  }} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900">
+                                    {replacementProductVariants.map((variant, variantIndex) => <option key={`${variant.size}-${variant.color}-${variantIndex}`} value={variantIndex}>{variant.size || "One size"}{variant.color ? ` · ${variant.color}` : ""} · stock {Number(variant.quantity || 0)}</option>)}
+                                  </select>
+                                </label>
+                              ) : (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <label className="text-[10px] font-semibold text-slate-500">Size<select value={replacementProduct.size} onChange={(event) => setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], size: event.target.value } }))} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">One size</option>{parseArray(replacementProduct.sizes).map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
+                                  <label className="text-[10px] font-semibold text-slate-500">Color<select value={replacementProduct.color} onChange={(event) => setReplacementProducts((current) => ({ ...current, [lineKey]: { ...current[lineKey], color: event.target.value } }))} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900"><option value="">Default color</option>{parseArray(replacementProduct.colors).map((color) => <option key={color} value={color}>{color}</option>)}</select></label>
+                                </div>
+                              )}
+                              <p className="text-[10px] text-slate-600">Catalog stock for selected variant: {replacementStock}</p>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <label className="text-[10px] font-semibold text-slate-500">Qty<input type="number" min="0" max={Number(item.quantity || 1)} step="1" value={exchangeQuantities[lineKey] ?? 0} onChange={(event) => setExchangeQuantities({ ...exchangeQuantities, [lineKey]: event.target.value })} className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1.5 text-xs text-slate-900" /></label>
                   </div>
                 );
               })}
             </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+              <p className="font-bold text-slate-800">Exchange value estimate</p>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-slate-600">
+                <p>Original item credit<br /><span className="font-semibold text-slate-900">{currency}{exchangePriceSummary.original.toLocaleString("en-NP")}</span></p>
+                <p>Replacement value<br /><span className="font-semibold text-slate-900">{exchangePriceSummary.complete ? `${currency}${exchangePriceSummary.replacement.toLocaleString("en-NP")}` : "Select replacement product(s)"}</span></p>
+              </div>
+              {exchangePriceSummary.complete && <p className="mt-2 font-semibold text-slate-900">{exchangePriceDifference > 0 ? `${exchangeRouteLabel === "NCM courier" ? "Estimated amount to pay distributor" : "Estimated amount due at delivery"}: ${currency}${exchangePriceDifference.toLocaleString("en-NP")}` : exchangePriceDifference < 0 ? `${exchangeRouteLabel === "NCM courier" ? "Estimated refund from distributor" : "Estimated refund/credit"}: ${currency}${Math.abs(exchangePriceDifference).toLocaleString("en-NP")}` : "No price difference"}</p>}
+              <p className="mt-1 text-[10px] text-slate-500">Route: {exchangeRouteLabel}. Any carrier charge is confirmed during Admin review and is not included in this estimate.</p>
+              {exchangeRouteLabel === "NCM courier" && exchangePriceDifference !== 0 && <p className="mt-1 text-[10px] text-slate-500">NCM transports the replacement only. The assigned distributor will handle the price difference separately and submit payment proof for Admin verification.</p>}
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-xs font-semibold text-slate-700">Cause
                 <select value={exchangeReasonCode} onChange={(event) => setExchangeReasonCode(event.target.value)} className="mt-1 w-full border border-slate-300 rounded-lg p-2.5 font-normal">
-                  <option value="SIZE_OR_FIT">Size or fit</option><option value="DEFECTIVE">Defective product</option><option value="WRONG_ITEM">Wrong item</option><option value="DAMAGED_IN_TRANSIT">Damaged in transit</option><option value="OTHER">Other</option>
+                  <option value="SIZE_OR_FIT">Size or fit</option><option value="DEFECTIVE">Defective product</option><option value="WRONG_ITEM">Wrong item</option><option value="DAMAGED_IN_TRANSIT">Damaged in transit</option><option value="STITCHING_DEFECT">Stitching defect (warranty)</option><option value="THREADING_ISSUE">Threading issue (warranty)</option><option value="OTHER">Other</option>
                 </select>
               </label>
               <label className="text-xs font-semibold text-slate-700">Details{exchangeReasonCode === "OTHER" ? " *" : ""}

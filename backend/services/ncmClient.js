@@ -42,6 +42,91 @@ export const extractNcmCharge = (payload) => {
   return Number.isFinite(charge) && charge >= 0 ? charge : null;
 };
 
+export const extractNcmDeliveryPricing = (payload, { allowGenericDiscount = false } = {}) => {
+  const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  if (!data || typeof data !== "object") return null;
+
+  const readAmount = (keys) => {
+    for (const key of keys) {
+      if (data[key] === undefined || data[key] === null || data[key] === "") continue;
+      const amount = Number(data[key]);
+      if (Number.isFinite(amount) && amount >= 0) return Number(amount.toFixed(2));
+    }
+    return null;
+  };
+  const grossCharge = readAmount([
+    "delivery_charge_before_discount",
+    "deliveryChargeBeforeDiscount",
+    "original_delivery_charge",
+    "originalDeliveryCharge",
+    "regular_delivery_charge",
+    "regularDeliveryCharge",
+    "base_delivery_charge",
+    "baseDeliveryCharge",
+    "list_delivery_charge",
+    "listDeliveryCharge",
+    "gross_delivery_charge",
+    "grossDeliveryCharge",
+  ]);
+  const netCharge = readAmount([
+    "net_delivery_charge",
+    "netDeliveryCharge",
+    "discounted_delivery_charge",
+    "discountedDeliveryCharge",
+    "final_delivery_charge",
+    "finalDeliveryCharge",
+    "payable_delivery_charge",
+    "payableDeliveryCharge",
+    "delivery_charge_after_discount",
+    "deliveryChargeAfterDiscount",
+  ]);
+  const listedCharge = readAmount([
+    "delivery_charge",
+    "deliveryCharge",
+    "shipping_charge",
+    "shippingCharge",
+    "charge",
+    "amount",
+  ]);
+  const discountKeys = [
+    "delivery_discount",
+    "deliveryDiscount",
+    "delivery_discount_amount",
+    "deliveryDiscountAmount",
+    "discount_amount",
+    "discountAmount",
+  ];
+  if (allowGenericDiscount) discountKeys.push("discount");
+  const reportedDiscount = readAmount(discountKeys);
+
+  if (grossCharge === null && netCharge === null && listedCharge === null) return null;
+
+  const explicitGross = grossCharge;
+  let actualNetCharge = netCharge;
+  let originalCharge = explicitGross;
+  if (actualNetCharge === null && listedCharge !== null) {
+    if (explicitGross !== null && listedCharge < explicitGross) {
+      actualNetCharge = listedCharge;
+    } else {
+      actualNetCharge = Math.max(0, listedCharge - (reportedDiscount || 0));
+      if (originalCharge === null) originalCharge = listedCharge;
+    }
+  }
+  if (originalCharge === null) {
+    originalCharge = actualNetCharge + (reportedDiscount || 0);
+  }
+  const discountAmount = reportedDiscount === null
+    ? Number(Math.max(0, originalCharge - actualNetCharge).toFixed(2))
+    : reportedDiscount;
+  if (discountAmount > originalCharge || actualNetCharge > originalCharge) return null;
+
+  return {
+    chargeBeforeDiscount: Number(originalCharge.toFixed(2)),
+    discountAmount: Number(discountAmount.toFixed(2)),
+    actualCharge: Number(actualNetCharge.toFixed(2)),
+  };
+};
+
 export const getNcmResponseRejection = (payload) => {
   const data = payload?.data && typeof payload.data === "object" ? payload.data : payload;
   if (data?.success === false) return String(data.detail || data.message || data.error || "NCM rejected the request");

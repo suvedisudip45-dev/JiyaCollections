@@ -416,6 +416,7 @@ export const receiveCompletedProductionLine = async ({
   quantity,
   unitCogs,
   unitVatAmount = 0,
+  manufacturerPayableRecognizedAtProduction = false,
   vatTreatment = "EXEMPT",
   vatRate = 13,
   vatInvoiceVerified = false,
@@ -446,6 +447,7 @@ export const receiveCompletedProductionLine = async ({
       availableQuantity: quantity,
       unitCogs,
       unitVatAmount,
+      manufacturerPayableRecognizedAtProduction,
       vatTreatment,
       vatRate,
       vatInvoiceVerified,
@@ -460,6 +462,7 @@ export const receiveCompletedProductionLine = async ({
     costLayer.producedQuantity !== quantity ||
     !new Prisma.Decimal(String(costLayer.unitCogs)).equals(String(unitCogs)) ||
     !new Prisma.Decimal(String(costLayer.unitVatAmount)).equals(String(unitVatAmount)) ||
+    costLayer.manufacturerPayableRecognizedAtProduction !== manufacturerPayableRecognizedAtProduction ||
     costLayer.vatTreatment !== vatTreatment ||
     !new Prisma.Decimal(String(costLayer.vatRate)).equals(String(vatRate)) ||
     costLayer.vatInvoiceVerified !== vatInvoiceVerified ||

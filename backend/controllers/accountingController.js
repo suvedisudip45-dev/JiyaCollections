@@ -11,6 +11,18 @@ import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import { buildPartySubledgerReconciliation } from "../services/partySubledgerReconciliationService.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
+import {
+  BALANCE_REPORT_JOURNAL_STATUSES,
+  buildGeneralLedgerBalanceReconciliation,
+} from "../services/accountingLedgerIntegrityService.js";
+import { buildAccountingControlCoverage } from "../services/accountingControlCoverageService.js";
+import {
+  buildManufacturerLogisticsReconciliation,
+  buildManufacturerProductionReconciliation,
+} from "../services/manufacturerLogisticsReconciliationService.js";
+import { buildCustomerRefundPayableReconciliation } from "../services/customerRefundPayableReconciliationService.js";
+import { buildCollaborationFeeReceivableReconciliation } from "../services/collaborationFeeReceivableReconciliationService.js";
+import { buildNcmCarrierFeeReconciliation } from "../services/ncmCarrierFeeReconciliationService.js";
 
 const getNepalDateBoundary = (value, endOfDay = false) => {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
@@ -270,7 +282,7 @@ export const getGeneralLedgerReport = async (req, res) => {
       where: {
         accountId,
         journalEntry: {
-          status: "POSTED",
+          status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
           transactionDate: { lt: start },
         },
       },
@@ -292,7 +304,7 @@ export const getGeneralLedgerReport = async (req, res) => {
       where: {
         accountId,
         journalEntry: {
-          status: "POSTED",
+          status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
           transactionDate: { gte: start, lte: end },
         },
       },
@@ -407,7 +419,7 @@ export const getTrialBalanceReport = async (req, res) => {
         where: {
           accountId: acc.id,
           journalEntry: {
-            status: "POSTED",
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
             transactionDate: { lt: start },
           },
         },
@@ -438,7 +450,7 @@ export const getTrialBalanceReport = async (req, res) => {
         where: {
           accountId: acc.id,
           journalEntry: {
-            status: "POSTED",
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
             transactionDate: { gte: start, lte: end },
           },
         },
@@ -555,7 +567,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       prisma.journalLine.findMany({
         where: {
           journalEntry: {
-            status: "POSTED",
+            status: { in: BALANCE_REPORT_JOURNAL_STATUSES },
             transactionDate: { lte: end },
           },
         },
@@ -722,6 +734,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let bank = 0;
     let ar = 0;
     let codReceivable = 0;
+    let distributorCodReceivable = 0;
     let gatewayClearing = 0;
     let inventory = 0;
     let inputVat = 0;
@@ -731,6 +744,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 
     let ap = 0;
     let manufacturerPayable = 0;
+    let distributorPayable = 0;
     let marketingPartnerPayable = 0;
     let carrierPayable = 0;
     let outputVat = 0;
@@ -751,6 +765,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       else if (code === "1120") bank += cumBal;
       else if (code === "1130") ar += cumBal;
       else if (code === "1170") codReceivable += cumBal;
+      else if (code === "1190") distributorCodReceivable += cumBal;
       else if (code === "1180") gatewayClearing += cumBal;
       else if (code === "1140") inventory += cumBal;
       else if (code === "1150") inputVat += cumBal;
@@ -759,6 +774,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       else if (code === "1590") accumulatedDepreciation += cumBal;
       else if (code === "2110") ap += cumBal;
       else if (code === "2160") manufacturerPayable += cumBal;
+      else if (code === "2190") distributorPayable += cumBal;
       else if (code === "2170") marketingPartnerPayable += cumBal;
       else if (code === "2180") carrierPayable += cumBal;
       else if (code === "2120") outputVat += cumBal;
@@ -772,10 +788,10 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     });
 
     const netFixedAssets = Number((fixedAssetsGross - accumulatedDepreciation).toFixed(2));
-    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + gatewayClearing + inventory + inputVat + supplierAdvances).toFixed(2));
+    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + distributorCodReceivable + gatewayClearing + inventory + inputVat + supplierAdvances).toFixed(2));
     const totalAssets = Number((totalCurrentAssets + netFixedAssets).toFixed(2));
 
-    const totalCurrentLiabilities = Number((ap + manufacturerPayable + marketingPartnerPayable + carrierPayable + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
+    const totalCurrentLiabilities = Number((ap + manufacturerPayable + distributorPayable + marketingPartnerPayable + carrierPayable + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
     const totalLongTermLiabilities = Number(bankLoans.toFixed(2));
     const totalLiabilities = Number((totalCurrentLiabilities + totalLongTermLiabilities).toFixed(2));
 
@@ -833,6 +849,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
             bank,
             accountsReceivable: ar,
             codReceivable,
+            distributorCodReceivable,
             gatewayClearing,
             inventory,
             inputVat,
@@ -850,6 +867,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           currentLiabilities: {
             accountsPayable: ap,
             manufacturerPayable,
+            distributorPayable,
             marketingPartnerPayable,
             carrierPayable,
             outputVat,
@@ -889,7 +907,30 @@ export const getRealtimeFinancialStatements = async (req, res) => {
 export const getSubledgerReconciliation = async (req, res) => {
   try {
     const partyControlCodes = ["1170", "1190", "2180", "2190"];
-    const [arAccount, apAccount, payables, receivables, accounts, accountingPostingStatus, partyDocumentGroups, partyControlAccounts] = await Promise.all([
+    const [
+      arAccount,
+      apAccount,
+      payables,
+      receivables,
+      accounts,
+      accountingPostingStatus,
+      partyDocumentGroups,
+      partyControlAccounts,
+      ledgerAccounts,
+      journalLineGroups,
+      manufacturerLogisticsJournalLines,
+      manufacturerLogisticsDocuments,
+      manufacturerProductionJournalLines,
+      manufacturerProductionDocuments,
+      customerRefundPayableJournalLines,
+      customerRefundPayables,
+      collaborationFeeInvoices,
+      collaborationFeeDocuments,
+      collaborationFeeJournalLines,
+      ncmCarrierFeeAccrualJournalLines,
+      ncmCarrierFeeDocuments,
+      ncmCarrierFeeSettlementJournalLines,
+    ] = await Promise.all([
       prisma.account.findUnique({ where: { accountCode: "1130" } }),
       prisma.account.findUnique({ where: { accountCode: "2110" } }),
       prisma.accountPayable.findMany({ where: { status: { in: ["UNPAID", "PARTIALLY_PAID"] } } }),
@@ -912,7 +953,197 @@ export const getSubledgerReconciliation = async (req, res) => {
         where: { accountCode: { in: partyControlCodes } },
         select: { accountCode: true, currentBalance: true },
       }),
+      prisma.account.findMany({
+        select: {
+          id: true,
+          accountCode: true,
+          accountName: true,
+          normalBalance: true,
+          currentBalance: true,
+        },
+        orderBy: { accountCode: "asc" },
+      }),
+      prisma.journalLine.groupBy({
+        by: ["accountId"],
+        where: {
+          journalEntry: { status: { in: BALANCE_REPORT_JOURNAL_STATUSES } },
+        },
+        _sum: { debit: true, credit: true },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2160" } },
+          journalEntry: { is: { sourceType: "MANUFACTURER_LOGISTICS", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          supplierId: true,
+          accountingParty: { select: { partyType: true, sourceEntityId: true } },
+          journalEntry: { select: { sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "MANUFACTURER_LOGISTICS" },
+        select: {
+          side: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          party: { select: { partyType: true, sourceEntityId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2160" } },
+          journalEntry: { is: { sourceType: "MANUFACTURER_PRODUCTION", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          supplierId: true,
+          accountingParty: { select: { partyType: true, sourceEntityId: true } },
+          journalEntry: { select: { sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "MANUFACTURER_PRODUCTION" },
+        select: {
+          side: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          party: { select: { partyType: true, sourceEntityId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2110" } },
+          journalEntry: {
+            is: {
+              sourceType: { in: ["SALES_RETURN", "ORDER_EXCHANGE"] },
+              status: "POSTED",
+            },
+          },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.accountPayable.findMany({
+        where: { referenceType: { in: ["CUSTOMER_REFUND", "CUSTOMER_EXCHANGE_REFUND"] } },
+        select: {
+          referenceType: true,
+          referenceId: true,
+          totalAmount: true,
+          paidAmount: true,
+          remainingBalance: true,
+          status: true,
+        },
+      }),
+      prisma.collaborationFeeInvoice.findMany({
+        select: {
+          id: true,
+          invoiceNumber: true,
+          status: true,
+          totalAmount: true,
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "RECEIVABLE", sourceType: "COLLABORATION_FEE" },
+        select: {
+          id: true,
+          side: true,
+          sourceType: true,
+          sourceId: true,
+          originalAmount: true,
+          allocatedAmount: true,
+          remainingAmount: true,
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "1130" } },
+          journalEntry: { is: { sourceType: "COLLABORATION_FEE_INVOICE", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2180" } },
+          journalEntry: { is: { sourceType: "NCM_CARRIER_FEE_ACCRUAL", status: "POSTED" } },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { sourceType: true, sourceId: true } },
+        },
+      }),
+      prisma.accountingDocument.findMany({
+        where: { side: "PAYABLE", sourceType: "NCM_CARRIER_FEE" },
+        select: {
+          side: true,
+          sourceType: true,
+          sourceId: true,
+          originalAmount: true,
+          remainingAmount: true,
+          allocations: { select: { amount: true, journalEntryId: true } },
+        },
+      }),
+      prisma.journalLine.findMany({
+        where: {
+          account: { is: { accountCode: "2180" } },
+          journalEntry: {
+            is: {
+              sourceType: "PAYMENT",
+              sourceId: { startsWith: "NCM-REMIT-" },
+              status: "POSTED",
+            },
+          },
+        },
+        select: {
+          debit: true,
+          credit: true,
+          journalEntry: { select: { id: true, sourceType: true, sourceId: true } },
+        },
+      }),
     ]);
+
+    const collaborationDocumentIds = collaborationFeeDocuments.map((document) => document.id);
+    const collaborationFeeAllocations = collaborationDocumentIds.length
+      ? await prisma.accountingAllocation.findMany({
+        where: { documentId: { in: collaborationDocumentIds } },
+        select: { documentId: true, journalEntryId: true, amount: true },
+      })
+      : [];
+    const collaborationReceiptJournalIds = [
+      ...new Set(collaborationFeeAllocations.map((allocation) => allocation.journalEntryId).filter(Boolean)),
+    ];
+    const [collaborationReceiptAllocations, collaborationReceiptJournals] = collaborationReceiptJournalIds.length
+      ? await Promise.all([
+        prisma.accountingAllocation.findMany({
+          where: { journalEntryId: { in: collaborationReceiptJournalIds } },
+          select: { documentId: true, journalEntryId: true, amount: true },
+        }),
+        prisma.journalEntry.findMany({
+          where: { id: { in: collaborationReceiptJournalIds } },
+          select: {
+            id: true,
+            status: true,
+            lines: {
+              where: { account: { is: { accountCode: "1130" } } },
+              select: { debit: true, credit: true },
+            },
+          },
+        }),
+      ])
+      : [[], []];
 
     const arControlBalance = Number(arAccount?.currentBalance || 0);
     const sumReceivables = receivables.reduce((acc, r) => acc + Number(r.remainingBalance || 0), 0);
@@ -925,23 +1156,57 @@ export const getSubledgerReconciliation = async (req, res) => {
       documentGroups: partyDocumentGroups,
       accounts: partyControlAccounts,
     });
+    const generalLedgerBalances = buildGeneralLedgerBalanceReconciliation({
+      accounts: ledgerAccounts,
+      journalLineGroups,
+    });
+    const accountingControlCoverage = buildAccountingControlCoverage({ accounts: ledgerAccounts });
+    const manufacturerLogisticsReconciliation = buildManufacturerLogisticsReconciliation({
+      journalLines: manufacturerLogisticsJournalLines,
+      documents: manufacturerLogisticsDocuments,
+    });
+    const manufacturerProductionReconciliation = buildManufacturerProductionReconciliation({
+      journalLines: manufacturerProductionJournalLines,
+      documents: manufacturerProductionDocuments,
+    });
+    const customerRefundPayableReconciliation = buildCustomerRefundPayableReconciliation({
+      journalLines: customerRefundPayableJournalLines,
+      payables: customerRefundPayables,
+    });
+    const collaborationFeeReceivableReconciliation = buildCollaborationFeeReceivableReconciliation({
+      invoices: collaborationFeeInvoices,
+      documents: collaborationFeeDocuments,
+      journalLines: collaborationFeeJournalLines,
+      documentAllocations: collaborationFeeAllocations,
+      allocations: collaborationReceiptAllocations,
+      collectionJournals: collaborationReceiptJournals,
+    });
+    const ncmCarrierFeeReconciliation = buildNcmCarrierFeeReconciliation({
+      accrualJournalLines: ncmCarrierFeeAccrualJournalLines,
+      documents: ncmCarrierFeeDocuments,
+      settlementJournalLines: ncmCarrierFeeSettlementJournalLines,
+    });
 
     res.json({
       success: true,
       coverageStatus: "PARTIAL",
       coverageGaps: [
-        "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
-        "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-        "Party-level checks below cover only the listed NCM and distributor source types; historical and other-party documents still require migration and reconciliation.",
+        "Legacy AR checks only account 1130; collaboration fee invoices are checked separately below, while COD, gateway, and other receivables remain incomplete.",
+        "Legacy AP checks account 2110; accepted-production, local-freight, and platform-funded customer refund sources are checked separately below, while settlement clearing, legacy delivery accruals, and other manufacturer, marketing-partner, and carrier balances remain incomplete.",
+        "Party-level checks below cover only the listed NCM and distributor sources; carrier-fee accrual, bill, allocation, and remittance clearing is checked separately below, while historical and other-party documents remain incomplete.",
         "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
+        "GL balances are compared with journal-derived balances; any opening balance not represented by a posted journal remains unresolved.",
+        `${accountingControlCoverage.unreconciledCount} configured balance-sheet control accounts do not yet have complete operational subledger reconciliation.`,
       ],
       reconciliation: {
         coverageStatus: "PARTIAL",
         coverageGaps: [
-          "Legacy AR checks only account 1130; COD and gateway controls require document-level reconciliation.",
-          "Legacy AP checks only account 2110; manufacturer, marketing-partner, and carrier controls are not fully linked to bills and allocations.",
-          "Party-level checks below cover only the listed NCM and distributor source types; historical and other-party documents still require migration and reconciliation.",
+          "Legacy AR checks only account 1130; collaboration fee invoices are checked separately below, while COD, gateway, and other receivables remain incomplete.",
+          "Legacy AP checks account 2110; accepted-production, local-freight, and platform-funded customer refund sources are checked separately below, while settlement clearing, legacy delivery accruals, and other manufacturer, marketing-partner, and carrier balances remain incomplete.",
+          "Party-level checks below cover only the listed NCM and distributor sources; carrier-fee accrual, bill, allocation, and remittance clearing is checked separately below, while historical and other-party documents remain incomplete.",
           "Delivery-sale accounting events are tracked below; other source events without journals are not yet exhaustively reconciled.",
+          "GL balances are compared with journal-derived balances; any opening balance not represented by a posted journal remains unresolved.",
+          `${accountingControlCoverage.unreconciledCount} configured balance-sheet control accounts do not yet have complete operational subledger reconciliation.`,
         ],
         accountsReceivable: {
           glControlAccount: "1130 Accounts Receivable",
@@ -960,6 +1225,13 @@ export const getSubledgerReconciliation = async (req, res) => {
           isReconciled: Math.abs(apControlBalance - sumPayables) <= 0.05,
         },
         partySubledgers,
+        generalLedgerBalances,
+        accountingControlCoverage,
+        customerRefundPayableReconciliation,
+        collaborationFeeReceivableReconciliation,
+        ncmCarrierFeeReconciliation,
+        manufacturerProductionReconciliation,
+        manufacturerLogisticsReconciliation,
         cashAndBank: {
           glControlAccounts: "Explicitly mapped Treasury asset accounts",
           ...cashAndBankReconciliation,
@@ -1073,4 +1345,3 @@ export const reopenFiscalYearController = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
-

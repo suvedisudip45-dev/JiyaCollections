@@ -259,13 +259,16 @@ export const payManufacturerSettlement = async (req, res) => {
           client: tx,
         });
         if (!journal?.id) throw new Error("Accounting journal could not be posted for the settlement.");
-        const documentAllocation = request.requestType === "PRODUCTION"
+        const documentAllocation = ["PRODUCTION", "LOGISTICS"].includes(request.requestType)
           ? await allocateManufacturerPaymentToDocuments({
               manufacturerId: request.manufacturerId,
               amount,
               journalEntryId: journal.id,
               idempotencyKey: `MFG-SETTLEMENT-ALLOCATION:${payout.id}`,
-              notes: `Production settlement ${request.id}`,
+              sourceTypes: request.requestType === "LOGISTICS"
+                ? ["MANUFACTURER_LOGISTICS"]
+                : ["MANUFACTURER_PRODUCTION", "MANUFACTURER_DELIVERY_COGS"],
+              notes: `${request.requestType} settlement ${request.id}`,
               client: tx,
             })
           : null;

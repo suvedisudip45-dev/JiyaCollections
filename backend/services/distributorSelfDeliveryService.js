@@ -5,7 +5,10 @@ import { enqueueDeliveredSaleAccounting } from "./accountingOutboxService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
 import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
-import { accrueDistributorDeliveryEarning } from "./distributorServiceEarningService.js";
+import {
+  accrueDistributorDeliveryEarning,
+  accrueDistributorServiceCharge,
+} from "./distributorServiceEarningService.js";
 import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
@@ -652,6 +655,7 @@ export const processSelfDeliveryReturn = async ({
   inspectionEvidenceUrl,
   actorContext = {},
   client = prisma,
+  accrueServiceCharge = accrueDistributorServiceCharge,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
   if (!assignmentIdOrOrderId) throw fail("Order or Assignment ID is required.", 400);
@@ -738,6 +742,7 @@ export const processSelfDeliveryReturn = async ({
       stockLocation = await tx.inventoryLocation.create({
         data: {
           locationKey: `DIST_${distributorId}_STOCK`,
+          name: `Distributor ${distributorId} stock`,
           kind: "DISTRIBUTOR",
           distributorId,
           inventoryOwner: "PLATFORM",
@@ -753,6 +758,7 @@ export const processSelfDeliveryReturn = async ({
       damagedLocation = await tx.inventoryLocation.create({
         data: {
           locationKey: `DIST_${distributorId}_DAMAGED`,
+          name: `Distributor ${distributorId} damaged stock`,
           kind: "DAMAGED",
           distributorId,
           inventoryOwner: "PLATFORM",
@@ -885,14 +891,17 @@ export const processSelfDeliveryReturn = async ({
           await tx.inventoryDiscrepancy.create({
             data: {
               distributorId,
+              inventoryLocationId: damagedLocation.id,
               inventorySkuId: sku.id,
-              discrepancyType: "DAMAGED",
+              discrepancyType: damageType || "DELIVERY_DAMAGE",
+              custodyStage: "DISTRIBUTOR_RETURN",
               quantity,
-              damageType: damageType || "DELIVERY_DAMAGE",
               details: `Self-delivery customer return damage: ${reason}. Notes: ${damageNotes || notes || "No additional notes"}`,
+              reportedBy: actorContext.actorId || null,
               reportedByRole: "DISTRIBUTOR",
-              reportedByAccountId: actorContext.actorId || null,
+              evidence: [inspectionEvidenceUrl],
               status: "OPEN",
+              idempotencyKey: `DISTRIBUTOR_RETURN_DAMAGE:${approvedReturn.id}:${sku.id}`,
             },
           });
         }
@@ -923,6 +932,29 @@ export const processSelfDeliveryReturn = async ({
         inspectionResult: hasDamagedItems ? "PARTIAL" : "RESTOCKABLE",
         inspectedAt: now,
       },
+    });
+    const distributorProfile = await tx.distributor.findUnique({
+      where: { id: distributorId },
+      select: { id: true, name: true },
+    });
+    if (!distributorProfile) throw fail("Distributor profile not found while recording the return service charge.", 404);
+    const returnRateCard = await resolveActiveRateCard({
+      distributorId,
+      effectiveAt: now,
+      client: tx,
+    });
+    await accrueServiceCharge({
+      distributorId,
+      distributorName: distributorProfile.name,
+      assignmentId: assignment.id,
+      orderId: order.id,
+      sourceId: customerReturn.id,
+      rateCardId: returnRateCard.rateCardId || null,
+      serviceType: "RETURN",
+      chargeAmount: returnRateCard.returnCharge,
+      vatRate: returnRateCard.vatRate,
+      effectiveAt: now,
+      client: tx,
     });
     const logisticsPayable = await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
     if (logisticsPayable) {

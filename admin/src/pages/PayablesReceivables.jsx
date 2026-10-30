@@ -139,7 +139,7 @@ const PayablesReceivables = ({ token }) => {
   const [mfgSubTab, setMfgSubTab] = useState("manufacturers"); // "manufacturers" | "orders"
   const [loading, setLoading] = useState(true);
   const [tab, setTab]       = useState("payables");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get("search") || "");
   const [catFilter, setCatFilter] = useState("ALL");
   const [showAddP, setShowAddP]   = useState(false);
   const [showAddR, setShowAddR]   = useState(false);

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../App";
 
 const REASON_LABELS = {
@@ -26,6 +27,11 @@ const STATUS_STYLES = {
 
 const formatMoney = (amount) => `${currency}${Number(amount || 0).toLocaleString("en-NP")}`;
 const formatDate = (date) => date ? new Date(date).toLocaleString() : "Not recorded";
+const formatOrderDate = (date) => date ? new Date(Number(date)).toLocaleDateString() : "Not recorded";
+const readable = (value) => String(value || "").replace(/_/g, " ");
+const periodLabel = (journalEntry) => journalEntry
+  ? `${journalEntry.accountingPeriod?.periodName || "Period unavailable"}${journalEntry.fiscalYear?.name ? ` ${journalEntry.fiscalYear.name}` : ""}`
+  : null;
 
 const ExchangeRequestsPanel = ({ token }) => {
   const [requests, setRequests] = useState([]);
@@ -182,6 +188,54 @@ const ExchangeRequestsPanel = ({ token }) => {
               <div><p className="text-slate-400">Customer</p><p className="font-semibold text-slate-800">{request.customer?.name || request.customerName}</p><p className="text-slate-500">{request.customer?.phone || request.customerPhone || "No phone"}</p></div>
               <div><p className="text-slate-400">Manufacturer</p><p className="font-semibold text-slate-800">{request.manufacturerName || "Not assigned"}</p></div>
               <div><p className="text-slate-400">Return reason</p><p className="font-semibold text-slate-800">{REASON_LABELS[request.reasonCode] || request.reasonCode}</p><p className="text-slate-600">{request.reasonDetails || "No extra details"}</p></div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-[10px] font-bold uppercase text-slate-500">Financial &amp; accounting summary</p>
+              <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <p><span className="text-slate-400">Original invoice</span><br /><span className="font-semibold text-slate-800">{formatMoney(request.order?.amount)} · {formatOrderDate(request.order?.date)}</span></p>
+                <p><span className="text-slate-400">Replacement value</span><br /><span className="font-semibold text-slate-800">{formatMoney(request.replacementTotalValue)}</span></p>
+                <p><span className="text-slate-400">Requested item value</span><br /><span className="font-semibold text-slate-800">{formatMoney(request.originalTotalValue)} · Difference {formatMoney(request.priceDifference)}</span></p>
+                <p><span className="text-slate-400">Route / logistics</span><br /><span className="font-semibold text-slate-800">{isNcmRoute ? "NCM Courier" : isDistributorRoute ? "Distributor Self-Delivery" : "Unconfirmed"} · {formatMoney(request.ncmTotalCharge ?? request.logisticsSettlementAmount)}</span><br /><span className="text-slate-500">Payer: {isNcmRoute ? request.ncmChargePayer || "MERCHANT" : isDistributorRoute ? "MERCHANT" : "Unconfirmed"}</span></p>
+              </div>
+              {isNcmRoute && Number(request.priceDifferenceCodAmount || 0) > 0 && (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  Customer upgrade payment: {formatMoney(request.priceDifferenceCodAmount)}. NCM only transports the replacement; the assigned distributor records the customer payment and submits screenshot evidence for Admin verification.
+                </p>
+              )}
+              {isNcmRoute && Number(request.priceDifference || 0) < 0 && (
+                <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  Customer refund: {formatMoney(Math.abs(Number(request.priceDifference)))}. The assigned distributor pays the customer and submits screenshot evidence for Admin verification; the resulting amount is payable to the distributor.
+                </p>
+              )}
+              {request.distributorCashEvents?.map((payment) => (
+                <div key={payment.id} className="mt-2 rounded-md border border-slate-200 bg-white p-2 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-800">
+                      {payment.eventType === "EXCHANGE_UPGRADE_COLLECTION" ? "Upgrade collected" : "Downgrade refunded"} · {formatMoney(payment.amount)} · {readable(payment.status)}
+                    </span>
+                    {payment.evidenceUrl && <a href={payment.evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">View payment screenshot</a>}
+                  </div>
+                  {payment.externalReference && <p className="mt-1 text-slate-500">Reference: {payment.externalReference}</p>}
+                  {payment.status === "PENDING_VERIFICATION" && (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button disabled={busyId === request.id} onClick={() => postAction(request.id, "payment-review", { cashEventId: payment.id, decision: "VERIFY" }, "Distributor payment evidence verified")} className="rounded-md bg-emerald-700 px-2 py-1.5 font-bold text-white disabled:opacity-50">Verify payment</button>
+                      <button disabled={busyId === request.id} onClick={() => postAction(request.id, "payment-review", { cashEventId: payment.id, decision: "REJECT", reviewNotes: decisionReasons[request.id] || "" }, "Payment evidence rejected")} className="rounded-md bg-rose-700 px-2 py-1.5 font-bold text-white disabled:opacity-50">Reject evidence</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {request.journalEntry ? (
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 pt-2 text-xs">
+                  <Link to={`/journal-entries?search=${encodeURIComponent(request.journalEntry.journalNumber)}`} className="font-bold text-blue-700 underline">
+                    Journal {request.journalEntry.journalNumber}
+                  </Link>
+                  <span className="text-emerald-700">Posted to period: {periodLabel(request.journalEntry)}</span>
+                  {request.taxCreditNoteNumber && <span className="text-slate-600">Credit note: {request.taxCreditNoteNumber}</span>}
+                </div>
+              ) : (
+                <p className="mt-3 border-t border-slate-200 pt-2 text-xs font-semibold text-amber-800">Exchange accounting journal not posted yet.</p>
+              )}
             </div>
 
             <div className="border-t border-slate-100 pt-3">

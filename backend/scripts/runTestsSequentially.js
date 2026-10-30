@@ -14,6 +14,7 @@ const databaseIntegrationTests = new Set([
   "customerAndPartnerCardFlow.test.js",
   "customerOwnershipRegression.test.js",
   "marketingBenefitRandomAllocation.test.js",
+  "operationalFlawsResolution.test.js",
   "settlementIdempotencyAndRevert.test.js",
 ]);
 

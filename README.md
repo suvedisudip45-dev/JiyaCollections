@@ -185,10 +185,15 @@ ADMIN_PASSWORD="adminpassword"
 VITE_BACKEND_URL=http://localhost:4000
 ```
 
-### Return and exchange schema rollout
-From `backend/`, apply the additive migration, seed the new RBAC permissions, and regenerate Prisma Client before starting the API:
+### Prisma migration baseline
+
+The migration history is squashed into `backend/prisma/migrations/0_init`, generated from the current `backend/prisma/schema.prisma`. Fresh databases should apply this baseline with `npx prisma migrate deploy` from `backend/`; do not run the baseline SQL against an existing database whose tables already exist.
+
+Existing databases must retain their data and must not apply `0_init` as a new schema migration. Before deploying to one, back it up and coordinate a migration-history cutover for its `_prisma_migrations` table; verify the live schema matches the baseline first. This repository change does not connect to a database or rewrite deployed migration records. After the cutover, create future schema changes as new Prisma migrations and apply them with `npx prisma migrate deploy`.
+
+### RBAC and Prisma Client refresh
+After applying the baseline to a fresh database or deploying a later migration that changes permissions or the Prisma schema, run the relevant seed/client-generation steps from `backend/` before starting the API:
 ```bash
-npx prisma migrate deploy
 npm run seed
 npx prisma generate
 ```

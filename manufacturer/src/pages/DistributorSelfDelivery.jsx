@@ -79,6 +79,15 @@ const DistributorSelfDelivery = () => {
   const [exchangeInspectionItems, setExchangeInspectionItems] = useState([]);
   const [exchangeInspectionNotes, setExchangeInspectionNotes] = useState("");
   const [submittingExchange, setSubmittingExchange] = useState(false);
+  const [exchangePaymentToSubmit, setExchangePaymentToSubmit] = useState(null);
+  const [exchangePaymentForm, setExchangePaymentForm] = useState({
+    amount: "",
+    paymentMethod: "MOBILE_WALLET",
+    externalReference: "",
+    evidenceFile: null,
+    idempotencyKey: "",
+  });
+  const [submittingExchangePayment, setSubmittingExchangePayment] = useState(false);
 
   const loadOrders = useCallback(async ({ preserveBatchResults = false } = {}) => {
     if (!preserveBatchResults) setBatchResults([]);
@@ -382,6 +391,47 @@ const DistributorSelfDelivery = () => {
     );
   };
 
+  const openExchangePaymentEvidence = (request) => {
+    setExchangePaymentToSubmit(request);
+    setExchangePaymentForm({
+      amount: Math.abs(Number(request.priceDifference || 0)).toFixed(2),
+      paymentMethod: "MOBILE_WALLET",
+      externalReference: "",
+      evidenceFile: null,
+      idempotencyKey: window.crypto.randomUUID(),
+    });
+  };
+
+  const submitExchangePaymentEvidence = async (event) => {
+    event.preventDefault();
+    if (!exchangePaymentToSubmit || submittingExchangePayment) return;
+    if (!exchangePaymentForm.evidenceFile) {
+      toast.error("Upload a JPG or PNG screenshot of the customer payment.");
+      return;
+    }
+    setSubmittingExchangePayment(true);
+    try {
+      const formData = new FormData();
+      formData.append("amount", exchangePaymentForm.amount);
+      formData.append("paymentMethod", exchangePaymentForm.paymentMethod);
+      formData.append("externalReference", exchangePaymentForm.externalReference);
+      formData.append("idempotencyKey", exchangePaymentForm.idempotencyKey);
+      formData.append("evidence", exchangePaymentForm.evidenceFile);
+      const response = await axios.post(
+        `${backendUrl}/api/returns/exchange/distributor/${exchangePaymentToSubmit.id}/payment-evidence`,
+        formData,
+        { headers: { token } },
+      );
+      toast.success(response.data.message || "Exchange payment screenshot submitted for Admin verification.");
+      setExchangePaymentToSubmit(null);
+      await loadOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not submit exchange payment evidence.");
+    } finally {
+      setSubmittingExchangePayment(false);
+    }
+  };
+
   const filteredOrders = orders.filter((o) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
@@ -520,7 +570,11 @@ const DistributorSelfDelivery = () => {
                 )}
               </article>
             ))}
-            {exchangeRequests.map((request) => (
+            {exchangeRequests.map((request) => {
+              const difference = Number(request.priceDifference || 0);
+              const paymentEvidence = request.distributorCashEvents?.[0];
+              const isNcmSettlement = request.deliveryRoute === "NCM" && difference !== 0;
+              return (
               <article key={request.id} className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
                 <p className="text-xs font-bold text-[#171717]">Exchange · Order #{String(request.orderId || "").slice(0, 8).toUpperCase()}</p>
                 <p className="mt-1 text-[11px] text-[#575757]">{request.customerName || "Customer"} · {request.reasonDetails || request.reasonCode}</p>
@@ -533,6 +587,27 @@ const DistributorSelfDelivery = () => {
                 <p className="mt-2 text-[11px] text-[#575757]">
                   Replacement: {(Array.isArray(request.replacementItems) ? request.replacementItems : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
                 </p>
+                {isNcmSettlement && (
+                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-[11px] font-semibold text-amber-900">
+                      {difference > 0
+                        ? `Collect the NPR ${Math.abs(difference).toFixed(2)} upgrade payment from the customer.`
+                        : `Pay the customer NPR ${Math.abs(difference).toFixed(2)} for the downgrade.`}
+                      {" "}NCM transports the replacement only; upload the online payment screenshot for Admin verification.
+                    </p>
+                    {paymentEvidence && (
+                      <p className={`mt-2 text-[10px] font-semibold ${paymentEvidence.status === "VERIFIED" ? "text-emerald-800" : paymentEvidence.status === "REJECTED" ? "text-rose-800" : "text-amber-800"}`}>
+                        Evidence {paymentEvidence.status.replace(/_/g, " ").toLowerCase()} · {paymentEvidence.externalReference || "No transaction reference"}
+                      </p>
+                    )}
+                    {paymentEvidence?.evidenceUrl && <a href={paymentEvidence.evidenceUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[10px] font-semibold text-blue-700 underline">View submitted screenshot</a>}
+                    {paymentEvidence?.status !== "PENDING_VERIFICATION" && paymentEvidence?.status !== "VERIFIED" && (
+                      <button type="button" onClick={() => openExchangePaymentEvidence(request)} className="mt-2 rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white">
+                        {paymentEvidence?.status === "REJECTED" ? "Resubmit payment evidence" : "Record payment & upload screenshot"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {!request.inspectedAt && (
                   <button
                     type="button"
@@ -564,7 +639,8 @@ const DistributorSelfDelivery = () => {
                   </button>
                 )}
               </article>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
@@ -945,6 +1021,51 @@ const DistributorSelfDelivery = () => {
               <button type="button" onClick={() => setExchangeToInspect(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
               <button type="submit" disabled={submittingExchange} className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
                 {submittingExchange ? "Processing..." : "Confirm receipt & inspection"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {exchangePaymentToSubmit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form onSubmit={submitExchangePaymentEvidence} className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <div>
+              <h2 className="text-base font-bold text-[#171717]">Record NCM exchange payment</h2>
+              <p className="mt-1 text-xs text-[#575757]">
+                {Number(exchangePaymentToSubmit.priceDifference || 0) > 0
+                  ? "Record the upgrade payment received from the customer."
+                  : "Record the downgrade refund paid to the customer."}
+                {" "}The screenshot is stored securely for Admin verification.
+              </p>
+            </div>
+            <label className="block text-xs font-semibold text-[#575757]">
+              Amount
+              <input value={exchangePaymentForm.amount} readOnly className="mt-1 w-full rounded-lg border border-[#dedbd3] bg-[#f8f7f4] p-2 text-xs font-semibold" />
+            </label>
+            <label className="block text-xs font-semibold text-[#575757]">
+              Payment method
+              <select value={exchangePaymentForm.paymentMethod} onChange={(event) => setExchangePaymentForm((current) => ({ ...current, paymentMethod: event.target.value }))} className="mt-1 w-full rounded-lg border border-[#dedbd3] bg-white p-2 text-xs">
+                <option value="MOBILE_WALLET">Mobile wallet</option>
+                <option value="BANK_TRANSFER">Bank transfer</option>
+                <option value="CARD">Card</option>
+                <option value="CASH">Cash</option>
+              </select>
+            </label>
+            {exchangePaymentForm.paymentMethod !== "CASH" && (
+              <label className="block text-xs font-semibold text-[#575757]">
+                Transaction reference
+                <input required value={exchangePaymentForm.externalReference} onChange={(event) => setExchangePaymentForm((current) => ({ ...current, externalReference: event.target.value }))} className="mt-1 w-full rounded-lg border border-[#dedbd3] p-2 text-xs" />
+              </label>
+            )}
+            <label className="block text-xs font-semibold text-[#575757]">
+              Payment screenshot (JPG/PNG)
+              <input required type="file" accept="image/jpeg,image/png" onChange={(event) => setExchangePaymentForm((current) => ({ ...current, evidenceFile: event.target.files?.[0] || null }))} className="mt-1 block w-full text-xs" />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] pt-3">
+              <button type="button" onClick={() => setExchangePaymentToSubmit(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
+              <button type="submit" disabled={submittingExchangePayment} className="rounded-lg bg-amber-800 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {submittingExchangePayment ? "Submitting..." : "Submit for Admin verification"}
               </button>
             </div>
           </form>
