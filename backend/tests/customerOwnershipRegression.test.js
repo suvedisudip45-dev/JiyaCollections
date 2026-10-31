@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "../config/db.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 import { createCampaign, generateBatch } from "../services/marketingCardService.js";
 import {
   verifyCustomerCardCode,
@@ -48,6 +49,7 @@ test("customer cannot verify or activate another customer's delivered marketing 
 
   const order = await prisma.order.create({
     data: {
+      ...createOrderIdentity(),
       userId: customerA.id,
       amount: 2500,
       deliveryFee: 100,

@@ -8,6 +8,7 @@ import {
 import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 
 const parseJSON = (value, fallback = {}) => {
   if (!value) return fallback;
@@ -223,6 +224,7 @@ export const createDistributorDirectOrder = async (req, res) => {
       });
       const created = await tx.order.create({
         data: {
+          ...createOrderIdentity(),
           userId: linkedUser?.id || (isWalkIn ? "GUEST_WALK_IN" : "GUEST_PHONE_ORDER"),
           items: frozenItems,
           amount,

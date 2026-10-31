@@ -6,6 +6,7 @@ import { createManufacturerCostSnapshot } from "../services/manufacturerCostSnap
 import { accrueCollaborationSalesForOrder } from "../services/collaborationSalesService.js";
 import { postDeliveredOrderAccounting } from "../services/accountingPostingEngine.js";
 import { allocateProductionLayersForOrderItem, transitionOrderProductionAllocations } from "../services/manufacturerProductionService.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 
 const parseJSON = (val, fallback = []) => {
   if (!val) return fallback;
@@ -225,6 +226,7 @@ export const createDirectOrder = async (req, res) => {
     const order = await prisma.$transaction(async (tx) => {
       const createdOrder = await tx.order.create({
         data: {
+        ...createOrderIdentity(),
         userId: loyaltyRewardApplied?.userId || (isWalkIn ? "GUEST_WALK_IN" : "GUEST_PHONE_ORDER"),
         items: acceptedItems,
         amount: netAmount,

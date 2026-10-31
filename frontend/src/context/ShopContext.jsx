@@ -359,12 +359,12 @@ const ShopContextProvider = (props) => {
     }
   };
 
-  const resolveLocationPrices = async ({ items, province, district, eligibilityMode = "WHOLE_BASKET" }) => {
+  const resolveLocationPrices = async ({ items, province, district, ncmBranch = "" }) => {
     const response = await axios.post(backendUrl + "/api/product/resolve-prices", {
       items,
       province,
       district,
-      eligibilityMode,
+      ncmBranch,
     });
     if (!response.data?.success) {
       throw new Error(response.data?.message || "Unable to verify location pricing");
@@ -388,7 +388,11 @@ const ShopContextProvider = (props) => {
       const province = address?.province || address?.state || "";
       const district = address?.district || "";
       if (province && district) {
-        setPriceLocation({ province, district });
+        setPriceLocation({
+          province,
+          district,
+          ncmBranch: address?.ncmBranch || address?.city || "",
+        });
       } else {
         setPriceLocation(null);
       }

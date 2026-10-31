@@ -620,6 +620,7 @@ model ComboBundleProduct {
 
 model Order {
   id                          String              @id @default(uuid())
+  orderReference              String              @unique @db.VarChar(15)
   userId                      String
   items                       Json
   amount                      Float
@@ -650,6 +651,7 @@ model Order {
   assignedDistributorGiftInventoryId String?
   giftStatus                  String              @default("NONE") // NONE | PENDING_PACKING | RESERVED | DELIVERED | RETURNED | LOST
   locationDiscountManufacturerId String?
+  locationDiscountDistributorId String?
   locationDiscountProvince    String?             @db.VarChar(120)
   locationDiscountDistrict    String?             @db.VarChar(120)
   locationPricingSnapshot     Json?
@@ -1851,6 +1853,7 @@ model Distributor {
   stockLocations       InventoryLocation[] @relation("DistributorStockLocations")
   destinationTransfers StockTransfer[]     @relation("TransferDestinationDistributor")
   locations DistributorLocation[]
+  locationProductDiscounts LocationProductDiscount[]
   assignments OrderAssignment[]
   deliveryChargeNegotiations DistributorDeliveryChargeNegotiation[]
   settlementRequests DistributorSettlementRequest[]
@@ -2866,6 +2869,8 @@ model ManufacturerLocation {
 model LocationProductDiscount {
   id                 String   @id @default(uuid())
   productId          String
+  distributorId      String?
+  scopeKey           String   @default("ALL") @db.VarChar(191)
   province           String   @db.VarChar(120)
   district           String   @db.VarChar(120)
   discountPercentage Decimal  @default(0) @db.Decimal(5, 2)
@@ -2873,10 +2878,12 @@ model LocationProductDiscount {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  distributor        Distributor? @relation(fields: [distributorId], references: [id], onDelete: Cascade)
 
-  @@unique([productId, province, district])
+  @@unique([productId, province, district, scopeKey], map: "LocProductDisc_product_location_scope_key")
   @@index([province, district, isActive])
   @@index([productId, isActive])
+  @@index([distributorId, isActive])
 }
 
 // Per-manufacturer inventory for each product

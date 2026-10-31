@@ -39,7 +39,7 @@ export const validateTransferRequestAvailability = (requestLines, balances) => {
     const available = availableBySku.get(line.inventorySkuId) || 0;
     if (line.requestedQuantity > available) {
       throw fail(
-        `Requested quantity for SKU ${line.inventorySkuId} exceeds the manufacturer's available factory stock (${available}).`,
+        `The manufacturer has only ${available} units available for this product variant, but you requested ${line.requestedQuantity}. Reduce the quantity or choose another variant.`,
         "INSUFFICIENT_FACTORY_STOCK",
         409,
       );

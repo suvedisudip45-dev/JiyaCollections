@@ -25,6 +25,7 @@ test("uses the selected NCM branch instead of a city mapping", () => {
   const input = buildDeliveryInput({
     order: {
       id: "order-1",
+      orderReference: "A1B2C3D4E5F6071",
       amount: 1000,
       address: JSON.stringify({
         name: "Customer",
@@ -47,6 +48,7 @@ test("uses the distributor pickup branch as origin and customer's selected branc
   const input = buildDeliveryInput({
     order: {
       id: "order-distributor",
+      orderReference: "A1B2C3D4E5F6072",
       amount: 1000,
       address: JSON.stringify({
         name: "Customer",
@@ -71,6 +73,7 @@ test("uses customer city as the destination when no specific NCM branch is selec
   const input = buildDeliveryInput({
     order: {
       id: "order-distributor-city",
+      orderReference: "A1B2C3D4E5F6073",
       amount: 1000,
       address: JSON.stringify({
         name: "Customer",

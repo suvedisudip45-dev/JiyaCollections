@@ -202,11 +202,12 @@ export const sanitizeNcmWebhookPayload = (payload) => {
   return sanitize(payload);
 };
 
-export const generateVendorReference = ({ order, assignment }) => {
-  const orderKey = String(order?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ORD";
-  const assignmentKey = String(assignment?.id || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase() || "ASS";
-  const suffix = crypto.createHash("sha256").update(`${order?.id || ""}|${assignment?.id || ""}`).digest("hex").slice(0, 4).toUpperCase();
-  return `NCM${orderKey}${assignmentKey}${suffix}`.slice(0, 15);
+export const generateVendorReference = ({ order }) => {
+  const orderReference = String(order?.orderReference || "").trim();
+  if (!orderReference) {
+    throw new Error("Order reference is required before creating an NCM delivery.");
+  }
+  return orderReference;
 };
 
 const runTransaction = async (handler, { retries = 1 } = {}) => {

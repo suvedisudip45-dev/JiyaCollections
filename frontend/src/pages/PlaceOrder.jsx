@@ -87,7 +87,7 @@ const PlaceOrder = () => {
         Number(comboBundlePurchase?.quantity || 1)
       ).find((variant) => variant.size.toLowerCase() === String(comboBundlePurchase?.size || "").toLowerCase())
     : null;
-  const orderSubtotal = comboBundleData
+  const baseOrderSubtotal = comboBundleData
     ? Number(comboBundleData.sellingPrice || comboBundleData.calculatedPrice || 0) * Number(comboBundlePurchase?.quantity || 1)
     : getCartAmount();
 
@@ -106,6 +106,27 @@ const PlaceOrder = () => {
       quantity: Number(comboBundlePurchase?.quantity || 1),
     })).filter((item) => item.productId);
   }, [cartPricingItems, comboBundleData, comboBundlePurchase?.quantity, checkoutBundleVariant]);
+  const hasComboBundle = Boolean(comboBundleData);
+  const checkoutPriceKey = JSON.stringify({
+    province: formData.province,
+    district: formData.district,
+    ncmBranch: formData.city || formData.ncmBranch || "",
+    items: cartPricingItems,
+  });
+  const hasMatchingPriceResult = locationPriceResult.key === checkoutPriceKey;
+  const locationPriceQuote = hasMatchingPriceResult ? locationPriceResult.quote : null;
+  const locationPriceStatus = hasMatchingPriceResult
+    ? locationPriceResult.status
+    : !hasComboBundle && cartPricingItems.length > 0
+      ? "loading"
+      : "idle";
+  const locationPriceError = hasMatchingPriceResult ? locationPriceResult.error : "";
+  const hasCurrentLocationQuote = Boolean(
+    locationPriceQuote && locationPriceStatus === "ready"
+  );
+  const orderSubtotal = hasCurrentLocationQuote
+    ? locationPriceQuote.items.reduce((total, item) => total + Number(item.lineTotal || 0), 0)
+    : baseOrderSubtotal;
   const shippingQuoteKey = JSON.stringify({
     province: formData.province,
     district: formData.district,
@@ -130,23 +151,13 @@ const PlaceOrder = () => {
       : "idle";
   const shippingQuoteError = hasMatchingShippingQuote ? shippingQuoteResult.error : "";
   const shippingStockShortages = hasMatchingShippingQuote ? shippingQuoteResult.stockShortages : [];
-  const hasComboBundle = Boolean(comboBundleData);
-  const checkoutPriceKey = JSON.stringify({
-    province: formData.province,
-    district: formData.district,
-    items: cartPricingItems,
-  });
-  const hasMatchingPriceResult = locationPriceResult.key === checkoutPriceKey;
-  const locationPriceQuote = hasMatchingPriceResult ? locationPriceResult.quote : null;
-  const locationPriceStatus = hasMatchingPriceResult
-    ? locationPriceResult.status
-    : !hasComboBundle && cartPricingItems.length > 0
-      ? "loading"
-      : "idle";
-  const locationPriceError = hasMatchingPriceResult ? locationPriceResult.error : "";
-  const hasCurrentLocationQuote = Boolean(
-    locationPriceQuote && locationPriceStatus === "ready"
-  );
+  const locationPricingStatusMessage = locationPriceQuote?.fulfillmentSelectionError
+    ? `${locationPriceQuote.fulfillmentSelectionError.message} Standard product pricing is shown.`
+    : locationPriceQuote?.fulfillmentConfirmed
+      ? locationPriceQuote.locationDiscountApplied
+        ? "Distributor stock verified; matching place-wise pricing is applied."
+        : "Distributor stock verified; standard product pricing applies."
+      : "Standard product pricing applies.";
   const locationPriceByVariant = new Map((hasCurrentLocationQuote ? locationPriceQuote.items : []).map((item) => [
     `${item.productId}|${item.size}|${item.color}`,
     item,
@@ -398,7 +409,7 @@ const PlaceOrder = () => {
       items: cartPricingItems,
       province: formData.province,
       district: formData.district,
-      eligibilityMode: "WHOLE_BASKET",
+      ncmBranch: formData.city || formData.ncmBranch || "",
     }).then((response) => {
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to resolve the delivery-location price");
       if (!cancelled) {
@@ -426,7 +437,9 @@ const PlaceOrder = () => {
     backendUrl,
     cartPricingItems,
     checkoutPriceKey,
+    formData.city,
     formData.district,
+    formData.ncmBranch,
     formData.province,
     hasComboBundle,
     locationPriceRetry,
@@ -1125,9 +1138,7 @@ const PlaceOrder = () => {
                         </button>
                       </span>
                     )}
-                    {hasCurrentLocationQuote && (locationPriceQuote.locationDiscountManufacturerId
-                      ? "Local hub stock verified; qualifying location discounts are applied."
-                      : "No mapped local hub can fulfill the full cart; standard product pricing applies.")}
+                    {hasCurrentLocationQuote && locationPricingStatusMessage}
                   </p>
                 )}
                 <div className="mt-3 divide-y divide-gray-100">
@@ -1157,7 +1168,7 @@ const PlaceOrder = () => {
                           <p className="mt-0.5 text-[10px] font-semibold uppercase text-gray-500">{categoryNames || "Uncategorized"}</p>
                           {entry.product.description && <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-gray-500">{entry.product.description}</p>}
                           <p className="mt-1 text-[10px] text-gray-600">Size {entry.size}{entry.color ? ` · ${entry.color}` : ""} · Qty {entry.quantity}</p>
-                          {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% location discount · price locked at checkout</p>}
+                          {entry.discountSource === "LOCATION" && <p className="mt-1 text-[10px] font-semibold text-emerald-700">{entry.locationDiscountPercentage}% place-wise discount · price locked at checkout</p>}
                         </div>
                         <p className="shrink-0 font-bold text-gray-900">Rs. {entry.lineTotal.toLocaleString()}</p>
                       </div>

@@ -312,7 +312,7 @@ export const getAdminDistributorExchanges = async (req, res) => {
         take: pagination.limit,
         include: {
           customer: { select: { id: true, name: true, phone: true, email: true } },
-          order: { select: { id: true, date: true, status: true, amount: true, paymentMethod: true, payment: true } },
+          order: { select: { id: true, orderReference: true, date: true, status: true, amount: true, paymentMethod: true, payment: true } },
           events: {
             orderBy: { occurredAt: "desc" },
             take: 5,

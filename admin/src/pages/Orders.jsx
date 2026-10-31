@@ -192,7 +192,7 @@ const AdminOrderCard = ({
             </span>
           )}
           <span className="font-mono font-bold text-gray-900">
-            #{order._id?.slice(-8).toUpperCase()}
+            #{order.orderReference}
           </span>
           <span className="text-gray-400">•</span>
           <span className="text-gray-500">{orderDateStr}</span>
@@ -353,7 +353,7 @@ const MonitorOrderCard = ({ order, onPrint, customerLoyaltyMap }) => {
       {/* Top Bar */}
       <div className="px-5 py-3 border-b border-gray-100 bg-slate-50/60 rounded-t-xl flex flex-wrap items-center justify-between gap-2 text-xs">
         <div className="flex items-center gap-2.5">
-          <span className="font-mono font-bold text-gray-900">#{order._id?.slice(-8).toUpperCase()}</span>
+          <span className="font-mono font-bold text-gray-900">#{order.orderReference}</span>
           <span className="text-gray-400">•</span>
           <span className="text-gray-500">{orderDateStr}</span>
           {order.address?.source && (
@@ -609,8 +609,8 @@ const Orders = ({ token }) => {
         const fullName = `${order.address?.firstName || ""} ${order.address?.lastName || ""}`.toLowerCase();
         const phone = (order.address?.phone || "").toLowerCase();
         const city = (order.address?.city || "").toLowerCase();
-        const orderId = (order._id || "").toLowerCase();
-        return fullName.includes(query) || phone.includes(query) || city.includes(query) || orderId.includes(query);
+        const orderIds = `${order.orderReference || ""} ${order._id || ""}`.toLowerCase();
+        return fullName.includes(query) || phone.includes(query) || city.includes(query) || orderIds.includes(query);
       }
       return true;
     });
@@ -633,8 +633,8 @@ const Orders = ({ token }) => {
         const fullName = `${order.address?.firstName || ""} ${order.address?.lastName || ""}`.toLowerCase();
         const phone = (order.address?.phone || "").toLowerCase();
         const city = (order.address?.city || "").toLowerCase();
-        const orderId = (order._id || "").toLowerCase();
-        return fullName.includes(query) || phone.includes(query) || city.includes(query) || orderId.includes(query);
+        const orderIds = `${order.orderReference || ""} ${order._id || ""}`.toLowerCase();
+        return fullName.includes(query) || phone.includes(query) || city.includes(query) || orderIds.includes(query);
       }
       return true;
     });
@@ -809,7 +809,7 @@ const Orders = ({ token }) => {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search by customer name, phone, city, order ID..."
+                  placeholder="Search by customer name, phone, city, order reference..."
                   value={searchQuery}
                   onChange={(e) => { setSearchQuery(e.target.value); setAdminPage(1); }}
                   className="w-full pl-9 pr-3 py-1.5 text-xs bg-gray-50/50 border border-gray-200 rounded-lg focus:bg-white focus:border-indigo-500"
@@ -881,7 +881,7 @@ const Orders = ({ token }) => {
                   <tr className="hover:bg-gray-50/80">
                     <td className="px-4 py-3">
                       <input type="checkbox" checked={selectedOrderIds.has(order._id)} onChange={() => toggleSelectOrder(order._id)} aria-label={`Select order ${order._id}`} className="mr-2" />
-                      <span className="font-mono font-bold">#{order._id?.slice(-8).toUpperCase()}</span>
+                      <span className="font-mono font-bold">#{order.orderReference}</span>
                       <p className="mt-1 text-[10px] text-gray-500">{new Date(order.date).toLocaleDateString()}</p>
                     </td>
                     <td className="px-4 py-3">{`${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim() || "Customer"}</td>
@@ -1009,7 +1009,7 @@ const Orders = ({ token }) => {
                 <React.Fragment key={order._id || index}>
                   <tr className="hover:bg-gray-50/80">
                     <td className="px-4 py-3">
-                      <span className="font-mono font-bold">#{order._id?.slice(-8).toUpperCase()}</span>
+                      <span className="font-mono font-bold">#{order.orderReference}</span>
                       <p className="mt-1 text-[10px] text-gray-500">{new Date(order.date).toLocaleDateString()}</p>
                     </td>
                     <td className="px-4 py-3">
@@ -1400,7 +1400,7 @@ export const AdminOrderDetail = ({ token }) => {
           <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
             {source === "monitor" ? "Storefront order" : "Admin-created order"}
           </p>
-          <h1 className="mt-1 text-xl font-bold text-gray-900">Order #{orderId.slice(-8).toUpperCase()}</h1>
+          <h1 className="mt-1 break-all font-mono text-xl font-bold text-gray-900">Order ID: {order?._id || order?.id || orderId}</h1>
         </div>
         <Link to="/orders" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50">
           Back to orders

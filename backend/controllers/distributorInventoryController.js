@@ -18,65 +18,236 @@ const actorContext = (req) => ({
   correlationId: req.correlationId || null,
 });
 
-const responseError = (res, error) => {
-  console.error("decreaseDistributorInventory error:", error);
+const responseError = (res, error, action = "decreaseDistributorInventory", fallbackMessage = "Unable to record distributor inventory decrease.") => {
+  console.error(`${action} error:`, error);
   return res.status(error.statusCode || 500).json({
     success: false,
-    message: error.statusCode ? error.message : "Unable to record distributor inventory decrease.",
+    message: error.statusCode ? error.message : fallbackMessage,
     ...(error.code ? { code: error.code } : {}),
   });
+};
+
+const getDistributorInventoryLocations = (distributorId) => prisma.inventoryLocation.findMany({
+  where: {
+    kind: { in: ["DISTRIBUTOR", "DAMAGED"] },
+    distributorId,
+    inventoryOwner: "PLATFORM",
+    isActive: true,
+  },
+  select: { id: true, kind: true },
+});
+
+const inventoryQuantities = (balances, locations) => {
+  const hubLocationIds = new Set(locations.filter((location) => location.kind === "DISTRIBUTOR").map((location) => location.id));
+  const hubBalances = balances.filter((balance) => hubLocationIds.has(balance.locationId));
+  const damagedQty = balances
+    .filter((balance) => locations.some((location) => location.id === balance.locationId && location.kind === "DAMAGED"))
+    .reduce((total, balance) => total + balance.quantityOnHand, 0);
+  const quantity = hubBalances.reduce((total, balance) => total + balance.quantityOnHand, 0);
+  const reservedQty = hubBalances.reduce((total, balance) => total + balance.reservedQuantity, 0);
+  return {
+    quantity,
+    reservedQty,
+    availableQty: Math.max(0, quantity - reservedQty),
+    damagedQty,
+  };
 };
 
 export const getDistributorInventory = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
-    const location = await prisma.inventoryLocation.findFirst({
-      where: {
-        kind: "DISTRIBUTOR",
-        distributorId: req.distributorId,
-        inventoryOwner: "PLATFORM",
+    const locations = await getDistributorInventoryLocations(req.distributorId);
+    if (!locations.length) return res.json(paginatedResponse("inventory", [], pagination, 0));
+    const locationIds = locations.map((location) => location.id);
+    if (req.query.groupBy !== "product") {
+      const distributorLocationIds = locations
+        .filter((location) => location.kind === "DISTRIBUTOR")
+        .map((location) => location.id);
+      const skuWhere = {
         isActive: true,
-      },
-      select: { id: true },
-    });
-    if (!location) return res.json(paginatedResponse("inventory", [], pagination, 0));
+        product: { published: true, deletedAt: null },
+        balances: { some: { locationId: { in: distributorLocationIds } } },
+      };
+      const [skus, total] = await prisma.$transaction([
+        prisma.inventorySku.findMany({
+          where: skuWhere,
+          orderBy: [{ product: { name: "asc" } }, { size: "asc" }, { color: "asc" }],
+          skip: pagination.skip,
+          take: pagination.limit,
+          include: {
+            product: { select: { id: true, name: true, image: true, price: true, category: true } },
+          },
+        }),
+        prisma.inventorySku.count({ where: skuWhere }),
+      ]);
+      const balances = skus.length
+        ? await prisma.inventoryBalance.findMany({
+            where: {
+              locationId: { in: locationIds },
+              inventorySkuId: { in: skus.map((sku) => sku.id) },
+            },
+            select: { locationId: true, inventorySkuId: true, quantityOnHand: true, reservedQuantity: true },
+          })
+        : [];
+      const balancesBySku = new Map();
+      for (const balance of balances) {
+        const skuBalances = balancesBySku.get(balance.inventorySkuId) || [];
+        skuBalances.push(balance);
+        balancesBySku.set(balance.inventorySkuId, skuBalances);
+      }
+      const inventory = skus.map((sku) => ({
+        inventorySkuId: sku.id,
+        productId: sku.productId,
+        productName: sku.product.name,
+        product: sku.product,
+        size: sku.size,
+        color: sku.color,
+        ...inventoryQuantities(balancesBySku.get(sku.id) || [], locations),
+      }));
+      return res.json(paginatedResponse("inventory", inventory, pagination, total));
+    }
 
-    const where = {
-      locationId: location.id,
-      inventorySku: { isActive: true, product: { published: true } },
+    const skuWhere = {
+      isActive: true,
+      balances: { some: { locationId: { in: locationIds } } },
     };
-    const [balances, total] = await prisma.$transaction([
-      prisma.inventoryBalance.findMany({
-        where,
-        orderBy: [{ inventorySku: { product: { name: "asc" } } }, { inventorySku: { size: "asc" } }, { inventorySku: { color: "asc" } }],
+    const productWhere = {
+      published: true,
+      deletedAt: null,
+      inventorySkus: { some: skuWhere },
+    };
+    const [products, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where: productWhere,
+        orderBy: { name: "asc" },
         skip: pagination.skip,
         take: pagination.limit,
         include: {
-          inventorySku: {
-            include: {
-              product: {
-                select: { id: true, name: true, image: true, price: true, category: true },
+          inventorySkus: {
+            where: skuWhere,
+            orderBy: [{ size: "asc" }, { color: "asc" }],
+            select: {
+              id: true,
+              size: true,
+              color: true,
+              balances: {
+                where: { locationId: { in: locationIds } },
+                select: { locationId: true, quantityOnHand: true, reservedQuantity: true },
               },
             },
           },
         },
       }),
-      prisma.inventoryBalance.count({ where }),
+      prisma.product.count({ where: productWhere }),
     ]);
-    const inventory = balances.map((balance) => ({
-      inventorySkuId: balance.inventorySkuId,
-      productId: balance.inventorySku.productId,
-      productName: balance.inventorySku.product.name,
-      product: balance.inventorySku.product,
-      size: balance.inventorySku.size,
-      color: balance.inventorySku.color,
-      quantity: balance.quantityOnHand,
-      reservedQty: balance.reservedQuantity,
-      availableQty: Math.max(0, balance.quantityOnHand - balance.reservedQuantity),
-    }));
+    const inventory = products.map((product) => {
+      const variants = product.inventorySkus.map((sku) => ({
+        inventorySkuId: sku.id,
+        size: sku.size,
+        color: sku.color,
+        ...inventoryQuantities(sku.balances, locations),
+      }));
+      const totals = variants.reduce((result, variant) => ({
+        quantity: result.quantity + variant.quantity,
+        reservedQty: result.reservedQty + variant.reservedQty,
+        availableQty: result.availableQty + variant.availableQty,
+        damagedQty: result.damagedQty + variant.damagedQty,
+      }), { quantity: 0, reservedQty: 0, availableQty: 0, damagedQty: 0 });
+      return {
+        productId: product.id,
+        productName: product.name,
+        product: {
+          id: product.id,
+          name: product.name,
+          image: product.image,
+          price: product.price,
+          category: product.category,
+        },
+        ...totals,
+        variants,
+      };
+    });
     return res.json(paginatedResponse("inventory", inventory, pagination, total));
   } catch (error) {
-    return responseError(res, error);
+    return responseError(res, error, "getDistributorInventory", "Unable to load distributor inventory.");
+  }
+};
+
+export const getDistributorInventorySkuDetails = async (req, res) => {
+  try {
+    const inventorySkuId = String(req.params.inventorySkuId || "").trim();
+    if (!inventorySkuId || inventorySkuId.length > 191) {
+      return res.status(400).json({ success: false, message: "A valid product variant is required." });
+    }
+    const locations = await getDistributorInventoryLocations(req.distributorId);
+    const locationIds = locations.map((location) => location.id);
+    if (!locationIds.length) {
+      return res.status(404).json({ success: false, message: "This product variant is not in your hub inventory." });
+    }
+    const sku = await prisma.inventorySku.findFirst({
+      where: {
+        id: inventorySkuId,
+        isActive: true,
+        product: { published: true, deletedAt: null },
+        balances: { some: { locationId: { in: locationIds } } },
+      },
+      select: {
+        id: true,
+        productId: true,
+        size: true,
+        color: true,
+        product: { select: { id: true, name: true, image: true, price: true, category: true } },
+      },
+    });
+    if (!sku) {
+      return res.status(404).json({ success: false, message: "This product variant is not in your hub inventory." });
+    }
+    const pagination = getPagination({ ...req.query, limit: Math.min(Number(req.query.limit) || 20, 50) });
+    const ledgerWhere = {
+      inventorySkuId,
+      OR: [
+        { sourceLocationId: { in: locationIds } },
+        { destinationLocationId: { in: locationIds } },
+      ],
+    };
+    const [balances, movements, total] = await prisma.$transaction([
+      prisma.inventoryBalance.findMany({
+        where: { inventorySkuId, locationId: { in: locationIds } },
+        select: { locationId: true, quantityOnHand: true, reservedQuantity: true },
+      }),
+      prisma.inventoryLedgerEntry.findMany({
+        where: ledgerWhere,
+        include: {
+          sourceLocation: { select: { name: true, kind: true } },
+          destinationLocation: { select: { name: true, kind: true } },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.inventoryLedgerEntry.count({ where: ledgerWhere }),
+    ]);
+    return res.json({
+      success: true,
+      inventory: {
+        inventorySkuId: sku.id,
+        productId: sku.productId,
+        productName: sku.product.name,
+        product: sku.product,
+        size: sku.size,
+        color: sku.color,
+        ...inventoryQuantities(balances, locations),
+      },
+      movements,
+      pagination: {
+        page: pagination.page,
+        limit: pagination.limit,
+        total,
+        totalPages: Math.ceil(total / pagination.limit),
+      },
+    });
+  } catch (error) {
+    return responseError(res, error, "getDistributorInventorySkuDetails", "Unable to load variant details.");
   }
 };
 

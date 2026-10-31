@@ -11,6 +11,7 @@ import {
 import {
   decreaseDistributorInventory,
   getDistributorInventory,
+  getDistributorInventorySkuDetails,
 } from "../controllers/distributorInventoryController.js";
 import {
   createDistributorDirectOrder,
@@ -119,6 +120,13 @@ distributorRouter.post(
   authorize("distributor:inventory_decrease"),
   setDistributorContext,
   decreaseDistributorInventory,
+);
+distributorRouter.get(
+  "/inventory/:inventorySkuId/details",
+  authenticate,
+  authorize("distributor:inventory_read"),
+  setDistributorContext,
+  getDistributorInventorySkuDetails,
 );
 distributorRouter.get(
   "/inventory",

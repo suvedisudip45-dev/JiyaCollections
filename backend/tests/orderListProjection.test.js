@@ -6,6 +6,7 @@ import { buildOrderListItem } from '../controllers/orderController.js';
 test('buildOrderListItem preserves required order list fields while removing unnecessary internal values', () => {
   const order = {
     id: 'ord_1',
+    orderReference: 'ORDER1234567890',
     userId: 'user_1',
     items: [{ productId: 'p1', size: 'M', color: 'Black', quantity: 1, name: 'Tshirt' }],
     amount: 1200,
@@ -46,6 +47,7 @@ test('buildOrderListItem preserves required order list fields while removing unn
   const result = buildOrderListItem(order);
 
   assert.equal(result.id, 'ord_1');
+  assert.equal(result.orderReference, 'ORDER1234567890');
   assert.equal(result.amount, 1200);
   assert.equal(result.deliveryFee, 50);
   assert.equal(result.items[0].name, 'Tshirt');

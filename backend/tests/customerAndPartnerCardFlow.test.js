@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { prisma } from "../config/db.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 import {
   createCampaign,
   generateBatch,
@@ -50,6 +51,7 @@ async function runTest() {
   // 3. Setup Delivered Order with products
   const order = await prisma.order.create({
     data: {
+      ...createOrderIdentity(),
       userId: customer.id,
       amount: 4500,
       deliveryFee: 100,
@@ -193,6 +195,7 @@ async function runTest() {
   // Test Partner Card Rejection (e.g. suspicious or fraud)
   const order2 = await prisma.order.create({
     data: {
+      ...createOrderIdentity(),
       userId: customer.id,
       amount: 2000,
       deliveryFee: 100,

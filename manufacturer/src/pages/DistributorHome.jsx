@@ -169,7 +169,8 @@ const DistributorHome = () => {
       (requestQuantities.get(sku.inventorySkuId) || 0) > sku.availableQuantity
     );
     if (exceededSku) {
-      toast.error(`Requested quantity for ${exceededSku.productName} (${exceededSku.size} / ${exceededSku.color}) exceeds the manufacturer's available ${exceededSku.availableQuantity} units.`);
+      const requestedQuantity = requestQuantities.get(exceededSku.inventorySkuId);
+      toast.error(`Only ${exceededSku.availableQuantity} ${exceededSku.productName} (${exceededSku.size} / ${exceededSku.color}) are available from the manufacturer, but you requested ${requestedQuantity}. Reduce the quantity or choose another variant.`);
       return;
     }
     setSaving(true);

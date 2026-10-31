@@ -89,7 +89,7 @@ collaboration activity is accepted by the application.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Order` | `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety; product analytics reads item-level quantity and price snapshots and delivery province/district from this order |
+| `Order` | `id` (internal UUID), unique `orderReference` (15-character uppercase customer/NCM reference), `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `orderReference` is persisted, unique, and used as NCM's vendor reference; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety; product analytics reads item-level quantity and price snapshots and delivery province/district from this order |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items; admin self-delivery monitoring explicitly filters `deliveryType=SELF_DELIVERY` and excludes orders with a `DeliveryOrder` |
 | `ShippingConfig` | `sameDistrictFee`, same/different-province door-to-door and door-to-hub fees, `routeOverrides`, separate door-to-door and door-to-hub split-shipment fees, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tariffs plus optional route exceptions and company-paid return/exchange logistics rates; same-zone deliveries use door-to-door only, while route and split-shipment choices use their configured tariff; approved return/exchange requests snapshot the settlement rate and create an accounts payable after logistics completion |
 | `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `ncmReconciliationRequired`, `ncmReconciliationReason`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; indexes support the NCM admin monitor and pending reconciliation queue |
@@ -100,7 +100,9 @@ collaboration activity is accepted by the application.
 | `NcmSupportTicket` | `ncmTicketId`, `ticketType`, `message`, `status`, `addedOn`, `closedOn`, `lastActivityAt` | compact local ticket index; create/detail/reply/close operations update it, so active/closed lists are served from MySQL without a carrier call; latest comment/reply summaries are retained for activity tracking |
 
 For distributor-assigned customer orders, admins can enter package details and
-request NCM booking from Order Assignments. Confirmed booking data and webhook
+request NCM booking from Order Assignments. The persisted `Order.orderReference`
+is displayed to customers and sent to NCM as `vref_id`; it is capped at 15
+uppercase alphanumeric characters to fit the carrier reference field. Confirmed booking data and webhook
 status changes are persisted on the delivery and related order records.
 Customer-order status reads use this database state rather than polling NCM's
 status/detail APIs. The webhook is acknowledged after event and status
@@ -193,16 +195,16 @@ The schema includes explicit coverage and pricing metadata for Nepal-specific lo
 | `LocationMapping` | `code`, `name`, `type`, `province` | canonical Nepal province/district code map used for normalization and matching |
 | `NcmBranch` | `name`, `provinceName`, `districtName`, `coveredAreas`, `isActive` | active branch and covered-area choices exposed by the shared location lookup API |
 | `ManufacturerLocation` | `manufacturerId`, `province`, `district`, `isActive` | local dispatch coverage by manufacturer, keyed to deliverable province/district pairs |
-| `LocationProductDiscount` | `productId`, `province`, `district`, `discountPercentage`, `isActive` | per-product local discount overrides by geography |
+| `LocationProductDiscount` | `productId`, `distributorId`, `province`, `district`, `discountPercentage`, `isActive` | per-product discount rule keyed to the customer district and expected fulfilling distributor; `distributorId` may be null for legacy all-distributor rules |
 
 The `Order` row also captures the resolved local-pricing decision in:
 
-- `locationDiscountManufacturerId`
+- `locationDiscountDistributorId`
 - `locationDiscountProvince`
 - `locationDiscountDistrict`
 - `locationPricingSnapshot`
 
-These fields lock the order to the backend-resolved local discount and assigned manufacturer so checkout cannot drift to stale frontend pricing after a stock or assignment change.
+These fields lock each order shipment to the backend-resolved local discount and distributor. Pricing uses the distributor selected by checkout from active distributor-ledger stock; it does not depend on `ManufacturerLocation` or `ManufacturerInventory`. The legacy `locationDiscountManufacturerId` field remains for historical records only.
 
 ### 3.8 Marketing cards and campaigns
 
@@ -322,7 +324,7 @@ Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Or
 - An `Order` can be associated with `DeliveryOrder`, `LetterDelivery`, and `MarketingCardOrder` records.
 - `ManufacturerInventory` is keyed by `(manufacturerId, productId)` and tracks both physical stock and reserved stock.
 - Manufacturer portal stock adjustments write one `ManufacturerInventoryMovement` per changed variant in the same transaction as the inventory update. The movement captures prior/current quantities, signed delta, stock-in/out direction, reason, optional note, and actor; the manufacturer history endpoint is scoped to the authenticated manufacturer.
-- `LocationMapping` supplies canonical Nepal geography; `ManufacturerLocation` and `LocationProductDiscount` drive local discount selection, while `DistributorLocation` stores service districts used by prioritized customer-order allocation. `DistributorReview` is linked to one delivered `Order` and contributes to its distributor's `qualityRating` and `ratingCount`.
+- `LocationMapping` supplies canonical Nepal geography; `LocationProductDiscount` is scoped to the customer district and expected fulfilling distributor. `ManufacturerLocation` is managed independently and does not determine customer pricing. `DistributorLocation` stores service districts used by prioritized customer-order allocation. `DistributorReview` is linked to one delivered `Order` and contributes to its distributor's `qualityRating` and `ratingCount`.
 - `MarketingCampaign` → `MarketingCardBatch` → `MarketingCard` forms the card issuance chain.
 - `OrderExchangeRequest` is the main exchange transaction record and is accompanied by an audit event log (`OrderExchangeEvent`).
 - System-level audit events complement existing domain ledgers and access-management logs; do not replace those records or write directly to the audit log from business request paths. Use the shared audit service so event enqueueing participates in the business transaction.

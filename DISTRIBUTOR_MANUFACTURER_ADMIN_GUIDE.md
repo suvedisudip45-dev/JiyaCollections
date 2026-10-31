@@ -819,7 +819,8 @@ creation, and distributor-owned assignment are transactional. No
 
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
-| `GET /api/distributor/inventory` | Distributor | `distributor:inventory_read` | Read available ledger stock at the active hub. |
+| `GET /api/distributor/inventory` | Distributor | `distributor:inventory_read` | Read paginated SKU stock for existing workflows; `?groupBy=product` returns product-level totals with size/color SKU quantities. |
+| `GET /api/distributor/inventory/:inventorySkuId/details` | Distributor | `distributor:inventory_read` | Read an owned SKU's current quantities and paginated ledger movement history. |
 | `GET /api/distributor/orders/direct` | Distributor | `distributor:direct_order_read` | List the active hub's direct orders. |
 | `POST /api/distributor/orders/direct` | Distributor | `distributor:direct_order_create` | Create a direct order, snapshot FIFO inventory cost allocations, and deduct the active hub's unreserved ledger stock transactionally. |
 | `PATCH /api/distributor/orders/direct/status` | Distributor | `distributor:direct_order_status_update` | Update an order owned by the active distributor; delivered sales post allocated COGS and payment confirmations clear customer receivables. |

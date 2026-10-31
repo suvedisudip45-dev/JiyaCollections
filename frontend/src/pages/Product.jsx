@@ -126,6 +126,7 @@ const Product = () => {
     quantity,
     province: priceLocation?.province || "",
     district: priceLocation?.district || "",
+    ncmBranch: priceLocation?.ncmBranch || "",
   });
 
   useEffect(() => {
@@ -141,7 +142,7 @@ const Product = () => {
       items: [{ productId: currentProductId, size, color, quantity }],
       province: priceLocation.province,
       district: priceLocation.district,
-      eligibilityMode: "PER_ITEM",
+      ncmBranch: priceLocation.ncmBranch || "",
     }).then((result) => {
       if (active) {
         setVariantPriceQuote({ key: locationPriceKey, ...result.items[0] });
@@ -154,7 +155,7 @@ const Product = () => {
       }
     });
     return () => { active = false; };
-  }, [locationPriceKey, productData?._id, productData?.id, priceLocation?.province, priceLocation?.district]);
+  }, [locationPriceKey, productData?._id, productData?.id, priceLocation?.province, priceLocation?.district, priceLocation?.ncmBranch]);
 
   // Observer for sticky bottom bar
   useEffect(() => {

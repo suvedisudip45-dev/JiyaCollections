@@ -291,12 +291,12 @@ Fields shown are an illustrative subset of the actual product record. Public lis
 {
   "province": "Gandaki Province",
   "district": "Kaski",
-  "eligibilityMode": "PER_ITEM",
+  "ncmBranch": "Kathmandu",
   "items": [{ "productId": "product-id", "size": "M", "color": "Black", "quantity": 1 }]
 }
 ```
 
-Success envelope is `{ "success": true, ...result }`. The result contains an `items` array; each matched line is read in UI using `productId`, `size`, `color`, `effectiveUnitPrice`, `effectiveDiscountPercentage`, `locationDiscountPercentage`, `discountSource`, and `lineTotal`. Request may use `WHOLE_BASKET` instead, especially in cart and checkout. Errors can contain `{ success:false, code, message }`.
+Success envelope is `{ "success": true, ...result }`. The result contains an `items` array; each matched line is read in UI using `productId`, `size`, `color`, `effectiveUnitPrice`, `effectiveDiscountPercentage`, `locationDiscountPercentage`, `discountSource`, and `lineTotal`. The quote also reports `fulfillmentConfirmed` and `locationDiscountApplied` without exposing distributor identity. Checkout may send `ncmBranch` so distributor selection follows the same routing preference as its shipping quote. Place-wise rules match customer province/district, product, and selected distributor; manufacturer coverage is not considered. If no distributor can be selected, the endpoint returns standard pricing plus `fulfillmentSelectionError`; checkout separately blocks order submission when its shipping quote cannot confirm delivery. Errors can contain `{ success:false, code, message }`.
 
 #### Shipping configuration and quote
 
@@ -439,7 +439,7 @@ External map tiles/geocoding are not backend API responses and may fail or be in
 ## 6. State and pricing behavior to preserve
 
 - Storefront product listing is public and only displays published records from the backend. Product detail currently resolves from the shared loaded product list, so route behavior should account for loading and missing IDs.
-- Product `price` and `discount` can be location-adjusted by backend when product list is fetched with province and district. `resolve-prices` returns effective price line-by-line and should be used when basket/selection changes.
+- Product `price` and `discount` can be adjusted by legacy district-wide rules when product list is fetched with province and district. Distributor-specific place-wise rules are resolved by `resolve-prices`, which selects the likely distributor using active distributor-ledger stock and should be used when basket/selection changes.
 - Shipping is dynamic: quote includes customer province/district, order subtotal, item product/variant/quantity and NCM branch; backend can pick likely distributor origin and may respond with split shipment routing and fee. Admin-configured shipping remains authoritative.
 - There is a legacy `delivery_fee` fallback in ShopContext (`50`) and a legacy client helper for instant display. It is not authoritative for checkout; checkout blocks until quote ready. Design should not imply fallback value is a confirmed fee.
 - With a basket that requires products from multiple distributor hubs, backend can create multiple order shipments and return multiple `orderIds`. Keep each shipment visible in Orders; do not merge them into a fictional single fulfillment record.

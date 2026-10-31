@@ -53,7 +53,10 @@ test("stock request cannot exceed unreserved factory stock for any SKU", () => {
       [{ inventorySkuId: "sku-1", requestedQuantity: 6 }],
       factoryBalances,
     ),
-    (error) => error.code === "INSUFFICIENT_FACTORY_STOCK" && error.statusCode === 409,
+    (error) => error.code === "INSUFFICIENT_FACTORY_STOCK" &&
+      error.statusCode === 409 &&
+      error.message === "The manufacturer has only 5 units available for this product variant, but you requested 6. Reduce the quantity or choose another variant." &&
+      !error.message.includes("sku-1"),
   );
   assert.throws(
     () => validateTransferRequestAvailability(

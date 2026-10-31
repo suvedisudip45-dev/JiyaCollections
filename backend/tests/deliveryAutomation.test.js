@@ -19,6 +19,7 @@ import {
   statusEventKey,
   validateNcmDeliveryPackageDetails,
 } from "../services/deliveryService.js";
+import { createOrderIdentity } from "../utils/orderReference.js";
 
 const restoreEnv = (name, value) => {
   if (value === undefined) delete process.env[name];
@@ -97,15 +98,20 @@ test("delivery ownership uses distributor assignment for auto-allocated orders",
   }), false);
 });
 
-test("NCM vendor reference stays short and deterministic", () => {
-  const orderId = "4db7dcc1-dbf3-46eb-8c6c-73fec88611fc";
-  const assignmentId = "50cfd6db-49c5-4781-8acb-8411b4cb3e12";
-  const reference = generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } });
+test("NCM vendor reference matches the customer-facing order reference", () => {
+  const orderReference = "E6A2E77B53A78";
+  assert.equal(generateVendorReference({ order: { orderReference } }), orderReference);
+  assert.throws(() => generateVendorReference({ order: { id: "internal-order-id" } }), /Order reference is required/);
+});
 
-  assert.equal(reference.startsWith("NCM"), true);
-  assert.ok(reference.length <= 15, `Vendor reference is too long: ${reference.length} chars`);
-  assert.equal(generateVendorReference({ order: { id: orderId }, assignment: { id: assignmentId } }), reference);
-  assert.notEqual(reference, `ORDER-${orderId}-V${assignmentId}`);
+test("new orders receive a unique carrier-compatible customer reference", () => {
+  const first = createOrderIdentity();
+  const second = createOrderIdentity();
+
+  assert.match(first.orderReference, /^[A-F0-9]{15}$/);
+  assert.equal(first.orderReference.length, 15);
+  assert.notEqual(first.id, second.id);
+  assert.notEqual(first.orderReference, second.orderReference);
 });
 
 test("NCM status mapping updates assignment state for manufacturer dashboards", () => {
@@ -185,6 +191,7 @@ test("stored NCM webhook payloads redact authentication fields", () => {
 test("delivery payload auto-fills packaging metadata and keeps it editable", () => {
   const order = {
     id: "ord_123",
+    orderReference: "ORD123456789ABC",
     amount: 1500,
     address: JSON.stringify({
       city: "Kathmandu",
@@ -232,6 +239,7 @@ test("NCM package description includes dimensions and quality packaging notes", 
   const input = buildDeliveryInput({
     order: {
       id: "ord_dimensions",
+      orderReference: "ORDDIMS12345678",
       amount: 1500,
       address: JSON.stringify({ city: "Kathmandu", phone: "9800000000", name: "Ram Shrestha", street: "Boudha" }),
       items: JSON.stringify([{ name: "Cotton Shirt" }]),

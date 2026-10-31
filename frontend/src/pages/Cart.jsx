@@ -36,6 +36,7 @@ const Cart = () => {
   const cartPriceKey = JSON.stringify({
     province: priceLocation?.province || "",
     district: priceLocation?.district || "",
+    ncmBranch: priceLocation?.ncmBranch || "",
     items: cartData.map(({ _id, size, color, quantity }) => ({ productId: _id, size, color, quantity })),
   });
 
@@ -50,7 +51,7 @@ const Cart = () => {
     resolveLocationPrices({
       province: priceLocation.province,
       district: priceLocation.district,
-      eligibilityMode: "WHOLE_BASKET",
+      ncmBranch: priceLocation.ncmBranch || "",
       items: cartData.map(({ _id, size, color, quantity }) => ({ productId: _id, size, color, quantity })),
     }).then((result) => {
       if (active) {

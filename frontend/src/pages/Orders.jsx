@@ -500,7 +500,8 @@ const Orders = () => {
         // Search term filter
         if (searchTerm.trim()) {
           const query = searchTerm.toLowerCase().trim();
-          const matchId = (order.id || "").toLowerCase().includes(query);
+          const matchId = (order.id || "").toLowerCase().includes(query) ||
+            (order.orderReference || "").toLowerCase().includes(query);
           const matchCity = (order.address?.city || "").toLowerCase().includes(query);
           const matchItems = (order.items || []).some(
             (item) =>
@@ -800,7 +801,7 @@ const Orders = () => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search order ID, item name..."
+                placeholder="Search order reference, item name..."
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900 focus:bg-white transition"
               />
               {searchTerm && (
@@ -864,7 +865,7 @@ const Orders = () => {
               <table className="w-full min-w-[1050px] border-collapse text-left">
                 <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
                   <tr>
-                    <th className="px-4 py-3">Order ID</th><th className="px-4 py-3">Created At</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Order Status</th><th className="px-4 py-3 text-right">Total Amount</th><th className="px-4 py-3">Payment Status</th><th className="px-4 py-3">Delivered Date</th><th className="px-4 py-3">Actions</th>
+                    <th className="px-4 py-3">Order Reference</th><th className="px-4 py-3">Created At</th><th className="px-4 py-3">Product</th><th className="px-4 py-3">Order Status</th><th className="px-4 py-3 text-right">Total Amount</th><th className="px-4 py-3">Payment Status</th><th className="px-4 py-3">Delivered Date</th><th className="px-4 py-3">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
@@ -877,7 +878,7 @@ const Orders = () => {
 
                     return (
                       <tr key={order.id} className="align-top hover:bg-slate-50/70">
-                        <td className="whitespace-nowrap px-4 py-4 font-mono font-bold text-slate-900">#{order.id.slice(0, 8).toUpperCase()}</td>
+                        <td className="whitespace-nowrap px-4 py-4 font-mono font-bold text-slate-900">#{order.orderReference}</td>
                         <td className="whitespace-nowrap px-4 py-4 text-slate-600">{new Date(order.dateNum).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td>
                         <td className="max-w-56 px-4 py-4"><p className="line-clamp-2 font-semibold text-slate-800">{productNames[0] || "Order items"}</p>{productNames.length > 1 && <p className="mt-1 text-[10px] text-slate-500">+{productNames.length - 1} more product{productNames.length === 2 ? "" : "s"}</p>}{order.assignedGift && <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><Gift className="h-3 w-3" /> Gift included: {order.assignedGift.name}</p>}</td>
                         <td className="whitespace-nowrap px-4 py-4"><span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold ${statusBadge.bg}`}><span className={`h-1.5 w-1.5 rounded-full ${statusBadge.dot}`} />{statusBadge.label}</span></td>
@@ -907,7 +908,7 @@ const Orders = () => {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setCancelOrderTarget(null)}>
           <form onSubmit={submitOrderCancellation} onClick={(event) => event.stopPropagation()} className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Cancel order</h2><p className="text-xs text-slate-500 mt-1">#{cancelOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Cancel order</h2><p className="text-xs text-slate-500 mt-1">#{cancelOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setCancelOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"> <X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Cancellation is available only before NCM accepts the delivery order. After handoff, contact support to request an eligible exchange.</p>
@@ -925,7 +926,7 @@ const Orders = () => {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900">Rate your delivery hub</h2>
-                <p className="text-xs text-slate-500 mt-1">Order #{reviewOrderTarget.id.slice(0, 8).toUpperCase()}</p>
+                <p className="text-xs text-slate-500 mt-1">Order #{reviewOrderTarget.orderReference}</p>
               </div>
               <button type="button" disabled={actionLoading} onClick={() => setReviewOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close review form"><X className="w-5 h-5" /></button>
             </div>
@@ -963,7 +964,7 @@ const Orders = () => {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setExchangeOrderTarget(null)}>
           <form onSubmit={submitExchangeRequest} onClick={(event) => event.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Request an exchange</h2><p className="text-xs text-slate-500 mt-1">Order #{exchangeOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Request an exchange</h2><p className="text-xs text-slate-500 mt-1">Order #{exchangeOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setExchangeOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">The first product and its purchased size/color are selected by default. Set another product’s quantity to choose it; you can include multiple items. Admin approval is required. The marketing card must remain unscanned through pickup of the original product.</p>
@@ -1092,7 +1093,7 @@ const Orders = () => {
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => !actionLoading && setReturnOrderTarget(null)}>
           <form onSubmit={submitReturnRequest} onClick={(event) => event.stopPropagation()} className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-2xl p-5 space-y-4">
             <div className="flex items-start justify-between gap-3">
-              <div><h2 className="text-base font-bold text-slate-900">Request a return</h2><p className="text-xs text-slate-500 mt-1">Order #{returnOrderTarget.id.slice(0, 8).toUpperCase()}</p></div>
+              <div><h2 className="text-base font-bold text-slate-900">Request a return</h2><p className="text-xs text-slate-500 mt-1">Order #{returnOrderTarget.orderReference}</p></div>
               <button type="button" disabled={actionLoading} onClick={() => setReturnOrderTarget(null)} className="p-1 text-slate-400 hover:text-slate-800" aria-label="Close"><X className="w-5 h-5" /></button>
             </div>
             <p className="text-xs text-slate-600">Your request must be approved by an admin. Refund and stock adjustments happen only after the parcel is received and inspected.</p>
@@ -1136,7 +1137,7 @@ const Orders = () => {
                 </p>
                 <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2 mt-0.5">
                   <Truck className="w-5 h-5 text-emerald-400" />
-                  <span>Order #{trackingOrder.id.slice(0, 8).toUpperCase()}</span>
+                  <span>Order #{trackingOrder.orderReference}</span>
                 </h3>
               </div>
               <button
@@ -1365,7 +1366,7 @@ const Orders = () => {
               <div>
                 <h2 id="exchange-details-title" className="text-base font-bold text-slate-900">Exchange request details</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Order #{String(exchangeViewRequest.orderId || "").slice(0, 8).toUpperCase()}
+                  Order #{orders.find((order) => order.id === exchangeViewRequest.orderId)?.orderReference || exchangeViewRequest.orderId}
                 </p>
               </div>
               <button
@@ -1497,7 +1498,7 @@ const Orders = () => {
                 <div className="text-left sm:text-right">
                   <p className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Order Reference</p>
                   <p className="text-base font-mono font-bold text-slate-900">
-                    #{invoiceOrder.id.slice(0, 8).toUpperCase()}
+                    #{invoiceOrder.orderReference}
                   </p>
                   <p className="text-[11px] text-slate-500 mt-0.5">
                     Date: {new Date(invoiceOrder.dateNum).toLocaleDateString()}

@@ -706,7 +706,6 @@ const listProducts = async (req, res) => {
         items: products.map((product) => ({ productId: product.id, quantity: 1 })),
         province,
         district,
-        eligibilityMode: "PER_ITEM",
       });
       products = products.map((product, index) => ({
         ...product,
@@ -796,7 +795,6 @@ const singleProduct = async (req, res) => {
         items: [{ productId, quantity: 1 }],
         province,
         district,
-        eligibilityMode: "PER_ITEM",
       });
       product.globalDiscountPercentage = Number(product.discount || 0);
       product.discount = locationPrices.items[0].effectiveDiscountPercentage;

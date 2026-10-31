@@ -258,7 +258,7 @@ const DeliveryMonitor = ({ token }) => {
       const customerName = `${order.address?.firstName || ""} ${order.address?.lastName || ""}`.trim();
       const matchesSearch =
         !term ||
-        (order.id || row.orderId || "").toLowerCase().includes(term) ||
+        `${order.orderReference || ""} ${order.id || row.orderId || ""}`.toLowerCase().includes(term) ||
         customerName.toLowerCase().includes(term) ||
         (hub.businessName || hub.name || "").toLowerCase().includes(term) ||
         (hub.city || "").toLowerCase().includes(term) ||
@@ -454,7 +454,7 @@ const DeliveryMonitor = ({ token }) => {
                   return (
                     <tr key={row.id} className={`hover:bg-slate-50/80 transition-colors ${isDelivered ? "bg-emerald-50/20" : isActive ? "bg-sky-50/20" : ""}`}>
                       <td className="py-3.5 px-4">
-                        <div className="font-mono font-bold text-slate-900">#{(order.id || row.orderId || row.id).toString().slice(-8).toUpperCase()}</div>
+                        <div className="font-mono font-bold text-slate-900">#{order.orderReference}</div>
                         <div className="text-[11px] text-slate-500 mt-1">{customerName}</div>
                         <div className="text-[11px] text-slate-500">{order.address?.city || "Nepal"}</div>
                       </td>

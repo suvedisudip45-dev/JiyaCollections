@@ -232,10 +232,10 @@ const OrderAssignments = ({ token }) => {
   const filtered = assignments.filter((a) => {
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
-      const orderId = (a.order?.id || a.id).toLowerCase();
+      const orderIds = `${a.order?.orderReference || ""} ${a.order?.id || a.id}`.toLowerCase();
       const hubName = (a.distributor?.name || a.manufacturer?.name || a.manufacturer?.businessName || "").toLowerCase();
       const city = (a.order?.address?.city || a.order?.shippingAddress?.city || "").toLowerCase();
-      return orderId.includes(term) || hubName.includes(term) || city.includes(term);
+      return orderIds.includes(term) || hubName.includes(term) || city.includes(term);
     }
     return true;
   });
@@ -268,7 +268,7 @@ const OrderAssignments = ({ token }) => {
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Search by order ID, distributor, or city..."
+            placeholder="Search by order reference, distributor, or city..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-slate-900"
@@ -320,7 +320,7 @@ const OrderAssignments = ({ token }) => {
               <div key={order.id} className="rounded-lg bg-white p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-48">
-                    <p className="font-mono text-xs font-bold text-slate-900">#{order.id.slice(-8)}</p>
+                    <p className="font-mono text-xs font-bold text-slate-900">#{order.orderReference}</p>
                     <p className="mt-1 text-[11px] font-semibold text-amber-800">
                       Awaiting distributor assignment
                     </p>
@@ -564,7 +564,7 @@ const OrderAssignments = ({ token }) => {
                   Request NCM delivery
                 </h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Order #{ncmAssignment.order?.id?.slice(-8)} · Pickup {ncmAssignment.distributor?.ncmPickupBranch || ncmAssignment.manufacturer?.ncmPickupBranch || "branch not configured"} · Destination {ncmAssignment.order?.address?.ncmBranch || ncmAssignment.order?.address?.city || "not set"}
+                  Order #{ncmAssignment.order?.orderReference} · Pickup {ncmAssignment.distributor?.ncmPickupBranch || ncmAssignment.manufacturer?.ncmPickupBranch || "branch not configured"} · Destination {ncmAssignment.order?.address?.ncmBranch || ncmAssignment.order?.address?.city || "not set"}
                 </p>
               </div>
               <button type="button" onClick={() => setNcmAssignment(null)} className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100" aria-label="Close package details">
@@ -649,7 +649,7 @@ const OrderAssignments = ({ token }) => {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-base font-bold text-slate-900">{activeManualAssignmentId ? "Reassign order to another distributor" : "Manually assign failed order"}</h2>
-                <p className="mt-1 text-xs text-slate-500">Order #{activeManualOrder.id.slice(-8)} · assignment requires enough available distributor ledger stock.</p>
+                <p className="mt-1 text-xs text-slate-500">Order #{activeManualOrder.orderReference} · assignment requires enough available distributor ledger stock.</p>
               </div>
               <button type="button" onClick={() => setActiveManualOrder(null)} aria-label="Close" className="rounded-lg p-1 text-slate-500 hover:bg-slate-100">
                 <X className="h-4 w-4" />

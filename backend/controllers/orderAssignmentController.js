@@ -1211,6 +1211,7 @@ const getUnassignedOrders = async (req, res) => {
         take: pagination.limit,
         select: {
           id: true,
+          orderReference: true,
           items: true,
           address: true,
           amount: true,

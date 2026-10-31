@@ -828,9 +828,9 @@ const CreateOrder = ({ token }) => {
       if (res.data.success) {
         const orderMessage = res.data.message || "Order created successfully.";
         if (res.data.allocation?.status === "PENDING_ASSIGNMENT") {
-          toast.warning(`${orderMessage} (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+          toast.warning(`${orderMessage} (ID: #${res.data.order.orderReference})`);
         } else {
-          toast.success(`${orderMessage} (ID: #${res.data.orderId.slice(-6).toUpperCase()})`);
+          toast.success(`${orderMessage} (ID: #${res.data.order.orderReference})`);
         }
         
         // Store created order object for immediate printing modal
@@ -2021,7 +2021,7 @@ const CreateOrder = ({ token }) => {
               Order Placed Successfully!
             </h3>
             <p className="text-xs text-gray-500 mt-1">
-              Order <strong className="text-gray-800">#{createdOrderForPrint._id?.slice(-8).toUpperCase()}</strong> has been recorded in the database.
+              Order <strong className="text-gray-800">#{createdOrderForPrint.orderReference}</strong> has been recorded in the database.
             </p>
 
             <div className="my-4 p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs text-left space-y-1">

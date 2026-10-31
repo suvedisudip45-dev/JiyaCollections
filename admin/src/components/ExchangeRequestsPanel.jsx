@@ -166,7 +166,7 @@ const ExchangeRequestsPanel = ({ token }) => {
                     {request.status.replace(/_/g, " ")}
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-1">Order #{request.orderId.slice(0, 8).toUpperCase()} · Requested {formatDate(request.createdAt)}</p>
+                <p className="text-xs text-slate-500 mt-1">Order #{request.order?.orderReference || request.orderId} · Requested {formatDate(request.createdAt)}</p>
               </div>
               <p className="text-xs font-semibold text-slate-700">Lifetime returned units: {request.lifetimeReturnedUnits}</p>
             </div>

@@ -243,6 +243,7 @@ export const listAdminNcmDeliveries = async (query = {}, client = prisma) => {
       ? {
           OR: [
             { orderId: { contains: search } },
+            { order: { is: { orderReference: { contains: search } } } },
             { vendorReference: { contains: search } },
             ...(Number.isSafeInteger(Number(search)) && Number(search) > 0
               ? [{ ncmOrderId: Number(search) }]
@@ -272,6 +273,7 @@ export const listAdminNcmDeliveries = async (query = {}, client = prisma) => {
         order: {
           select: {
             id: true,
+            orderReference: true,
             userId: true,
             address: true,
             status: true,

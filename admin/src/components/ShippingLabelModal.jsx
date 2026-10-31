@@ -472,7 +472,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
           </div>
 
           <div className="text-center text-[7px] text-gray-500 mt-1 uppercase tracking-widest">
-            Aama Clothings • Order #{ord._id?.slice(-8).toUpperCase()} • Standard 4x6" Courier Label
+            Aama Clothings • Order #{ord.orderReference} • Standard 4x6" Courier Label
           </div>
         </div>
       </div>
@@ -499,7 +499,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
               <p className="text-xs text-gray-500">
                 {isBatch
                   ? `Ready to print ${orderList.length} labels at once in standard 4x6" thermal format`
-                  : `Order #${currentPreviewOrder._id?.slice(-8).toUpperCase()} • ${(currentPreviewOrder.address?.firstName || "").concat(" ").concat(currentPreviewOrder.address?.lastName || "")}`}
+                  : `Order #${currentPreviewOrder.orderReference} • ${(currentPreviewOrder.address?.firstName || "").concat(" ").concat(currentPreviewOrder.address?.lastName || "")}`}
               </p>
             </div>
           </div>
@@ -766,7 +766,7 @@ const ShippingLabelModal = ({ order, orders = [], currency, onClose }) => {
                   Previewing:{" "}
                   <strong>
                     #
-                    {currentPreviewOrder._id?.slice(-8).toUpperCase()}
+                    {currentPreviewOrder.orderReference}
                   </strong>{" "}
                   -{" "}
                   {(currentPreviewOrder.address?.firstName || "")
