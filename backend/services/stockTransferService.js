@@ -71,6 +71,14 @@ export const normalizeTransferPreparationChecklist = (checklist) => {
 export const isTransferPreparationComplete = (transfer) =>
   TRANSFER_PREPARATION_CHECKS.every((field) => transfer[field] === true);
 
+export const isStockTransferEditable = (transfer) => (
+  Boolean(transfer) &&
+  ["PENDING_ADMIN_APPROVAL", "APPROVED"].includes(transfer.status) &&
+  !isTransferPreparationComplete(transfer) &&
+  !(transfer.shipments || []).length &&
+  !(transfer.lines || []).some((line) => line.dispatchedQuantity > 0 || line.reservedShipmentQuantity > 0)
+);
+
 export const isSameProfileOwner = (manufacturerAccountId, distributorAccountId) =>
   Boolean(manufacturerAccountId && distributorAccountId && manufacturerAccountId === distributorAccountId);
 

@@ -20,6 +20,7 @@ import {
 } from "../controllers/distributorDirectOrderController.js";
 import {
   createStockTransferRequest,
+  editStockTransferRequest,
   receiveStockTransferForRequest,
 } from "../controllers/stockTransferController.js";
 import {
@@ -113,6 +114,13 @@ distributorRouter.post(
   authorize("transfer:distributor_request"),
   setDistributorContext,
   createStockTransferRequest,
+);
+distributorRouter.patch(
+  "/stock-requests/:id",
+  authenticate,
+  authorize("transfer:distributor_request"),
+  setDistributorContext,
+  editStockTransferRequest,
 );
 distributorRouter.post(
   "/stock-requests/:id/receive",

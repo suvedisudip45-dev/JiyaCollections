@@ -1,7 +1,7 @@
 /* eslint-disable react/prop-types */
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
-import { Check, Factory, RefreshCw, X } from "lucide-react";
+import { Check, Factory, Pencil, RefreshCw, X } from "lucide-react";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
@@ -95,6 +95,9 @@ const ManufacturerProductionRequests = ({ token }) => {
   const [notes, setNotes] = useState({});
   const [terms, setTerms] = useState({});
   const [savingId, setSavingId] = useState("");
+  const [editingRequestId, setEditingRequestId] = useState("");
+  const [editDraft, setEditDraft] = useState(null);
+  const [editQuantities, setEditQuantities] = useState({});
   const selectedProduct = products.find((product) => product.id === draft.productId);
   const productVariants = getProductVariants(selectedProduct);
   const requestedLines = productVariants
@@ -183,6 +186,61 @@ const ManufacturerProductionRequests = ({ token }) => {
       toast.error(error.response?.data?.message || "Unable to create production order.");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const beginEdit = (request) => {
+    setEditingRequestId(request.id);
+    setEditDraft({
+      manufacturerId: request.manufacturerId,
+      productId: request.productId,
+      fabricType: request.fabricType || "",
+      gsm: request.gsm ?? "",
+      targetCompletionDate: request.targetCompletionDate
+        ? new Date(request.targetCompletionDate).toISOString().slice(0, 10)
+        : "",
+      adminNote: request.adminNote || "",
+    });
+    setEditQuantities(Object.fromEntries((request.lines || []).map((line) => [
+      `${line.size}\u0000${line.color}`,
+      String(line.quantity),
+    ])));
+  };
+
+  const saveEdit = async (event, request) => {
+    event.preventDefault();
+    const lines = Object.entries(editQuantities)
+      .map(([key, quantity]) => {
+        const [size, color] = key.split("\u0000");
+        return { size, color, quantity: Number(quantity) };
+      })
+      .filter((line) => line.quantity > 0);
+    const total = lines.reduce((sum, line) => sum + line.quantity, 0);
+    if (!total) {
+      toast.error("Enter a positive quantity for at least one size/color SKU.");
+      return;
+    }
+
+    setSavingId(request.id);
+    try {
+      const response = await axios.patch(
+        `${backendUrl}/api/manufacturer-production/admin/requests/${request.id}`,
+        {
+          ...editDraft,
+          lines,
+          batches: [{ batchNumber: "Batch 1", plannedQuantity: total }],
+        },
+        { headers: { token } },
+      );
+      toast.success(response.data.message || "Production order updated.");
+      setEditingRequestId("");
+      setEditDraft(null);
+      setEditQuantities({});
+      await loadRequests();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Unable to update production order.");
+    } finally {
+      setSavingId("");
     }
   };
 
@@ -308,9 +366,70 @@ const ManufacturerProductionRequests = ({ token }) => {
             return <article key={request.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div><h2 className="font-bold text-slate-900">{request.productName}</h2><p className="mt-1 text-xs text-slate-500">{request.manufacturer?.name} · {quantity} units · Requested {new Date(request.requestedAt).toLocaleDateString()}</p></div>
-                <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass[request.status] || "bg-slate-100 text-slate-600"}`}>{request.status.replaceAll("_", " ")}</span>
+                <div className="flex items-center gap-2">
+                  {request.preProductionChecklist?.passed !== true &&
+                    ["PENDING_MANUFACTURER_QUOTE", "PENDING_ADMIN_APPROVAL", "PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "APPROVED"].includes(request.status) && (
+                      <button
+                        type="button"
+                        onClick={() => beginEdit(request)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Pencil size={13} /> Edit order
+                      </button>
+                    )}
+                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusClass[request.status] || "bg-slate-100 text-slate-600"}`}>{request.status.replaceAll("_", " ")}</span>
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">{(request.lines || []).map((line) => <span key={`${line.size}-${line.color}`} className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700">{line.size}{line.color !== "Standard" ? ` / ${line.color}` : ""}: {line.quantity}</span>)}</div>
+              {editingRequestId === request.id && editDraft && (() => {
+                const editProduct = products.find((product) => product.id === editDraft.productId);
+                const editVariants = getProductVariants(editProduct);
+                return (
+                  <form onSubmit={(event) => saveEdit(event, request)} className="mt-4 space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/50 p-4">
+                    <p className="text-xs font-bold text-indigo-950">Edit order details. Saving resets the quote and returns the request to the manufacturer.</p>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <label className="text-xs font-semibold text-slate-600">Manufacturer
+                        <select value={editDraft.manufacturerId} onChange={(event) => setEditDraft((current) => ({ ...current, manufacturerId: event.target.value }))} className="mt-1 w-full rounded-lg border bg-white px-2 py-2">
+                          {manufacturers.map((manufacturer) => <option key={manufacturer.id} value={manufacturer.id}>{manufacturer.name}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-semibold text-slate-600">Product
+                        <select value={editDraft.productId} onChange={(event) => {
+                          setEditDraft((current) => ({ ...current, productId: event.target.value }));
+                          setEditQuantities({});
+                        }} className="mt-1 w-full rounded-lg border bg-white px-2 py-2">
+                          {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-semibold text-slate-600">Target completion date
+                        <input required type="date" value={editDraft.targetCompletionDate} onChange={(event) => setEditDraft((current) => ({ ...current, targetCompletionDate: event.target.value }))} className="mt-1 w-full rounded-lg border px-2 py-2" />
+                      </label>
+                      <label className="text-xs font-semibold text-slate-600">Fabric type
+                        <input required maxLength={120} value={editDraft.fabricType} onChange={(event) => setEditDraft((current) => ({ ...current, fabricType: event.target.value }))} className="mt-1 w-full rounded-lg border px-2 py-2" />
+                      </label>
+                      <label className="text-xs font-semibold text-slate-600">Fabric GSM
+                        <input required type="number" min="0.01" max="1000" step="0.01" value={editDraft.gsm} onChange={(event) => setEditDraft((current) => ({ ...current, gsm: event.target.value }))} className="mt-1 w-full rounded-lg border px-2 py-2" />
+                      </label>
+                    </div>
+                    {editProduct && <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                      {editVariants.map((variant) => {
+                        const key = `${variant.size}\u0000${variant.color}`;
+                        return <label key={key} className="flex items-center justify-between gap-2 rounded-lg border bg-white p-2 text-xs">
+                          <span>{variant.size}{variant.color !== "Standard" ? ` / ${variant.color}` : ""}</span>
+                          <input type="number" min="0" step="1" value={editQuantities[key] || ""} onChange={(event) => setEditQuantities((current) => ({ ...current, [key]: event.target.value }))} className="w-20 rounded border px-2 py-1 text-center" aria-label={`Quantity for ${variant.size} ${variant.color}`} />
+                        </label>;
+                      })}
+                    </div>}
+                    <label className="block text-xs font-semibold text-slate-600">Production instructions
+                      <textarea maxLength={2000} rows={2} value={editDraft.adminNote} onChange={(event) => setEditDraft((current) => ({ ...current, adminNote: event.target.value }))} className="mt-1 w-full rounded-lg border px-3 py-2 text-sm" />
+                    </label>
+                    <div className="flex gap-2">
+                      <button disabled={savingId === request.id} className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{savingId === request.id ? "Saving…" : "Save changes"}</button>
+                      <button type="button" onClick={() => { setEditingRequestId(""); setEditDraft(null); }} className="rounded-lg border border-slate-300 px-4 py-2 text-xs font-bold text-slate-700">Cancel</button>
+                    </div>
+                  </form>
+                );
+              })()}
               {(pending || request.approvedUnitCogs) && <section className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4">
                 <h3 className="text-xs font-bold text-sky-950">{pending ? "Review manufacturer quote" : "Approved cost breakdown"}</h3>
                 <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">

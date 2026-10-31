@@ -18,6 +18,7 @@ import {
   normalizeTransferRequestLines,
   isNcmBranchEligible,
   isTransferPreparationComplete,
+  isStockTransferEditable,
   isSameProfileOwner,
   isPositiveLocalFreightCharge,
   planCostLayerAllocations,
@@ -78,6 +79,36 @@ test("manufacturer preparation checklist requires explicit pass/fail values befo
   assert.equal(isTransferPreparationComplete(checklist), true);
   assert.throws(() => normalizeTransferPreparationChecklist({ availabilityPassed: true }), /must be true or false/);
   assert.equal(isTransferPreparationComplete({ ...checklist, packagingPassed: false }), false);
+});
+
+test("stock transfer edits lock after all preparation checks pass or shipment activity begins", () => {
+  const transfer = {
+    status: "APPROVED",
+    availabilityPassed: false,
+    qualityPassed: false,
+    colorPassed: false,
+    sizePassed: false,
+    packagingPassed: false,
+    lines: [{ dispatchedQuantity: 0, reservedShipmentQuantity: 0 }],
+    shipments: [],
+  };
+  assert.equal(isStockTransferEditable(transfer), true);
+  assert.equal(isStockTransferEditable({
+    ...transfer,
+    packagingPassed: true,
+    availabilityPassed: true,
+    qualityPassed: true,
+    colorPassed: true,
+    sizePassed: true,
+  }), false);
+  assert.equal(isStockTransferEditable({
+    ...transfer,
+    shipments: [{ id: "shipment-1" }],
+  }), false);
+  assert.equal(isStockTransferEditable({
+    ...transfer,
+    status: "IN_TRANSIT",
+  }), false);
 });
 
 test("own-store delivery requires the same linked manufacturer and distributor account", () => {

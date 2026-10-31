@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import { toast } from "react-toastify";
 import { PackageOpen, RotateCw } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
@@ -625,7 +626,12 @@ const DistributorHome = () => {
                 </p>
                 {transfer.adminNote && <p className="mt-2 text-sm text-slate-600">Admin note: {transfer.adminNote}</p>}
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">{transfer.status.replaceAll("_", " ")}</span>
+                <Link to={`/distributor/demand/${transfer.id}`} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  View / Edit
+                </Link>
+              </div>
             </div>
             <div className="mt-4 space-y-3">
               {(transfer.shipments || []).map((shipment) => (

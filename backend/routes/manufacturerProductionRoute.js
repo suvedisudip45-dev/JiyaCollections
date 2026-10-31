@@ -7,6 +7,7 @@ import {
   reviewProductionRequest,
   startProduction,
   submitProductionForAdminAcceptance,
+  updateAdminProductionRequest,
 } from "../controllers/manufacturerProductionController.js";
 import { authenticate, authorize, authorizeAny, setManufacturerContext } from "../middleware/unifiedAuth.js";
 
@@ -29,6 +30,7 @@ router.post("/requests/:id/complete", authenticate, authorize("manufacturer:prod
 
 router.get("/admin/requests", authenticate, requireAdminRole, authorizeAny("manufacturer:production_admin", "manufacturer:admin_production_read"), listProductionRequests);
 router.get("/admin/options", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), getAdminProductionOptions);
+router.patch("/admin/requests/:id", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), updateAdminProductionRequest);
 router.post("/admin/requests/:id/review", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), reviewProductionRequest);
 router.post("/admin/requests/:id/acceptance", authenticate, requireAdminRole, authorize("manufacturer:production_admin"), completeProduction);
 

@@ -281,6 +281,14 @@ export const customerScanCard = async (req, res) => {
   try { return res.json({ success: true, card: await resolveCustomerQr({ customerId: req.userId, token: req.body.token }) }); } catch (error) { return sendError(res, error); }
 };
 
+export const customerRevealCard = async (req, res) => {
+  try {
+    const { revealCustomerQr } = await import("../services/marketingCardCustomerService.js");
+    const card = await revealCustomerQr({ customerId: req.userId, cardId: req.params.cardId });
+    return res.json({ success: true, card });
+  } catch (error) { return sendError(res, error); }
+};
+
 export const customerRedeemBenefit = async (req, res) => {
   try { return res.status(201).json({ success: true, redemption: await redeemCustomerBenefit({ customerId: req.userId, cardId: req.params.cardId, benefitId: req.params.benefitId }), message: "Benefit redeemed successfully." }); } catch (error) { return sendError(res, error); }
 };

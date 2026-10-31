@@ -6,8 +6,8 @@ import {
   generateBatch,
 } from "../services/marketingCardService.js";
 import {
-  verifyCustomerCardCode,
   verifyCustomerQr,
+  revealCustomerQr,
   activateCustomerCard,
   listCustomerCards,
 } from "../services/marketingCardCustomerService.js";
@@ -128,25 +128,31 @@ async function runTest() {
   // CUSTOMER FLOW TESTS
   // ----------------------------------------------------
 
-  // Step 1: Customer enters card code
-  const step1Result = await verifyCustomerCardCode({
-    customerId: customer.id,
-    cardCode: cardObj.cardCode,
-  });
-  assert.equal(step1Result.verified, true, "Step 1: Card code must be verified");
-  assert.equal(step1Result.cardCode, cardObj.cardCode);
-  console.log("✅ Step 1 passed: Customer entered card code and ownership/delivery was verified.");
-
-  // Step 2: Customer scans physical QR code (matches card code)
+  // Customer scans the physical QR directly; no card-code entry is required.
   const step2Result = await verifyCustomerQr({
     customerId: customer.id,
-    cardCode: cardObj.cardCode,
     token: cardObj.qrToken,
   });
   assert.equal(step2Result.success, true);
-  assert.equal(step2Result.hasBenefit, true);
-  assert.equal(step2Result.benefit.name, "15% In-Store Shopping Voucher");
-  console.log("✅ Step 2 passed: QR token validated against card code, benefit revealed.");
+  assert.equal(step2Result.cardCode, cardObj.cardCode);
+  assert.equal("hasBenefit" in step2Result, false);
+  assert.equal("benefit" in step2Result, false);
+  assert.match(step2Result.message, /Scratch to reveal/);
+  const pendingCards = await listCustomerCards(customer.id);
+  const pendingCard = pendingCards.find((card) => card.id === cardObj.id);
+  assert.equal(pendingCard.revealPending, true);
+  assert.equal(pendingCard.hasBenefit, false);
+  assert.deepEqual(pendingCard.benefits, []);
+  console.log("✅ Direct QR scan validates eligibility without revealing reward details.");
+
+  const revealResult = await revealCustomerQr({
+    customerId: customer.id,
+    cardId: cardObj.id,
+  });
+  assert.equal(revealResult.hasBenefit, true);
+  assert.equal(revealResult.benefit.name, "15% In-Store Shopping Voucher");
+  assert.equal((await listCustomerCards(customer.id)).find((card) => card.id === cardObj.id).revealPending, false);
+  console.log("✅ Scratch reveal endpoint returns reward details only after the reveal action.");
 
   // Step 3: Customer activates card (cannot self-redeem)
   const activatedCard = await activateCustomerCard({

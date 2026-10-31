@@ -2,7 +2,6 @@
 /* eslint-disable no-unused-vars */
 import React from "react";
 import Title from "../components/Title";
-import NewsLetterBox from "../components/NewsletterBox";
 import { assets } from "../assets/assets";
 const About = () => {
   return (
@@ -67,7 +66,6 @@ const About = () => {
           </p>
         </div>
       </div>
-      <NewsLetterBox />
     </div>
   );
 };

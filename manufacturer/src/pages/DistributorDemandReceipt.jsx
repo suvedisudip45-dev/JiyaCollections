@@ -8,11 +8,8 @@ import {
   Plus,
   Trash2,
   CheckCircle2,
-  AlertTriangle,
-  FileText,
   RotateCw,
   PackageCheck,
-  Building,
 } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
@@ -42,6 +39,8 @@ const DistributorDemandReceipt = () => {
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [editingTransferId, setEditingTransferId] = useState("");
+  const [editLines, setEditLines] = useState([]);
 
   const selectedManufacturer = useMemo(
     () => catalog.find((item) => item.id === manufacturerId),
@@ -148,6 +147,55 @@ const DistributorDemandReceipt = () => {
       setActiveTab("receipts");
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to submit demand request.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const canEditTransfer = (transfer) => (
+    ["PENDING_ADMIN_APPROVAL", "APPROVED"].includes(transfer.status) &&
+    ![
+      transfer.availabilityPassed,
+      transfer.qualityPassed,
+      transfer.colorPassed,
+      transfer.sizePassed,
+      transfer.packagingPassed,
+    ].every((value) => value === true) &&
+    !(transfer.shipments || []).length &&
+    !(transfer.lines || []).some((line) => line.dispatchedQuantity > 0 || line.reservedShipmentQuantity > 0)
+  );
+  const beginEdit = (transfer) => {
+    setManufacturerId(transfer.manufacturerId);
+    setEditLines(transfer.lines.map((line) => ({
+      inventorySkuId: line.inventorySkuId,
+      quantity: String(line.requestedQuantity),
+    })));
+    setEditingTransferId(transfer.id);
+  };
+  const updateEditLine = (index, field, value) => setEditLines((current) =>
+    current.map((line, lineIndex) => lineIndex === index ? { ...line, [field]: value } : line)
+  );
+  const saveDemandEdit = async (transfer) => {
+    const lines = editLines
+      .filter((line) => line.inventorySkuId && Number(line.quantity) > 0)
+      .map((line) => ({ inventorySkuId: line.inventorySkuId, quantity: Number(line.quantity) }));
+    if (!lines.length || lines.some((line) => !Number.isSafeInteger(line.quantity))) {
+      toast.error("Keep at least one product SKU with a positive whole-number quantity.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const response = await axios.patch(
+        `${backendUrl}/api/stock-transfers/distributor/${transfer.id}`,
+        { lines },
+        { headers: { token } },
+      );
+      toast.success(response.data.message || "Product request updated and sent for Admin review.");
+      setEditingTransferId("");
+      setEditLines([]);
+      await loadData();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not update the product request.");
     } finally {
       setSaving(false);
     }
@@ -461,6 +509,55 @@ const DistributorDemandReceipt = () => {
               {transfers.map((transfer) => (
                 transferId === transfer.id && (
                 <div key={transfer.id} className="rounded-xl border border-[#dedbd3] bg-white p-4 sm:p-5 space-y-3">
+
+                  {canEditTransfer(transfer) && (
+                    <section className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-indigo-950">Edit product request</h3>
+                          <p className="mt-1 text-xs text-indigo-800">You can edit quantities and SKU variants until the manufacturer passes all preparation checks. Saving returns the request to Admin review.</p>
+                        </div>
+                        {editingTransferId !== transfer.id && (
+                          <button type="button" onClick={() => beginEdit(transfer)} className="rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-bold text-indigo-900">
+                            Edit request
+                          </button>
+                        )}
+                      </div>
+                      {editingTransferId === transfer.id && (
+                        <div className="mt-3 space-y-2">
+                          {editLines.map((line, index) => {
+                            const transferSku = transfer.lines.find((item) => item.inventorySkuId === line.inventorySkuId)?.inventorySku;
+                            const stockSkus = selectedManufacturer?.stock || [];
+                            const existingOption = transferSku && !stockSkus.some((sku) => sku.inventorySkuId === line.inventorySkuId)
+                              ? [{
+                                  inventorySkuId: line.inventorySkuId,
+                                  productName: transferSku.product.name,
+                                  size: transferSku.size,
+                                  color: transferSku.color,
+                                  availableQuantity: 0,
+                                }]
+                              : [];
+                            const skuOptions = [...existingOption, ...stockSkus];
+                            return (
+                              <div key={`${line.inventorySkuId}-${index}`} className="flex flex-wrap gap-2">
+                                <select value={line.inventorySkuId} onChange={(event) => updateEditLine(index, "inventorySkuId", event.target.value)} className="min-w-48 flex-1 rounded-lg border border-indigo-200 bg-white px-2 py-2 text-xs">
+                                  <option value="">Select product variant</option>
+                                  {skuOptions.map((sku) => <option key={sku.inventorySkuId} value={sku.inventorySkuId}>{sku.productName} · {sku.size} / {sku.color} (Available: {sku.availableQuantity})</option>)}
+                                </select>
+                                <input type="number" min="0" step="1" value={line.quantity} onChange={(event) => updateEditLine(index, "quantity", event.target.value)} aria-label="Requested product quantity" className="w-24 rounded-lg border border-indigo-200 px-2 py-2 text-center text-xs" />
+                                <button type="button" disabled={editLines.length === 1} onClick={() => setEditLines((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 disabled:opacity-40">Remove</button>
+                              </div>
+                            );
+                          })}
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            <button type="button" onClick={() => setEditLines((current) => [...current, { inventorySkuId: "", quantity: "1" }])} className="rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-semibold text-indigo-900">Add SKU</button>
+                            <button type="button" onClick={() => saveDemandEdit(transfer)} disabled={saving} className="rounded-lg bg-indigo-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{saving ? "Saving…" : "Save changes"}</button>
+                            <button type="button" onClick={() => { setEditingTransferId(""); setEditLines([]); }} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700">Cancel</button>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+                  )}
 
                   {/* Transfer Shipments */}
                   {transfer.shipments && transfer.shipments.length > 0 ? (

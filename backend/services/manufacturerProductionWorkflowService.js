@@ -2,6 +2,12 @@ import { Prisma } from "@prisma/client";
 
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 
+export const isAdminProductionRequestEditable = (request) => (
+  Boolean(request) &&
+  ["PENDING_MANUFACTURER_QUOTE", "PENDING_ADMIN_APPROVAL", "PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "APPROVED"].includes(request.status) &&
+  request.preProductionChecklist?.passed !== true
+);
+
 export const validateAdminProductionPlan = ({ fabricType, gsm, targetCompletionDate, batches }) => {
   const normalizedFabric = String(fabricType || "").trim();
   const normalizedGsm = new Prisma.Decimal(String(gsm ?? ""));

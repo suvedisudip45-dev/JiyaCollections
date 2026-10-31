@@ -12,8 +12,11 @@ import {
   assertCardNotPreviouslyScanned,
   assertOwnStoreScanQuota,
   getOwnStoreScanLimits,
+  isDistributorOrderRewardCard,
+  scanQuotaFor,
   getScanWeekIndex,
   getScanLocationSnapshot,
+  isCustomerCardRewardRevealed,
 } from "../services/marketingCardCustomerService.js";
 import marketingCardRateLimit from "../middleware/marketingCardRateLimit.js";
 
@@ -84,11 +87,75 @@ test("a scanned card cannot be scanned again by the same or a different customer
   }
 });
 
-test("Own Store cards are not gated by order ownership or delivery", () => {
+test("customer card reward details remain hidden until scratch reveal while preserving legacy reveals", () => {
+  const linked = { status: "LINKED" };
+  assert.equal(isCustomerCardRewardRevealed(linked, [
+    { eventType: "CARD_QR_SCANNED_BY_CUSTOMER", metadata: { rewardHiddenUntilScratch: true } },
+  ]), false);
+  assert.equal(isCustomerCardRewardRevealed(linked, [
+    { eventType: "CARD_REWARD_REVEALED", metadata: {} },
+  ]), true);
+  assert.equal(isCustomerCardRewardRevealed(linked, [
+    { eventType: "CARD_QR_SCANNED_BY_CUSTOMER", metadata: {} },
+  ]), true);
+  assert.equal(isCustomerCardRewardRevealed({ status: "ACTIVE" }), true);
+});
+
+test("direct Own Store cards are not gated by order ownership or delivery", () => {
   assert.doesNotThrow(() => assertCardOrderEligibility(
     { campaign: { isOwnStore: true }, orderLink: null },
     "customer-1"
   ));
+});
+
+test("distributor-assigned Own Store cards are restricted to the customer on the delivered order", () => {
+  const card = {
+    assignedDistributorId: "distributor-1",
+    campaign: { isOwnStore: true },
+    orderLink: {
+      distributorId: "distributor-1",
+      order: { userId: "customer-1", fulfillmentStatus: "DELIVERED" },
+    },
+  };
+  assert.equal(isDistributorOrderRewardCard(card), true);
+  assert.doesNotThrow(() => assertCardOrderEligibility(card, "customer-1"));
+
+  assert.throws(() => assertCardOrderEligibility(card, "customer-2"), (error) => {
+    assert.equal(error.code, "MARKETING_CARD_FORBIDDEN");
+    return true;
+  });
+  assert.throws(() => assertCardOrderEligibility({
+    ...card,
+    orderLink: { ...card.orderLink, order: { userId: "customer-1", fulfillmentStatus: "IN_TRANSIT" } },
+  }, "customer-1"), (error) => {
+    assert.equal(error.code, "MARKETING_CARD_NOT_ELIGIBLE");
+    return true;
+  });
+  assert.throws(() => assertCardOrderEligibility({ ...card, orderLink: null }, "customer-1"), (error) => {
+    assert.equal(error.code, "MARKETING_CARD_NOT_ELIGIBLE");
+    return true;
+  });
+});
+
+test("only Own Store cards attached by their assigned distributor use the repeat-order flow", () => {
+  assert.equal(isDistributorOrderRewardCard({
+    assignedDistributorId: "distributor-1",
+    campaign: { isOwnStore: true },
+    orderLink: { distributorId: "distributor-1" },
+  }), true);
+  assert.equal(isDistributorOrderRewardCard({
+    assignedDistributorId: "distributor-1",
+    campaign: { isOwnStore: true },
+    orderLink: { distributorId: "distributor-2" },
+  }), false);
+  assert.equal(isDistributorOrderRewardCard({
+    assignedDistributorId: "distributor-1",
+    campaign: { isOwnStore: false },
+    orderLink: { distributorId: "distributor-1" },
+  }), false);
+});
+
+test("partner campaign cards remain restricted to their delivered order customer", () => {
   assert.doesNotThrow(() => assertCardOrderEligibility(
     {
       campaign: { isOwnStore: false },
@@ -137,6 +204,41 @@ test("Own Store scan quotas enforce weekly and per-organization thresholds", () 
     assert.equal(error.details.limit, "ORGANIZATION_CAMPAIGN");
     return true;
   });
+});
+
+test("Own Store quota counts exclude distributor-order cards and bypass quotas for their scans", async () => {
+  const queries = [];
+  const client = {
+    marketingCardCustomer: {
+      count: async ({ where }) => {
+        queries.push(where);
+        return 0;
+      },
+    },
+  };
+  const quota = await scanQuotaFor({
+    client,
+    customerId: "customer-1",
+    campaignId: "campaign-1",
+    assignedOrganization: "Everyone",
+    scanWeekIndex: 12,
+    isPublic: true,
+    maxScansPerCustomer: 2,
+  });
+  assert.equal(queries.length, 2);
+  assert.ok(queries.every((where) => where.card.assignedDistributorId === null));
+  assert.deepEqual(quota.campaign, { used: 0, limit: 2, remaining: 2 });
+
+  queries.length = 0;
+  assert.equal(await scanQuotaFor({
+    client,
+    customerId: "customer-1",
+    campaignId: "campaign-1",
+    assignedOrganization: "Aama Own Store",
+    scanWeekIndex: 12,
+    isDistributorOrderReward: true,
+  }), null);
+  assert.equal(queries.length, 0);
 });
 
 test("public Own Store scans use the campaign-wide per-customer cap", () => {

@@ -2,8 +2,10 @@ import express from "express";
 import {
   bookNcmStockTransfer,
   createStockTransferRequest,
+  editStockTransferRequest,
   dispatchManualStockTransfer,
   getStockTransferCatalog,
+  getStockTransferEditCatalog,
   listAdminStockTransfers,
   listAdminInventoryDiscrepancies,
   listDistributorStockTransfers,
@@ -32,12 +34,40 @@ stockTransferRouter.get(
   setDistributorContext,
   getStockTransferCatalog,
 );
+stockTransferRouter.get(
+  "/manufacturer/catalog",
+  authenticate,
+  authorize("transfer:manufacturer_read"),
+  setManufacturerContext,
+  getStockTransferEditCatalog,
+);
+stockTransferRouter.get(
+  "/admin/catalog",
+  authenticate,
+  requireAdminRole,
+  authorize("transfer:admin_review"),
+  getStockTransferEditCatalog,
+);
 stockTransferRouter.post(
   "/requests",
   authenticate,
   authorize("transfer:distributor_request"),
   setDistributorContext,
   createStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/distributor/:id",
+  authenticate,
+  authorize("transfer:distributor_request"),
+  setDistributorContext,
+  editStockTransferRequest,
+);
+stockTransferRouter.patch(
+  "/manufacturer/:id",
+  authenticate,
+  authorize("transfer:manufacturer_dispatch"),
+  setManufacturerContext,
+  editStockTransferRequest,
 );
 stockTransferRouter.get(
   "/distributor",
@@ -106,6 +136,13 @@ stockTransferRouter.get(
   authenticate,
   authorize("transfer:admin_read"),
   listAdminInventoryDiscrepancies,
+);
+stockTransferRouter.patch(
+  "/admin/:id",
+  authenticate,
+  requireAdminRole,
+  authorize("transfer:admin_review"),
+  editStockTransferRequest,
 );
 stockTransferRouter.patch(
   "/admin/:id/review",

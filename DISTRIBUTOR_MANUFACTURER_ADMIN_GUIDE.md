@@ -450,6 +450,12 @@ filter for direct carrier tracking and return-request review.
    records the reviewing account/time and moves the transfer to `APPROVED`.
    The approved demand then appears in the manufacturer's **Distributor
    Demands** page; unapproved requests are not shown in the manufacturer queue.
+5. Before all five manufacturer preparation checks pass, the distributor,
+   assigned manufacturer, or Admin may edit the request's SKU lines and
+   quantities. Saving an edit clears prior checks and approved quantities and
+   returns the request to `PENDING_ADMIN_APPROVAL`; Admin must review it again.
+   Edits are rejected once all preparation checks pass or shipment activity
+   begins.
 
 ### Step 4: Manufacturer dispatches the approved goods
 
@@ -465,6 +471,8 @@ saving, and dispatch remains blocked until all checks have been saved as passed.
    `PATCH /api/stock-transfers/:id/preparation`: current product availability,
    quality inspection, requested color, requested size, and packaging. Every
    check must be explicitly saved as passed before shipment booking.
+   Until all checks pass, the distributor, manufacturer, and Admin can edit the
+   request. Each edit clears the checklist and requires a new Admin review.
 2. Manufacturer dispatches approved quantities, selecting NCM or local freight.
    Before NCM booking, the form requires package type, product type and
    contents, weight, and dimensions; delivery instructions, fragile handling,
@@ -534,8 +542,14 @@ authentication and the permission shown.
 | Method and path | Actor | Permission | Action |
 |---|---|---|---|
 | `GET /stock-transfers/catalog` | Distributor | `transfer:distributor_request` | Read available factory SKU stock grouped by manufacturer. |
+| `GET /stock-transfers/manufacturer/catalog` | Manufacturer | `transfer:manufacturer_read` | Read available factory SKUs for adding lines to an editable transfer. |
+| `GET /stock-transfers/admin/catalog?manufacturerId=:id` | Admin | `transfer:admin_review` | Read available factory SKUs for the selected manufacturer when editing a transfer. |
 | `POST /stock-transfers/requests` | Distributor | `transfer:distributor_request` | Create bulk stock request. |
+| `PATCH /stock-transfers/distributor/:id` | Distributor | `transfer:distributor_request` | Edit request SKU lines/quantities before manufacturer preparation passes; resets checks and requires Admin review. |
+| `PATCH /stock-transfers/manufacturer/:id` | Manufacturer | `transfer:manufacturer_dispatch` | Edit assigned request SKU lines/quantities before preparation passes; resets checks and requires Admin review. |
+| `PATCH /stock-transfers/admin/:id` | Admin | `transfer:admin_review` | Edit request SKU lines/quantities before preparation passes; resets checks and requires Admin review. |
 | `POST /distributor/stock-requests` | Distributor | `transfer:distributor_request` | Create a manufacturer supply request (same-handler alias). Manufacturer/distributor profiles remain separate even when owned by one account. |
+| `PATCH /distributor/stock-requests/:id` | Distributor | `transfer:distributor_request` | Edit through the distributor route alias; subject to the same checklist cutoff and re-review. |
 | `POST /manufacturer/stock-requests/:id/dispatch` | Manufacturer | `transfer:manufacturer_dispatch` | Dispatch an approved request by NCM or manufacturer-paid local logistics. |
 | `GET /stock-transfers/distributor` | Distributor | `transfer:distributor_read` | List only the authenticated distributor's transfers. |
 | `POST /stock-transfers/shipments/:shipmentId/receipt` | Distributor | `transfer:distributor_receive` | Record good/damaged/missing receipt quantities. |
@@ -572,6 +586,9 @@ transfer flow:
    fabric type/GSM, target completion date, and batch plan in the Admin
    Manufacturer Production screen. The order is created through
    `POST /api/manufacturer/production/create` and waits for a manufacturer quote.
+   Admin may edit the order until the manufacturer passes the pre-production
+   checklist. Editing clears the quote and checklist and returns the request
+   for a new manufacturer quote and Admin approval.
 2. The assigned manufacturer submits a per-piece price, other production
    expenses for the order, VAT terms, and an optional note through
    `PATCH /api/manufacturer/production/:id/quote`. The Admin reviews and may
@@ -709,6 +726,7 @@ Relevant endpoints:
 | `POST /manufacturer-production/admin/requests/:id/acceptance` | Admin | `manufacturer:production_admin` | Accept reported good-unit counts to receive stock/cost layers, or reject for manufacturer rework. |
 | `GET /manufacturer-production/admin/options` | Admin | `manufacturer:production_admin` | Paginated active manufacturers and published products/SKUs for creating production orders (`type=manufacturers` or `type=products`). |
 | `POST /manufacturer-production/admin/requests/:id/review` | Admin | `manufacturer:production_admin` | Approve/reject and set terms. |
+| `PATCH /manufacturer-production/admin/requests/:id` | Admin | `manufacturer:production_admin` | Edit an order until its pre-production checklist passes; clears quote/checklist and requests a new manufacturer quote. |
 | `POST /manufacturer/production/create` | Admin | `manufacturer:production_admin` | Create a specification- and batch-backed production order. |
 | `PATCH /manufacturer/production/:id/pre-check` | Manufacturer | `manufacturer:production_manage` | Record pre-production gates. |
 | `PATCH /manufacturer/production/:id/quote` | Manufacturer | `manufacturer:production_manage` | Submit per-piece price, order-level production expenses, VAT terms, and note for Admin approval. |
@@ -880,6 +898,13 @@ All require `marketing_card:distributor_manage` and distributor context.
 Marketing-card assignment and receipt use the related assignment/receipt tables,
 and card/order attachment is unique per card and per order. The old
 manufacturer-owned routes are no longer mounted; legacy records remain intact.
+For Own Store campaigns, distributor stock is an order-reward channel: attaching
+a card binds it to that order, and after delivery only the account on the order
+can scan and claim the reward. A customer may claim separate cards attached to
+multiple delivered orders; these distributor-issued cards bypass campaign,
+organization, and weekly scan caps, while each physical card remains single-use.
+The configured Own Store per-account cap and the other scan caps continue to
+apply to public, marketing-partner, and custom-organization assignments.
 
 ### Letters
 

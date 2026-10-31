@@ -1,18 +1,16 @@
 /* eslint-disable react/prop-types */
 import { useEffect, useRef, useState } from "react";
 import confetti from "canvas-confetti";
-import { Sparkles, Gift, CheckCircle2 } from "lucide-react";
+import { Gift } from "lucide-react";
 
 export const DigitalScratchCard = ({
-  hasBenefit = false,
-  benefit = null,
-  partner = {},
-  onRevealed = () => {},
+  onRevealed,
 }) => {
   const canvasRef = useRef(null);
+  const revealRequestInProgress = useRef(false);
   const [isRevealed, setIsRevealed] = useState(false);
   const [isScratching, setIsScratching] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [revealedOffer, setRevealedOffer] = useState(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -52,8 +50,32 @@ export const DigitalScratchCard = ({
     ctx.strokeRect(6, 6, width - 12, height - 12);
   }, []);
 
+  const completeReveal = async () => {
+    if (isRevealed || revealRequestInProgress.current) return;
+    revealRequestInProgress.current = true;
+    try {
+      const result = await onRevealed();
+      if (!result) return;
+      setRevealedOffer(result);
+      setIsRevealed(true);
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (result.hasBenefit) {
+        confetti({
+          particleCount: 80,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ["#f59e0b", "#10b981", "#6366f1", "#ec4899"],
+        });
+      }
+    } finally {
+      revealRequestInProgress.current = false;
+    }
+  };
+
   const checkScratchPercentage = () => {
-    if (isRevealed) return;
+    if (isRevealed || revealRequestInProgress.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -74,21 +96,8 @@ export const DigitalScratchCard = ({
     }
 
     const currentPct = Math.round((transparentCount / totalPixels) * 100);
-    setProgress(Math.min(100, currentPct * 2));
 
-    if (currentPct > 35) {
-      setIsRevealed(true);
-      ctx.clearRect(0, 0, width, height);
-      if (hasBenefit) {
-        confetti({
-          particleCount: 80,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ["#f59e0b", "#10b981", "#6366f1", "#ec4899"],
-        });
-      }
-      onRevealed();
-    }
+    if (currentPct > 35) void completeReveal();
   };
 
   const scratch = (clientX, clientY) => {
@@ -124,7 +133,17 @@ export const DigitalScratchCard = ({
     <div className="relative mx-auto w-full max-w-sm rounded-2xl overflow-hidden border-2 border-slate-900 bg-white shadow-xl select-none">
       {/* Underlying Reward Content */}
       <div className="p-6 text-center flex flex-col justify-center items-center min-h-[220px] bg-gradient-to-b from-amber-50/50 to-white">
-        {hasBenefit && benefit ? (
+        {!isRevealed ? (
+          <div className="space-y-2 py-4">
+            <span className="text-3xl">🎁</span>
+            <h3 className="text-base font-black text-slate-800">
+              Your card is ready
+            </h3>
+            <p className="text-xs text-slate-500 max-w-[240px]">
+              Scratch the card to reveal what is inside.
+            </p>
+          </div>
+        ) : revealedOffer?.hasBenefit && revealedOffer.benefit ? (
           <div className="space-y-3 animate-fade-in">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-500 text-white shadow-md shadow-amber-200">
               <Gift className="h-7 w-7" />
@@ -134,17 +153,15 @@ export const DigitalScratchCard = ({
                 🎉 Congratulations!
               </span>
               <h3 className="mt-2 text-lg font-black text-slate-900">
-                {benefit.name}
+                {revealedOffer.benefit.name}
               </h3>
-              {benefit.description && (
+              {revealedOffer.benefit.description && (
                 <p className="text-xs text-slate-600 mt-1 max-w-[260px]">
-                  {benefit.description}
+                  {revealedOffer.benefit.description}
                 </p>
               )}
             </div>
-            <p className="text-[11px] font-bold text-amber-700">
-              Partner: {partner.name || "Brand Partner"}
-            </p>
+            <p className="text-[11px] font-bold text-amber-700">Reward revealed!</p>
           </div>
         ) : (
           <div className="space-y-2 py-4">
@@ -172,30 +189,6 @@ export const DigitalScratchCard = ({
           onTouchMove={handleTouchMove}
           className="absolute inset-0 h-full w-full cursor-crosshair touch-none transition-opacity duration-300"
         />
-      )}
-
-      {/* Quick Reveal button for convenience */}
-      {!isRevealed && (
-        <div className="absolute bottom-2 right-2">
-          <button
-            type="button"
-            onClick={() => {
-              setIsRevealed(true);
-              const canvas = canvasRef.current;
-              if (canvas) {
-                const ctx = canvas.getContext("2d");
-                ctx?.clearRect(0, 0, canvas.width, canvas.height);
-              }
-              if (hasBenefit) {
-                confetti({ particleCount: 50, spread: 60 });
-              }
-              onRevealed();
-            }}
-            className="rounded-lg bg-slate-900/80 px-2 py-1 text-[9px] font-bold text-white backdrop-blur hover:bg-slate-900"
-          >
-            Auto Reveal
-          </button>
-        </div>
       )}
     </div>
   );

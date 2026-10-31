@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import { applyInventoryMovement, ensureInventoryLocation, normalizeSkuOption } from "../services/inventoryLedgerService.js";
 import { buildManufacturerStockMovements } from "../services/manufacturerInventoryAudit.js";
 import { syncProductStock } from "../services/stockSyncService.js";
@@ -28,6 +29,7 @@ import {
   shouldAdvanceNcmStockTransferStatus,
   isStaleNcmStockTransferEvent,
   isTransferPreparationComplete,
+  isStockTransferEditable,
   isSameProfileOwner,
   isPositiveLocalFreightCharge,
   planCostLayerAllocations,
@@ -685,6 +687,67 @@ export const getStockTransferCatalog = async (req, res) => {
   }
 };
 
+export const getStockTransferEditCatalog = async (req, res) => {
+  try {
+    const isAdmin = String(req.auth?.role || "").toUpperCase() === "ADMIN" ||
+      req.auth?.roles?.includes("ADMIN");
+    const manufacturerId = req.manufacturerId || clean(req.query?.manufacturerId);
+    if (!manufacturerId || (!req.manufacturerId && !isAdmin)) {
+      throw fail("A valid manufacturer is required.", "MANUFACTURER_NOT_FOUND", 400);
+    }
+    const manufacturer = await prisma.manufacturer.findFirst({
+      where: { id: manufacturerId, isActive: true },
+      select: { id: true },
+    });
+    if (!manufacturer) throw fail("The selected manufacturer is not active.", "MANUFACTURER_NOT_ACTIVE", 404);
+    const location = await prisma.inventoryLocation.findFirst({
+      where: {
+        kind: "FACTORY",
+        manufacturerId,
+        inventoryOwner: "PLATFORM",
+        isActive: true,
+      },
+      select: { id: true },
+    });
+    if (!location) return res.json({ success: true, skus: [] });
+    const balances = await prisma.inventoryBalance.findMany({
+      where: {
+        locationId: location.id,
+        quantityOnHand: { gt: 0 },
+        inventorySku: { isActive: true, product: { published: true, deletedAt: null } },
+      },
+      select: {
+        quantityOnHand: true,
+        reservedQuantity: true,
+        inventorySku: {
+          select: {
+            id: true,
+            productId: true,
+            size: true,
+            color: true,
+            product: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: [{ inventorySku: { product: { name: "asc" } } }, { inventorySku: { size: "asc" } }, { inventorySku: { color: "asc" } }],
+      take: 5000,
+    });
+    const skus = balances
+      .map(({ quantityOnHand, reservedQuantity, inventorySku }) => ({
+        inventorySkuId: inventorySku.id,
+        productId: inventorySku.productId,
+        productName: inventorySku.product.name,
+        size: inventorySku.size,
+        color: inventorySku.color,
+        availableQuantity: Math.max(0, quantityOnHand - reservedQuantity),
+      }))
+      .filter((sku) => sku.availableQuantity > 0);
+    return res.json({ success: true, skus });
+  } catch (error) {
+    return respondError(res, error, "getStockTransferEditCatalog");
+  }
+};
+
 export const createStockTransferRequest = async (req, res) => {
   try {
     const manufacturerId = clean(req.body?.manufacturerId);
@@ -754,6 +817,117 @@ export const createStockTransferRequest = async (req, res) => {
     return res.status(201).json({ success: true, transfer });
   } catch (error) {
     return respondError(res, error, "createStockTransferRequest");
+  }
+};
+
+export const editStockTransferRequest = async (req, res) => {
+  try {
+    const isAdmin = String(req.auth?.role || "").toUpperCase() === "ADMIN" ||
+      req.auth?.roles?.includes("ADMIN");
+    const lines = await prisma.$transaction(async (tx) => {
+      const current = await loadTransfer(tx, req.params.id);
+      if (!current) throw fail("Stock transfer request not found.", "TRANSFER_NOT_FOUND", 404);
+      const isDistributor = req.distributorId === current.distributorId;
+      const isManufacturer = req.manufacturerId === current.manufacturerId;
+      if (!isAdmin && !isDistributor && !isManufacturer) {
+        throw fail("Stock transfer request not found.", "TRANSFER_NOT_FOUND", 404);
+      }
+      if (!isStockTransferEditable(current)) {
+        throw fail("This request can no longer be edited after preparation checks pass or shipment preparation begins.", "TRANSFER_STATE_CONFLICT", 409);
+      }
+
+      const requestedLines = await resolveStockRequestLines(tx, req.body?.lines);
+      const skus = await tx.inventorySku.findMany({
+        where: {
+          id: { in: requestedLines.map((line) => line.inventorySkuId) },
+          isActive: true,
+          product: { published: true, deletedAt: null },
+        },
+        select: { id: true },
+      });
+      if (skus.length !== requestedLines.length) {
+        throw fail("Every requested product variant must be active.", "SKU_INACTIVE", 409);
+      }
+      const balances = await tx.inventoryBalance.findMany({
+        where: {
+          locationId: current.sourceLocationId,
+          inventorySkuId: { in: requestedLines.map((line) => line.inventorySkuId) },
+        },
+        select: { inventorySkuId: true, quantityOnHand: true, reservedQuantity: true },
+      });
+      validateTransferRequestAvailability(requestedLines, balances);
+
+      const adminNote = clean(req.body?.adminNote);
+      if (adminNote.length > 2000) throw fail("Admin note cannot exceed 2000 characters.");
+      const claimed = await tx.stockTransfer.updateMany({
+        where: {
+          id: current.id,
+          status: current.status,
+          preparedAt: current.preparedAt,
+          availabilityPassed: current.availabilityPassed,
+          qualityPassed: current.qualityPassed,
+          colorPassed: current.colorPassed,
+          sizePassed: current.sizePassed,
+          packagingPassed: current.packagingPassed,
+        },
+        data: {
+          status: "PENDING_ADMIN_APPROVAL",
+          reviewedByAccountId: null,
+          reviewedAt: null,
+          adminNote: isAdmin ? adminNote || null : null,
+          availabilityPassed: false,
+          qualityPassed: false,
+          colorPassed: false,
+          sizePassed: false,
+          packagingPassed: false,
+          preparedByAccountId: null,
+          preparedAt: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw fail("The request or checklist changed while editing. Refresh and retry.", "TRANSFER_STATE_CONFLICT", 409);
+      }
+
+      await tx.stockTransferLine.deleteMany({ where: { stockTransferId: current.id } });
+      await tx.stockTransferLine.createMany({
+        data: requestedLines.map((line) => ({
+          stockTransferId: current.id,
+          inventorySkuId: line.inventorySkuId,
+          requestedQuantity: line.requestedQuantity,
+          approvedQuantity: 0,
+        })),
+      });
+
+      await recordSystemAudit({
+        actorId: req.auth?.accountId || req.auth?.profileId || null,
+        actorRole: String(req.auth?.role || "SYSTEM").toUpperCase(),
+        portalSource: String(req.auth?.role || "SYSTEM").toUpperCase(),
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      }, {
+        action: "STOCK_TRANSFER_REQUEST_EDITED",
+        entityType: "StockTransfer",
+        entityId: current.id,
+        beforeState: {
+          status: current.status,
+          lines: current.lines.map(({ inventorySkuId, requestedQuantity }) => ({ inventorySkuId, requestedQuantity })),
+        },
+        afterState: {
+          status: "PENDING_ADMIN_APPROVAL",
+          lines: requestedLines,
+        },
+      }, { client: tx });
+
+      return loadTransfer(tx, current.id);
+    }, { isolationLevel: "Serializable" });
+    return res.json({
+      success: true,
+      message: "Request updated and returned for Admin review. Product preparation checks must be completed again after approval.",
+      transfer: lines,
+    });
+  } catch (error) {
+    return respondError(res, error, "editStockTransferRequest");
   }
 };
 

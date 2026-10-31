@@ -837,7 +837,7 @@ const MarketingCards = ({ token }) => {
               <section className="rounded-2xl border border-[#e6c5ba] bg-[#f8f7f4] p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-[#bd4c34]">Step 3 · Customer access</p>
                 <h2 className="mt-1 text-sm font-black text-[#171717]">Assign Own Store cards</h2>
-                <p className="mt-1 text-xs text-slate-600">Make cards public or assign them to a partner or organization. This tracks access; distributor stock is managed separately.</p>
+                <p className="mt-1 text-xs text-slate-600">Make cards public or assign them to a partner or organization. The campaign account cap applies to these cards; distributor stock is managed separately for repeat rewards on delivered orders.</p>
                 <div className="mt-4 space-y-3">
                   <select
                     className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -849,7 +849,7 @@ const MarketingCards = ({ token }) => {
                   </select>
                   {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId)?.maxScansPerCustomer && (
                       <p className="rounded-lg bg-orange-50 px-3 py-2 text-[11px] text-orange-900">
-                        Own Store campaign cap: {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId).maxScansPerCustomer} scan(s) per account.
+                        Own Store campaign cap: {campaigns.find((campaignItem) => campaignItem.id === organizationAssignment.campaignId).maxScansPerCustomer} scan(s) per account for this assignment type.
                     </p>
                   )}
                   <select
@@ -928,7 +928,7 @@ const MarketingCards = ({ token }) => {
               <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Step 3 · Physical distribution</p>
                 <h2 className="mt-1 text-sm font-black text-slate-900">Send cards to a distributor</h2>
-                <p className="mt-1 text-xs text-slate-500">Assign generated physical cards to a distributor hub for receipt and customer handoff.</p>
+                <p className="mt-1 text-xs text-slate-500">Assign generated physical cards to a distributor hub. Each attached card is tied to one delivered order; the same customer can claim rewards from cards on multiple orders without Own Store campaign scan quotas.</p>
                 <div className="mt-4 space-y-3">
                   <select className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={assignment.campaignId} onChange={(e) => setAssignment({ ...assignment, campaignId: e.target.value })}>
                     <option value="">Select campaign</option>
@@ -993,7 +993,7 @@ const MarketingCards = ({ token }) => {
                         Own Store campaign cap per account
                       </label>
                       <p className="mt-1 text-[10px] text-orange-800">
-                        Maximum Own Store cards one customer can scan during this campaign, regardless of distribution. Defaults to one.
+                        Maximum cards one customer can scan for partner, Everyone, or custom-organization assignments. Distributor-issued cards attached to delivered orders are exempt. Defaults to one.
                       </p>
                       <input
                         id="maxScansPerCustomer"

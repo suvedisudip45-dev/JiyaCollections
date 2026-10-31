@@ -9,11 +9,9 @@ import {
   Camera,
   CameraOff,
   CheckCircle2,
-  Sparkles,
   Store,
   Clock,
   ShieldCheck,
-  Tag,
   ArrowRight,
 } from "lucide-react";
 import { ShopContext } from "../context/ShopContext";
@@ -33,14 +31,12 @@ const MarketingCards = () => {
   const [working, setWorking] = useState(false);
 
   // Verification step state
-  const [step, setStep] = useState(1); // 1: Enter Code, 2: Scan QR, 3: Revealed Offer
-  const [cardCode, setCardCode] = useState("");
-  const [verifiedCardInfo, setVerifiedCardInfo] = useState(null); // { cardId, cardCode, partner, campaign, ad }
+  const [step, setStep] = useState(1); // 1: Scan QR, 2: Reveal offer
   const [qrToken, setQrToken] = useState("");
   const [scannedOfferResult, setScannedOfferResult] = useState(null); // { hasBenefit, benefit, partner, message }
   const canClaimScannedReward = Boolean(
     scannedOfferResult?.campaign?.isOwnStore &&
-    ["DISCOUNT", "VOUCHER"].includes(scannedOfferResult?.benefit?.benefitType)
+    ["DISCOUNT", "GIFT", "VOUCHER"].includes(scannedOfferResult?.benefit?.benefitType)
   );
   const [sponsorAdOpen, setSponsorAdOpen] = useState(false);
   const [isScratchRevealed, setIsScratchRevealed] = useState(false);
@@ -74,64 +70,64 @@ const MarketingCards = () => {
     loadCards();
   }, [loadCards, navigate, token]);
 
-  // Step 1: Verify Card Code
-  const handleVerifyCode = async (event) => {
-    event.preventDefault();
-    const cleanCode = cardCode.trim().toUpperCase();
-    if (!cleanCode) return;
-
-    setWorking(true);
-    try {
-      const response = await axios.post(
-        `${backendUrl}/api/marketing-cards/customer/cards/verify-code`,
-        { cardCode: cleanCode },
-        { headers: { token } }
-      );
-      if (!response.data.success) throw new Error(response.data.message);
-
-      setVerifiedCardInfo(response.data);
-      if (response.data.ad) {
-        setSponsorAdOpen(true);
-      } else {
-        setStep(2);
-      }
-      toast.success(response.data.message || "Card code verified! Please scan the QR code.");
-    } catch (error) {
-      notifyRequestError(error, "Unable to verify this card code.");
-    } finally {
-      setWorking(false);
-    }
-  };
-
-  // Step 2: Verify Scanned QR Token
+  // Scan and validate the QR token directly; card ownership is enforced by the API.
   const submitQrToken = useCallback(
     async (tokenValue) => {
-      if (!tokenValue?.trim() || !cardCode.trim()) return;
+      if (!tokenValue?.trim()) return;
       setWorking(true);
       try {
         const response = await axios.post(
-          `${backendUrl}/api/marketing-cards/customer/cards/verify-qr`,
-          {
-            cardCode: cardCode.trim().toUpperCase(),
-            token: tokenValue.trim(),
-          },
+          `${backendUrl}/api/marketing-cards/customer/cards/scan`,
+          { token: tokenValue.trim() },
           { headers: { token } }
         );
         if (!response.data.success) throw new Error(response.data.message);
 
-        setScannedOfferResult(response.data);
+        const result = response.data.card;
+        if (!result?.success || !result.cardId) {
+          throw new Error(response.data.message || "This QR code is invalid or not allocated to your account.");
+        }
+        setScannedOfferResult(result);
         setIsScratchRevealed(false);
-        setStep(3);
+        setStep(2);
         setScannerOpen(false);
-        toast.success(response.data.message || "QR code verified!");
+        setQrToken("");
+        setScannerError("");
+        if (result.ad) setSponsorAdOpen(true);
+        toast.success(result.message || "Card validated. Scratch to reveal your reward.");
       } catch (error) {
-        notifyRequestError(error, "Unable to verify QR token.");
+        setScannerOpen(false);
+        setScannerError(error.response?.data?.message || error.message || "This QR code is invalid or not allocated to your account. Please try another card.");
+        notifyRequestError(error, "This QR code is invalid or not allocated to your account.");
       } finally {
         setWorking(false);
       }
     },
-    [backendUrl, cardCode, token]
+    [backendUrl, token]
   );
+
+  const revealScannedCard = async () => {
+    if (!scannedOfferResult?.cardId) return null;
+    setWorking(true);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/marketing-cards/customer/cards/${scannedOfferResult.cardId}/reveal`,
+        {},
+        { headers: { token } }
+      );
+      if (!response.data.success || !response.data.card) {
+        throw new Error(response.data.message || "Unable to reveal this card.");
+      }
+      setScannedOfferResult((current) => ({ ...current, ...response.data.card }));
+      setIsScratchRevealed(true);
+      return response.data.card;
+    } catch (error) {
+      notifyRequestError(error, "Unable to reveal this card. Please scratch it again.");
+      return null;
+    } finally {
+      setWorking(false);
+    }
+  };
 
   const handleManualQrSubmit = (event) => {
     event.preventDefault();
@@ -153,8 +149,6 @@ const MarketingCards = () => {
       toast.success("Card activated! Bring your physical card to the partner store to claim.");
       // Reset form & reload cards
       setStep(1);
-      setCardCode("");
-      setVerifiedCardInfo(null);
       setQrToken("");
       setScannedOfferResult(null);
       await loadCards();
@@ -186,11 +180,10 @@ const MarketingCards = () => {
 
   const handleResetVerification = () => {
     setStep(1);
-    setCardCode("");
-    setVerifiedCardInfo(null);
     setQrToken("");
     setScannedOfferResult(null);
     setScannerOpen(false);
+    setScannerError("");
     setSponsorAdOpen(false);
     setIsScratchRevealed(false);
   };
@@ -203,7 +196,7 @@ const MarketingCards = () => {
 
     const startScanner = async () => {
       if (!navigator.mediaDevices?.getUserMedia || !("BarcodeDetector" in window)) {
-        setScannerError("Camera QR scanning is not supported in this browser. Use manual QR token entry below.");
+        setScannerError("Camera QR scanning is not supported in this browser. Paste the QR token below instead.");
         return;
       }
       try {
@@ -238,7 +231,7 @@ const MarketingCards = () => {
         };
         scan();
       } catch {
-        setScannerError("Camera access was unavailable. Please allow camera permissions or enter the code manually.");
+        setScannerError("Camera access was unavailable. Allow camera permissions or paste the QR token below.");
       }
     };
 
@@ -264,7 +257,7 @@ const MarketingCards = () => {
           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[var(--muted)]">Private customer area</p>
           <h1 className="mt-2 text-3xl font-black tracking-tight text-[var(--ink)]">Marketing Cards &amp; Offers</h1>
           <p className="mt-2 max-w-xl text-sm text-[var(--muted)]">
-            Scan free Own Store cards shared with all customers, or verify partner cards attached to your delivered orders.
+            Scan public or organization-assigned Own Store cards, or claim distributor-issued Own Store and partner cards attached to your delivered orders.
           </p>
         </div>
         <button
@@ -289,29 +282,18 @@ const MarketingCards = () => {
               1
             </span>
             <span className={`text-xs font-bold ${step === 1 ? "text-[var(--ink)]" : "text-[var(--muted)]"}`}>
-              Enter Card Code
+              Scan Card
             </span>
             <ArrowRight size={14} className="text-slate-400" />
             <span
               className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-black ${
-                step >= 2 ? "bg-[var(--ink)] text-white" : "bg-slate-200 text-slate-600"
+                step >= 2 ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"
               }`}
             >
               2
             </span>
-            <span className={`text-xs font-bold ${step === 2 ? "text-[var(--ink)]" : "text-[var(--muted)]"}`}>
-              Scan QR Code
-            </span>
-            <ArrowRight size={14} className="text-slate-400" />
-            <span
-              className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-black ${
-                step >= 3 ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"
-              }`}
-            >
-              3
-            </span>
-            <span className={`text-xs font-bold ${step === 3 ? "text-emerald-700" : "text-[var(--muted)]"}`}>
-              Reveal &amp; Activate Offer
+            <span className={`text-xs font-bold ${step === 2 ? "text-emerald-700" : "text-[var(--muted)]"}`}>
+              Scratch &amp; Reveal
             </span>
           </div>
 
@@ -326,81 +308,18 @@ const MarketingCards = () => {
           )}
         </div>
 
-        {/* STEP 1: Enter Card Code */}
+        {/* STEP 1: Direct QR scan */}
         {step === 1 && (
-          <form onSubmit={handleVerifyCode} className="max-w-xl space-y-4">
-            <div className="flex items-center gap-3">
-              <CreditCard size={22} className="text-slate-800" />
-              <div>
-                <h2 className="text-sm font-black uppercase tracking-wider text-[var(--ink)]">Step 1: Enter Card Code</h2>
-                <p className="text-xs text-[var(--muted)]">
-                  Own Store cards are available to any signed-in customer. Partner campaign cards must be attached to your delivered order.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <label htmlFor="cardCodeInput" className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
-                Card Code
-              </label>
-              <input
-                id="cardCodeInput"
-                value={cardCode}
-                onChange={(event) => setCardCode(event.target.value.toUpperCase())}
-                placeholder="e.g. AAMA-0KTM-PAR-AB12B00001"
-                className="w-full rounded-xl border border-[var(--line)] bg-white px-4 py-3 font-mono text-sm uppercase outline-none focus:border-[var(--ink)] focus:ring-1 focus:ring-[var(--ink)]"
-                maxLength={64}
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={working || !cardCode.trim()}
-              className="w-full rounded-xl bg-[var(--ink)] py-3.5 text-xs font-bold uppercase tracking-wider text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition"
-            >
-              {working ? "Verifying Code..." : "Verify Card Code & Proceed to Scan"}
-            </button>
-          </form>
-        )}
-
-        {/* STEP 2: Promotional Ad Banner + QR Scanner */}
-        {step === 2 && (
           <div className="space-y-6">
-            {/* Verified Card Badge */}
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-emerald-50 border border-emerald-200 p-4">
-              <div className="flex items-center gap-3">
-                <CheckCircle2 size={20} className="text-emerald-600 flex-shrink-0" />
-                <div>
-                  <p className="text-xs font-bold text-emerald-900">
-                    Card Verified: <span className="font-mono">{verifiedCardInfo?.cardCode}</span>
-                  </p>
-                  <p className="text-[11px] text-emerald-700">
-                    Partner: <span className="font-bold">{verifiedCardInfo?.partner?.name}</span> • Campaign: {verifiedCardInfo?.campaign?.name}
-                  </p>
-                </div>
-              </div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
-                Step 1 Complete
-              </span>
-            </div>
-
-            {/* Promotional Ad Hook Banner (Placeholder for brand partner advertisement) */}
-            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-amber-600 via-rose-600 to-indigo-700 p-6 text-white shadow-md">
-              <div className="relative z-10 max-w-lg space-y-2">
-                <div className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-0.5 text-[10px] font-black uppercase tracking-wider text-white backdrop-blur-xs">
-                  <Sparkles size={12} /> Sponsored Partner Offer
-                </div>
-                <h3 className="text-xl font-black">
-                  Special Rewards by {verifiedCardInfo?.partner?.name || "Our Brand Partner"}
-                </h3>
-                <p className="text-xs text-white/90 leading-relaxed">
-                  Thank you for shopping with Aama Clothings! Scan your card&apos;s physical QR code now to reveal your exclusive discounts, vouchers, or gift hampers.
+            <div className="flex items-center gap-3">
+              <Camera size={22} className="text-slate-800" />
+              <div>
+                <h2 className="text-sm font-black uppercase tracking-wider text-[var(--ink)]">Scan your card QR code</h2>
+                <p className="text-xs text-[var(--muted)]">
+                  No card code is needed. We will check the card and your eligibility after you scan it.
                 </p>
               </div>
             </div>
-
-            {/* QR Scanner / Manual Verification */}
             <div className="grid gap-6 md:grid-cols-2">
               <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[var(--line)] bg-white p-6 text-center">
                 {scannerOpen ? (
@@ -414,7 +333,7 @@ const MarketingCards = () => {
                         aria-label="Marketing card QR scanner"
                       />
                     </div>
-                    {scannerError && <p className="text-xs text-amber-700 font-medium">{scannerError}</p>}
+                    {scannerError && <p role="alert" className="text-xs text-rose-700 font-medium">{scannerError}</p>}
                     <button
                       type="button"
                       onClick={() => setScannerOpen(false)}
@@ -436,11 +355,13 @@ const MarketingCards = () => {
                     </div>
                     <button
                       type="button"
+                      disabled={working}
                       onClick={() => setScannerOpen(true)}
                       className="inline-flex items-center gap-2 rounded-xl bg-[var(--ink)] px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-slate-800 transition"
                     >
                       <Camera size={15} /> Start Camera Scanner
                     </button>
+                    {scannerError && <p role="alert" className="max-w-sm text-xs text-rose-700 font-medium">{scannerError}</p>}
                   </div>
                 )}
               </div>
@@ -453,7 +374,7 @@ const MarketingCards = () => {
                     <h4 className="text-sm font-bold text-[var(--ink)]">Manual QR Token Entry</h4>
                   </div>
                   <p className="mt-1 text-xs text-[var(--muted)]">
-                    If camera is unavailable, paste the secure QR token string to verify.
+                    If camera scanning is unavailable, paste the token encoded in the card QR code.
                   </p>
                 </div>
 
@@ -471,7 +392,7 @@ const MarketingCards = () => {
                     disabled={working || !qrToken.trim()}
                     className="w-full rounded-xl border border-[var(--ink)] py-3 text-xs font-bold uppercase tracking-wider text-[var(--ink)] hover:bg-slate-50 disabled:opacity-50 transition"
                   >
-                    {working ? "Verifying QR..." : "Verify Authenticated QR Token"}
+                    {working ? "Checking card..." : "Check QR Code"}
                   </button>
                 </div>
               </form>
@@ -479,8 +400,8 @@ const MarketingCards = () => {
           </div>
         )}
 
-        {/* STEP 3: Reveal Offer & Activate Card */}
-        {step === 3 && scannedOfferResult && (
+        {/* STEP 2: Reveal Offer & Activate Card */}
+        {step === 2 && scannedOfferResult && (
           <div className="space-y-6">
             {/* Gamified Digital Scratch Card */}
             <div className="space-y-3 text-center">
@@ -488,10 +409,7 @@ const MarketingCards = () => {
                 ✨ Rub to Reveal Your Exclusive Partnership Reward ✨
               </p>
               <DigitalScratchCard
-                hasBenefit={scannedOfferResult.hasBenefit}
-                benefit={scannedOfferResult.benefit}
-                partner={scannedOfferResult.partner || {}}
-                onRevealed={() => setIsScratchRevealed(true)}
+                onRevealed={revealScannedCard}
               />
             </div>
 
@@ -540,7 +458,9 @@ const MarketingCards = () => {
                   </button>
                   <p className="mt-2 text-[11px] text-slate-500">
                     {canClaimScannedReward
-                      ? "Claim this reward now to make it available as an offer at checkout."
+                      ? scannedOfferResult.benefit.benefitType === "GIFT"
+                        ? "Claim this gift to save it for your next eligible order."
+                        : "Claim this reward now to make it available as an offer at checkout."
                       : `Once activated, take your physical card to ${scannedOfferResult.partner?.name}'s shopping store to claim!`}
                   </p>
                 </div>
@@ -563,7 +483,15 @@ const MarketingCards = () => {
                 </button>
               </div>
             ))}
-            {step === 3 && scannedOfferResult?.scanLimits && (
+            {step === 2 && isScratchRevealed && scannedOfferResult?.isDistributorOrderReward && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs text-emerald-950">
+                <p className="font-bold">Reward from your delivered order</p>
+                <p className="mt-1">
+                  This card is linked to your delivered order. Campaign scan caps do not apply to distributor-issued cards, so cards attached to your other eligible orders can each unlock a reward once.
+                </p>
+              </div>
+            )}
+            {step === 2 && scannedOfferResult?.scanLimits && (
               <div className="rounded-xl border border-[var(--line)] bg-[var(--paper)] p-4 text-xs text-[var(--ink)]">
                 <p className="font-bold">Own Store scan limits for this campaign</p>
                 <p className="mt-1">
@@ -586,19 +514,14 @@ const MarketingCards = () => {
       </div>
 
       {/* Sponsor Ad Interstitial Modal */}
-      {sponsorAdOpen && verifiedCardInfo?.ad && (
+      {sponsorAdOpen && scannedOfferResult?.ad && (
         <SponsorAdModal
           isOpen={sponsorAdOpen}
-          onClose={() => {
-            setSponsorAdOpen(false);
-            setStep(2);
-          }}
-          onProceed={() => {
-            setSponsorAdOpen(false);
-            setStep(2);
-          }}
-          ad={verifiedCardInfo.ad}
-          partner={verifiedCardInfo.partner}
+          onClose={() => setSponsorAdOpen(false)}
+          onProceed={() => setSponsorAdOpen(false)}
+          proceedLabel="Continue to scratch card"
+          ad={scannedOfferResult.ad}
+          partner={scannedOfferResult.partner}
         />
       )}
 
@@ -621,7 +544,7 @@ const MarketingCards = () => {
             <CreditCard className="mx-auto mb-3 text-[var(--muted)]" size={28} />
             <p className="text-sm font-bold text-[var(--ink)]">No activated cards yet</p>
             <p className="mt-1 text-xs text-[var(--muted)]">
-              Enter the printed card code above. Own Store cards do not require a delivered order.
+              Public and organization-assigned Own Store cards do not require an order. Distributor-issued Own Store cards must be attached to your delivered order.
             </p>
           </div>
         ) : (
@@ -641,7 +564,15 @@ const MarketingCards = () => {
                   </span>
                 </div>
 
-                {!card.hasBenefit || card.benefits.length === 0 ? (
+                {card.revealPending ? (
+                  <div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3.5 border border-slate-100">
+                    <span className="text-2xl">🎁</span>
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">Scratch to reveal</p>
+                      <p className="text-[11px] text-slate-500">The result is hidden until you scratch this card.</p>
+                    </div>
+                  </div>
+                ) : !card.hasBenefit || card.benefits.length === 0 ? (
                   <div className="flex items-center gap-3 rounded-xl bg-slate-50 p-3.5 border border-slate-100">
                     <span className="text-2xl">🍀</span>
                     <div>

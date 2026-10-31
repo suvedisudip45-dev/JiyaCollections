@@ -33,6 +33,7 @@ import {
   customerActivateCard,
   customerLinkCard,
   customerScanCard,
+  customerRevealCard,
   customerRedeemBenefit,
 } from "../controllers/marketingCardController.js";
 import {
@@ -108,6 +109,7 @@ marketingCardRouter.post("/customer/claim-reward", authenticate, authorize("mark
 marketingCardRouter.post("/customer/cards/verify-code", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("link"), customerVerifyCode);
 marketingCardRouter.post("/customer/cards/verify-qr", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("scan"), customerVerifyQr);
 marketingCardRouter.post("/customer/cards/:cardId/activate", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("link"), customerActivateCard);
+marketingCardRouter.post("/customer/cards/:cardId/reveal", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("scan"), customerRevealCard);
 marketingCardRouter.post("/customer/cards/link", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("link"), customerLinkCard);
 marketingCardRouter.post("/customer/cards/scan", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("scan"), customerScanCard);
 marketingCardRouter.post("/customer/cards/:cardId/benefits/:benefitId/redeem", authenticate, authorize("marketing_card:customer_manage"), requirePlatformFeature("marketingCardsEnabled"), marketingCardRateLimit("redeem"), customerRedeemBenefit);

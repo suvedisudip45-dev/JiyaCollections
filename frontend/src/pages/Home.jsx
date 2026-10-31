@@ -4,7 +4,6 @@ import Hero from "../components/Hero";
 import FestiveOfferSection from "../components/FestiveOfferSection";
 import CategoryShowcase from "../components/CategoryShowcase";
 import OurPolicy from "../components/OurPolicy";
-import NewsletterBox from "../components/NewsletterBox";
 import ProductRail from "../components/ProductRail";
 import { Link } from "react-router-dom";
 import { ArrowUpRight } from "lucide-react";
@@ -142,7 +141,6 @@ const Home = () => {
       />
       <CategoryShowcase />
       <OurPolicy />
-      <NewsletterBox />
     </div>
   );
 };

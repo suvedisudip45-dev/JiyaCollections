@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  isAdminProductionRequestEditable,
   validateAdminProductionPlan,
   validatePostProductionChecklist,
   validatePreProductionChecklist,
@@ -11,6 +12,29 @@ const requestedLines = [
   { size: "S", color: "Navy", quantity: 10 },
   { size: "M", color: "Navy", quantity: 8 },
 ];
+
+test("admin production edits remain available until the pre-production checklist passes", () => {
+  assert.equal(isAdminProductionRequestEditable({
+    status: "PENDING_MANUFACTURER_QUOTE",
+    preProductionChecklist: null,
+  }), true);
+  assert.equal(isAdminProductionRequestEditable({
+    status: "PRE_CHECK_FAILED",
+    preProductionChecklist: { passed: false },
+  }), true);
+  assert.equal(isAdminProductionRequestEditable({
+    status: "PRE_CHECK_PASSED",
+    preProductionChecklist: { passed: true },
+  }), false);
+  assert.equal(isAdminProductionRequestEditable({
+    status: "APPROVED",
+    preProductionChecklist: { passed: true },
+  }), false);
+  assert.equal(isAdminProductionRequestEditable({
+    status: "COMPLETED",
+    preProductionChecklist: null,
+  }), false);
+});
 
 test("admin production plan validates required specifications and batch quantities", () => {
   const plan = validateAdminProductionPlan({

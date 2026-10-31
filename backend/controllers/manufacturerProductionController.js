@@ -14,6 +14,7 @@ import {
   validateManufacturerProductionQuote,
 } from "../services/manufacturerProductionService.js";
 import {
+  isAdminProductionRequestEditable,
   validateAdminProductionPlan,
   validatePostProductionChecklist,
   summarizeManufacturerProductionDashboard,
@@ -251,6 +252,132 @@ export const createAdminProductionRequest = async (req, res) => {
   } catch (error) {
     console.error("createAdminProductionRequest error:", error);
     return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to create production order." });
+  }
+};
+
+export const updateAdminProductionRequest = async (req, res) => {
+  try {
+    const requestId = String(req.params.id || "").trim();
+    const manufacturerId = String(req.body.manufacturerId || "").trim();
+    const productId = String(req.body.productId || "").trim();
+    if (!manufacturerId || !productId) {
+      return res.status(400).json({ success: false, message: "Manufacturer and product are required." });
+    }
+
+    const manufacturer = await prisma.manufacturer.findFirst({
+      where: { id: manufacturerId, isActive: true, contractStatus: "ACTIVE" },
+      select: { id: true },
+    });
+    if (!manufacturer) return res.status(404).json({ success: false, message: "Active manufacturer not found." });
+
+    const product = await prisma.product.findFirst({
+      where: { id: productId, published: true, deletedAt: null },
+      select: { id: true, name: true, sizes: true, colors: true, variants: true },
+    });
+    if (!product) return res.status(404).json({ success: false, message: "Published product not found." });
+
+    const normalized = normalizeProductionRequestLines(req.body.lines);
+    validRequestLines(product, normalized.lines);
+    const plan = validateAdminProductionPlan(req.body);
+    if (plan.batchQuantity !== normalized.totalQuantity) {
+      return res.status(400).json({ success: false, message: "Batch planned quantities must equal the requested size/color quantities." });
+    }
+    const adminNote = String(req.body.adminNote || "").trim();
+    if (adminNote.length > 2000) return res.status(400).json({ success: false, message: "Admin note cannot exceed 2000 characters." });
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const current = await tx.manufacturerProductionRequest.findUnique({
+        where: { id: requestId },
+        include: { lines: true },
+      });
+      if (!current) throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
+      if (!isAdminProductionRequestEditable(current)) {
+        throw Object.assign(new Error("Production orders cannot be edited after the manufacturer passes the pre-production checklist."), { statusCode: 409 });
+      }
+
+      const claimed = await tx.manufacturerProductionRequest.updateMany({
+        where: {
+          id: requestId,
+          status: current.status,
+          preProductionCheckedAt: current.preProductionCheckedAt,
+        },
+        data: {
+          manufacturerId,
+          productId,
+          productName: product.name,
+          status: "PENDING_MANUFACTURER_QUOTE",
+          proposedUnitCogs: null,
+          minimumOrderQuantity: normalized.totalQuantity,
+          proposedDeliveryCost: 0,
+          vatTreatment: "EXEMPT",
+          vatRate: 13,
+          vatInvoiceReference: null,
+          approvedUnitCogs: null,
+          approvedMinimumOrderQuantity: null,
+          approvedDeliveryCost: null,
+          approvedVatTreatment: "EXEMPT",
+          approvedVatRate: 13,
+          approvedVatInvoiceReference: null,
+          approvedVatInvoiceVerified: false,
+          fabricType: plan.fabricType,
+          gsm: plan.gsm,
+          targetCompletionDate: plan.targetCompletionDate,
+          batchPlan: plan.batches,
+          preProductionChecklist: Prisma.JsonNull,
+          preProductionCheckedAt: null,
+          manufacturerNote: null,
+          adminNote: adminNote || null,
+          reviewedBy: null,
+          reviewedAt: null,
+          productionReviewDecision: null,
+          productionReviewedBy: null,
+          productionReviewedAt: null,
+          productionReviewNote: null,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw Object.assign(new Error("Production request changed while being edited. Refresh and retry."), { statusCode: 409 });
+      }
+
+      await tx.manufacturerProductionRequestLine.deleteMany({ where: { requestId } });
+      await tx.manufacturerProductionRequestLine.createMany({
+        data: normalized.lines.map((line) => ({ requestId, ...line })),
+      });
+      await recordSystemAudit(actorContext(req), {
+        action: "ADMIN_MANUFACTURER_PRODUCTION_ORDER_UPDATED",
+        entityType: "ManufacturerProductionRequest",
+        entityId: requestId,
+        beforeState: {
+          status: current.status,
+          manufacturerId: current.manufacturerId,
+          productId: current.productId,
+          lines: current.lines.map(({ size, color, quantity }) => ({ size, color, quantity })),
+        },
+        afterState: {
+          status: "PENDING_MANUFACTURER_QUOTE",
+          manufacturerId,
+          productId,
+          lines: normalized.lines,
+          fabricType: plan.fabricType,
+          gsm: plan.gsm.toFixed(2),
+          targetCompletionDate: plan.targetCompletionDate.toISOString(),
+          batches: plan.batches,
+        },
+      }, { client: tx });
+      return tx.manufacturerProductionRequest.findUnique({
+        where: { id: requestId },
+        include: {
+          manufacturer: { select: { id: true, name: true, city: true } },
+          product: { select: { id: true, name: true, image: true } },
+          lines: { orderBy: [{ size: "asc" }, { color: "asc" }] },
+        },
+      });
+    }, { isolationLevel: "Serializable" });
+
+    return res.json({ success: true, message: "Production order updated and returned to the manufacturer for a new quote.", request: updated });
+  } catch (error) {
+    console.error("updateAdminProductionRequest error:", error);
+    return res.status(error.statusCode || 400).json({ success: false, message: error.message || "Unable to update production order." });
   }
 };
 
