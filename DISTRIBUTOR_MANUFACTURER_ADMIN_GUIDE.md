@@ -49,12 +49,13 @@ Manufacturer and distributor profiles remain independent when they share an
 page rather than mixing their inventory, production, or financial history.
 Inventory totals include current on-hand and available units and estimate
 retail/cost value from current product prices. These estimates are not a
-historical cost-layer valuation. The financial summary reuses the distributor
-statement service. Its legacy earnings summary is not the accounting-party
-receivables ledger; use the adjacent COD receivable/remittance panel for
-distributor cash balances. That panel displays open COD receivable, pending
-remittance review, verified distributor refund payable, and the balance eligible
-for an Admin-approved offset separately, with offset history.
+historical cost-layer valuation. The Finance tab shows the distributor's NPR
+accounting-party subledger: gross open receivables, gross open payables, the
+signed net due to/from the company, and pending COD remittance review. It
+itemizes open accounting documents on both sides, including COD, verified
+refunds, service earnings, delivery charges, incentives, and bonuses. The net
+position is derived from remaining document balances and allocations, not a
+manually maintained counter.
 
 ## Distributor COD and customer refund cash
 
@@ -66,10 +67,11 @@ collected; the cash event is recorded as pending verification, not as OTP
 verified. Delivery and the distributor COD receivable are still recorded, but
 this does not mark the company as having received cash. In the Distributor
 Finance dashboard, submit COD remittances with
-the transfer reference and a JPG/PNG image of the transfer evidence. Admins review the evidence in the
-distributor detail Finance tab, select the receiving NPR treasury account, and
-verify or reject the batch. Verification posts company cash, clears the
-distributor receivable, and records the allocation and audit event atomically.
+the transfer reference and a JPG/PNG image of the transfer evidence. Admins
+review the evidence in the distributor detail Finance tab, select the receiving
+NPR treasury account, and verify or reject the batch. Verification posts
+company cash, clears the distributor receivable, and records the allocation
+and audit event atomically.
 
 Admin return approval snapshots the configured customer return charge
 percentage against returned product value; the original delivery fee is not
@@ -80,14 +82,28 @@ inspection also requires a JPG/PNG photo of the returned goods. Admin verificati
 the return and creates a distributor payable. Rejected evidence reopens the
 refund task. The Admin Returns page can settle that payable from an active NPR
 treasury account and displays the distributor assigned to the order, its
-delivery status, and return-received date beside the refund evidence; payout is
-recorded separately from COD remittance. If both
-verified refund payable and COD receivable are open, an Admin can explicitly
-approve a partial or full offset in distributor Finance detail. The maximum
-excludes pending remittance submissions and cannot exceed either open balance.
-Approval posts a journal entry, allocates both gross accounting documents
-atomically, and records the Admin, reason, and offset for audit; the Distributor
-Finance dashboard shows the resulting history.
+delivery status, and return-received date beside the refund evidence. Admins
+can also post a unified settlement from the distributor Finance detail on any
+day. It offsets the lower gross balance first (FIFO against open documents),
+then records the partial or full net cash receipt/payment in the selected
+active NPR treasury account. Cash is posted only after the Admin confirms the
+transfer is complete and enters its reference. An offset requires a set-off
+agreement reference and explicit Admin confirmation; gross receivable/payable
+documents remain separately visible and allocations identify cash versus
+offset applications. One balanced journal, Treasury movement, document
+allocations, settlement record, and audit event are committed in a serializable
+transaction. Pending COD remittance reviews and older pending settlement
+requests must be resolved first to prevent double settlement. Legacy refund
+offset and payout workflows remain available for historical records and
+pending items. Return/exchange logistics payables still recorded only in the
+legacy Accounts Payable register are included in the gross payable and net
+position, shown separately, and block unified settlement until paid there.
+Set-off approval is an operational control, not a substitute for confirming
+that the parties' agreement and applicable accounting rules permit offsetting.
+The Admin `/payables` page also provides a distributor-wise gross receivable,
+gross payable, and net position overview. Aggregate net receivables and
+payables are summed per distributor and are never cross-offset between
+different distributors.
 
 The Logistics sidebar also exposes `/ncm-deliveries` and
 `/self-deliveries` as separate admin monitoring views. The first lists local
@@ -639,10 +655,11 @@ transfer flow:
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
 10. Distributor Financial Dashboard & Accounting:
    - `GET /api/distributor/finance/statement`: Itemized self-delivery, return, and exchange charges, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. A later return does not reverse an already-completed delivery earning; the Rate Card return charge is an additional distributor earning, and a completed distributor exchange settlement is included in the distributor's net settlement. The separately configured company-paid return logistics settlement remains its own payable. New service charges use immutable `DistributorServiceEarning` snapshots.
-   - `POST /api/distributor/finance/ask-settlement`: Submit a payout request capped by available earnings and pending-request reservations. The selected VAT toggle is recorded on the request; a request made without VAT has zero VAT and is capped at the non-VAT balance. Requests are exposed as distributor settlement payables only when backed by open earning documents.
+   - Admin issues a partial or full net-settlement request from the distributor profile after reviewing the open receivable/payable position. Distributors cannot initiate a settlement or submit unsolicited remittance evidence.
+   - For `COMPANY_COLLECTS` requests, the distributor submits the bank/wallet reference and proof against the issued request; Admin verifies it and the settlement is then posted. For `COMPANY_PAYS`, Admin records the completed payout and proof; the distributor acknowledges receipt. A request is not an accounting settlement until the corresponding transfer is verified/recorded.
    - Before creating a new request, missing delivery earnings are accrued from completed self-delivery assignments using the rate card effective at delivery; missing return charges are accrued from completed returns. Older requests without accounting documents remain reconciliation-required: Admin can explicitly backfill only earnings supported by completed delivery/return records, then link the resulting documents. No payable is created from a requested amount alone.
    - Open, subledger-backed distributor settlement requests are displayed in Payables & Receivables and can be paid through the standard distributor payout lifecycle. A non-VAT request excludes VAT from the requested amount; any VAT portion on its source earning documents is not paid by that request.
-   - Admin payout allocates funds against the earning documents and clears distributor payable control 2190 in a serializable transaction with Treasury and journal posting. Active NPR Treasury mapping to the matching GL account is required. The Admin settlement list displays outstanding COD and pending-remittance warnings; service earnings are paid gross and COD is not silently netted. Rate-card revisions create new versions; closing an approved card preserves history.
+   - Admin distributor Finance derives gross receivable/payable and net due from all open NPR accounting-party documents. It creates one active net-settlement request at a time; requests may be partial but cannot exceed the current net balance. Settlement applies FIFO allocations, requires an agreement reference plus explicit Admin confirmation for offsets, and records completed cash movement against an active NPR treasury account. Pending legacy remittance reviews and older settlement requests block a new request. Rate-card revisions create new versions; closing an approved card preserves history.
    - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
 Relevant endpoints:
@@ -670,7 +687,13 @@ Relevant endpoints:
 | `DELETE /api/admin/distributor-rates/:id` | Admin | `distributor:admin_review` | Close an approved rate card without deleting its history. |
 | `GET /api/distributor/rates` | Distributor | `distributor:profile_read` | View active negotiated rate card terms. |
 | `GET /api/distributor/finance/statement` | Distributor | `distributor:profile_read` | View itemized earnings, bonuses, deductions, and VAT breakdown (toggleable). |
-| `POST /api/distributor/finance/ask-settlement` | Distributor | `distributor:profile_read` | Submit a payout request no higher than net available self-delivery earnings, choosing whether VAT is included. Closed-period target bonuses and missing completed delivery/return earnings are accrued before the balance is checked. Pending requests reserve their unpaid amount. NCM deliveries are excluded. Requests without verified earning documents remain reconciliation-required and are not paid. |
+| `GET /api/distributor/finance/remittances` | Distributor | `distributor:profile_read` | View COD remittances, unified gross/net subledger balances, open documents, and settlement history. |
+| `GET /api/admin/distributors/settlement-positions` | Admin | `finance:payables_read` | View paginated distributor-wise open receivable/payable/net balances and company-wide gross/per-distributor net totals. |
+| `POST /api/admin/distributors/:id/finance/settlements` | Admin | `finance:receivable_collect` and `finance:payable_settle` | Issue an idempotent partial/full request for the distributor's current net balance; does not post an accounting settlement. |
+| `POST /api/distributor/finance/settlement-requests/:requestId/evidence` | Distributor | `distributor:profile_read` | Submit transfer reference and evidence for an open company-collection request issued by Admin. |
+| `POST /api/distributor/finance/settlement-requests/:requestId/acknowledge` | Distributor | `distributor:profile_read` | Acknowledge receipt of a company payout after Admin records the transfer and evidence. |
+| `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/review` | Admin | `finance:receivable_collect` | Verify or reject distributor-submitted evidence for a company-collection request. |
+| `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/payout` | Admin | `finance:payable_settle` | Record a company payout using an active NPR treasury account, transfer reference, and evidence. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |

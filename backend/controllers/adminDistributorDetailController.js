@@ -1,8 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { getDistributorFinancialStatement } from "../services/distributorFinanceService.js";
+import { getDistributorUnifiedSettlementPosition } from "../services/distributorCashSettlementService.js";
 import { resolveActiveRateCard } from "../services/distributorRateCardService.js";
-import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import { getPagination, getPaginationMeta, paginatedResponse } from "../utils/pagination.js";
 
 const sendError = (res, error, action) => {
   console.error(`${action} error:`, error);
@@ -75,6 +76,184 @@ export const listAdminDistributors = async (req, res) => {
     return res.json(paginatedResponse("distributors", distributors, pagination, total));
   } catch (error) {
     return sendError(res, error, "listAdminDistributors");
+  }
+};
+
+export const getAdminDistributorSettlementPositions = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const query = String(req.query.q || "").trim().slice(0, 120);
+    const distributorWhere = query
+      ? {
+          OR: [
+            { name: { contains: query } },
+            { phone: { contains: query } },
+            { city: { contains: query } },
+            { district: { contains: query } },
+            { province: { contains: query } },
+          ],
+        }
+      : {};
+    const distributors = await prisma.distributor.findMany({
+      where: distributorWhere,
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        city: true,
+        district: true,
+        province: true,
+        status: true,
+      },
+    });
+
+    if (!distributors.length) {
+      return res.json({
+        success: true,
+        distributors: [],
+        data: [],
+        totals: {
+          distributorCount: 0,
+          outstandingReceivable: "0.00",
+          outstandingPayable: "0.00",
+          companyCollects: "0.00",
+          companyPays: "0.00",
+          pendingRemittance: "0.00",
+          legacyLogisticsPayable: "0.00",
+        },
+        pagination: getPaginationMeta({ ...pagination, total: 0 }),
+      });
+    }
+
+    const distributorIds = distributors.map(({ id }) => id);
+    const parties = await prisma.accountingParty.findMany({
+      where: { partyType: "DISTRIBUTOR", sourceEntityId: { in: distributorIds } },
+      select: { id: true, sourceEntityId: true },
+    });
+    const partyIdToDistributorId = new Map(parties.map((party) => [party.id, party.sourceEntityId]));
+    const [documents, returns, exchanges, pendingRemittances] = await Promise.all([
+      parties.length
+        ? prisma.accountingDocument.findMany({
+            where: {
+              partyId: { in: parties.map(({ id }) => id) },
+              currency: "NPR",
+              status: { in: ["OPEN", "PARTIALLY_PAID"] },
+              remainingAmount: { gt: 0 },
+            },
+            select: { partyId: true, side: true, remainingAmount: true },
+          })
+        : Promise.resolve([]),
+      prisma.customerReturn.findMany({
+        where: { distributorId: { in: distributorIds }, deliveryRoute: "DISTRIBUTOR" },
+        select: { id: true, distributorId: true },
+      }),
+      prisma.orderExchangeRequest.findMany({
+        where: { distributorId: { in: distributorIds }, deliveryRoute: "DISTRIBUTOR" },
+        select: { id: true, distributorId: true },
+      }),
+      prisma.distributorRemittanceBatch.groupBy({
+        by: ["distributorId"],
+        where: { distributorId: { in: distributorIds }, status: "PENDING_REVIEW" },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const legacyRequestDistributor = new Map();
+    for (const request of returns) legacyRequestDistributor.set(`RETURN_LOGISTICS_SETTLEMENT:${request.id}`, request.distributorId);
+    for (const request of exchanges) legacyRequestDistributor.set(`EXCHANGE_LOGISTICS_SETTLEMENT:${request.id}`, request.distributorId);
+    const legacyReferences = [...returns.map(({ id }) => id), ...exchanges.map(({ id }) => id)];
+    const legacyPayables = legacyReferences.length
+      ? await prisma.accountPayable.findMany({
+          where: {
+            referenceType: { in: ["RETURN_LOGISTICS_SETTLEMENT", "EXCHANGE_LOGISTICS_SETTLEMENT"] },
+            referenceId: { in: legacyReferences },
+            status: { in: ["UNPAID", "PARTIALLY_PAID"] },
+            remainingBalance: { gt: 0 },
+          },
+          select: { referenceType: true, referenceId: true, remainingBalance: true },
+        })
+      : [];
+
+    const zero = () => new Prisma.Decimal(0);
+    const positionByDistributor = new Map(distributorIds.map((id) => [id, {
+      receivable: zero(),
+      payable: zero(),
+      legacyLogisticsPayable: zero(),
+      pendingRemittance: zero(),
+    }]));
+    for (const document of documents) {
+      const distributorId = partyIdToDistributorId.get(document.partyId);
+      const position = positionByDistributor.get(distributorId);
+      if (!position) continue;
+      const amount = new Prisma.Decimal(String(document.remainingAmount || 0));
+      if (document.side === "RECEIVABLE") position.receivable = position.receivable.plus(amount);
+      if (document.side === "PAYABLE") position.payable = position.payable.plus(amount);
+    }
+    for (const payable of legacyPayables) {
+      const distributorId = legacyRequestDistributor.get(`${payable.referenceType}:${payable.referenceId}`);
+      const position = positionByDistributor.get(distributorId);
+      if (!position) continue;
+      const amount = new Prisma.Decimal(String(payable.remainingBalance || 0));
+      position.payable = position.payable.plus(amount);
+      position.legacyLogisticsPayable = position.legacyLogisticsPayable.plus(amount);
+    }
+    for (const batch of pendingRemittances) {
+      const position = positionByDistributor.get(batch.distributorId);
+      if (position) position.pendingRemittance = new Prisma.Decimal(String(batch._sum.amount || 0));
+    }
+
+    const allRows = distributors.map((distributor) => {
+      const position = positionByDistributor.get(distributor.id);
+      const netBalance = position.receivable.minus(position.payable);
+      return {
+        ...distributor,
+        outstandingReceivable: position.receivable.toFixed(2),
+        outstandingPayable: position.payable.toFixed(2),
+        netBalance: netBalance.toFixed(2),
+        companyCollects: Prisma.Decimal.max(netBalance, 0).toFixed(2),
+        companyPays: Prisma.Decimal.max(netBalance.negated(), 0).toFixed(2),
+        pendingRemittance: position.pendingRemittance.toFixed(2),
+        legacyLogisticsPayable: position.legacyLogisticsPayable.toFixed(2),
+      };
+    });
+    const totals = allRows.reduce((result, row) => {
+      result.outstandingReceivable = result.outstandingReceivable.plus(row.outstandingReceivable);
+      result.outstandingPayable = result.outstandingPayable.plus(row.outstandingPayable);
+      result.pendingRemittance = result.pendingRemittance.plus(row.pendingRemittance);
+      result.legacyLogisticsPayable = result.legacyLogisticsPayable.plus(row.legacyLogisticsPayable);
+      const netBalance = new Prisma.Decimal(row.netBalance);
+      result.companyCollects = result.companyCollects.plus(Prisma.Decimal.max(netBalance, 0));
+      result.companyPays = result.companyPays.plus(Prisma.Decimal.max(netBalance.negated(), 0));
+      return result;
+    }, {
+      outstandingReceivable: zero(),
+      outstandingPayable: zero(),
+      pendingRemittance: zero(),
+      legacyLogisticsPayable: zero(),
+      companyCollects: zero(),
+      companyPays: zero(),
+    });
+    const pageRows = allRows.slice(pagination.skip, pagination.skip + pagination.limit);
+    const formattedTotals = {
+      distributorCount: allRows.length,
+      outstandingReceivable: totals.outstandingReceivable.toFixed(2),
+      outstandingPayable: totals.outstandingPayable.toFixed(2),
+      companyCollects: totals.companyCollects.toFixed(2),
+      companyPays: totals.companyPays.toFixed(2),
+      pendingRemittance: totals.pendingRemittance.toFixed(2),
+      legacyLogisticsPayable: totals.legacyLogisticsPayable.toFixed(2),
+    };
+
+    return res.json({
+      success: true,
+      distributors: pageRows,
+      data: pageRows,
+      totals: formattedTotals,
+      pagination: getPaginationMeta({ ...pagination, total: allRows.length }),
+    });
+  } catch (error) {
+    return sendError(res, error, "getAdminDistributorSettlementPositions");
   }
 };
 
@@ -333,18 +512,23 @@ export const getAdminDistributorExchanges = async (req, res) => {
 
 export const getAdminDistributorFinance = async (req, res) => {
   try {
-    const statement = await getDistributorFinancialStatement({
-      distributorId: req.params.id,
-      withVat: req.query.withVat !== "false",
-      startDate: req.query.startDate || null,
-      endDate: req.query.endDate || null,
-    });
+    const [statement, fullSettlementPosition] = await Promise.all([
+      getDistributorFinancialStatement({
+        distributorId: req.params.id,
+        withVat: req.query.withVat !== "false",
+        startDate: req.query.startDate || null,
+        endDate: req.query.endDate || null,
+      }),
+      getDistributorUnifiedSettlementPosition({ distributorId: req.params.id }),
+    ]);
+    const { receivableDocuments, payableDocuments, ...settlementPosition } = fullSettlementPosition;
     return res.json({
       success: true,
       distributor: statement.distributor,
       rateCard: statement.rateCard,
       vatMode: statement.vatMode,
       summary: statement.summary,
+      settlementPosition,
     });
   } catch (error) {
     return sendError(res, error, "getAdminDistributorFinance");

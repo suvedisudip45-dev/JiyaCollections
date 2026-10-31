@@ -1,10 +1,12 @@
 /* eslint-disable no-unused-vars */
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
+import { Link } from "react-router-dom";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
 const fmt = (n) => `${currency}${Number(n || 0).toLocaleString("en-NP", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const fmtBalance = (n) => `${currency}${Number(n || 0).toLocaleString("en-NP", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const adjustedCashDue = (balance, type, amount) => Number(balance || 0) + (type === "FINE" ? Number(amount || 0) : 0) - (type === "DISCOUNT" ? Number(amount || 0) : 0);
 const formatDate = (d) => { if (!d) return "—"; return new Date(d).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }); };
 const isOverdue = (dueDate) => { if (!dueDate) return false; return new Date(dueDate) < new Date(); };
@@ -134,6 +136,12 @@ const PayablesReceivables = ({ token }) => {
   const [payoutEvidence, setPayoutEvidence] = useState({});
   const [payoutFailureReasons, setPayoutFailureReasons] = useState({});
   const [mfgSummary, setMfgSummary] = useState(null);
+  const [distributorPositions, setDistributorPositions] = useState([]);
+  const [distributorPositionTotals, setDistributorPositionTotals] = useState(null);
+  const [distributorPositionPagination, setDistributorPositionPagination] = useState(null);
+  const [distributorPositionSearch, setDistributorPositionSearch] = useState("");
+  const [distributorPositionAppliedSearch, setDistributorPositionAppliedSearch] = useState("");
+  const [distributorPositionLoading, setDistributorPositionLoading] = useState(false);
   const [range, setRange]   = useState("month");
   const [selectedMfgId, setSelectedMfgId] = useState("ALL");
   const [mfgSubTab, setMfgSubTab] = useState("manufacturers"); // "manufacturers" | "orders"
@@ -173,6 +181,32 @@ const PayablesReceivables = ({ token }) => {
     } catch { toast.error("Failed to load payables & receivables"); }
     finally { setLoading(false); }
   },[token]);
+
+  const fetchDistributorPositions = useCallback(async (page = 1, query = "") => {
+    try {
+      setDistributorPositionLoading(true);
+      const response = await axios.get(`${backendUrl}/api/admin/distributors/settlement-positions`, {
+        headers: { token },
+        params: { page, limit: 10, q: query.trim() || undefined },
+      });
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to load distributor balances.");
+      setDistributorPositions(response.data.distributors || []);
+      setDistributorPositionTotals(response.data.totals || null);
+      setDistributorPositionPagination(response.data.pagination || null);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Unable to load distributor balances.");
+      setDistributorPositions([]);
+      setDistributorPositionTotals(null);
+      setDistributorPositionPagination(null);
+    } finally {
+      setDistributorPositionLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (token) fetchDistributorPositions();
+  }, [token, fetchDistributorPositions]);
 
   const processInitiatedPayout = async (payout, action) => {
     const bankEvidenceReference = String(payoutEvidence[payout.id] || "").trim();
@@ -929,6 +963,115 @@ const PayablesReceivables = ({ token }) => {
 
         <button onClick={fetchData} className="px-3 py-2 border border-slate-300 text-slate-700 text-xs font-medium rounded-lg hover:bg-slate-50 flex items-center gap-1.5"><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>Refresh</button>
       </div>
+
+      <section className="space-y-4 rounded-2xl border border-indigo-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-base font-black text-slate-900">Distributor settlement positions</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Current open receivables and payables by distributor. Net due is calculated separately for each distributor; these balances are separate from the legacy payables and receivables list below.
+            </p>
+          </div>
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const query = distributorPositionSearch.trim();
+              setDistributorPositionAppliedSearch(query);
+              fetchDistributorPositions(1, query);
+            }}
+          >
+            <input
+              value={distributorPositionSearch}
+              onChange={(event) => setDistributorPositionSearch(event.target.value)}
+              placeholder="Find distributor by name or location"
+              className="min-w-0 rounded-lg border border-slate-200 px-3 py-2 text-xs sm:w-64"
+            />
+            <button type="submit" disabled={distributorPositionLoading} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+              Search
+            </button>
+            <button type="button" onClick={() => fetchDistributorPositions(distributorPositionPagination?.page || 1, distributorPositionAppliedSearch)} disabled={distributorPositionLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50">
+              Refresh
+            </button>
+          </form>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {[
+            ["Distributor receivable", distributorPositionTotals?.outstandingReceivable, "text-emerald-700"],
+            ["Distributor payable", distributorPositionTotals?.outstandingPayable, "text-rose-700"],
+            ["Net receivable by distributor", distributorPositionTotals?.companyCollects, "text-indigo-800"],
+            ["Net payable by distributor", distributorPositionTotals?.companyPays, "text-violet-800"],
+            ["Pending COD remittances", distributorPositionTotals?.pendingRemittance, "text-amber-700"],
+          ].map(([label, amount, color]) => (
+            <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
+              <p className={`mt-1 text-lg font-black ${color}`}>{fmtBalance(amount)}</p>
+            </div>
+          ))}
+        </div>
+        {Number(distributorPositionTotals?.legacyLogisticsPayable || 0) > 0 && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Includes {fmtBalance(distributorPositionTotals.legacyLogisticsPayable)} of legacy return/exchange logistics payables; these are itemized per distributor and must be cleared through Accounts Payable before unified settlement.
+          </p>
+        )}
+
+        <div className="overflow-x-auto rounded-xl border border-slate-100">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-3 py-2.5">Distributor</th>
+                <th className="px-3 py-2.5">Location</th>
+                <th className="px-3 py-2.5 text-right">Receivable</th>
+                <th className="px-3 py-2.5 text-right">Payable</th>
+                <th className="px-3 py-2.5 text-right">Net due</th>
+                <th className="px-3 py-2.5 text-right">Pending COD</th>
+                <th className="px-3 py-2.5">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {distributorPositionLoading ? (
+                <tr><td colSpan="7" className="px-3 py-8 text-center text-slate-500">Loading distributor balances…</td></tr>
+              ) : distributorPositions.length ? distributorPositions.map((distributor) => (
+                <tr key={distributor.id} className="hover:bg-slate-50/80">
+                  <td className="px-3 py-3">
+                    <p className="font-bold text-slate-900">{distributor.name}</p>
+                    <p className="mt-0.5 text-[10px] text-slate-500">{distributor.phone || distributor.status}</p>
+                  </td>
+                  <td className="px-3 py-3 text-slate-600">{[distributor.city, distributor.district, distributor.province].filter(Boolean).join(", ") || "—"}</td>
+                  <td className="px-3 py-3 text-right font-bold text-emerald-700">{fmtBalance(distributor.outstandingReceivable)}</td>
+                  <td className="px-3 py-3 text-right font-bold text-rose-700">
+                    {fmtBalance(distributor.outstandingPayable)}
+                    {Number(distributor.legacyLogisticsPayable) > 0 && <p className="text-[9px] font-medium text-amber-700">includes legacy logistics {fmtBalance(distributor.legacyLogisticsPayable)}</p>}
+                  </td>
+                  <td className={`px-3 py-3 text-right font-black ${Number(distributor.netBalance) >= 0 ? "text-emerald-800" : "text-rose-800"}`}>
+                    {Number(distributor.netBalance) > 0 ? "Company collects " : Number(distributor.netBalance) < 0 ? "Company pays " : "Settled "}
+                    {fmtBalance(Math.abs(Number(distributor.netBalance || 0)))}
+                  </td>
+                  <td className="px-3 py-3 text-right font-semibold text-amber-700">{fmtBalance(distributor.pendingRemittance)}</td>
+                  <td className="px-3 py-3">
+                    <Link to={`/distributors/${distributor.id}?tab=finance`} className="whitespace-nowrap rounded-lg bg-indigo-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-indigo-800">
+                      View settlement
+                    </Link>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="7" className="px-3 py-8 text-center text-slate-500">No distributor balances found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span>
+            {distributorPositionPagination?.total || 0} distributors · net receivable and payable totals are calculated per distributor and are not cross-offset.
+          </span>
+          <div className="flex gap-2">
+            <button type="button" disabled={!distributorPositionPagination?.hasPreviousPage || distributorPositionLoading} onClick={() => fetchDistributorPositions(distributorPositionPagination.page - 1, distributorPositionAppliedSearch)} className="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold disabled:opacity-40">Previous</button>
+            <span className="px-2 py-1.5">Page {distributorPositionPagination?.page || 1} of {distributorPositionPagination?.totalPages || 1}</span>
+            <button type="button" disabled={!distributorPositionPagination?.hasNextPage || distributorPositionLoading} onClick={() => fetchDistributorPositions(distributorPositionPagination.page + 1, distributorPositionAppliedSearch)} className="rounded-lg border border-slate-200 px-3 py-1.5 font-semibold disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      </section>
 
       <div className="border-b border-slate-200">
         <div className="flex flex-wrap">

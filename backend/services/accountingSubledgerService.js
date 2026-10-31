@@ -83,6 +83,8 @@ export const allocatePaymentToDocuments = async ({
   side = "RECEIVABLE", // RECEIVABLE (Receipt) | PAYABLE (Disbursement)
   amount,
   journalEntryId = null,
+  settlementBatchId = null,
+  allocationType = null,
   targetDocumentIds = [],
   sourceTypes = [],
   notes = null,
@@ -95,6 +97,12 @@ export const allocatePaymentToDocuments = async ({
   }
 
   const normalizedSide = String(side || "").toUpperCase();
+  const normalizedAllocationType = allocationType === null
+    ? null
+    : String(allocationType).trim().toUpperCase();
+  if (normalizedAllocationType && !["CASH", "OFFSET"].includes(normalizedAllocationType)) {
+    throw new Error("Allocation type must be CASH or OFFSET.");
+  }
 
   // Load open or partially paid documents
   const where = {
@@ -167,6 +175,8 @@ export const allocatePaymentToDocuments = async ({
         data: {
           documentId: doc.id,
           journalEntryId,
+          settlementBatchId,
+          allocationType: normalizedAllocationType,
           amount: allocAmount,
           allocatedAt: new Date(),
           notes: notes || `Payment allocation of NPR ${allocAmount.toFixed(2)}`,

@@ -21,7 +21,10 @@ test("Distributor and Admin route routers are properly constructed", () => {
   assert.ok(distRoutes.some((r) => r.path === "/orders/:id/status" && r.methods.includes("patch")));
   assert.ok(distRoutes.some((r) => r.path === "/orders/:id/return" && r.methods.includes("post")));
   assert.ok(distRoutes.some((r) => r.path === "/finance/statement" && r.methods.includes("get")));
-  assert.ok(distRoutes.some((r) => r.path === "/finance/ask-settlement" && r.methods.includes("post")));
+  assert.ok(!distRoutes.some((r) => r.path === "/finance/ask-settlement" && r.methods.includes("post")));
+  assert.ok(distRoutes.some((r) => r.path === "/finance/settlement-requests/:requestId/evidence" && r.methods.includes("post")));
+  assert.ok(distRoutes.some((r) => r.path === "/finance/settlement-requests/:requestId/acknowledge" && r.methods.includes("post")));
+  assert.ok(!distRoutes.some((r) => r.path === "/finance/remittances" && r.methods.includes("post")));
   assert.ok(distRoutes.some((r) => r.path === "/rates" && r.methods.includes("get")));
 
   const adminRateRoutes = adminDistributorRateRouter.stack

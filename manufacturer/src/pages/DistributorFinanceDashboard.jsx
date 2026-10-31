@@ -8,9 +8,7 @@ import {
   Percent,
   Receipt,
   FileCheck,
-  Send,
   RotateCw,
-  X,
 } from "lucide-react";
 import { backendUrl, useManufacturer, currency } from "../context/ManufacturerContext";
 
@@ -20,19 +18,8 @@ const DistributorFinanceDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [withVat, setWithVat] = useState(true);
 
-  // Settlement Request Modal
-  const [showAskModal, setShowAskModal] = useState(false);
-  const [askAmount, setAskAmount] = useState("");
-  const [askNotes, setAskNotes] = useState("");
-  const [submittingAsk, setSubmittingAsk] = useState(false);
-  const [showRemittanceModal, setShowRemittanceModal] = useState(false);
-  const [remittanceForm, setRemittanceForm] = useState({
-    amount: "",
-    reference: "",
-    evidenceFile: null,
-    idempotencyKey: "",
-  });
-  const [submittingRemittance, setSubmittingRemittance] = useState(false);
+  const [requestEvidence, setRequestEvidence] = useState({});
+  const [busyRequestId, setBusyRequestId] = useState(null);
 
   const loadStatement = useCallback(async () => {
     setLoading(true);
@@ -50,8 +37,11 @@ const DistributorFinanceDashboard = () => {
       setStatement({
         ...statementResponse.data,
         cashPosition: remittanceResponse.data.position,
+        settlementPosition: remittanceResponse.data.settlementPosition,
         remittances: remittanceResponse.data.remittances || [],
         settlementOffsets: remittanceResponse.data.offsets || [],
+        balanceSettlements: remittanceResponse.data.settlements || [],
+        settlementRequests: remittanceResponse.data.settlementRequests || [],
       });
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not load financial statement.");
@@ -64,88 +54,54 @@ const DistributorFinanceDashboard = () => {
     loadStatement();
   }, [loadStatement]);
 
-  const handleAskSettlement = async (e) => {
-    e.preventDefault();
-    const num = Number(askAmount);
-    const availableBalance = Number(summary.netPayableBalance || 0);
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(askAmount.trim()) || !Number.isFinite(num) || num <= 0) {
-      toast.error("Enter a positive amount with no more than two decimal places.");
-      return;
-    }
-    if (num > availableBalance) {
-      toast.error("The requested amount cannot exceed the available net settlement payable.");
-      return;
-    }
-    setSubmittingAsk(true);
-    try {
-      const response = await axios.post(
-        `${backendUrl}/api/distributor/finance/ask-settlement`,
-        {
-          amount: num,
-          withVat,
-          notes: askNotes.trim() || undefined,
-        },
-        { headers: { token } }
-      );
-      toast.success(response.data.message || "Settlement request submitted to Admin.");
-      setShowAskModal(false);
-      setAskAmount("");
-      setAskNotes("");
-      await loadStatement();
-    } catch (error) {
-      toast.error(error.response?.data?.message || "Failed to submit settlement request.");
-    } finally {
-      setSubmittingAsk(false);
-    }
-  };
-
   const summary = statement?.summary || {};
   const transactions = statement?.transactions || [];
-  const settlementLineItems = transactions.filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "BONUS"].includes(item.type));
-  const settlementDeliveryCount = settlementLineItems.filter((item) => item.type === "DELIVERY").length;
   const cashPosition = statement?.cashPosition || {};
+  const settlementPosition = statement?.settlementPosition || {};
   const remittances = statement?.remittances || [];
+  const settlementRequests = statement?.settlementRequests || [];
 
-  const openRemittanceModal = () => {
-    setRemittanceForm({
-      amount: Number(cashPosition.availableToRemit || 0).toFixed(2),
-      reference: "",
-      evidenceFile: null,
-      idempotencyKey: window.crypto.randomUUID(),
-    });
-    setShowRemittanceModal(true);
-  };
-
-  const handleSubmitRemittance = async (event) => {
+  const submitRequestEvidence = async (event, request) => {
     event.preventDefault();
-    const amount = Number(remittanceForm.amount);
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(remittanceForm.amount.trim()) || !Number.isFinite(amount) || amount <= 0) {
-      toast.error("Enter a positive remittance amount with no more than two decimal places.");
+    const form = requestEvidence[request.id] || {};
+    if (!form.transferReference?.trim() || !form.evidenceFile) {
+      toast.error("Enter the bank transfer reference and attach the transfer evidence.");
       return;
     }
-    if (amount > Number(cashPosition.availableToRemit || 0)) {
-      toast.error("The remittance cannot exceed your available COD receivable.");
-      return;
-    }
-    setSubmittingRemittance(true);
+    const formData = new FormData();
+    formData.append("transferReference", form.transferReference.trim());
+    formData.append("evidence", form.evidenceFile);
+    setBusyRequestId(request.id);
     try {
-      const formData = new FormData();
-      formData.append("amount", remittanceForm.amount);
-      formData.append("reference", remittanceForm.reference);
-      formData.append("idempotencyKey", remittanceForm.idempotencyKey);
-      formData.append("evidence", remittanceForm.evidenceFile);
       const response = await axios.post(
-        `${backendUrl}/api/distributor/finance/remittances`,
+        `${backendUrl}/api/distributor/finance/settlement-requests/${request.id}/evidence`,
         formData,
         { headers: { token } }
       );
-      toast.success(response.data.message || "COD remittance submitted for Admin verification.");
-      setShowRemittanceModal(false);
+      toast.success(response.data.message || "Transfer evidence submitted to Admin.");
+      setRequestEvidence((current) => ({ ...current, [request.id]: {} }));
       await loadStatement();
     } catch (error) {
-      toast.error(error.response?.data?.message || "Could not submit COD remittance.");
+      toast.error(error.response?.data?.message || "Could not submit transfer evidence.");
     } finally {
-      setSubmittingRemittance(false);
+      setBusyRequestId(null);
+    }
+  };
+
+  const acknowledgePayout = async (request) => {
+    setBusyRequestId(request.id);
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/distributor/finance/settlement-requests/${request.id}/acknowledge`,
+        {},
+        { headers: { token } }
+      );
+      toast.success(response.data.message || "Company payout receipt acknowledged.");
+      await loadStatement();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not acknowledge payout receipt.");
+    } finally {
+      setBusyRequestId(null);
     }
   };
 
@@ -180,15 +136,6 @@ const DistributorFinanceDashboard = () => {
               Without VAT
             </button>
           </div>
-
-          <button
-            onClick={() => setShowAskModal(true)}
-            disabled={Number(summary.netPayableBalance || 0) <= 0}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Send className="w-3.5 h-3.5" />
-            Ask for Settlement
-          </button>
 
           <button
             onClick={loadStatement}
@@ -307,17 +254,20 @@ const DistributorFinanceDashboard = () => {
 
       <section className="space-y-4 rounded-2xl border border-[#dedbd3] bg-[#ffffff] p-4 sm:p-5">
         <div>
-          <h2 className="text-sm font-bold text-[#171717]">Customer COD, refunds &amp; settlement</h2>
+          <h2 className="text-sm font-bold text-[#171717]">Company balance &amp; settlement</h2>
           <p className="mt-1 max-w-4xl text-[11px] leading-5 text-[#575757]">
-            You collect COD and owe it to the company. For an approved return, you pay the customer the Admin-approved refund after charges; the company records that amount as payable to you after verifying your proof. An Admin may explicitly offset eligible balances. Pending remittances are excluded from offset until reviewed.
+            Posted COD and approved earnings, incentives, and refunds are shown as separate gross balances. The net position is the amount due after posted settlements; remittances awaiting Admin review are not treated as paid.
           </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {[
-            ["COD receivable owed to company", cashPosition.outstandingReceivable],
+            ["Company payable to you", settlementPosition.outstandingPayable],
+            ["Receivable owed to company", settlementPosition.outstandingReceivable],
+            [
+              Number(settlementPosition.netBalance || 0) > 0 ? "Net you owe company" : "Net company owes you",
+              Math.abs(Number(settlementPosition.netBalance || 0)),
+            ],
             ["Remittance awaiting Admin review", cashPosition.pendingRemittance],
-            ["Verified refund payable to you", cashPosition.refundPayable],
-            ["Eligible for Admin-approved offset", cashPosition.availableToOffset],
           ].map(([label, amount]) => (
             <div key={label} className="rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-3">
               <p className="text-[10px] font-bold uppercase tracking-wide text-[#575757]">{label}</p>
@@ -327,18 +277,144 @@ const DistributorFinanceDashboard = () => {
             </div>
           ))}
         </div>
-        {Number(cashPosition.availableToRemit || 0) > 0 && (
-          <button
-            type="button"
-            onClick={openRemittanceModal}
-            className="flex items-center gap-2 rounded-xl bg-[#171717] px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-[#262626]"
-          >
-            <Send className="h-3.5 w-3.5" />
-            Submit COD remittance
-          </button>
+        {settlementPosition.unifiedSettlementBlocked && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+            <p>
+              The net includes {currency}{Number(settlementPosition.excludedLegacyLogisticsPayableTotal || 0).toFixed(2)} in older return/exchange logistics payables,
+              but Admin must process these through Accounts Payable before posting a unified settlement.
+            </p>
+            <ul className="mt-2 space-y-1">
+              {(settlementPosition.excludedLegacyLogisticsPayables || []).map((payable) => (
+                <li key={payable.id}>{payable.title} · {currency}{Number(payable.remainingBalance || 0).toFixed(2)}</li>
+              ))}
+            </ul>
+          </div>
         )}
+        <p className="text-[10px] text-[#575757]">
+          Verified customer refunds are included in company payables. Open service earnings, delivery charges, incentives, bonuses, and refund documents are itemized in the statement.
+        </p>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {[
+            ["Open receivable documents", settlementPosition.receivableDocuments],
+            ["Open payable documents", settlementPosition.payableDocuments],
+          ].map(([label, documents]) => (
+            <details key={label} className="rounded-xl border border-[#dedbd3] p-3">
+              <summary className="cursor-pointer text-xs font-bold text-[#171717]">{label} ({documents?.length || 0})</summary>
+              <div className="mt-2 max-h-56 space-y-2 overflow-auto">
+                {(documents || []).map((document) => (
+                  <div key={document.id} className="flex justify-between gap-3 border-t border-[#dedbd3] pt-2 text-[10px]">
+                    <div>
+                      <p className="font-semibold text-[#171717]">{document.documentNumber} · {document.sourceType}</p>
+                      <p className="text-[#575757]">{document.sourceId} · {new Date(document.issueDate).toLocaleDateString()}</p>
+                    </div>
+                    <p className="font-bold text-[#171717]">{currency}{Number(document.remainingAmount || 0).toFixed(2)}</p>
+                  </div>
+                ))}
+                {!documents?.length && <p className="pt-2 text-[10px] text-[#575757]">No open documents.</p>}
+              </div>
+            </details>
+          ))}
+        </div>
         <div className="space-y-2">
-          <h3 className="text-xs font-bold text-[#171717]">COD remittance history</h3>
+          <h3 className="text-xs font-bold text-[#171717]">Settlement requests from Admin</h3>
+          <p className="text-[10px] text-[#575757]">
+            Transfer only against an Admin-issued request. For collection requests, submit transfer proof for the requested amount. For payouts, review Admin's proof and acknowledge receipt.
+          </p>
+          {settlementRequests.length ? settlementRequests.map((request) => (
+            <article key={request.id} className="space-y-3 rounded-xl border border-[#dedbd3] bg-white p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-[#171717]">
+                    {request.direction === "COMPANY_COLLECTS" ? "Pay company" : "Receive from company"} · {currency}{Number(request.requestedAmount || 0).toFixed(2)}
+                  </p>
+                  <p className="mt-1 text-[10px] text-[#575757]">
+                    {new Date(request.createdAt).toLocaleString()} · {request.status.replaceAll("_", " ")}
+                  </p>
+                  {request.requestNotes && <p className="mt-1 text-[10px] text-[#575757]">{request.requestNotes}</p>}
+                </div>
+                {request.status === "REQUESTED" && request.direction === "COMPANY_COLLECTS" && (
+                  <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">Transfer due</span>
+                )}
+                {request.status === "EVIDENCE_SUBMITTED" && (
+                  <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[10px] font-bold text-sky-800">Awaiting Admin verification</span>
+                )}
+                {request.status === "REQUESTED" && request.direction === "COMPANY_PAYS" && (
+                  <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold text-violet-800">Awaiting company payout</span>
+                )}
+                {request.status === "POSTED" && (
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-800">Transfer verified and posted</span>
+                )}
+                {request.status === "ACKNOWLEDGED" && (
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-800">Payout receipt acknowledged</span>
+                )}
+                {request.status === "REJECTED" && (
+                  <span className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-800">Evidence rejected</span>
+                )}
+              </div>
+
+              {request.status === "REQUESTED" && request.direction === "COMPANY_COLLECTS" && (
+                <form onSubmit={(event) => submitRequestEvidence(event, request)} className="grid gap-2 rounded-lg border border-amber-100 bg-amber-50 p-3 sm:grid-cols-2">
+                  <label className="text-[10px] font-semibold text-[#171717]">
+                    Bank / wallet transfer reference
+                    <input
+                      value={requestEvidence[request.id]?.transferReference || ""}
+                      onChange={(event) => setRequestEvidence((current) => ({
+                        ...current,
+                        [request.id]: { ...current[request.id], transferReference: event.target.value },
+                      }))}
+                      maxLength={191}
+                      required
+                      className="mt-1 w-full rounded-lg border border-[#dedbd3] bg-white p-2 text-xs"
+                    />
+                  </label>
+                  <label className="text-[10px] font-semibold text-[#171717]">
+                    Transfer evidence (JPG/PNG, max 8 MB)
+                    <input
+                      type="file"
+                      accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+                      onChange={(event) => setRequestEvidence((current) => ({
+                        ...current,
+                        [request.id]: { ...current[request.id], evidenceFile: event.target.files?.[0] || null },
+                      }))}
+                      required
+                      className="mt-1 w-full rounded-lg border border-[#dedbd3] bg-white p-2 text-xs"
+                    />
+                  </label>
+                  <button type="submit" disabled={busyRequestId === request.id} className="justify-self-start rounded-lg bg-[#171717] px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50 sm:col-span-2">
+                    {busyRequestId === request.id ? "Submitting evidence…" : "Submit transfer evidence"}
+                  </button>
+                </form>
+              )}
+
+              {request.direction === "COMPANY_COLLECTS" && request.transferReference && (
+                <div className="flex flex-wrap justify-between gap-2 border-t border-[#dedbd3] pt-2 text-[10px] text-[#575757]">
+                  <span>Transfer reference: {request.transferReference}</span>
+                  {request.evidenceUrl && <a href={request.evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">View submitted evidence</a>}
+                </div>
+              )}
+
+              {request.status === "PAYMENT_SENT" && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-violet-100 bg-violet-50 p-3">
+                  <div className="text-[10px] text-violet-950">
+                    <p>Company transfer reference: <b>{request.transferReference || "—"}</b> · {request.financialAccount?.accountName || "Treasury"}</p>
+                    {request.evidenceUrl && <a href={request.evidenceUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block font-semibold text-blue-700 underline">View payout evidence</a>}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busyRequestId === request.id}
+                    onClick={() => acknowledgePayout(request)}
+                    className="rounded-lg bg-violet-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
+                  >
+                    {busyRequestId === request.id ? "Acknowledging…" : "Acknowledge receipt"}
+                  </button>
+                </div>
+              )}
+              {request.reviewNotes && <p className="text-[10px] text-rose-700">Admin note: {request.reviewNotes}</p>}
+            </article>
+          )) : <p className="rounded-lg border border-dashed border-[#dedbd3] p-3 text-center text-[11px] text-[#575757]">No open or recent settlement requests.</p>}
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xs font-bold text-[#171717]">Historical COD remittance records</h3>
           <div className="divide-y divide-[#dedbd3] rounded-xl border border-[#dedbd3]">
             {remittances.length ? remittances.map((remittance) => (
               <div key={remittance.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs">
@@ -350,6 +426,20 @@ const DistributorFinanceDashboard = () => {
                 {remittance.evidenceUrl && <a href={remittance.evidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] font-semibold text-blue-700 underline">View submitted evidence</a>}
               </div>
             )) : <p className="p-4 text-center text-[11px] text-[#575757]">No COD remittances submitted yet.</p>}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-xs font-bold text-[#171717]">Unified settlement history</h3>
+          <div className="divide-y divide-[#dedbd3] rounded-xl border border-[#dedbd3]">
+            {statement?.balanceSettlements?.length ? statement.balanceSettlements.map((settlement) => (
+              <div key={settlement.id} className="flex flex-wrap items-center justify-between gap-2 p-3 text-xs">
+                <div>
+                  <p className="font-bold text-[#171717]">{settlement.direction.replaceAll("_", " ")} · {new Date(settlement.postedAt).toLocaleString()}</p>
+                  <p className="mt-1 text-[10px] text-[#575757]">Cash {currency}{Number(settlement.cashAmount || 0).toFixed(2)} · Offset {currency}{Number(settlement.offsetAmount || 0).toFixed(2)} · Ref {settlement.reference || "—"} · Set-off {settlement.setoffAgreementReference || "—"}</p>
+                  <p className="mt-1 text-[10px] text-[#575757]">Journal {settlement.journalEntryId || "—"} · {settlement.notes || "No notes"}</p>
+                </div>
+              </div>
+            )) : <p className="p-4 text-center text-[11px] text-[#575757]">No unified settlements are recorded yet.</p>}
           </div>
         </div>
         <div className="space-y-2">
@@ -482,147 +572,6 @@ const DistributorFinanceDashboard = () => {
         )}
       </div>
 
-      {/* Ask Settlement Modal */}
-      {showAskModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl w-full max-w-md shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-[#dedbd3] bg-[#f8f7f4]">
-              <div className="flex items-center gap-2">
-                <Send className="w-4 h-4 text-[#171717]" />
-                <h3 className="text-sm font-bold text-[#171717]">Request Payout Settlement</h3>
-              </div>
-              <button onClick={() => setShowAskModal(false)} className="text-[#575757] p-1">
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleAskSettlement} className="p-6 space-y-4 text-xs">
-              <div className="p-3 bg-[#f8f7f4] rounded-xl border border-[#dedbd3]">
-                <span className="text-[11px] text-[#575757]">Available Net Settlement Balance:</span>
-                <p className="text-lg font-bold text-[#171717]">
-                  {currency}{(summary.netPayableBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                </p>
-                <div className="mt-2 grid grid-cols-2 gap-2 border-t border-[#dedbd3] pt-2 text-[10px] text-[#575757] sm:grid-cols-4">
-                  <span>{settlementDeliveryCount} completed deliveries</span>
-                  <span>Delivery: {currency}{Number(summary.grossDeliveryEarnings || 0).toFixed(2)}</span>
-                  <span>Incentive: {currency}{Number(summary.earnedIncentives || 0).toFixed(2)}</span>
-                  <span>Target bonus: {currency}{Number(summary.earnedBonuses || 0).toFixed(2)}</span>
-                </div>
-                <details className="mt-2 text-[10px]">
-                  <summary className="cursor-pointer font-semibold text-indigo-700">Review delivery-by-delivery statement</summary>
-                  <div className="mt-2 max-h-40 overflow-auto rounded-lg border border-[#dedbd3] bg-white">
-                    {settlementLineItems.map((item) => (
-                      <div key={item.id} className="flex justify-between gap-2 border-b border-[#dedbd3] px-2 py-1.5 last:border-0">
-                        <span>{item.type} · {item.referenceId} {item.eligibleDeliveryCount ? `· ${item.eligibleDeliveryCount} deliveries` : ""}</span>
-                        <b>{currency}{Number(item.netAmount || 0).toFixed(2)}</b>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              </div>
-
-              <div>
-                <label className="block font-bold text-[#171717] mb-1">Requested Settlement Amount (Rs)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max={summary.netPayableBalance || 0}
-                  value={askAmount}
-                  onChange={(e) => setAskAmount(e.target.value)}
-                  placeholder="e.g., 5000"
-                  className="w-full p-2.5 border border-[#dedbd3] rounded-xl text-sm font-bold focus:outline-none focus:border-[#171717]"
-                  required
-                />
-                <p className="mt-1 text-[10px] text-[#575757]">
-                  Requesting {withVat ? "with VAT" : "without VAT"}; pending requests reduce the available balance.
-                </p>
-              </div>
-
-              <div>
-                <label className="block font-bold text-[#171717] mb-1">Notes / Bank Details</label>
-                <textarea
-                  value={askNotes}
-                  onChange={(e) => setAskNotes(e.target.value)}
-                  maxLength={1000}
-                  placeholder="e.g., Nabil Bank A/C #0234017500000, Branch: Kathmandu"
-                  className="w-full p-2.5 border border-[#dedbd3] rounded-xl text-xs focus:outline-none focus:border-[#171717] resize-none h-16"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#dedbd3]">
-                <button
-                  type="button"
-                  onClick={() => setShowAskModal(false)}
-                  className="px-4 py-2 border border-[#dedbd3] rounded-xl text-[#575757]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={submittingAsk || Number(summary.netPayableBalance || 0) <= 0}
-                  className="px-5 py-2 bg-[#171717] text-white font-bold rounded-xl hover:bg-[#262626] transition-colors disabled:opacity-50"
-                >
-                  {submittingAsk ? "Submitting..." : "Submit Payout Request"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {showRemittanceModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <form onSubmit={handleSubmitRemittance} className="w-full max-w-md space-y-4 overflow-hidden rounded-2xl border border-[#dedbd3] bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-[#dedbd3] bg-[#f8f7f4] px-5 py-4">
-              <div>
-                <h3 className="text-sm font-bold text-[#171717]">Submit COD remittance</h3>
-                <p className="mt-1 text-[10px] text-[#575757]">Available to remit: {currency}{Number(cashPosition.availableToRemit || 0).toFixed(2)}</p>
-              </div>
-              <button type="button" onClick={() => setShowRemittanceModal(false)} className="rounded-lg p-1 text-[#575757]" aria-label="Close remittance form"><X className="h-4 w-4" /></button>
-            </div>
-            <div className="space-y-3 px-5 pb-2 text-xs">
-              <label className="block">
-                <span className="mb-1 block font-bold text-[#171717]">Amount</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max={cashPosition.availableToRemit || 0}
-                  value={remittanceForm.amount}
-                  onChange={(event) => setRemittanceForm((current) => ({ ...current, amount: event.target.value }))}
-                  className="w-full rounded-lg border border-[#dedbd3] p-2.5"
-                  required
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block font-bold text-[#171717]">Bank / wallet transfer reference</span>
-                <input
-                  value={remittanceForm.reference}
-                  onChange={(event) => setRemittanceForm((current) => ({ ...current, reference: event.target.value }))}
-                  maxLength={191}
-                  required
-                  className="w-full rounded-lg border border-[#dedbd3] p-2.5"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block font-bold text-[#171717]">Transfer evidence image (JPG or PNG, max 8 MB)</span>
-                <input
-                  type="file"
-                  accept=".jpg,.jpeg,.png,image/jpeg,image/png"
-                  onChange={(event) => setRemittanceForm((current) => ({ ...current, evidenceFile: event.target.files?.[0] || null }))}
-                  required
-                  className="w-full rounded-lg border border-[#dedbd3] p-2.5 file:mr-3 file:rounded-md file:border-0 file:bg-[#f1f0ec] file:px-3 file:py-1.5 file:text-[10px] file:font-semibold"
-                />
-              </label>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-[#dedbd3] px-5 py-4">
-              <button type="button" onClick={() => setShowRemittanceModal(false)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-[#575757]">Cancel</button>
-              <button type="submit" disabled={submittingRemittance} className="rounded-lg bg-[#171717] px-4 py-2 font-bold text-white disabled:opacity-50">{submittingRemittance ? "Submitting..." : "Submit for Admin review"}</button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 };

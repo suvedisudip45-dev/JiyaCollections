@@ -1,0 +1,38 @@
+CREATE TABLE `DistributorSettlementRequestToken` (
+  `id` VARCHAR(191) NOT NULL,
+  `distributorId` VARCHAR(191) NOT NULL,
+  `direction` VARCHAR(24) NOT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'REQUESTED',
+  `requestedAmount` DECIMAL(20, 2) NOT NULL,
+  `idempotencyKey` VARCHAR(191) NOT NULL,
+  `requestNotes` TEXT NULL,
+  `setoffAgreementReference` VARCHAR(191) NULL,
+  `setoffConfirmed` BOOLEAN NOT NULL DEFAULT false,
+  `transferReference` VARCHAR(191) NULL,
+  `evidenceUrl` TEXT NULL,
+  `financialAccountId` VARCHAR(191) NULL,
+  `evidenceSubmittedAt` DATETIME(3) NULL,
+  `evidenceSubmittedByAccountId` VARCHAR(191) NULL,
+  `transferSentAt` DATETIME(3) NULL,
+  `transferSentByAccountId` VARCHAR(191) NULL,
+  `acknowledgedAt` DATETIME(3) NULL,
+  `acknowledgedByAccountId` VARCHAR(191) NULL,
+  `reviewedAt` DATETIME(3) NULL,
+  `reviewedByAccountId` VARCHAR(191) NULL,
+  `reviewNotes` TEXT NULL,
+  `settlementId` VARCHAR(191) NULL,
+  `createdByAccountId` VARCHAR(191) NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL,
+  INDEX `DistributorSettlementRequestToken_distributorId_status_createdAt_idx` (`distributorId`, `status`, `createdAt`),
+  INDEX `DistributorSettlementRequestToken_status_createdAt_idx` (`status`, `createdAt`),
+  UNIQUE INDEX `DistributorSettlementRequestToken_idempotencyKey_key` (`idempotencyKey`),
+  UNIQUE INDEX `DistributorSettlementRequestToken_settlementId_key` (`settlementId`),
+  PRIMARY KEY (`id`),
+  CONSTRAINT `DistributorSettlementRequestToken_distributorId_fkey`
+    FOREIGN KEY (`distributorId`) REFERENCES `Distributor` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `DistributorSettlementRequestToken_financialAccountId_fkey`
+    FOREIGN KEY (`financialAccountId`) REFERENCES `FinancialAccount` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `DistributorSettlementRequestToken_settlementId_fkey`
+    FOREIGN KEY (`settlementId`) REFERENCES `DistributorBalanceSettlement` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

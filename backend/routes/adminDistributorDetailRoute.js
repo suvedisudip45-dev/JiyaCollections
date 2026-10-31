@@ -2,6 +2,7 @@ import express from "express";
 import {
   getAdminDistributorExchanges,
   getAdminDistributorFinance,
+  getAdminDistributorSettlementPositions,
   getAdminDistributorFinanceTransactions,
   getAdminDistributorInventory,
   getAdminDistributorProfile,
@@ -14,8 +15,12 @@ import {
   getAdminDistributorCashRemittances,
   reviewDistributorCashRemittance,
   approveDistributorRefundNetting,
+  reviewAdminDistributorSettlementRequest,
+  recordAdminDistributorSettlementPayout,
+  settleAdminDistributorBalances,
 } from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
+import { secureEvidenceUpload } from "../middleware/secureUpload.js";
 
 const adminDistributorDetailRouter = express.Router();
 
@@ -31,6 +36,7 @@ const requireAdminRole = (req, res, next) => {
 };
 
 adminDistributorDetailRouter.use(authenticate, requireAdminRole);
+adminDistributorDetailRouter.get("/settlement-positions", authorize("finance:payables_read"), getAdminDistributorSettlementPositions);
 adminDistributorDetailRouter.get("/", authorize("distributor:admin_list"), listAdminDistributors);
 adminDistributorDetailRouter.get("/:id/profile", authorize("distributor:admin_detail"), getAdminDistributorProfile);
 adminDistributorDetailRouter.get("/:id/login-history", authorize("distributor:admin_sessions_read"), getAdminDistributorLoginHistory);
@@ -40,6 +46,23 @@ adminDistributorDetailRouter.get("/:id/exchanges", authorize("distributor:admin_
 adminDistributorDetailRouter.get("/:id/finance", authorize("distributor:admin_finance_read"), getAdminDistributorFinance);
 adminDistributorDetailRouter.get("/:id/finance/transactions", authorize("distributor:admin_finance_read"), getAdminDistributorFinanceTransactions);
 adminDistributorDetailRouter.get("/:id/finance/settlements", authorize("distributor:admin_finance_read"), getAdminDistributorSettlements);
+adminDistributorDetailRouter.post(
+  "/:id/finance/settlements",
+  authorize("finance:receivable_collect"),
+  authorize("finance:payable_settle"),
+  settleAdminDistributorBalances,
+);
+adminDistributorDetailRouter.post(
+  "/:id/finance/settlement-requests/:requestId/review",
+  authorize("finance:receivable_collect"),
+  reviewAdminDistributorSettlementRequest,
+);
+adminDistributorDetailRouter.post(
+  "/:id/finance/settlement-requests/:requestId/payout",
+  authorize("finance:payable_settle"),
+  ...secureEvidenceUpload("evidence"),
+  recordAdminDistributorSettlementPayout,
+);
 adminDistributorDetailRouter.get(
   "/:id/finance/remittances",
   authorize("distributor:admin_finance_read"),

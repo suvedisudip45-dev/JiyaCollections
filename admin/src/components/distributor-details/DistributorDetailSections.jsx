@@ -255,9 +255,15 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
   const [accountByBatch, setAccountByBatch] = useState({});
   const [loading, setLoading] = useState(true);
   const [busyBatchId, setBusyBatchId] = useState(null);
-  const [approvingNetting, setApprovingNetting] = useState(false);
-  const [nettingFormOpen, setNettingFormOpen] = useState(false);
-  const [nettingForm, setNettingForm] = useState({ amount: "", notes: "" });
+  const [postingSettlement, setPostingSettlement] = useState(false);
+  const [settlementFormOpen, setSettlementFormOpen] = useState(false);
+  const [settlementForm, setSettlementForm] = useState({
+    requestedAmount: "",
+    setoffAgreementReference: "",
+    setoffConfirmed: false,
+    notes: "",
+  });
+  const [payoutFormByRequest, setPayoutFormByRequest] = useState({});
   const endpoint = `${backendUrl}/api/admin/distributors/${distributorId}/finance/remittances`;
 
   const load = useCallback(async () => {
@@ -310,44 +316,149 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
     }
   };
 
-  const approveNetting = async () => {
-    const maximum = Number(data?.position?.availableToOffset || 0);
-    if (!Number.isFinite(maximum) || maximum <= 0 || approvingNetting) return;
-    const amount = nettingForm.amount.trim();
-    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(amount) || Number(amount) <= 0 || Number(amount) > maximum) {
-      toast.error(`Enter a valid amount up to NPR ${maximum.toFixed(2)}.`);
+  const postUnifiedSettlement = async () => {
+    const position = data?.settlementPosition;
+    const maximum = Math.abs(Number(position?.netBalance || 0));
+    const requestedAmount = settlementForm.requestedAmount.trim();
+    const amount = Number(requestedAmount);
+    const offsetAmount = Math.min(
+      Number(position?.outstandingReceivable || 0),
+      Number(position?.outstandingPayable || 0),
+    );
+    if (!/^\d{1,18}(?:\.\d{1,2})?$/.test(requestedAmount) || !Number.isFinite(amount) || amount <= 0 || amount > maximum) {
+      toast.error(`Enter a positive request amount up to the net balance of NPR ${maximum.toFixed(2)}.`);
       return;
     }
-    const notes = nettingForm.notes.trim();
-    if (!notes) {
-      toast.error("Add an Admin note explaining this offset.");
+    if (offsetAmount > 0 && (
+      !settlementForm.setoffAgreementReference.trim() ||
+      !settlementForm.setoffConfirmed
+    )) {
+      toast.error("Enter the agreement reference and confirm it authorizes this set-off.");
+      return;
+    }
+    if (!settlementForm.notes.trim()) {
+      toast.error("Add a note for the settlement request.");
       return;
     }
 
-    setApprovingNetting(true);
+    setPostingSettlement(true);
     try {
       await axios.post(
-        `${backendUrl}/api/admin/distributors/${distributorId}/finance/refund-netting`,
-        { amount, notes, idempotencyKey: window.crypto.randomUUID() },
+        `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlements`,
+        {
+          requestedAmount,
+          setoffAgreementReference: settlementForm.setoffAgreementReference.trim(),
+          setoffConfirmed: settlementForm.setoffConfirmed,
+          notes: settlementForm.notes.trim(),
+          idempotencyKey: window.crypto.randomUUID(),
+        },
         { headers: { token } },
       );
-      toast.success("Refund payable offset against COD receivable was approved and posted.");
-      setNettingFormOpen(false);
-      setNettingForm({ amount: "", notes: "" });
+      toast.success("Settlement request was issued to the distributor.");
+      setSettlementFormOpen(false);
+      setSettlementForm({
+        requestedAmount: "",
+        setoffAgreementReference: "",
+        setoffConfirmed: false,
+        notes: "",
+      });
       await load();
     } catch (error) {
-      toast.error(error.response?.data?.message || "Could not approve distributor balance offset.");
+      toast.error(error.response?.data?.message || "Could not post distributor balance settlement.");
     } finally {
-      setApprovingNetting(false);
+      setPostingSettlement(false);
     }
+  };
+
+  const reviewSettlementRequest = async (request, decision) => {
+    const reviewNotes = decision === "REJECT"
+      ? window.prompt("Why is this transfer evidence being rejected?")?.trim()
+      : "";
+    if (decision === "REJECT" && !reviewNotes) return;
+    const financialAccountId = accountByBatch[request.id] || accounts.find((account) =>
+      account.status === "ACTIVE" &&
+      account.currency === "NPR" &&
+      ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+    )?.id;
+    if (decision === "VERIFY" && !financialAccountId) {
+      toast.error("Select the active NPR treasury account that received the transfer.");
+      return;
+    }
+    setBusyBatchId(request.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlement-requests/${request.id}/review`,
+        { decision, financialAccountId, reviewNotes },
+        { headers: { token } },
+      );
+      toast.success(decision === "VERIFY" ? "Distributor transfer evidence acknowledged and posted." : "Transfer evidence rejected.");
+      await load();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not review settlement evidence.");
+    } finally {
+      setBusyBatchId(null);
+    }
+  };
+
+  const recordPayoutTransfer = async (request) => {
+    const form = payoutFormByRequest[request.id] || {};
+    if (!form.transferReference?.trim() || !form.financialAccountId || !form.evidenceFile) {
+      toast.error("Enter the transfer reference, select the treasury account, and attach transfer evidence.");
+      return;
+    }
+    const formData = new FormData();
+    formData.append("transferReference", form.transferReference.trim());
+    formData.append("financialAccountId", form.financialAccountId);
+    formData.append("evidence", form.evidenceFile);
+    setBusyBatchId(request.id);
+    try {
+      await axios.post(
+        `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlement-requests/${request.id}/payout`,
+        formData,
+        { headers: { token } },
+      );
+      toast.success("Company payout recorded. The distributor can acknowledge receipt.");
+      await load();
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not record the company payout.");
+    } finally {
+      setBusyBatchId(null);
+    }
+  };
+
+  const settlementPosition = data?.settlementPosition || {};
+  const openReceivable = Number(settlementPosition.outstandingReceivable || 0);
+  const openPayable = Number(settlementPosition.outstandingPayable || 0);
+  const offsetPreview = Math.min(openReceivable, openPayable);
+  const maximumNetCash = Math.abs(Number(settlementPosition.netBalance || 0));
+  const activeSettlementRequest = (data?.settlementRequests || []).find((request) =>
+    ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"].includes(request.status)
+  );
+  const settlementBlocked = Number(settlementPosition.pendingRemittance || 0) > 0 ||
+    Number(settlementPosition.pendingSettlementRequests || 0) > 0 ||
+    (data?.settlementRequests || []).some((request) => ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"].includes(request.status)) ||
+    settlementPosition.unifiedSettlementBlocked === true;
+  const hasOpenBalance = openReceivable > 0 || openPayable > 0;
+  const toggleSettlementForm = () => {
+    if (settlementFormOpen) {
+      setSettlementFormOpen(false);
+      return;
+    }
+    setSettlementForm({
+      requestedAmount: maximumNetCash.toFixed(2),
+      setoffAgreementReference: "",
+      setoffConfirmed: false,
+      notes: "",
+    });
+    setSettlementFormOpen(true);
   };
 
   return (
     <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="font-bold text-slate-900">COD receivables &amp; remittances</h2>
-          <p className="mt-1 text-xs text-slate-500">Gross COD receivables and verified distributor refund payables remain separately recorded. Only verified remittances or explicit Admin-approved offsets clear balances.</p>
+          <h2 className="font-bold text-slate-900">Distributor balance &amp; settlement</h2>
+          <p className="mt-1 text-xs text-slate-500">COD, delivery earnings, incentives, refunds, and other posted distributor documents roll into one gross-to-net position.</p>
         </div>
         <button type="button" onClick={load} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Refresh</button>
       </div>
@@ -355,10 +466,13 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Open COD receivable", data.position?.outstandingReceivable],
+              ["Company receivable", settlementPosition.outstandingReceivable],
+              ["Company payable", settlementPosition.outstandingPayable],
+              [
+                Number(settlementPosition.netBalance || 0) > 0 ? "Net due to company" : "Net due to distributor",
+                Math.abs(Number(settlementPosition.netBalance || 0)),
+              ],
               ["Pending remittance review", data.position?.pendingRemittance],
-              ["Verified refund payable to distributor", data.position?.refundPayable],
-              ["Available for approved offset", data.position?.availableToOffset],
             ].map(([label, amount]) => (
               <div key={label} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p>
@@ -366,68 +480,267 @@ const DistributorCodRemittances = ({ distributorId, token }) => {
               </div>
             ))}
           </div>
-          {Number(data.position?.availableToOffset || 0) > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
-              <p className="max-w-2xl text-xs leading-5 text-amber-950">
-                Review the verified customer-refund proof before offsetting. This action posts a journal entry and allocates both the COD receivable and distributor payable; pending remittances are excluded.
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+            <p className="max-w-3xl text-xs leading-5 text-indigo-950">
+              Admin issues one request for the distributor's current net amount. The distributor submits evidence for money owed to the company; company payouts are recorded by Admin and acknowledged by the distributor.
+            </p>
+            <button
+              type="button"
+              disabled={!hasOpenBalance || maximumNetCash <= 0 || settlementBlocked || postingSettlement}
+              onClick={toggleSettlementForm}
+              className="rounded-lg bg-indigo-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
+            >
+              {settlementFormOpen ? "Close request form" : "Issue net settlement request"}
+            </button>
+          </div>
+          {activeSettlementRequest && (
+            <p className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+              Request {activeSettlementRequest.id} is in progress ({activeSettlementRequest.status.replaceAll("_", " ")}). Complete or reject it before issuing another request.
+            </p>
+          )}
+          {(Number(settlementPosition.pendingRemittance || 0) > 0 || Number(settlementPosition.pendingSettlementRequests || 0) > 0) && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Clear {Number(settlementPosition.pendingRemittance || 0) > 0 ? "the pending COD remittance review" : ""}
+              {Number(settlementPosition.pendingRemittance || 0) > 0 && Number(settlementPosition.pendingSettlementRequests || 0) > 0 ? " and " : ""}
+              {Number(settlementPosition.pendingSettlementRequests || 0) > 0 ? "existing distributor settlement request(s)" : ""}
+              {" "}before issuing a settlement request.
+            </p>
+          )}
+          {settlementPosition.unifiedSettlementBlocked && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900">
+              <p>
+                The net includes {amountText(settlementPosition.excludedLegacyLogisticsPayableTotal)} in legacy return/exchange logistics payables,
+                but they are not yet in the accounting subledger. Settle them through Accounts Payable before issuing a settlement request.
               </p>
-              <button
-                type="button"
-                disabled={approvingNetting}
-                onClick={() => {
-                  setNettingForm({ amount: Number(data.position.availableToOffset).toFixed(2), notes: "" });
-                  setNettingFormOpen((open) => !open);
-                }}
-                className="rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50"
-              >
-                {nettingFormOpen ? "Close offset form" : `Prepare offset · ${amountText(data.position.availableToOffset)}`}
-              </button>
+              <ul className="mt-2 space-y-1">
+                {(settlementPosition.excludedLegacyLogisticsPayables || []).map((payable) => (
+                  <li key={payable.id}>{payable.title} · {payable.referenceType} · {amountText(payable.remainingBalance)}</li>
+                ))}
+              </ul>
             </div>
           )}
-          {nettingFormOpen && Number(data.position?.availableToOffset || 0) > 0 && (
+          {settlementFormOpen && hasOpenBalance && !settlementBlocked && (
             <form
               onSubmit={(event) => {
                 event.preventDefault();
-                approveNetting();
+                postUnifiedSettlement();
               }}
-              className="grid gap-3 rounded-xl border border-amber-200 bg-white p-4 sm:grid-cols-2"
+              className="grid gap-3 rounded-xl border border-indigo-200 bg-white p-4 sm:grid-cols-2"
             >
+              <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-700 sm:col-span-2">
+                <p><b>Net balance:</b> {amountText(maximumNetCash)} {Number(settlementPosition.netBalance || 0) >= 0 ? "owed to the company" : "owed to the distributor"}.</p>
+                {offsetPreview > 0 && <p className="mt-1"><b>Offset preview:</b> {amountText(offsetPreview)} applied to both gross sides when the request is completed.</p>}
+                <p className="mt-1 text-[10px] text-slate-500">The requested amount may be partial, but cannot exceed the current net balance. Transfer evidence is added by the party making the payment.</p>
+              </div>
               <label className="space-y-1 text-xs font-semibold text-slate-700">
-                Offset amount (maximum {amountText(data.position.availableToOffset)})
+                Net request amount (maximum {amountText(maximumNetCash)})
                 <input
                   type="text"
                   inputMode="decimal"
                   autoComplete="off"
-                  value={nettingForm.amount}
-                  onChange={(event) => setNettingForm((current) => ({ ...current, amount: event.target.value }))}
+                  value={settlementForm.requestedAmount}
+                  onChange={(event) => setSettlementForm((current) => ({ ...current, requestedAmount: event.target.value }))}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                   required
                 />
               </label>
               <label className="space-y-1 text-xs font-semibold text-slate-700">
-                Admin reason
+                Set-off agreement/reference {offsetPreview > 0 ? "(required)" : "(optional)"}
+                <input
+                  type="text"
+                  maxLength={191}
+                  value={settlementForm.setoffAgreementReference}
+                  onChange={(event) => setSettlementForm((current) => ({ ...current, setoffAgreementReference: event.target.value }))}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  required={offsetPreview > 0}
+                />
+              </label>
+              {offsetPreview > 0 && (
+                <label className="flex items-start gap-2 text-xs text-slate-700 sm:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={settlementForm.setoffConfirmed}
+                    onChange={(event) => setSettlementForm((current) => ({ ...current, setoffConfirmed: event.target.checked }))}
+                    required
+                    className="mt-0.5"
+                  />
+                  I confirm the referenced agreement permits offsetting these distributor balances.
+                </label>
+              )}
+              <label className="space-y-1 text-xs font-semibold text-slate-700 sm:col-span-2">
+                Request note
                 <input
                   type="text"
                   maxLength={2000}
-                  value={nettingForm.notes}
-                  onChange={(event) => setNettingForm((current) => ({ ...current, notes: event.target.value }))}
+                  value={settlementForm.notes}
+                  onChange={(event) => setSettlementForm((current) => ({ ...current, notes: event.target.value }))}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                   required
                 />
               </label>
               <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2">
-                <p className="text-[10px] text-slate-500">This will reduce both the distributor COD receivable and verified refund payable. Pending remittances remain reserved.</p>
+                <p className="text-[10px] text-slate-500">No accounting entry is posted until the transfer is verified or acknowledged.</p>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => setNettingFormOpen(false)} className="rounded-lg border border-slate-300 px-3 py-2 text-[10px] font-bold text-slate-700">Cancel</button>
-                  <button type="submit" disabled={approvingNetting} className="rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">
-                    {approvingNetting ? "Posting offset…" : "Confirm and post offset"}
+                  <button type="button" onClick={() => setSettlementFormOpen(false)} className="rounded-lg border border-slate-300 px-3 py-2 text-[10px] font-bold text-slate-700">Cancel</button>
+                  <button type="submit" disabled={postingSettlement} className="rounded-lg bg-indigo-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">
+                    {postingSettlement ? "Issuing request…" : "Issue request"}
                   </button>
                 </div>
               </div>
             </form>
           )}
+          <div className="grid gap-3 lg:grid-cols-2">
+            {[["Open receivable documents", settlementPosition.receivableDocuments], ["Open payable documents", settlementPosition.payableDocuments]].map(([label, documents]) => (
+              <details key={label} className="rounded-xl border border-slate-100 bg-white p-3">
+                <summary className="cursor-pointer text-xs font-bold text-slate-800">{label} ({documents?.length || 0})</summary>
+                <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                  {(documents || []).map((document) => (
+                    <div key={document.id} className="flex justify-between gap-3 border-t border-slate-100 pt-2 text-[10px]">
+                      <div><p className="font-semibold text-slate-800">{document.documentNumber} · {document.sourceType}</p><p className="text-slate-500">{document.sourceId} · {dateText(document.issueDate)}</p></div>
+                      <p className="font-bold text-slate-900">{amountText(document.remainingAmount)}</p>
+                    </div>
+                  ))}
+                  {!documents?.length && <p className="pt-2 text-[10px] text-slate-500">No open documents.</p>}
+                </div>
+              </details>
+            ))}
+          </div>
           <div className="space-y-2">
-            <h3 className="text-xs font-bold text-slate-800">Approved receivable/payable offsets</h3>
+            <h3 className="text-xs font-bold text-slate-800">Admin-issued settlement requests</h3>
+            {(data.settlementRequests || []).length ? data.settlementRequests.map((request) => (
+              <article key={request.id} className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-900">
+                      {request.direction === "COMPANY_COLLECTS" ? "Distributor pays company" : "Company pays distributor"} · {amountText(request.requestedAmount)}
+                    </p>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      Request {request.id} · {dateText(request.createdAt)} · {request.status.replaceAll("_", " ")}
+                    </p>
+                    {request.requestNotes && <p className="mt-1 text-[10px] text-slate-600">{request.requestNotes}</p>}
+                    {request.setoffAgreementReference && <p className="mt-1 text-[10px] text-slate-500">Set-off authority: {request.setoffAgreementReference}</p>}
+                  </div>
+                  {request.status === "REQUESTED" && request.direction === "COMPANY_COLLECTS" && (
+                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">Waiting for distributor transfer</span>
+                  )}
+                  {request.status === "PAYMENT_SENT" && (
+                    <span className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">Waiting for distributor acknowledgment</span>
+                  )}
+                  {request.status === "ACKNOWLEDGED" && (
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-800">Receipt acknowledged</span>
+                  )}
+                </div>
+
+                {request.status === "EVIDENCE_SUBMITTED" && (
+                  <div className="space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <p className="text-sky-950">Distributor transfer reference: <b>{request.transferReference || "—"}</b></p>
+                      {request.evidenceUrl && <a href={request.evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">View evidence</a>}
+                    </div>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="min-w-52 flex-1 text-[10px] font-semibold text-slate-700">
+                        Treasury account receiving funds
+                        <select
+                          value={accountByBatch[request.id] || ""}
+                          onChange={(event) => setAccountByBatch((current) => ({ ...current, [request.id]: event.target.value }))}
+                          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                        >
+                          <option value="">Select an active NPR account</option>
+                          {accounts.filter((account) =>
+                            account.status === "ACTIVE" &&
+                            account.currency === "NPR" &&
+                            ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+                          ).map((account) => <option key={account.id} value={account.id}>{account.accountName}</option>)}
+                        </select>
+                      </label>
+                      <button type="button" disabled={busyBatchId === request.id} onClick={() => reviewSettlementRequest(request, "VERIFY")} className="rounded-lg bg-emerald-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Acknowledge &amp; verify</button>
+                      <button type="button" disabled={busyBatchId === request.id} onClick={() => reviewSettlementRequest(request, "REJECT")} className="rounded-lg bg-rose-700 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50">Reject evidence</button>
+                    </div>
+                  </div>
+                )}
+
+                {request.status === "REQUESTED" && request.direction === "COMPANY_PAYS" && (
+                  <div className="grid gap-2 rounded-lg border border-violet-200 bg-violet-50 p-3 sm:grid-cols-2">
+                    <label className="text-[10px] font-semibold text-slate-700">
+                      Completed transfer reference
+                      <input
+                        value={payoutFormByRequest[request.id]?.transferReference || ""}
+                        onChange={(event) => setPayoutFormByRequest((current) => ({
+                          ...current,
+                          [request.id]: { ...current[request.id], transferReference: event.target.value },
+                        }))}
+                        maxLength={191}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                      />
+                    </label>
+                    <label className="text-[10px] font-semibold text-slate-700">
+                      Treasury account paid from
+                      <select
+                        value={payoutFormByRequest[request.id]?.financialAccountId || ""}
+                        onChange={(event) => setPayoutFormByRequest((current) => ({
+                          ...current,
+                          [request.id]: { ...current[request.id], financialAccountId: event.target.value },
+                        }))}
+                        className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs"
+                      >
+                        <option value="">Select an active NPR account</option>
+                        {accounts.filter((account) =>
+                          account.status === "ACTIVE" &&
+                          account.currency === "NPR" &&
+                          ["CASH", "BANK", "WALLET"].includes(String(account.accountType).toUpperCase())
+                        ).map((account) => <option key={account.id} value={account.id}>{account.accountName}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-[10px] font-semibold text-slate-700 sm:col-span-2">
+                      Transfer evidence (JPG/PNG)
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png"
+                        onChange={(event) => setPayoutFormByRequest((current) => ({
+                          ...current,
+                          [request.id]: { ...current[request.id], evidenceFile: event.target.files?.[0] || null },
+                        }))}
+                        className="mt-1 block w-full rounded-lg border border-slate-200 bg-white p-2 text-xs"
+                      />
+                    </label>
+                    <button type="button" disabled={busyBatchId === request.id} onClick={() => recordPayoutTransfer(request)} className="justify-self-start rounded-lg bg-violet-800 px-3 py-2 text-[10px] font-bold text-white disabled:opacity-50 sm:col-span-2">
+                      {busyBatchId === request.id ? "Recording transfer…" : "Record completed payout"}
+                    </button>
+                  </div>
+                )}
+
+                {request.transferReference && request.direction === "COMPANY_PAYS" && request.status !== "REQUESTED" && (
+                  <div className="flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-2 text-[10px] text-slate-600">
+                    <span>Company transfer: {request.transferReference} · {request.financialAccount?.accountName || "Treasury"}</span>
+                    {request.evidenceUrl && <a href={request.evidenceUrl} target="_blank" rel="noreferrer" className="font-semibold text-blue-700 underline">View payout evidence</a>}
+                  </div>
+                )}
+              </article>
+            )) : <p className="text-xs text-slate-500">No Admin-issued settlement requests.</p>}
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold text-slate-800">Unified settlement history</h3>
+            {(data.settlements || []).length ? data.settlements.map((settlement) => (
+              <details key={settlement.id} className="rounded-xl border border-slate-100 p-3">
+                <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3 text-xs">
+                  <span className="font-bold text-slate-900">{settlement.direction.replaceAll("_", " ")} · {dateText(settlement.postedAt)}</span>
+                  <span className="font-black text-slate-900">Cash {amountText(settlement.cashAmount)} · Offset {amountText(settlement.offsetAmount)}</span>
+                </summary>
+                <div className="mt-2 space-y-1 border-t border-slate-100 pt-2 text-[10px] text-slate-600">
+                  <p>Ref {settlement.reference || "—"} · Set-off authority {settlement.setoffAgreementReference || "—"}</p>
+                  <p>Journal {settlement.journalEntryId || "—"} · Cash transaction {settlement.cashTransactionId || "—"} · {settlement.financialAccount?.accountName || "No cash account"}</p>
+                  {settlement.notes && <p>{settlement.notes}</p>}
+                  {(settlement.allocations || []).map((allocation) => (
+                    <p key={allocation.id}>
+                      {allocation.allocationType || "PAYMENT"} {allocation.document?.side} · {allocation.document?.documentNumber} · {allocation.document?.sourceType} · {amountText(allocation.amount)}
+                    </p>
+                  ))}
+                </div>
+              </details>
+            )) : <p className="text-xs text-slate-500">No unified settlements have been posted.</p>}
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xs font-bold text-slate-800">Legacy refund offsets</h3>
             {(data.offsets || []).length ? data.offsets.map((offset) => (
               <div key={offset.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 p-3">
                 <div>
@@ -511,13 +824,16 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Net payable", summary.summary?.netPayableBalance],
-              ["Paid settlements", summary.summary?.totalSettledPaid],
-              ["Pending requests", summary.summary?.pendingSettlementAmount],
-              ["Receivable from platform", summary.summary?.receivables],
+              ["Company receivable", summary.settlementPosition?.outstandingReceivable],
+              ["Company payable", summary.settlementPosition?.outstandingPayable],
+              [
+                Number(summary.settlementPosition?.netBalance || 0) > 0 ? "Net due to company" : "Net due to distributor",
+                Math.abs(Number(summary.settlementPosition?.netBalance || 0)),
+              ],
+              ["Pending COD remittance", summary.settlementPosition?.pendingRemittance],
             ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-200 bg-white p-4"><p className="text-[11px] font-bold uppercase tracking-wide text-slate-500">{label}</p><p className="mt-1 text-lg font-black text-slate-900">{amountText(value)}</p></div>)}
           </div>
-          <p className="text-xs text-slate-500">The current distributor statement reports receivables as zero; it is not a general receivables ledger.</p>
+          <p className="text-xs text-slate-500">These balances include all open NPR accounting documents. The detailed FIFO settlement documents and settlement history appear below.</p>
           <div className="rounded-2xl border border-slate-200 bg-white p-5">
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-bold text-slate-900">Earnings overview</h2><p className="mt-1 text-xs text-slate-500">Based on the distributor financial statement and current rate card.</p></div><button type="button" onClick={() => setReloadSummary((value) => value + 1)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Refresh</button></div>
             <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">

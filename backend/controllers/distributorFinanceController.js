@@ -1,7 +1,6 @@
 import {
   getDistributorFinancialStatement,
   resolveDistributorSettlementReconciliation,
-  submitDistributorSettlementRequest,
   initiateAdminDistributorSettlement,
   confirmAdminDistributorSettlement,
   failAdminDistributorSettlement,
@@ -18,9 +17,16 @@ import {
   getDistributorCashPositions,
   listDistributorRemittances,
   listDistributorSettlementOffsets,
+  getDistributorUnifiedSettlementPosition,
+  listDistributorBalanceSettlements,
+  listDistributorSettlementRequestTokens,
+  createDistributorSettlementRequestToken,
+  submitDistributorSettlementRequestEvidence as submitSettlementRequestEvidence,
+  reviewDistributorSettlementRequestToken,
+  recordDistributorSettlementPayout,
+  acknowledgeDistributorSettlementPayout,
   netDistributorRefundPayable,
   reviewDistributorRemittance,
-  submitDistributorRemittance,
 } from "../services/distributorCashSettlementService.js";
 import { deleteEvidenceImage, uploadEvidenceImage } from "../utils/evidenceImageUpload.js";
 
@@ -74,12 +80,15 @@ export const getDistributorCashRemittances = async (req, res) => {
     if (!distributorId) {
       return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
     }
-    const [position, remittances, offsets] = await Promise.all([
+    const [position, settlementPosition, remittances, offsets, settlements, settlementRequests] = await Promise.all([
       getDistributorCashPosition({ distributorId }),
+      getDistributorUnifiedSettlementPosition({ distributorId }),
       listDistributorRemittances({ distributorId, take: req.query.limit || 50, cursor: req.query.cursor || null }),
       listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+      listDistributorBalanceSettlements({ distributorId, take: req.query.limit || 50 }),
+      listDistributorSettlementRequestTokens({ distributorId, take: req.query.limit || 50 }),
     ]);
-    return res.status(200).json({ success: true, position, remittances, offsets });
+    return res.status(200).json({ success: true, position, settlementPosition, remittances, offsets, settlements, settlementRequests });
   } catch (error) {
     console.error("getDistributorCashRemittances error:", error);
     return res.status(error.statusCode || 500).json({
@@ -93,22 +102,150 @@ export const getDistributorCashRemittances = async (req, res) => {
 export const getAdminDistributorCashRemittances = async (req, res) => {
   try {
     const distributorId = req.params.id;
-    const [position, remittances, offsets] = await Promise.all([
+    const [position, settlementPosition, remittances, offsets, settlements, settlementRequests] = await Promise.all([
       getDistributorCashPosition({ distributorId }),
+      getDistributorUnifiedSettlementPosition({ distributorId }),
       listDistributorRemittances({
         distributorId,
         take: req.query.limit || 50,
         cursor: req.query.cursor || null,
       }),
       listDistributorSettlementOffsets({ distributorId, take: req.query.limit || 50 }),
+      listDistributorBalanceSettlements({ distributorId, take: req.query.limit || 50 }),
+      listDistributorSettlementRequestTokens({ distributorId, take: req.query.limit || 50 }),
     ]);
-    return res.status(200).json({ success: true, position, remittances, offsets });
+    return res.status(200).json({ success: true, position, settlementPosition, remittances, offsets, settlements, settlementRequests });
   } catch (error) {
     console.error("getAdminDistributorCashRemittances error:", error);
     return res.status(error.statusCode || 500).json({
       success: false,
       message: error.message || "Failed to load distributor COD remittances.",
       code: error.code || "DISTRIBUTOR_CASH_POSITION_ERROR",
+    });
+  }
+};
+
+export const settleAdminDistributorBalances = async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      return res.status(400).json({ success: false, message: "A JSON settlement body is required.", code: "INVALID_REQUEST_BODY" });
+    }
+    const result = await createDistributorSettlementRequestToken({
+      distributorId: req.params.id,
+      requestedAmount: req.body.requestedAmount,
+      setoffAgreementReference: req.body.setoffAgreementReference || null,
+      setoffConfirmed: req.body.setoffConfirmed === true,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
+      notes: req.body.notes || null,
+      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(result.isReplay ? 200 : 201).json(result);
+  } catch (error) {
+    console.error("settleAdminDistributorBalances error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to create distributor settlement request.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_ERROR",
+    });
+  }
+};
+
+export const submitDistributorSettlementRequestEvidence = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/distributor_settlement_requests");
+    const result = await submitSettlementRequestEvidence({
+      distributorId,
+      requestId: req.params.requestId,
+      transferReference: req.body?.transferReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      distributorAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    console.error("submitDistributorSettlementRequestEvidence error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to submit settlement transfer evidence.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_EVIDENCE_ERROR",
+    });
+  }
+};
+
+export const reviewAdminDistributorSettlementRequest = async (req, res) => {
+  try {
+    const result = await reviewDistributorSettlementRequestToken({
+      distributorId: req.params.id,
+      requestId: req.params.requestId,
+      decision: req.body?.decision,
+      financialAccountId: req.body?.financialAccountId || null,
+      reviewNotes: req.body?.reviewNotes || null,
+      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("reviewAdminDistributorSettlementRequest error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to review distributor settlement evidence.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_REVIEW_ERROR",
+    });
+  }
+};
+
+export const recordAdminDistributorSettlementPayout = async (req, res) => {
+  let uploadedEvidence;
+  try {
+    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/distributor_settlement_payouts");
+    const result = await recordDistributorSettlementPayout({
+      distributorId: req.params.id,
+      requestId: req.params.requestId,
+      transferReference: req.body?.transferReference,
+      evidenceUrl: uploadedEvidence.secure_url,
+      financialAccountId: req.body?.financialAccountId || null,
+      adminAccountId: req.auth?.accountId || req.auth?.userId || null,
+      actorContext: {
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        correlationId: req.correlationId || null,
+      },
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
+    console.error("recordAdminDistributorSettlementPayout error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to record distributor payout.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_PAYOUT_ERROR",
+    });
+  }
+};
+
+export const acknowledgeDistributorSettlementRequest = async (req, res) => {
+  try {
+    const distributorId = req.distributorId || req.auth?.distributorId;
+    if (!distributorId) return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
+    const result = await acknowledgeDistributorSettlementPayout({
+      distributorId,
+      requestId: req.params.requestId,
+      distributorAccountId: req.auth?.accountId || req.auth?.userId || null,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("acknowledgeDistributorSettlementRequest error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || "Failed to acknowledge distributor payout.",
+      code: error.code || "DISTRIBUTOR_SETTLEMENT_ACK_ERROR",
     });
   }
 };
@@ -141,37 +278,6 @@ export const approveDistributorRefundNetting = async (req, res) => {
   }
 };
 
-export const submitDistributorCashRemittance = async (req, res) => {
-  let uploadedEvidence;
-  try {
-    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-      return res.status(400).json({ success: false, message: "A multipart remittance request body is required.", code: "INVALID_REQUEST_BODY" });
-    }
-    const distributorId = req.distributorId || req.auth?.distributorId;
-    if (!distributorId) {
-      return res.status(403).json({ success: false, message: "An approved distributor profile is required." });
-    }
-    uploadedEvidence = await uploadEvidenceImage(req.file, "aama_financial_evidence/remittances");
-    const result = await submitDistributorRemittance({
-      distributorId,
-      amount: req.body.amount,
-      reference: req.body.reference,
-      evidenceUrl: uploadedEvidence.secure_url,
-      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
-      recordedByAccountId: req.auth?.accountId || req.auth?.userId || null,
-    });
-    return res.status(result.isReplay ? 200 : 201).json(result);
-  } catch (error) {
-    if (uploadedEvidence?.public_id) await deleteEvidenceImage(uploadedEvidence.public_id);
-    console.error("submitDistributorCashRemittance error:", error);
-    return res.status(error.statusCode || 500).json({
-      success: false,
-      message: error.message || "Failed to submit distributor COD remittance.",
-      code: error.code || "DISTRIBUTOR_REMITTANCE_ERROR",
-    });
-  }
-};
-
 export const reviewDistributorCashRemittance = async (req, res) => {
   try {
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
@@ -197,65 +303,6 @@ export const reviewDistributorCashRemittance = async (req, res) => {
       success: false,
       message: error.message || "Failed to review distributor COD remittance.",
       code: error.code || "DISTRIBUTOR_REMITTANCE_REVIEW_ERROR",
-    });
-  }
-};
-
-/**
- * POST /api/distributor/finance/ask-settlement
- * Submit settlement request to Admin.
- */
-export const askDistributorSettlement = async (req, res) => {
-  try {
-    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-      return res.status(400).json({
-        success: false,
-        message: "A JSON settlement request body is required.",
-        code: "INVALID_REQUEST_BODY",
-      });
-    }
-    const distributorId = req.distributorId || req.auth?.distributorId;
-    if (!distributorId) {
-      return res.status(403).json({
-        success: false,
-        message: "An approved distributor profile is required.",
-      });
-    }
-
-    const { amount, notes } = req.body;
-    const withVat = req.body.withVat === undefined ? true : req.body.withVat;
-    if (typeof withVat !== "boolean") {
-      return res.status(400).json({
-        success: false,
-        message: "withVat must be true or false.",
-        code: "INVALID_VAT_MODE",
-      });
-    }
-    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"] || null;
-    if (amount === undefined || amount === null) {
-      return res.status(400).json({
-        success: false,
-        message: "Settlement amount is required.",
-      });
-    }
-
-    const requestedByAccountId = req.auth?.accountId || req.auth?.userId || null;
-    const result = await submitDistributorSettlementRequest({
-      distributorId,
-      amount,
-      withVat,
-      notes,
-      idempotencyKey,
-      requestedByAccountId,
-    });
-
-    return res.status(result.isReplay ? 200 : 201).json(result);
-  } catch (error) {
-    console.error("askDistributorSettlement error:", error);
-    return res.status(error.statusCode || 500).json({
-      success: false,
-      message: error.message || "Failed to submit settlement request.",
-      code: error.code || "SETTLEMENT_REQUEST_ERROR",
     });
   }
 };

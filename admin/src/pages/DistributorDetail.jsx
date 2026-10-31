@@ -33,7 +33,9 @@ const DistributorDetail = ({ token }) => {
   const { can } = usePermissions();
   const [distributor, setDistributor] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("profile");
+  const [activeTab, setActiveTab] = useState(() => (
+    new URLSearchParams(window.location.search).get("tab") === "finance" ? "finance" : "profile"
+  ));
 
   const loadProfile = useCallback(async () => {
     setLoading(true);

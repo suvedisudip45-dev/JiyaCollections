@@ -1040,6 +1040,8 @@ model FinancialAccount {
   outflows             CashTransaction[] @relation("FromAccount")
   inflows              CashTransaction[] @relation("ToAccount")
   distributorRemittanceBatches DistributorRemittanceBatch[]
+  distributorBalanceSettlements DistributorBalanceSettlement[]
+  distributorSettlementRequests DistributorSettlementRequestToken[]
   financialPayouts     FinancialPayout[]
 
   @@index([accountingAccountId])
@@ -1062,6 +1064,7 @@ model CashTransaction {
   receiptUrl     String?           @default("")
   fromAccount    FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
   toAccount      FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
+  distributorBalanceSettlement DistributorBalanceSettlement?
   createdAt      DateTime          @default(now())
 
   @@index([date])
@@ -1600,6 +1603,7 @@ model JournalEntry {
   updatedAt          DateTime      @updatedAt
   lines              JournalLine[]
   settlementOffset  DistributorSettlementOffset?
+  distributorBalanceSettlement DistributorBalanceSettlement?
   supplierCreditApplications SupplierCreditApplication[]
 
   @@index([transactionDate])
@@ -1730,13 +1734,17 @@ model AccountingAllocation {
   documentId     String
   document       AccountingDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   journalEntryId String?
+  settlementBatchId String?
+  allocationType String? @db.VarChar(16) // CASH | OFFSET
   amount         Decimal            @db.Decimal(20, 2)
   allocatedAt    DateTime           @default(now())
   notes          String?            @db.Text
   idempotencyKey String?            @unique @db.VarChar(191)
+  settlementBatch DistributorBalanceSettlement? @relation(fields: [settlementBatchId], references: [id], onDelete: Restrict)
 
   @@index([documentId, allocatedAt])
   @@index([journalEntryId])
+  @@index([settlementBatchId, allocationType])
 }
 
 model SupplierCreditApplication {
@@ -1860,6 +1868,8 @@ model Distributor {
   cashEvents                   DistributorCashEvent[]
   remittanceBatches            DistributorRemittanceBatch[]
   settlementOffsets            DistributorSettlementOffset[]
+  balanceSettlements           DistributorBalanceSettlement[]
+  settlementRequestTokens      DistributorSettlementRequestToken[]
   deliveryOtpChallenges        DeliveryOtpChallenge[]
   serviceEarnings              DistributorServiceEarning[]
   bonusPlans                   DistributorBonusPlan[]
@@ -1935,8 +1945,9 @@ model DistributorCashEvent {
   customerReturnId      String?
   orderExchangeRequestId String?
   remittanceBatchId     String?
+  settlementBatchId     String?
   accountingDocumentId  String?
-  eventType             String   @db.VarChar(32) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | EXCHANGE_UPGRADE_COLLECTION | EXCHANGE_DOWNGRADE_REFUND | APPROVED_ADJUSTMENT
+  eventType             String   @db.VarChar(40) // CUSTOMER_COLLECTION | COMPANY_REMITTANCE | CUSTOMER_REFUND | DISTRIBUTOR_REFUND_REIMBURSEMENT | EXCHANGE_UPGRADE_COLLECTION | EXCHANGE_DOWNGRADE_REFUND | APPROVED_ADJUSTMENT | DISTRIBUTOR_BALANCE_SETTLEMENT
   amount                Decimal  @db.Decimal(20, 2)
   status                String   @default("PENDING_VERIFICATION") @db.VarChar(24) // PENDING_VERIFICATION | VERIFIED | POSTED | REJECTED
   paymentMethod         String?  @db.VarChar(32)
@@ -1957,6 +1968,7 @@ model DistributorCashEvent {
   customerReturn        CustomerReturn? @relation(fields: [customerReturnId], references: [id], onDelete: Restrict)
   orderExchangeRequest  OrderExchangeRequest? @relation(fields: [orderExchangeRequestId], references: [id], onDelete: Restrict)
   remittanceBatch       DistributorRemittanceBatch? @relation(fields: [remittanceBatchId], references: [id], onDelete: Restrict)
+  settlementBatch       DistributorBalanceSettlement? @relation(fields: [settlementBatchId], references: [id], onDelete: Restrict)
   accountingDocument    AccountingDocument? @relation(fields: [accountingDocumentId], references: [id], onDelete: Restrict)
 
   @@index([distributorId, eventType, status, occurredAt], map: "DistributorCashEvent_distributor_event_status_time_idx")
@@ -1964,6 +1976,7 @@ model DistributorCashEvent {
   @@index([customerReturnId, eventType, status])
   @@index([orderExchangeRequestId, eventType, status])
   @@index([remittanceBatchId])
+  @@index([settlementBatchId])
   @@index([accountingDocumentId, status])
 }
 
@@ -1981,6 +1994,76 @@ model DistributorSettlementOffset {
   journalEntry        JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
 
   @@index([distributorId, approvedAt])
+}
+
+model DistributorBalanceSettlement {
+  id                           String      @id @default(uuid())
+  distributorId                String
+  direction                    String      @db.VarChar(24) // COMPANY_COLLECTS | COMPANY_PAYS | OFFSET_ONLY
+  status                       String      @default("POSTED") @db.VarChar(24)
+  receivableApplied            Decimal     @default(0) @db.Decimal(20, 2)
+  payableApplied               Decimal     @default(0) @db.Decimal(20, 2)
+  cashAmount                   Decimal     @default(0) @db.Decimal(20, 2)
+  offsetAmount                 Decimal     @default(0) @db.Decimal(20, 2)
+  reference                    String?     @db.VarChar(191)
+  setoffAgreementReference     String?     @db.VarChar(191)
+  setoffConfirmed              Boolean     @default(false)
+  setoffConfirmedAt            DateTime?
+  setoffConfirmedByAccountId   String?
+  financialAccountId           String?
+  journalEntryId               String?     @unique @db.VarChar(191)
+  cashTransactionId            String?     @unique @db.VarChar(191)
+  idempotencyKey               String      @unique @db.VarChar(191)
+  createdByAccountId            String?
+  transferConfirmedAt          DateTime?
+  transferConfirmedByAccountId String?
+  postedAt                     DateTime    @default(now())
+  notes                        String?     @db.Text
+  createdAt                    DateTime    @default(now())
+  distributor                  Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  financialAccount             FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  journalEntry                 JournalEntry? @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  cashTransaction              CashTransaction? @relation(fields: [cashTransactionId], references: [id], onDelete: Restrict)
+  allocations                  AccountingAllocation[]
+  cashEvents                   DistributorCashEvent[]
+  settlementRequest            DistributorSettlementRequestToken?
+
+  @@index([distributorId, postedAt])
+  @@index([status, postedAt])
+}
+
+model DistributorSettlementRequestToken {
+  id                           String      @id @default(uuid())
+  distributorId                String
+  direction                    String      @db.VarChar(24) // COMPANY_COLLECTS | COMPANY_PAYS
+  status                       String      @default("REQUESTED") @db.VarChar(24) // REQUESTED | EVIDENCE_SUBMITTED | PAYMENT_SENT | ACKNOWLEDGED | POSTED | REJECTED
+  requestedAmount              Decimal     @db.Decimal(20, 2)
+  idempotencyKey               String      @unique @db.VarChar(191)
+  requestNotes                 String?     @db.Text
+  setoffAgreementReference     String?     @db.VarChar(191)
+  setoffConfirmed              Boolean     @default(false)
+  transferReference            String?     @db.VarChar(191)
+  evidenceUrl                  String?     @db.Text
+  financialAccountId           String?
+  evidenceSubmittedAt          DateTime?
+  evidenceSubmittedByAccountId String?
+  transferSentAt               DateTime?
+  transferSentByAccountId      String?
+  acknowledgedAt               DateTime?
+  acknowledgedByAccountId      String?
+  reviewedAt                   DateTime?
+  reviewedByAccountId          String?
+  reviewNotes                  String?     @db.Text
+  settlementId                 String?     @unique
+  createdByAccountId           String?
+  createdAt                    DateTime    @default(now())
+  updatedAt                    DateTime    @updatedAt
+  distributor                  Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  financialAccount             FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  settlement                   DistributorBalanceSettlement? @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+
+  @@index([distributorId, status, createdAt])
+  @@index([status, createdAt])
 }
 
 model DistributorLocation {

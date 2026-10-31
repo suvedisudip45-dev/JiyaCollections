@@ -57,6 +57,7 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/admin/location-discounts` | Dynamic product discounts by province/district and admin overrides |
 | `/api/lookups` | Public Nepal province, district, active NCM branch, and covered-area lookups |
 | `/api/admin/gifts` | Gift catalog, spend-rule configuration, distributor distributions, and admin return review |
+| `/api/admin/distributors` | Distributor administration, per-distributor Finance records, and paginated settlement-position summaries |
 | `/api/distributor/gifts` | Distributor gift-stock inbox, allocation decisions, order options, and return/loss recording |
 | `/api/distributor` | Distributor direct orders, ledger-backed inventory reads, transfers, delivery, finance, and workspace profile |
 | `/api/notifications` | Notification service endpoints |
@@ -97,6 +98,7 @@ continues to reconcile already-recorded collaboration sales.
 - `GET /api/admin/discount-analytics` and `/filters` require the `ADMIN` role and `product:sales_analytics_read`. The report supports all-time, today, week, month, year, and custom (up to 366-day) ranges, with category, province, district, distributor, and customer filters. It classifies saved item price reductions and order reward snapshots into product, place-wise, loyalty, marketing-card/voucher, combo-bundle, admin, and legacy categories; totals include paginated customer and order details. Canceled orders are excluded. Place-wise pricing replaces, rather than stacks with, the product setting discount. Free-shipping savings and historical orders without original-price snapshots are not inferable from persisted data and are explicitly excluded.
 - `GET /api/distributor/product-analytics/summary`, `/products`, `/locations`, and `/timeline` require `distributor:product_sales_read` and authenticated distributor workspace context. Scope is derived from the session, never a client-provided distributor ID; the service omits revenue fields and rejects revenue sorting.
 - `GET /api/features` and `PATCH /api/features` (the update requires `platform:features_manage`)
+- `GET /api/admin/distributors/settlement-positions` requires `finance:payables_read` and returns distributor-wise open NPR receivables, payables, pending remittances, and net due. Aggregate net receivable/payable totals are summed per distributor and cannot cross-offset counterparties.
 - Customer administration endpoints additionally require the authenticated `ADMIN` role. `GET /api/customer/admin/analytics` returns aggregate active/disabled totals, province/district counts, weekly/monthly/yearly and selected-period account-creation counts, repeat-purchase rate, and all-time order sales by delivery-address province/district. Split-shipment order rows sharing a `checkoutGroupId` count as one transaction for transaction and repeat-purchase counts; revenue, item costs, and per-package carrier charges still sum across shipment rows. Production overhead in the sales estimate uses only overhead recorded on sold order-item cost snapshots, divided by that product's all-time non-cancelled units sold and allocated by location units sold; unsold inventory and produced quantities in cost layers are not overhead inputs. Approximate profit subtracts available product COGS, this allocated overhead, and recorded NCM charges; local distributor delivery expenses, unrecorded carrier charges, returns/refunds, and other operating expenses are not included. It requires `customer:admin_list` and does not return customer identities. `GET /api/customer/admin/search` requires a search of at least two characters or an explicit status, location, or account-creation date filter, supports server-side pagination, and sorts customers by latest non-cancelled order; it requires `customer:admin_list`.
 - `GET /api/customer/details/:userId/profile` returns the compact customer profile, customer code, loyalty summary, and aggregate marketing-card scan/claimed/used reward counts (`customer:admin_detail`). `GET /api/customer/details/:userId/orders` and `/letters` return separately paginated history (`customer:admin_orders_read` and `customer:admin_detail`, respectively). The legacy details endpoint accepts `includeOrders=false` to load individual card/reward and other customer-activity records without duplicating the paginated order history.
 - `PATCH /api/customer/admin/:userId/status` requires `customer:account_manage`; disabling a customer revokes that account's active sessions and is recorded in the system audit outbox. Letter uploads/deletes require `customer:letter_manage`.
@@ -207,8 +209,27 @@ through the distributor Finance detail. The offset is capped at the lower of
 open COD receivable less pending remittances and verified refund payable, then
 posts a balanced 2190/1190 journal and allocates both subledger documents in
 one serializable transaction. Offset history and an audit event are retained.
-These cash flows use scoped distributor context, idempotency keys, and
-transactional accounting and audit records.
+
+The Admin distributor Finance detail derives gross receivable, gross payable,
+and signed net balances from all open party accounting documents; it never
+stores a mutable net-balance counter. Admin issues a partial or full net
+settlement request, tracked by `DistributorSettlementRequestToken`; issuing a
+request does not post accounting. For company collections, the distributor
+submits a transfer reference and evidence, then Admin verifies the received
+funds. For company payouts, Admin records the completed transfer and evidence,
+then the distributor acknowledges receipt. The accounting posting allocates
+the lower gross side first (FIFO), then posts the remaining cash movement.
+Posting creates one balanced journal, Treasury cash transaction, document
+allocations tagged `CASH` or `OFFSET`, a batch record, and an audit event in one
+serializable transaction. A posted cash movement requires a transfer
+reference and active NPR Treasury account. An offset requires a set-off
+agreement reference and explicit Admin confirmation; gross AR/AP documents
+remain visible. Pending legacy COD remittances and legacy pending distributor
+payout requests block new unified requests until reviewed. The accounting presentation rule for
+offsetting requires both an enforceable right of set-off and net or
+simultaneous settlement intent ([IAS 32](https://www.ifrs.org/issued-standards/list-of-standards/ias-32-financial-instruments-presentation/));
+the application captures Admin confirmation and the agreement reference but
+does not determine legal enforceability.
 
 Manufacturer post-production QA now enters `PENDING_ADMIN_ACCEPTANCE`; inventory
 and production cost layers are recorded only after Admin accepts the reported
@@ -223,8 +244,9 @@ distributor settlement requests without earning documents do not accrue AP from
 the requested amount and remain blocked until historical earnings are
 reconciled. Manufacturer, distributor, and generic payable payouts require an
 active NPR Treasury account mapped to the correct cash/bank/wallet GL account.
-Distributor service settlements remain gross and expose COD receivable warnings
-rather than silently netting COD from earnings.
+Older distributor settlement requests retain their legacy payout lifecycle;
+new Admin-issued requests reconcile COD and posted distributor payable
+sources together through the party subledger.
 
 Manual local stock-transfer dispatch posts delivery expense 6430 and manufacturer
 payable 2160 together with an idempotent shipment-linked payable bill.

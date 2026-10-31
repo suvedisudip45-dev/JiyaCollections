@@ -36,8 +36,8 @@ import {
 import {
   getDistributorStatement,
   getDistributorCashRemittances,
-  submitDistributorCashRemittance,
-  askDistributorSettlement,
+  submitDistributorSettlementRequestEvidence,
+  acknowledgeDistributorSettlementRequest,
   listDistributorRates,
 } from "../controllers/distributorFinanceController.js";
 import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
@@ -52,20 +52,27 @@ import {
 
 const distributorRouter = express.Router();
 
-distributorRouter.post(
-  "/finance/remittances",
-  authenticate,
-  authorize("distributor:profile_read"),
-  setDistributorContext,
-  ...secureEvidenceUpload("evidence"),
-  submitDistributorCashRemittance,
-);
 distributorRouter.get(
   "/finance/remittances",
   authenticate,
   authorize("distributor:profile_read"),
   setDistributorContext,
   getDistributorCashRemittances,
+);
+distributorRouter.post(
+  "/finance/settlement-requests/:requestId/evidence",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  ...secureEvidenceUpload("evidence"),
+  submitDistributorSettlementRequestEvidence,
+);
+distributorRouter.post(
+  "/finance/settlement-requests/:requestId/acknowledge",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  acknowledgeDistributorSettlementRequest,
 );
 distributorRouter.get("/register", publicRegistrationRateLimit, registerDistributor);
 
@@ -268,13 +275,6 @@ distributorRouter.get(
   authorize("distributor:profile_read"),
   setDistributorContext,
   getDistributorStatement,
-);
-distributorRouter.post(
-  "/finance/ask-settlement",
-  authenticate,
-  authorize("distributor:profile_read"),
-  setDistributorContext,
-  askDistributorSettlement,
 );
 distributorRouter.get(
   "/rates",
