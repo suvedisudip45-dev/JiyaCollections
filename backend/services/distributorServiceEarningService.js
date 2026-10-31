@@ -166,8 +166,8 @@ export const accrueDistributorServiceCharge = async ({
   journalPoster = postJournalEntry,
 } = {}) => {
   const normalizedType = String(serviceType || "").trim().toUpperCase();
-  if (!["RETURN", "EXCHANGE"].includes(normalizedType)) {
-    throw new Error("Distributor service charge must be a RETURN or EXCHANGE.");
+  if (!["RETURN", "EXCHANGE", "NCM_TRANSFER"].includes(normalizedType)) {
+    throw new Error("Distributor service charge must be a RETURN, EXCHANGE, or NCM_TRANSFER.");
   }
   if (!distributorId || !distributorName || !assignmentId || !orderId || !sourceId) {
     throw new Error("Distributor, assignment, order, and service source details are required.");
@@ -200,7 +200,9 @@ export const accrueDistributorServiceCharge = async ({
     rateCardId,
     vatRate: normalizedVatRate.toFixed(2),
     vatAmount: vatAmount.toFixed(2),
-    taxTreatment: "RATE_CARD_SERVICE_CHARGE",
+    taxTreatment: normalizedType === "NCM_TRANSFER"
+      ? "NCM_TRANSFER_FEE_NO_VAT"
+      : "RATE_CARD_SERVICE_CHARGE",
   };
   const earning = await client.distributorServiceEarning.create({
     data: {
@@ -229,6 +231,9 @@ export const accrueDistributorServiceCharge = async ({
     sourceEntityId: distributorId,
     displayName: distributorName,
   }, { client });
+  const expenseMappingKey = normalizedType === "NCM_TRANSFER"
+    ? "DISTRIBUTOR_NCM_TRANSFER_EXPENSE"
+    : "DELIVERY_EXPENSE";
   const journal = await journalPoster({
     transactionDate: effectiveAt,
     sourceType: "DISTRIBUTOR_SERVICE_EARNING",
@@ -239,7 +244,7 @@ export const accrueDistributorServiceCharge = async ({
     createdBy: "SYSTEM",
     lines: [
       {
-        mappingKey: "DELIVERY_EXPENSE",
+        mappingKey: expenseMappingKey,
         debit: payableAmount,
         credit: 0,
         description: `Distributor ${normalizedType.toLowerCase()} service expense for order ${orderId}`,
@@ -274,5 +279,37 @@ export const accrueDistributorServiceCharge = async ({
       accountingDocumentId: document.id,
       journalEntryId: journal.id,
     },
+  });
+};
+
+export const accrueDistributorNcmTransferEarning = async ({
+  distributorId,
+  distributorName,
+  assignmentId,
+  orderId,
+  deliveryOrderId,
+  effectiveAt = new Date(),
+  client = prisma,
+  rateCardResolver = resolveActiveRateCard,
+  accrueServiceCharge = accrueDistributorServiceCharge,
+} = {}) => {
+  if (!deliveryOrderId) {
+    throw new Error("NCM delivery record ID is required to accrue a transfer earning.");
+  }
+  const rateCard = await rateCardResolver({ distributorId, effectiveAt, client });
+  const chargeAmount = money(rateCard.ncmTransferCharge ?? 0, "NCM transfer charge");
+  if (chargeAmount.isZero()) return null;
+
+  return accrueServiceCharge({
+    distributorId,
+    distributorName,
+    assignmentId,
+    orderId,
+    sourceId: deliveryOrderId,
+    rateCardId: rateCard.rateCardId || null,
+    serviceType: "NCM_TRANSFER",
+    chargeAmount,
+    effectiveAt,
+    client,
   });
 };

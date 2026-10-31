@@ -34,18 +34,6 @@ const DistributorApplications = ({ token }) => {
   const [selectedCoverageProvince, setSelectedCoverageProvince] = useState("");
   const [selectedCoveragePairs, setSelectedCoveragePairs] = useState(new Set());
 
-  // Rate Cards state
-  const [ratesList, setRatesList] = useState([]);
-  const [ratesLoading, setRatesLoading] = useState(false);
-  const [selectedDistributorForRate, setSelectedDistributorForRate] = useState(null);
-  const [rateForm, setRateForm] = useState({
-    deliveryCharge: 100,
-    returnCharge: 50,
-    commissionRate: 0,
-    vatRate: 13,
-    vatInclusive: false,
-  });
-
   // Settlements state
   const [settlements, setSettlements] = useState([]);
   const [settlementsLoading, setSettlementsLoading] = useState(false);
@@ -122,20 +110,6 @@ const DistributorApplications = ({ token }) => {
     }
   }, [token]);
 
-  const loadRates = useCallback(async () => {
-    setRatesLoading(true);
-    try {
-      const response = await axios.get(`${backendUrl}/api/admin/distributor-rates`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setRatesList(response.data?.rateCards || []);
-    } catch (e) {
-      toast.error(e.response?.data?.message || "Failed to load rate cards.");
-    } finally {
-      setRatesLoading(false);
-    }
-  }, [token]);
-
   const loadSettlements = useCallback(async () => {
     setSettlementsLoading(true);
     try {
@@ -204,12 +178,8 @@ const DistributorApplications = ({ token }) => {
     if (activeTab === "applications") loadApplications();
     if (activeTab === "manufacturer-requests") loadManufacturerRequests();
     if (activeTab === "coverage") loadCoverage();
-    if (activeTab === "rates") {
-      loadApplications();
-      loadRates();
-    }
     if (activeTab === "settlements") loadSettlements();
-  }, [activeTab, loadApplications, loadManufacturerRequests, loadCoverage, loadRates, loadSettlements]);
+  }, [activeTab, loadApplications, loadManufacturerRequests, loadCoverage, loadSettlements]);
 
   useEffect(() => {
     const selectedDistributor = coverageDistributors.find(
@@ -384,49 +354,13 @@ const DistributorApplications = ({ token }) => {
     }
   };
 
-  const handleSaveRateCard = async (e) => {
-    e.preventDefault();
-    if (!selectedDistributorForRate) {
-      toast.error("Please select a distributor first");
-      return;
-    }
-    try {
-      await axios.post(
-        `${backendUrl}/api/admin/distributor-rates`,
-        {
-          distributorId: selectedDistributorForRate.id,
-          ...rateForm,
-          status: "APPROVED",
-        },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast.success(`A new rate-card version was saved for ${selectedDistributorForRate.name}`);
-      loadRates();
-    } catch (err) {
-      toast.error(err.response?.data?.message || "Failed to update rates");
-    }
-  };
-
-  const expireRateCard = async (rateCard) => {
-    if (!window.confirm("Close this rate card? Past earnings will remain unchanged.")) return;
-    try {
-      await axios.delete(`${backendUrl}/api/admin/distributor-rates/${rateCard.id}`, {
-        headers: { token },
-      });
-      toast.success("Rate card closed; its history was retained.");
-      loadRates();
-    } catch (requestError) {
-      toast.error(requestError.response?.data?.message || "Rate card could not be closed.");
-    }
-  };
-
   return (
     <section className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Distributor Management</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Review partner authorizations, negotiate custom delivery rates, and approve financial settlements.
+            Review partner authorizations, manage service-area coverage, and approve financial settlements. Configure distributor rates from each distributor&apos;s detail page.
           </p>
         </div>
         <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-medium">
@@ -450,12 +384,6 @@ const DistributorApplications = ({ token }) => {
               Service-area coverage
             </button>
           )}
-          <button
-            onClick={() => setActiveTab("rates")}
-            className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "rates" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
-          >
-            Delivery Rate Cards & Target Bonus Plans
-          </button>
           <button
             onClick={() => setActiveTab("settlements")}
             className={`px-3.5 py-1.5 rounded-lg transition-all ${activeTab === "settlements" ? "bg-white text-slate-900 shadow-sm font-semibold" : "text-slate-600 hover:text-slate-900"}`}
@@ -735,158 +663,6 @@ const DistributorApplications = ({ token }) => {
           <p className="text-xs text-slate-500">
             {selectedCoveragePairs.size} district{selectedCoveragePairs.size === 1 ? "" : "s"} selected.
           </p>
-        </div>
-      )}
-
-      {/* TAB 2: RATE CARDS */}
-      {activeTab === "rates" && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2 space-y-4">
-              <h2 className="text-base font-bold text-slate-900">Configured Delivery Rate Cards</h2>
-              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-                <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
-                  <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-600">
-                    <tr>
-                      <th className="px-4 py-3">Distributor</th>
-                      <th className="px-4 py-3">Delivery / Return</th>
-                      <th className="px-4 py-3">Commission deduction</th>
-                      <th className="px-4 py-3">Effective Period</th>
-                      <th className="px-4 py-3">Status / VAT</th>
-                      <th className="px-4 py-3 text-right">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {ratesLoading ? (
-                      <tr><td colSpan="6" className="px-4 py-6 text-center text-slate-500">Loading rates...</td></tr>
-                    ) : ratesList.length === 0 ? (
-                      <tr><td colSpan="6" className="px-4 py-6 text-center text-slate-500">No custom rate cards saved yet. Default fallback applies.</td></tr>
-                    ) : (
-                      ratesList.map((rate) => (
-                        <tr key={rate.id} className="hover:bg-slate-50/60">
-                          <td className="px-4 py-3 font-semibold text-slate-900">{rate.distributor?.name || rate.distributorId}</td>
-                          <td className="px-4 py-3 text-slate-700 font-medium">
-                            Rs {Number(rate.deliveryCharge).toFixed(2)} / Rs {Number(rate.returnCharge).toFixed(2)}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-slate-600">
-                            {Number(rate.commissionRate).toFixed(2)}%
-                          </td>
-                          <td className="px-4 py-3 text-xs text-slate-600">
-                            {rate.effectiveFrom ? new Date(rate.effectiveFrom).toLocaleDateString() : "—"} – {rate.effectiveUntil ? new Date(rate.effectiveUntil).toLocaleDateString() : "Open"}
-                          </td>
-                          <td className="px-4 py-3 text-xs text-slate-600">
-                            {rate.status} · No input VAT without verified invoice
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => {
-                                setSelectedDistributorForRate(rate.distributor);
-                                setRateForm({
-                                  deliveryCharge: Number(rate.deliveryCharge),
-                                  returnCharge: Number(rate.returnCharge),
-                                  commissionRate: Number(rate.commissionRate),
-                                  vatRate: Number(rate.vatRate ?? 13),
-                                  vatInclusive: Boolean(rate.vatInclusive),
-                                });
-                              }}
-                              className="text-xs font-semibold text-blue-600 hover:text-blue-800"
-                            >
-                              Revise
-                            </button>
-                            <button
-                              onClick={() => expireRateCard(rate)}
-                              disabled={!canEditCoverage || !["APPROVED", "PENDING"].includes(rate.status)}
-                              className="ml-3 text-xs font-semibold text-rose-600 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              Close
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Set Rates Form */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
-              <h2 className="text-base font-bold text-slate-900">
-                {selectedDistributorForRate ? `Edit Rates: ${selectedDistributorForRate.name}` : "Configure Rate Card"}
-              </h2>
-              
-              <div className="space-y-3 text-xs">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Select Active Distributor</label>
-                  <select
-                    value={selectedDistributorForRate?.id || ""}
-                    onChange={(e) => {
-                      const found = applications.find((a) => a.id === e.target.value);
-                      setSelectedDistributorForRate(found || null);
-                    }}
-                    className="w-full rounded-lg border border-slate-300 p-2 text-sm bg-white"
-                  >
-                    <option value="">-- Choose Distributor --</option>
-                    {applications.filter((a) => a.status === "ACTIVE").map((dist) => (
-                      <option key={dist.id} value={dist.id}>
-                        {dist.name} ({dist.city || "Hub"})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Delivery earning (NPR)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={rateForm.deliveryCharge}
-                      onChange={(e) => setRateForm({ ...rateForm, deliveryCharge: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Return service earning (NPR)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={rateForm.returnCharge}
-                      onChange={(e) => setRateForm({ ...rateForm, returnCharge: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-0.5">Commission (% of delivery earning)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={rateForm.commissionRate}
-                      onChange={(e) => setRateForm({ ...rateForm, commissionRate: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-slate-300 p-2 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">This card controls fixed delivery and return charges only. Per-delivery incentives are disabled. Configure monthly target tiers from the distributor profile.</p>
-                <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800">No recoverable input VAT is claimed on distributor service payments unless a verified eligible tax invoice is supported by the accounting workflow.</p>
-
-                <button
-                  onClick={handleSaveRateCard}
-                  className="w-full mt-3 bg-slate-900 text-white rounded-lg py-2.5 font-semibold text-xs hover:bg-black transition shadow-sm"
-                >
-                  Save Negotiated Rate Card
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 

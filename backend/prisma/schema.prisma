@@ -2087,6 +2087,7 @@ model DistributorDeliveryChargeNegotiation {
   productId           String?
   deliveryCharge      Decimal  @db.Decimal(20, 2)
   returnCharge        Decimal  @db.Decimal(20, 2)
+  ncmTransferCharge   Decimal  @default(0) @db.Decimal(20, 2)
   commissionRate      Decimal  @default(0) @db.Decimal(20, 2)
   bonusRate           Decimal  @default(0) @db.Decimal(20, 2)
   incentiveRate       Decimal  @default(0) @db.Decimal(20, 2)

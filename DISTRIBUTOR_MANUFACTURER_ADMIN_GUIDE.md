@@ -40,9 +40,12 @@ endpoints and `distributor:admin_*` permissions; remittance verification also
 requires `finance:receivable_collect`. Every detail endpoint requires the
 `ADMIN` role. The distributor
 profile editor reuses the existing audited application-profile update flow,
-while delivery, return, commission, and VAT values reuse the approved
-distributor rate-card workflow. Monthly target bonuses are configured
-separately and apply to completed distributor deliveries after the month closes.
+while delivery, return, NCM transfer, commission, and VAT values reuse the
+approved distributor rate-card workflow. The per-distributor NCM transfer fee
+is accrued as a separate payable only after NCM confirms customer delivery; it
+does not replace or combine with delivery, direct-hub, or phone-order income.
+Monthly target bonuses are configured separately and apply to completed
+distributor deliveries after the month closes.
 
 Manufacturer and distributor profiles remain independent when they share an
 `AuthAccount`; the distributor page links to the existing manufacturer detail
@@ -973,7 +976,7 @@ story/template delivery records.
   - Instant inclusive/exclusive compensation display toggle; the rate-card VAT setting is not proof of verified input VAT or statutory distributor tax status.
   - Interactive **"Ask for Settlement"** modal caps the request at available net settlement balance; the backend independently validates the amount and reserves it transactionally.
 - **Admin Distributor Management (`admin/src/pages/DistributorApplications.jsx`)**:
-  - Separate review queues for new distributor applications and manufacturer requests to add distributor access, plus custom negotiated delivery rate cards & incentives and distributor settlement payout review & execution.
+  - Separate review queues for new distributor applications and manufacturer requests to add distributor access, service-area coverage management, and distributor settlement payout review & execution. Configure delivery, return, commission, VAT, and per-successful-NCM-delivery rates only from the distributor detail page (`/distributors/:distributorId`).
 
 ## 10. Source references
 

@@ -423,7 +423,7 @@ export const getDistributorFinancialStatement = async ({
     ? await client.distributorServiceEarning.findMany({
         where: {
           distributorId,
-          serviceType: { in: ["DELIVERY", "RETURN", "EXCHANGE"] },
+          serviceType: { in: ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER"] },
           ...(Object.keys(dateFilter).length ? { effectiveAt: dateFilter } : {}),
         },
         orderBy: { effectiveAt: "desc" },
@@ -440,12 +440,14 @@ export const getDistributorFinancialStatement = async ({
       .map((earning) => [earning.assignmentId, earning])
   );
   const exchangeEarnings = serviceEarnings.filter((earning) => earning.serviceType === "EXCHANGE");
+  const ncmTransferEarnings = serviceEarnings.filter((earning) => earning.serviceType === "NCM_TRANSFER");
 
   let grossDeliveryEarnings = 0;
   let earnedIncentives = 0;
   let adminDiscountsApplied = 0;
   let returnFeesEarned = 0;
   let exchangeFeesEarned = 0;
+  let ncmTransferFeesEarned = 0;
   let snapshottedDeliverySubtotal = 0;
   let snapshottedServiceSubtotal = 0;
   let snapshottedVatAmount = 0;
@@ -610,6 +612,33 @@ export const getDistributorFinancialStatement = async ({
     });
   }
 
+  for (const earning of ncmTransferEarnings) {
+    const transferFee = Number(earning.otherCharges || 0);
+    ncmTransferFeesEarned += transferFee;
+    snapshottedServiceSubtotal += transferFee;
+    snapshottedVatAmount += Number(earning.vatAmount || 0);
+    itemizedTransactions.push({
+      id: `tx-ncm-transfer-${earning.id}`,
+      type: "NCM_TRANSFER",
+      referenceId: earning.orderId,
+      date: earning.effectiveAt,
+      description: `NCM customer delivery transfer fee for Order ${earning.orderId.slice(0, 8)}`,
+      grossAmount: Number(transferFee.toFixed(2)),
+      incentiveAmount: 0,
+      discountChargeAmount: 0,
+      netAmount: Number(earning.payableAmount),
+      vatAmount: Number(earning.vatAmount || 0),
+      orderAmount: 0,
+      paymentMethod: "N/A",
+      earningId: earning.id,
+      assignmentId: earning.assignmentId,
+      accountingDocumentId: earning.accountingDocumentId,
+      journalEntryId: earning.journalEntryId,
+      rateCardId: earning.rateCardId,
+      isRateSnapshotted: true,
+    });
+  }
+
   // Itemize settlements
   let totalSettledPaid = 0;
   let pendingSettlementAmount = 0;
@@ -655,7 +684,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Compute subtotal before VAT
   const subtotalBeforeVat = Number(
-    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned + exchangeFeesEarned - adminDiscountsApplied).toFixed(2)
+    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned + exchangeFeesEarned + ncmTransferFeesEarned - adminDiscountsApplied).toFixed(2)
   );
   const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal - snapshottedServiceSubtotal);
   const taxableLegacySubtotal = Math.max(0, legacyDeliverySubtotal - legacyReturnFees);
@@ -678,6 +707,7 @@ export const getDistributorFinancialStatement = async ({
       earnedBonuses: Number(earnedBonuses.toFixed(2)),
       returnFeesEarned: Number(returnFeesEarned.toFixed(2)),
       exchangeFeesEarned: Number(exchangeFeesEarned.toFixed(2)),
+      ncmTransferFeesEarned: Number(ncmTransferFeesEarned.toFixed(2)),
       adminDiscountsApplied: Number(adminDiscountsApplied.toFixed(2)),
       subtotalBeforeVat,
       vatRate,
@@ -814,7 +844,7 @@ export const submitDistributorSettlementRequest = async ({
       }
       const openSourceIds = new Set(earningDocuments.map((document) => document.sourceId));
       const settlementLineItems = statement.transactions
-        .filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "BONUS"].includes(item.type))
+        .filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "BONUS"].includes(item.type))
         .filter((item) => !item.earningId || openSourceIds.has(item.earningId));
       const statementSnapshot = {
         createdAt: new Date().toISOString(),
@@ -838,6 +868,7 @@ export const submitDistributorSettlementRequest = async ({
             bonusAmount: item.bonusAmount || 0,
             returnCharge: item.type === "RETURN" ? item.grossAmount : 0,
             exchangeCharge: item.type === "EXCHANGE" ? item.grossAmount : 0,
+            ncmTransferCharge: item.type === "NCM_TRANSFER" ? item.grossAmount : 0,
             commissionDeduction: item.discountChargeAmount || 0,
             netAmount: item.netAmount,
             eligibleDeliveryCount: item.eligibleDeliveryCount,

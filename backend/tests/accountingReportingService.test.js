@@ -19,6 +19,7 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
       line("5100", "DEBIT", "800.00", 0, "2026-10-05T10:00:00.000Z"),
       line("6430", "DEBIT", "1200.00", 0, "2026-10-06T10:00:00.000Z"),
       line("6430", "DEBIT", "250.00", 0, "2026-10-06T10:00:00.000Z", "DELIVERY_SALE"),
+      line("6440", "DEBIT", "80.00", 0, "2026-10-06T10:00:00.000Z", "DISTRIBUTOR_SERVICE_EARNING"),
       line("2120", "CREDIT", 0, "276.11", "2026-10-05T10:00:00.000Z"),
       line("1150", "DEBIT", "50.00", 0, "2026-10-05T10:00:00.000Z"),
       line("1140", "DEBIT", "15200.00", 0, "2026-09-01T10:00:00.000Z"),
@@ -31,7 +32,7 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
   assert.equal(snapshot.basis, "POSTED_JOURNALS");
   assert.equal(snapshot.incomeStatement.netRevenue, 2400);
   assert.equal(snapshot.incomeStatement.totalCogs, 800);
-  assert.equal(snapshot.incomeStatement.totalOperatingExpenses, 1200);
+  assert.equal(snapshot.incomeStatement.totalOperatingExpenses, 1280);
   assert.equal(snapshot.vat.outputVat, 276.11);
   assert.equal(snapshot.vat.inputVat, 50);
   assert.equal(snapshot.vat.netVatPayable, 226.11);

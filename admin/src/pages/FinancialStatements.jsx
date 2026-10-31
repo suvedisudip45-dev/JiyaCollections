@@ -108,6 +108,7 @@ const FinancialStatements = ({ token }) => {
     manufacturerCommission: Number(rtOpex.manufacturerCommission || 0),
     marketingPartnerCpa: Number(rtOpex.marketingPartnerCpa || 0),
     deliveryExpense: Number(rtOpex.deliveryExpense || 0),
+    ncmTransferExpense: Number(rtOpex.ncmTransferExpense || 0),
     softwareTools: Number(rtOpex.softwareTools || 0),
     miscExpenses: Number(rtOpex.miscExpenses || 0),
     totalOperatingExpenses: Number(rtOpex.totalOperatingExpenses || 0),
@@ -388,6 +389,12 @@ const FinancialStatements = ({ token }) => {
                   <div className="flex justify-between py-1 border-b border-slate-50">
                     <span>Delivery &amp; Carrier Expense (Account 6430)</span>
                     <span className="font-mono">Rs {Number(plOpex.deliveryExpense).toLocaleString()}</span>
+                  </div>
+                )}
+                {Number(plOpex.ncmTransferExpense || 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-50">
+                    <span>Distributor NCM Fulfillment Expense (Account 6440)</span>
+                    <span className="font-mono">Rs {Number(plOpex.ncmTransferExpense).toLocaleString()}</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1 border-b border-slate-50">

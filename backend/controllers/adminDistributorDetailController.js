@@ -286,6 +286,7 @@ export const getAdminDistributorProfile = async (req, res) => {
             productId: true,
             deliveryCharge: true,
             returnCharge: true,
+            ncmTransferCharge: true,
             commissionRate: true,
             bonusRate: true,
             incentiveRate: true,
@@ -543,11 +544,12 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       return res.status(404).json({ success: false, message: "Distributor profile not found." });
     }
 
-    const [rateCard, deliveries, returns, settlements, rows] = await Promise.all([
+    const [rateCard, deliveries, returns, settlements, ncmTransferEarnings, rows] = await Promise.all([
       resolveActiveRateCard({ distributorId }),
       prisma.orderAssignment.count({ where: { distributorId, status: { in: ["delivered", "Delivered"] } } }),
       prisma.orderAssignment.count({ where: { distributorId, status: { in: ["returned", "Returned"] } } }),
       prisma.distributorSettlementRequest.count({ where: { distributorId } }),
+      prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: "NCM_TRANSFER" } }),
       prisma.$queryRaw(Prisma.sql`
         SELECT *
         FROM (
@@ -583,6 +585,21 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
             AND a.status IN ('returned', 'Returned')
           UNION ALL
           SELECT
+            'NCM_TRANSFER' AS transactionType,
+            e.id AS sourceId,
+            e.orderId AS referenceId,
+            e.effectiveAt AS transactionDate,
+            0 AS orderAmount,
+            'N/A' AS paymentMethod,
+            e.payableAmount AS settlementAmount,
+            NULL AS status,
+            NULL AS notes,
+            NULL AS financialAccountId
+          FROM DistributorServiceEarning e
+          WHERE e.distributorId = ${distributorId}
+            AND e.serviceType = 'NCM_TRANSFER'
+          UNION ALL
+          SELECT
             'SETTLEMENT' AS transactionType,
             s.id AS sourceId,
             s.id AS referenceId,
@@ -614,6 +631,24 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       ? rateCard.deliveryCharge * (rateCard.commissionRate / 100)
       : rateCard.commissionRate;
     const transactions = rows.map((row) => {
+      if (row.transactionType === "NCM_TRANSFER") {
+        const amount = Number(row.settlementAmount || 0);
+        return {
+          id: `tx-ncm-transfer-${row.sourceId}`,
+          type: "NCM_TRANSFER",
+          earningId: row.sourceId,
+          referenceId: row.referenceId,
+          date: row.transactionDate,
+          description: `NCM customer delivery transfer fee for Order ${String(row.referenceId).slice(0, 8)}`,
+          grossAmount: amount,
+          incentiveAmount: 0,
+          discountChargeAmount: 0,
+          netAmount: amount,
+          orderAmount: 0,
+          paymentMethod: "N/A",
+          isRateSnapshotted: true,
+        };
+      }
       if (row.transactionType === "DELIVERY") {
         const earning = savedEarningsByAssignment.get(row.sourceId);
         if (earning) {
@@ -679,7 +714,7 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
         financialAccountId: row.financialAccountId || null,
       };
     });
-    return res.json(paginatedResponse("transactions", transactions, pagination, deliveries + returns + settlements));
+    return res.json(paginatedResponse("transactions", transactions, pagination, deliveries + returns + settlements + ncmTransferEarnings));
   } catch (error) {
     return sendError(res, error, "getAdminDistributorFinanceTransactions");
   }

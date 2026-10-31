@@ -61,7 +61,7 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
   const balance = (code, source = period) => source[code]?.balance || 0;
   const netRevenue = balance("4100") + balance("4200") - balance("4500") - balance("4600");
   const totalCogs = balance("5100") + balance("5200") + balance("5300") + balance("5500") - balance("5400");
-  const totalOperatingExpenses = ["6100", "6200", "6300", "6400", "6410", "6420", "6430", "6500", "6600", "6700"]
+  const totalOperatingExpenses = ["6100", "6200", "6300", "6400", "6410", "6420", "6430", "6440", "6500", "6600", "6700"]
     .reduce((total, code) => total + balance(code), 0);
   const nonOperatingNet = balance("8100") - balance("7100") - balance("7200");
   const grossProfit = netRevenue - totalCogs;

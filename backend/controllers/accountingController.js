@@ -628,6 +628,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let manufacturerCommission = 0;
     let marketingPartnerCpa = 0;
     let deliveryExpense = 0;
+    let ncmTransferExpense = 0;
     let softwareTools = 0;
     let depreciationExpense = 0;
     let miscExpenses = 0;
@@ -655,6 +656,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       else if (code === "6410") manufacturerCommission += periodBal;
       else if (code === "6420") marketingPartnerCpa += periodBal;
       else if (code === "6430") deliveryExpense += periodBal;
+      else if (code === "6440") ncmTransferExpense += periodBal;
       else if (code === "6500") softwareTools += periodBal;
       else if (code === "6600") depreciationExpense += periodBal;
       else if (code === "6700") miscExpenses += periodBal;
@@ -666,7 +668,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     const netRevenue = Number((grossSales + shippingRevenue - salesReturns - salesDiscounts).toFixed(2));
     const totalCOGS = Number((directCOGS + freightTransport + packagingExpense + scrapLoss - purchaseReturns).toFixed(2));
     const grossProfit = Number((netRevenue - totalCOGS).toFixed(2));
-    const totalOperatingExpenses = Number((salaries + rent + utilities + marketing + manufacturerCommission + marketingPartnerCpa + deliveryExpense + softwareTools + miscExpenses).toFixed(2));
+    const totalOperatingExpenses = Number((salaries + rent + utilities + marketing + manufacturerCommission + marketingPartnerCpa + deliveryExpense + ncmTransferExpense + softwareTools + miscExpenses).toFixed(2));
     const ebitda = Number((grossProfit - totalOperatingExpenses).toFixed(2));
     const netProfitBeforeTax = Number((ebitda - depreciationExpense - loanInterest - bankCharges + otherIncome).toFixed(2));
 
@@ -686,6 +688,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let fiscalYearManufacturerCommission = 0;
     let fiscalYearMarketingPartnerCpa = 0;
     let fiscalYearDeliveryExpense = 0;
+    let fiscalYearNcmTransferExpense = 0;
     let fiscalYearSoftwareTools = 0;
     let fiscalYearMiscExpenses = 0;
     let fiscalYearDepreciationExpense = 0;
@@ -712,6 +715,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         case "6410": fiscalYearManufacturerCommission += balance; break;
         case "6420": fiscalYearMarketingPartnerCpa += balance; break;
         case "6430": fiscalYearDeliveryExpense += balance; break;
+        case "6440": fiscalYearNcmTransferExpense += balance; break;
         case "6500": fiscalYearSoftwareTools += balance; break;
         case "6600": fiscalYearDepreciationExpense += balance; break;
         case "6700": fiscalYearMiscExpenses += balance; break;
@@ -725,7 +729,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     const fiscalYearNetRevenue = fiscalYearGrossSales + fiscalYearShippingRevenue - fiscalYearSalesReturns - fiscalYearSalesDiscounts;
     const fiscalYearTotalCogs = fiscalYearDirectCOGS + fiscalYearFreightTransport + fiscalYearPackagingExpense + fiscalYearScrapLoss - fiscalYearPurchaseReturns;
     const fiscalYearTotalOpex = fiscalYearSalaries + fiscalYearRent + fiscalYearUtilities + fiscalYearMarketing +
-      fiscalYearManufacturerCommission + fiscalYearMarketingPartnerCpa + fiscalYearDeliveryExpense + fiscalYearSoftwareTools + fiscalYearMiscExpenses;
+      fiscalYearManufacturerCommission + fiscalYearMarketingPartnerCpa + fiscalYearDeliveryExpense + fiscalYearNcmTransferExpense + fiscalYearSoftwareTools + fiscalYearMiscExpenses;
     const currentFiscalYearNetProfit = Number((fiscalYearNetRevenue - fiscalYearTotalCogs - fiscalYearTotalOpex -
       fiscalYearDepreciationExpense - fiscalYearLoanInterest - fiscalYearBankCharges + fiscalYearOtherIncome).toFixed(2));
 
@@ -829,6 +833,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           manufacturerCommission,
           marketingPartnerCpa,
           deliveryExpense,
+          ncmTransferExpense,
           softwareTools,
           miscExpenses,
           totalOperatingExpenses,

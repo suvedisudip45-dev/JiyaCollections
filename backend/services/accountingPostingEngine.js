@@ -78,6 +78,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "6410", accountName: "Manufacturer Commission Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6420", accountName: "Marketing Partner CPA Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6430", accountName: "Delivery & Carrier Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6440", accountName: "Distributor NCM Fulfillment Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6500", accountName: "Software & Technology Tools", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6600", accountName: "Fixed Asset Depreciation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6700", accountName: "Miscellaneous Operating Expenses", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
@@ -113,6 +114,7 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "MANUFACTURER_COMMISSION_EXPENSE", accountCode: "6410" },
   { mappingKey: "MARKETING_PARTNER_CPA_EXPENSE", accountCode: "6420" },
   { mappingKey: "DELIVERY_EXPENSE", accountCode: "6430" },
+  { mappingKey: "DISTRIBUTOR_NCM_TRANSFER_EXPENSE", accountCode: "6440" },
 ];
 
 export const ensureStandardAccountMappings = async (client = prisma) => {

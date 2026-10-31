@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   accrueDistributorDeliveryEarning,
+  accrueDistributorNcmTransferEarning,
   accrueDistributorServiceCharge,
 } from "../services/distributorServiceEarningService.js";
 
@@ -131,4 +132,72 @@ test("return service charge is snapshotted and creates a payable earning documen
   assert.equal(state.documents[0].sourceType, "DISTRIBUTOR_SERVICE_EARNING");
   assert.equal(state.documents[0].originalAmount.toString(), "56.5");
   assert.equal(state.journals[0].lines[1].credit.toString(), "56.5");
+});
+
+test("NCM transfer earning uses the distributor rate, separate expense mapping, and idempotent payable", async () => {
+  const { client, state } = createHarness();
+  const input = {
+    distributorId: "dist-1",
+    distributorName: "Distributor One",
+    assignmentId: "assignment-1",
+    orderId: "order-1",
+    sourceId: "delivery-1",
+    serviceType: "NCM_TRANSFER",
+    chargeAmount: 80,
+    client,
+    journalPoster: async (journal) => {
+      state.journals.push(journal);
+      return { id: "ncm-journal-1" };
+    },
+  };
+  const first = await accrueDistributorServiceCharge(input);
+  const replay = await accrueDistributorServiceCharge(input);
+
+  assert.equal(first.id, replay.id);
+  assert.equal(first.serviceType, "NCM_TRANSFER");
+  assert.equal(first.otherCharges.toString(), "80");
+  assert.equal(first.vatAmount.toString(), "0");
+  assert.equal(first.payableAmount.toString(), "80");
+  assert.equal(state.earnings.length, 1);
+  assert.equal(state.documents[0].originalAmount.toString(), "80");
+  assert.equal(state.journals[0].lines[0].mappingKey, "DISTRIBUTOR_NCM_TRANSFER_EXPENSE");
+  assert.equal(state.journals[0].lines[1].mappingKey, "DISTRIBUTOR_PAYABLE");
+  assert.equal(state.journals.length, 1);
+});
+
+test("NCM transfer earning snapshots the configured distributor fee and skips a zero fee", async () => {
+  const { client } = createHarness();
+  const captured = [];
+  const input = {
+    distributorId: "dist-1",
+    distributorName: "Distributor One",
+    assignmentId: "assignment-1",
+    orderId: "order-1",
+    deliveryOrderId: "delivery-1",
+    effectiveAt: new Date("2026-10-31T00:00:00.000Z"),
+    client,
+    rateCardResolver: async ({ distributorId, effectiveAt }) => {
+      assert.equal(distributorId, "dist-1");
+      assert.equal(effectiveAt.toISOString(), "2026-10-31T00:00:00.000Z");
+      return { rateCardId: "rate-1", ncmTransferCharge: 75 };
+    },
+    accrueServiceCharge: async (earning) => {
+      captured.push(earning);
+      return earning;
+    },
+  };
+
+  const earning = await accrueDistributorNcmTransferEarning(input);
+  assert.equal(earning.serviceType, "NCM_TRANSFER");
+  assert.equal(earning.sourceId, "delivery-1");
+  assert.equal(earning.rateCardId, "rate-1");
+  assert.equal(earning.chargeAmount.toString(), "75");
+  assert.equal(captured.length, 1);
+
+  const zeroFee = await accrueDistributorNcmTransferEarning({
+    ...input,
+    rateCardResolver: async () => ({ ncmTransferCharge: 0 }),
+  });
+  assert.equal(zeroFee, null);
+  assert.equal(captured.length, 1);
 });

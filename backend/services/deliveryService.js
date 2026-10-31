@@ -24,6 +24,7 @@ import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
 import { applyGiftDeliveryTransition } from "./giftService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
+import { accrueDistributorNcmTransferEarning } from "./distributorServiceEarningService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 const MAX_NCM_WEBHOOK_ORDER_IDS = 100;
@@ -1227,6 +1228,27 @@ export const applyNcmStatus = async ({
         if (deliveryState === "DELIVERED" && isNewDeliveryConfirmation) {
           await applyGiftDeliveryTransition(tx, delivery.orderId);
           await accrueCollaborationSalesForOrder({ orderId: delivery.orderId, deliveredAt: new Date(), client: tx });
+          if (delivery.distributorId) {
+            const assignment = await tx.orderAssignment.findFirst({
+              where: { orderId: delivery.orderId, distributorId: delivery.distributorId },
+              select: {
+                id: true,
+                distributor: { select: { id: true, name: true } },
+              },
+            });
+            if (!assignment?.distributor) {
+              throw new Error("Cannot accrue the NCM transfer fee because the distributor assignment is missing.");
+            }
+            await accrueDistributorNcmTransferEarning({
+              distributorId: assignment.distributor.id,
+              distributorName: assignment.distributor.name,
+              assignmentId: assignment.id,
+              orderId: delivery.orderId,
+              deliveryOrderId: delivery.id,
+              effectiveAt: delivery.deliveredAt || occurredAt,
+              client: tx,
+            });
+          }
         }
       }
 

@@ -2,6 +2,7 @@ import { prisma } from "../config/db.js";
 
 const DEFAULT_DELIVERY_CHARGE = 100;
 const DEFAULT_RETURN_CHARGE = 50;
+const DEFAULT_NCM_TRANSFER_CHARGE = 0;
 const DEFAULT_COMMISSION_RATE = 0;
 const DEFAULT_BONUS_RATE = 0;
 const DEFAULT_INCENTIVE_RATE = 0;
@@ -25,6 +26,7 @@ export const recordDistributorRateCard = async ({
   productId = null,
   deliveryCharge = DEFAULT_DELIVERY_CHARGE,
   returnCharge = DEFAULT_RETURN_CHARGE,
+  ncmTransferCharge = DEFAULT_NCM_TRANSFER_CHARGE,
   commissionRate = DEFAULT_COMMISSION_RATE,
   bonusRate = DEFAULT_BONUS_RATE,
   incentiveRate = DEFAULT_INCENTIVE_RATE,
@@ -67,6 +69,7 @@ export const recordDistributorRateCard = async ({
 
   const numDeliveryCharge = nonNegativeRateValue(deliveryCharge, "Delivery charge");
   const numReturnCharge = nonNegativeRateValue(returnCharge, "Return charge");
+  const numNcmTransferCharge = nonNegativeRateValue(ncmTransferCharge, "NCM transfer charge");
   const numCommissionRate = nonNegativeRateValue(commissionRate, "Commission rate", 100);
   nonNegativeRateValue(bonusRate, "Legacy delivery incentive");
   nonNegativeRateValue(incentiveRate, "Legacy incentive rate");
@@ -116,6 +119,7 @@ export const recordDistributorRateCard = async ({
     productId: productId || null,
     deliveryCharge: numDeliveryCharge,
     returnCharge: numReturnCharge,
+    ncmTransferCharge: numNcmTransferCharge,
     commissionRate: numCommissionRate,
     bonusRate: numBonusRate,
     incentiveRate: numIncentiveRate,
@@ -208,6 +212,7 @@ export const resolveActiveRateCard = async ({
     return {
       deliveryCharge: DEFAULT_DELIVERY_CHARGE,
       returnCharge: DEFAULT_RETURN_CHARGE,
+      ncmTransferCharge: DEFAULT_NCM_TRANSFER_CHARGE,
       commissionRate: DEFAULT_COMMISSION_RATE,
       bonusRate: DEFAULT_BONUS_RATE,
       incentiveRate: DEFAULT_INCENTIVE_RATE,
@@ -233,6 +238,7 @@ export const resolveActiveRateCard = async ({
       return {
         deliveryCharge: Number(productRate.deliveryCharge),
         returnCharge: Number(productRate.returnCharge),
+        ncmTransferCharge: Number(productRate.ncmTransferCharge ?? DEFAULT_NCM_TRANSFER_CHARGE),
         commissionRate: Number(productRate.commissionRate || 0),
         bonusRate: DEFAULT_BONUS_RATE,
         incentiveRate: DEFAULT_INCENTIVE_RATE,
@@ -260,6 +266,7 @@ export const resolveActiveRateCard = async ({
     return {
       deliveryCharge: Number(generalRate.deliveryCharge),
       returnCharge: Number(generalRate.returnCharge),
+      ncmTransferCharge: Number(generalRate.ncmTransferCharge ?? DEFAULT_NCM_TRANSFER_CHARGE),
       commissionRate: Number(generalRate.commissionRate || 0),
       bonusRate: DEFAULT_BONUS_RATE,
       incentiveRate: DEFAULT_INCENTIVE_RATE,
@@ -274,6 +281,7 @@ export const resolveActiveRateCard = async ({
   return {
     deliveryCharge: DEFAULT_DELIVERY_CHARGE,
     returnCharge: DEFAULT_RETURN_CHARGE,
+    ncmTransferCharge: DEFAULT_NCM_TRANSFER_CHARGE,
     commissionRate: DEFAULT_COMMISSION_RATE,
     bonusRate: DEFAULT_BONUS_RATE,
     incentiveRate: DEFAULT_INCENTIVE_RATE,
