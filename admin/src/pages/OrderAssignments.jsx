@@ -239,6 +239,9 @@ const OrderAssignments = ({ token }) => {
     }
     return true;
   });
+  const manualReassignmentDistributors = activeDistributors.filter((distributor) => (
+    !activeManualAssignmentId || distributor.id !== activeManualDistributorId
+  ));
 
   return (
     <div className="space-y-6">
@@ -505,12 +508,11 @@ const OrderAssignments = ({ token }) => {
                         {a.distributorId ? "Distributor" : a.manufacturerId ? "Legacy manufacturer" : "Unassigned"}
                       </td>
                       <td className="py-3.5 px-4 min-w-40">
-                        {canControlOrders && a.distributorId && !a.delivery && String(a.status || "").toLowerCase() === "rejected" && (
+                        {canControlOrders && a.distributorId && !a.delivery && ["assigned", "pending_acceptance", "rejected"].includes(String(a.status || "").toLowerCase()) && (
                           <button
                             type="button"
                             onClick={() => openManualReassignment(a)}
-                            disabled={!activeDistributors.some((distributor) => distributor.id !== a.distributorId)}
-                            className="mb-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="mb-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-semibold text-amber-900 hover:bg-amber-100"
                           >
                             <RotateCw className="h-3.5 w-3.5" />
                             Reassign hub
@@ -532,8 +534,8 @@ const OrderAssignments = ({ token }) => {
                             Request NCM delivery
                           </button>
                         ) : (
-                          <span className="text-[10px] text-slate-400">
-                            {a.delivery?.state || "Pack first"}
+                          <span className="text-[10px] text-slate-400" title="Packing is required before requesting NCM delivery; it does not affect hub reassignment.">
+                            {a.delivery?.state || "Pack first for NCM"}
                           </span>
                         )}
                       </td>
@@ -664,15 +666,21 @@ const OrderAssignments = ({ token }) => {
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-normal"
               >
                 <option value="">Select a distributor</option>
-                {activeDistributors.filter((distributor) => (
-                  !activeManualAssignmentId || distributor.id !== activeManualDistributorId
-                )).map((distributor) => (
+                {!manualReassignmentDistributors.length && (
+                  <option value="" disabled>No other active distributor is available</option>
+                )}
+                {manualReassignmentDistributors.map((distributor) => (
                   <option key={distributor.id} value={distributor.id}>
                     {distributor.name} · {[distributor.district, distributor.province].filter(Boolean).join(", ")}
                   </option>
                 ))}
               </select>
             </label>
+            {activeManualAssignmentId && !manualReassignmentDistributors.length && (
+              <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                There is no other active distributor to select. Activate another distributor first; it must also have enough available stock for this order.
+              </p>
+            )}
             <label className="block text-xs font-semibold text-slate-700">
               Reason for override
               <textarea

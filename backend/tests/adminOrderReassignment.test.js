@@ -15,7 +15,8 @@ const stubMethod = (t, target, name, implementation) => {
 const createHarness = (t, {
   sourceReserved = 2,
   targetOnHand = 5,
-  transactionAssignmentStatus = "rejected",
+  assignmentStatus = "rejected",
+  transactionAssignmentStatus = assignmentStatus,
 } = {}) => {
   const source = {
     id: "source-balance",
@@ -34,7 +35,7 @@ const createHarness = (t, {
     orderId: "order-1",
     distributorId: "source-hub",
     manufacturerId: null,
-    status: "rejected",
+    status: assignmentStatus,
   };
   const order = {
     id: "order-1",
@@ -201,6 +202,19 @@ test("Admin reassignment atomically transfers the reservation and audits the rea
     harness.auditEvents[0].afterState.reason,
     "Reroute due to local fulfillment capacity.",
   );
+});
+
+test("Admin can reassign an assigned order while it is still awaiting distributor acceptance", async (t) => {
+  const harness = createHarness(t, { assignmentStatus: "assigned" });
+  const response = createResponse();
+
+  await adminReassignOrder(createRequest(), response.res);
+
+  assert.equal(response.getStatus(), 200);
+  assert.equal(response.getBody().success, true);
+  assert.equal(harness.source.reservedQuantity, 0);
+  assert.equal(harness.target.reservedQuantity, 2);
+  assert.equal(harness.isReassigned(), true);
 });
 
 test("Admin reassignment does not start a transaction if the target lacks stock", async (t) => {

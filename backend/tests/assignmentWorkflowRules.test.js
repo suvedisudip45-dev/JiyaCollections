@@ -16,6 +16,7 @@ test("admin reassigning is blocked once manufacturer has accepted production", (
 
 test("admin reassigning stays allowed before acceptance and before delivery handoff", () => {
   assert.equal(canAdminReassignAssignment({ status: "assigned" }), true);
+  assert.equal(canAdminReassignAssignment({ status: "PENDING_ACCEPTANCE" }), true);
   assert.equal(canAdminReassignAssignment({ status: "rejected" }), true);
   assert.equal(canAdminReassignAssignment({ status: "assigned", hasDeliveryOrder: false }), true);
 });

@@ -198,11 +198,12 @@ const Sidebar = ({ isOpen = false, onClose }) => {
           label="Sales & Orders"
           icon={Icon.sales}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.sales}
-          routes={["/orders", "/create-order", "/product-analytics"]}
+          routes={["/orders", "/create-order", "/product-analytics", "/discount-analytics"]}
         >
           <NavItem to="/orders"        icon={Icon.orders}      label="Customer Orders" />
           <NavItem to="/create-order"  icon={Icon.createOrder} label="Create Direct Order" />
           <NavItem to="/product-analytics" icon={Icon.products} label="Product performance" />
+          <NavItem to="/discount-analytics" icon={Icon.offers} label="Discount analytics" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />

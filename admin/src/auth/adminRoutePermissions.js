@@ -23,6 +23,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/add-order": ["order:admin_create"],
   "/orders": ["order:list_admin"],
   "/product-analytics": ["product:sales_analytics_read"],
+  "/discount-analytics": ["product:sales_analytics_read"],
   "/order-assignments": ["assignment:admin_list", "order:control"],
   "/delivery-monitor": ["delivery:admin_list", "delivery:settlements_read", "delivery:logs_read", "delivery:ncm_handoff_recover"],
   "/ncm-deliveries": ["delivery:admin_list"],

@@ -59,6 +59,7 @@ import StoryLetterLibrary from "./pages/StoryLetterLibrary";
 import MarketingCards from "./pages/MarketingCards";
 import MarketingPartnerDetail from "./pages/MarketingPartnerDetail";
 import ProductAnalytics from "./pages/ProductAnalytics";
+import DiscountAnalytics from "./pages/DiscountAnalytics";
 import AccessUsers from "./pages/AccessUsers";
 import AccessRoles from "./pages/AccessRoles";
 import AccessPermissions from "./pages/AccessPermissions";
@@ -222,6 +223,7 @@ const App = () => {
                   <Route path="/orders" element={withPermission("/orders", <Orders token={token} />)} />
                   <Route path="/orders/:orderId" element={withPermission("/orders", <AdminOrderDetail token={token} />)} />
                   <Route path="/product-analytics" element={withPermission("/product-analytics", <ProductAnalytics token={token} />)} />
+                  <Route path="/discount-analytics" element={withPermission("/discount-analytics", <DiscountAnalytics token={token} />)} />
                   <Route path="/order-assignments" element={withPermission("/order-assignments", <OrderAssignments token={token} />)} />
                   <Route path="/delivery-monitor" element={withPermission("/delivery-monitor", <DeliveryMonitor token={token} />)} />
                   <Route path="/ncm-deliveries" element={withPermission("/ncm-deliveries", <NcmDeliveries token={token} />)} />
