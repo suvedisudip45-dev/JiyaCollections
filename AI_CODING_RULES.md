@@ -15,6 +15,8 @@ All future project changes must be reflected in the documentation set in this re
 
 This is a hard operating rule. Do not merge or continue feature work without updating the relevant documentation sections for any route, model, permission, flow, environment variable, deployment detail, or UI change.
 
+Request-signing compatibility is verified by backend middleware for portal `/api` requests, including authentication routes, and is deliberately excluded from NCM webhook receiver endpoints. `VITE_` variables are public browser configuration, not confidential secrets; never rely on client-side HMAC signing in place of backend authentication or authorization.
+
 ### 1.1 Keep backend logic authoritative
 
 The backend is the real source of truth for:

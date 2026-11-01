@@ -1,5 +1,9 @@
 # Database and Schemas
 
+## Request signing and infrastructure notes
+
+Request signing is enforced by backend middleware and does not add database models. Portal clients send the compatibility `Request-Signature`; the backend verifies it before sanitization and route handling using `HMAC_SECRET`. NCM webhook receiver routes are excluded. Browser `VITE_` variables are public and do not provide confidential key storage.
+
 ## 1. Database Engine and ORM
 
 The project uses:

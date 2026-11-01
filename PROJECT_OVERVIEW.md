@@ -1,5 +1,11 @@
 # Aama Clothings — Distributed E-Commerce Ecosystem
 
+## Request signing and HMAC compatibility
+
+The project uses the same compatibility signature algorithm across the customer, admin, manufacturer, and marketing portal clients for `/api` requests, including authentication requests. Backend middleware verifies the signature before sanitization and route handling, rejecting missing or mismatched signatures. NCM webhook receiver endpoints are explicitly excluded and retain their existing webhook verification.
+
+The backend secret is `HMAC_SECRET`; portal builds use a matching `VITE_HMAC_SECRET`. A `VITE_` value is embedded in the browser bundle and is therefore not confidential or suitable as a security boundary. This compatibility signature detects configuration/protocol mismatches, but JWT authentication, authorization, and webhook validation remain independently required.
+
 ## 1. Project Summary
 
 Aama Clothings is a multi-portal clothing commerce platform built around a central Node.js + Express API and MySQL Prisma data layer. The system supports a customer storefront, a business admin portal, manufacturer operations, distributor hub operations, marketing partner campaigns, and delivery/NCM fulfillment workflows.

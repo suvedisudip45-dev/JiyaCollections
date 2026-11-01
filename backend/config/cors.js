@@ -15,6 +15,9 @@ export const ALLOWED_CORS_HEADERS = [
   "x-requested-with",
   "x-correlation-id",
   "idempotency-key",
+  "Request-Signature",
+  "request-signature",
+  "x-request-signature",
 ];
 
 const normalizeOrigin = (value) => {

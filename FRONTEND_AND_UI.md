@@ -1,5 +1,13 @@
 # Frontend and UI Reference
 
+## Request signing and portal security
+
+The storefront, admin, manufacturer, and marketing portals sign `/api` requests, including login, refresh, and registration requests. The backend verifies each signature before route handling, and returns an explicit error for missing/mismatched signatures. NCM webhook receivers are excluded.
+
+The request-signing value is configured through `.env.example` values such as `VITE_HMAC_SECRET`, with a matching backend `HMAC_SECRET`. Vite exposes `VITE_` variables in the browser bundle, so this client-side compatibility signature is not a way to keep a secret from users; JWT authentication and backend authorization remain mandatory.
+
+Portal auth interceptors do not treat backend `HMAC_*` errors as expired-token responses, so a signature failure is surfaced directly rather than causing refresh-and-retry loops.
+
 ## 1. UI Architecture
 
 The project uses a multi-app frontend architecture:

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { clearResponseCache, installResponseCache } from "./responseCache";
+import { signRequestWithLegacyHmac } from "../utils/hmac";
 import {
   ACCESS_TOKEN_KEY,
   clearAuthTokens,
@@ -87,11 +88,14 @@ export const installAuthInterceptor = () => {
   installed = true;
   installResponseCache(axios, getAccessToken);
 
-  axios.interceptors.request.use((config) => {
+  axios.interceptors.request.use(async (config) => {
     const requestUrl = config.url || "";
     if (/\/api\/auth\//.test(requestUrl) || /\/api\/user\/(login|register)/.test(requestUrl)) {
       config.withCredentials = true;
     }
+
+    await signRequestWithLegacyHmac(config);
+
     return config;
   });
 
@@ -99,6 +103,10 @@ export const installAuthInterceptor = () => {
     (response) => response,
     async (error) => {
       const originalRequest = error.config;
+      const errorCode = error.response?.data?.code;
+      if (typeof errorCode === "string" && errorCode.startsWith("HMAC_")) {
+        return Promise.reject(error);
+      }
       const isAuthRequest = /\/api\/auth\/(login|refresh)/.test(originalRequest?.url || "");
       const headers = originalRequest?.headers;
       const hasAccessToken = Boolean(

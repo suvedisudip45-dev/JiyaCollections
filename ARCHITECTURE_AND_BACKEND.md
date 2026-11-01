@@ -1,5 +1,11 @@
 # Architecture and Backend Reference
 
+## Request signing and HMAC compatibility
+
+All portal clients sign `/api` requests, including authentication calls. Backend middleware verifies `Request-Signature` after JSON parsing but before sanitization and route dispatch; missing or invalid values are rejected, and an unset backend secret fails closed. The JSON parser retains the raw request body for signature verification so it matches the exact text sent by the portal; absent bodies remain distinct from JSON `{}`. Structured warning/error logs identify missing configuration, missing signatures, and mismatches with request metadata and signature lengths; secret values, signature contents, authorization headers, and request bodies are never logged. The canonical string is `METHOD|canonicalUrl|bodyText`, where the URL path is lowercased and query parameters are lowercased and sorted before hashing. The shared secret is appended to the canonical message, SHA-256 is computed, the digest is uppercased to hex, and the resulting hex string is base64-encoded. NCM webhook receiver routes are excluded from this middleware and retain their dedicated validation path.
+
+Configure `HMAC_SECRET` on the backend and the matching `VITE_HMAC_SECRET` in each portal. `VITE_` settings are public in browser bundles; this legacy compatibility signing flow does not replace JWT authentication or authorization and must not be treated as a confidential client secret.
+
 ## 1. System Architecture
 
 The application is structured as a distributed e-commerce platform with a central API server and multiple portal clients:
@@ -37,7 +43,7 @@ delivery submissions send that same value as the carrier vendor reference.
 | `backend/controllers/` | HTTP request handlers for auth, products, orders, accounting, delivery, returns |
 | `backend/routes/` | Router definitions grouped by domain |
 | `backend/services/` | Domain logic, RBAC, token generation, delivery/NCM reconciliation, accounting engine |
-| `backend/middleware/` | Auth, sanitization, rate limiting, request-level RBAC |
+| `backend/middleware/` | Auth, pre-route request-signature verification, sanitization, rate limiting, request-level RBAC |
 | `backend/security/` | MFA policies and security-specific code |
 | `backend/prisma/schema.prisma` | Canonical database schema |
 | `backend/tests/` | Regression tests for order exchange, delivery automation, marketing-card security |

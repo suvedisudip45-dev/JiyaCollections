@@ -4,6 +4,10 @@
 
 ## 1. High-level data flows
 
+### Portal API request-signature verification
+
+The customer, admin, manufacturer, and marketing portals attach the documented legacy compatibility signature to `/api` requests. Backend middleware verifies the signature before sanitization and route dispatch; missing/mismatched signatures are rejected, and an unset backend `HMAC_SECRET` fails closed. The JSON parser retains raw request text for verification, while an absent HTTP entity remains distinct from an explicitly sent JSON `{}`. Structured diagnostics record request metadata and signature lengths for failures, but never log the secret, signature contents, authorization headers, or body. HMAC failures do not trigger access-token refresh retries in portal interceptors. NCM webhook receiver routes remain excluded and continue using their dedicated verification. Because Vite exposes `VITE_HMAC_SECRET` in the browser bundle, this compatibility check must not be treated as a confidential authentication factor or a replacement for JWT/RBAC controls.
+
 ### Admin and privileged-portal sign-in
 
 1. The portal login UI submits an identifier and password to the backend. Some UIs AES-encrypt the password using Vite environment values before sending it.

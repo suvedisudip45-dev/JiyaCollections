@@ -57,6 +57,7 @@ import { startDeliveryAccountingOutboxWorker } from "./services/accountingOutbox
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
 import { syncAllProductsStock } from "./services/stockSyncService.js";
 import { invalidatePrismaQueryCache } from "./utils/prismaQueryCache.js";
+import { verifyRequestSignature } from "./middleware/verifyRequestSignature.js";
 
 // App Config
 const app = express();
@@ -78,8 +79,12 @@ const startServer = async () => {
 };
 
 // Middleware
-app.use(express.json({ limit: "10mb" }));
-app.use(sanitizeMiddleware);
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, res, buffer) => {
+    req.rawBody = buffer.toString("utf8");
+  },
+}));
 app.use((req, res, next) => {
   const suppliedId = String(req.headers["x-correlation-id"] || "").trim();
   req.correlationId = /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedId) ? suppliedId : randomUUID();
@@ -119,6 +124,8 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+app.use(verifyRequestSignature);
+app.use(sanitizeMiddleware);
 
 //  Api Endpoints
 app.use("/api/auth", authRouter);
