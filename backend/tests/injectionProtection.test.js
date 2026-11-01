@@ -101,6 +101,23 @@ test("storefront long-form content preserves paragraph whitespace while remainin
   assert.equal(cleaned.ordinaryText, "trimmed text");
 });
 
+test("product descriptions retain paragraph whitespace through request sanitization", () => {
+  const description = JSON.stringify({
+    about: { blocks: [{ type: "paragraph", text: "  First paragraph.\n\nSecond paragraph.\n" }] },
+  });
+  const cleaned = sanitizeObject({
+    description,
+  });
+  const cleanedObject = sanitizeObject({
+    description: {
+      about: { blocks: [{ type: "paragraph", text: "  First paragraph.\n\nSecond paragraph.\n" }] },
+    },
+  });
+
+  assert.equal(cleaned.description, description);
+  assert.equal(cleanedObject.description.about.blocks[0].text, "  First paragraph.\n\nSecond paragraph.\n");
+});
+
 test("Injection Protection - Express Middleware Handler", () => {
   const req = {
     body: {

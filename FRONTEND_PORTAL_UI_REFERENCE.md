@@ -24,7 +24,7 @@ All storefront routes are rendered inside the shared shell unless a route redire
 | `/` | Home | Editorial hero, category image tiles, New In and Best Sellers product rails, active festival offers, category showcase, policy strip, newsletter signup. |
 | `/shop` | Collection | Category/subcategory selection from query params, New/Bestseller featured filters, subcategory banner/description, product grid, sorting, client-side product search, infinite-scroll pages (12 per chunk), loading/empty states. |
 | `/collection` | Alias | Redirects to `/shop`. |
-| `/product/:productId` | Product detail | Image gallery, variant/color/size/stock selection, location-specific price quote, add-to-cart, wishlist, sticky mobile purchase bar, image lightbox/zoom, size guide, description/details/reviews tabs, related products. |
+| `/product/:productId` | Product detail | Image gallery, variant/color/size/stock selection, location-specific price quote, add-to-cart, wishlist, sticky mobile purchase bar, image lightbox/zoom, optional product-specific size chart modal, description/details/reviews tabs, related products. |
 | `/combo-bundles` | Combo directory | Browse combo bundle cards; category/category ID can be passed through query parameters. |
 | `/combo-bundles/:slug` | Combo detail | Bundle information, included product/variant selection, quantity and proceed-to-checkout action. |
 | `/about` | Journal/About | Static brand/story editorial content. |
@@ -138,7 +138,7 @@ Values are from `frontend/src/index.css`; page components can contain extra Tail
 - Main gallery, thumbnails/previous-next, responsive swipe rail, zoom/lightbox, featured variant image.
 - Product name, category, rating/review count, price/discount, location discount information and quote-loading/error state. Prices are shown without VAT-inclusive or VAT-exclusive labels.
 - Required size/color selection, quantity, stock availability, Add to Cart and Wishlist.
-- Optional product size guide opens modal; tabs switch description/details/reviews.
+- Selectable product sizes remain interactive size tiles. If an admin configured a product-specific size chart, the Size Chart control with ruler icon opens its measurement table (for example, size, chest, and shoulder) and fit tip in a modal. Description tabs do not repeat size-chart content.
 - When selected district/province is known (from saved profile address), UI requests per-item quote. Display quote source/discount percentage and strike-through original price as applicable.
 - Sticky mobile CTA repeats purchase action after original CTA scrolls away.
 
@@ -247,29 +247,27 @@ Backend paginated envelope:
   "products": [
     {
       "_id": "product-id",
-      "id": "product-id",
       "name": "Product name",
       "nepaliName": "...",
+      "description": "...",
       "image": ["https://..."],
       "category": "Women",
-      "categories": ["Women"],
       "subCategory": "Tops",
       "price": 2500,
       "discount": 10,
-      "globalDiscountPercentage": 10,
-      "locationDiscountPercentage": 0,
-      "discountSource": "GLOBAL",
       "sizes": ["S", "M"],
       "colors": ["Black"],
+      "colorImages": [],
       "variants": [{ "size": "S", "color": "Black", "quantity": 4, "image": "..." }],
-      "published": true,
       "newInStore": true,
+      "isUnisex": false,
       "bestseller": false,
+      "stockQuantity": 4,
+      "date": 1700000000000,
       "rating": 4.5,
       "reviewCount": 2
     }
   ],
-  "data": ["same records as products"],
   "pagination": {
     "page": 1,
     "limit": 12,
@@ -281,7 +279,7 @@ Backend paginated envelope:
 }
 ```
 
-Fields shown are an illustrative subset of the actual product record. Public list excludes unpublished/deleted products and may calculate location-aware effective discount when province/district query parameters are supplied. Default pagination is page 1/limit 12, maximum 50.
+This is the public storefront product shape: it omits internal product fields such as cost price and low-stock threshold, does not repeat the product ID/category under aliases, and returns the records only under `products`. Public list excludes unpublished/deleted products and may add location-aware discount fields when province/district query parameters are supplied. Default pagination is page 1/limit 12, maximum 50.
 
 #### Product location price
 

@@ -35,7 +35,6 @@ export const getPaginationMeta = ({ page, limit, total }) => {
 export const paginatedResponse = (key, records, pagination, total) => ({
   success: true,
   [key]: records,
-  data: records,
   pagination: getPaginationMeta({ ...pagination, total }),
 });
 

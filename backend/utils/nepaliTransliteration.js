@@ -326,10 +326,10 @@ export const transliterateToNepali = (text) => {
 
 /**
  * Utility to parse and validate structured descriptions
- * Support 3 standard sections:
+ * Support the description sections and optional product-specific size chart:
  * - about / overview
  * - fabricCare
- * - sizeFit
+ * - sizeChart (with legacy sizeFit conversion)
  */
 export const parseStructuredDescription = (rawDescription) => {
   if (!rawDescription) {
@@ -337,6 +337,7 @@ export const parseStructuredDescription = (rawDescription) => {
       about: "",
       fabricCare: "",
       sizeFit: "",
+      sizeChart: null,
       rawText: "",
       isStructured: false,
     };
@@ -344,9 +345,10 @@ export const parseStructuredDescription = (rawDescription) => {
 
   if (typeof rawDescription === "object" && rawDescription !== null) {
     return {
-      about: String(rawDescription.about || "").trim(),
-      fabricCare: String(rawDescription.fabricCare || "").trim(),
-      sizeFit: String(rawDescription.sizeFit || "").trim(),
+      about: normalizeDescriptionSection(rawDescription.about),
+      fabricCare: normalizeDescriptionSection(rawDescription.fabricCare),
+      sizeFit: normalizeDescriptionSection(rawDescription.sizeFit),
+      sizeChart: normalizeSizeChart(rawDescription.sizeChart, rawDescription.sizeFit),
       rawText: JSON.stringify(rawDescription),
       isStructured: true,
     };
@@ -359,9 +361,10 @@ export const parseStructuredDescription = (rawDescription) => {
         const parsed = JSON.parse(trimmed);
         if (parsed && typeof parsed === "object") {
           return {
-            about: String(parsed.about || "").trim(),
-            fabricCare: String(parsed.fabricCare || "").trim(),
-            sizeFit: String(parsed.sizeFit || "").trim(),
+            about: normalizeDescriptionSection(parsed.about),
+            fabricCare: normalizeDescriptionSection(parsed.fabricCare),
+            sizeFit: normalizeDescriptionSection(parsed.sizeFit),
+            sizeChart: normalizeSizeChart(parsed.sizeChart, parsed.sizeFit),
             rawText: trimmed,
             isStructured: true,
           };
@@ -371,9 +374,10 @@ export const parseStructuredDescription = (rawDescription) => {
       }
     }
     return {
-      about: trimmed,
+      about: rawDescription,
       fabricCare: "",
       sizeFit: "",
+      sizeChart: null,
       rawText: trimmed,
       isStructured: false,
     };
@@ -383,13 +387,99 @@ export const parseStructuredDescription = (rawDescription) => {
     about: "",
     fabricCare: "",
     sizeFit: "",
+    sizeChart: null,
     rawText: "",
     isStructured: false,
   };
+};
+
+const normalizeSizeChart = (chart, legacySection) => {
+  if (chart && typeof chart === "object" && Array.isArray(chart.headers) && Array.isArray(chart.rows)) {
+    const headers = chart.headers.slice(0, 20).map((header) => String(header ?? ""));
+    return {
+      title: String(chart.title || "Garment Sizing Guide"),
+      subtitle: String(chart.subtitle || ""),
+      headers,
+      rows: chart.rows.slice(0, 100).map((row) =>
+        headers.map((_, index) => String(Array.isArray(row) ? row[index] ?? "" : ""))
+      ),
+      fitTip: String(chart.fitTip || ""),
+    };
+  }
+
+  const legacy = normalizeDescriptionSection(legacySection);
+  const blocks = Array.isArray(legacy?.blocks) ? legacy.blocks : [];
+  const table = blocks.find((block) => block.type === "table");
+  const fitTip = blocks.flatMap((block) => (
+    block.type === "paragraph" ? [block.text] :
+      block.type === "list" ? block.items : []
+  )).filter(Boolean).join("\n");
+
+  if (table) {
+    return {
+      title: "Garment Sizing Guide",
+      subtitle: "",
+      headers: table.headers,
+      rows: table.rows,
+      fitTip,
+    };
+  }
+
+  if (fitTip) {
+    return { title: "Garment Sizing Guide", subtitle: "", headers: [], rows: [], fitTip };
+  }
+  return null;
+};
+
+export const getSizeChartValidationError = (chart) => {
+  if (!chart) return "";
+  if (!Array.isArray(chart.headers) || chart.headers.length < 2) {
+    return "A size chart needs a size column and at least one measurement column.";
+  }
+  if (chart.headers.some((header) => !String(header ?? "").trim())) {
+    return "Enter a heading for every size chart column.";
+  }
+  if (!Array.isArray(chart.rows) || chart.rows.length === 0) {
+    return "Add at least one size row to the measurement chart.";
+  }
+  if (chart.rows.some((row) =>
+    !Array.isArray(row)
+    || row.length !== chart.headers.length
+    || row.some((cell) => !String(cell ?? "").trim())
+  )) {
+    return "Complete every size and measurement cell before saving the product.";
+  }
+  return "";
+};
+
+const normalizeDescriptionSection = (section) => {
+  if (typeof section === "string") return section;
+  if (!section || typeof section !== "object" || !Array.isArray(section.blocks)) return "";
+
+  const blocks = section.blocks.slice(0, 100).flatMap((block) => {
+    if (!block || typeof block !== "object") return [];
+    if (block.type === "paragraph" && typeof block.text === "string") {
+      return [{ type: "paragraph", text: block.text }];
+    }
+    if (block.type === "list" && Array.isArray(block.items)) {
+      return [{ type: "list", items: block.items.slice(0, 100).map((item) => String(item ?? "")) }];
+    }
+    if (block.type === "table" && Array.isArray(block.headers) && Array.isArray(block.rows)) {
+      const headers = block.headers.slice(0, 20).map((header) => String(header ?? ""));
+      if (!headers.length) return [];
+      const rows = block.rows.slice(0, 100).map((row) =>
+        headers.map((_, index) => String(Array.isArray(row) ? row[index] ?? "" : ""))
+      );
+      return [{ type: "table", headers, rows }];
+    }
+    return [];
+  });
+  return { blocks };
 };
 
 export default {
   transliterateWord,
   transliterateToNepali,
   parseStructuredDescription,
+  getSizeChartValidationError,
 };

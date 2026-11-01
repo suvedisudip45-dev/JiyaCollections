@@ -8,7 +8,33 @@ import { sanitizeText } from "../middleware/sanitize.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { validateImageMerchandisingRules, assembleProductImages } from "../services/imageMerchandisingRules.js";
-import { transliterateToNepali, parseStructuredDescription } from "../utils/nepaliTransliteration.js";
+import {
+  getSizeChartValidationError,
+  transliterateToNepali,
+  parseStructuredDescription,
+} from "../utils/nepaliTransliteration.js";
+import { toStorefrontProduct } from "../utils/storefrontProductResponse.js";
+
+const STOREFRONT_PRODUCT_SELECT = {
+  id: true,
+  name: true,
+  nepaliName: true,
+  description: true,
+  price: true,
+  image: true,
+  category: true,
+  subCategory: true,
+  sizes: true,
+  colors: true,
+  colorImages: true,
+  variants: true,
+  bestseller: true,
+  newInStore: true,
+  isUnisex: true,
+  discount: true,
+  stockQuantity: true,
+  date: true,
+};
 
 // Helper: safely convert Prisma JSON field to plain array
 const toImageArray = (val) => {
@@ -83,6 +109,45 @@ const createRequestImageUploader = () => {
   };
 };
 
+const sanitizeDescriptionSection = (section) => {
+  const cleanText = (value) => sanitizeText(String(value ?? ""), { preserveWhitespace: true });
+  if (typeof section === "string") return cleanText(section);
+  if (!section || typeof section !== "object" || !Array.isArray(section.blocks)) return "";
+
+  return {
+    blocks: section.blocks.map((block) => {
+      if (block.type === "paragraph") return { type: "paragraph", text: cleanText(block.text) };
+      if (block.type === "list") return { type: "list", items: block.items.map(cleanText) };
+      if (block.type === "table") {
+        return {
+          type: "table",
+          headers: block.headers.map(cleanText),
+          rows: block.rows.map((row) => row.map(cleanText)),
+        };
+      }
+      return null;
+    }).filter(Boolean),
+  };
+};
+
+const sanitizeSizeChart = (chart) => {
+  if (!chart || typeof chart !== "object") return null;
+  const cleanText = (value) => sanitizeText(String(value ?? ""), { preserveWhitespace: true });
+  const headers = Array.isArray(chart.headers) ? chart.headers.slice(0, 20).map(cleanText) : [];
+  const rows = Array.isArray(chart.rows)
+    ? chart.rows.slice(0, 100).map((row) =>
+      headers.map((_, index) => cleanText(Array.isArray(row) ? row[index] : ""))
+    )
+    : [];
+  return {
+    title: cleanText(chart.title || "Garment Sizing Guide"),
+    subtitle: cleanText(chart.subtitle || ""),
+    headers,
+    rows,
+    fitTip: cleanText(chart.fitTip || ""),
+  };
+};
+
 // function for add product
 const addProduct = async (req, res) => {
   try {
@@ -110,6 +175,18 @@ const addProduct = async (req, res) => {
       featuredType, // 'variant' | 'gallery'
       featuredIndex, // number index
     } = req.body;
+
+    const addDescription = parseStructuredDescription(description);
+    const addSizeChartError = addDescription.isStructured
+      ? getSizeChartValidationError(addDescription.sizeChart)
+      : "";
+    if (addSizeChartError) {
+      return res.status(400).json({
+        success: false,
+        message: addSizeChartError,
+        code: "SIZE_CHART_INVALID",
+      });
+    }
 
     let parsedVariants = typeof variants === "string" ? JSON.parse(variants || "[]") : variants || [];
     if (!Array.isArray(parsedVariants)) parsedVariants = [];
@@ -189,12 +266,12 @@ const addProduct = async (req, res) => {
     const parsedDesc = parseStructuredDescription(description);
     if (parsedDesc.isStructured) {
       cleanDescription = JSON.stringify({
-        about: sanitizeText(parsedDesc.about),
-        fabricCare: sanitizeText(parsedDesc.fabricCare),
-        sizeFit: sanitizeText(parsedDesc.sizeFit),
+        about: sanitizeDescriptionSection(parsedDesc.about),
+        fabricCare: sanitizeDescriptionSection(parsedDesc.fabricCare),
+        sizeChart: sanitizeSizeChart(parsedDesc.sizeChart),
       });
     } else {
-      cleanDescription = sanitizeText(description || "");
+      cleanDescription = sanitizeText(description || "", { preserveWhitespace: true });
     }
 
     const cleanSubCategory = sanitizeText(subCategory, { stripAllHtml: true }) || "";
@@ -300,6 +377,20 @@ const updateProduct = async (req, res) => {
       featuredIndex,
       existingImages,
     } = req.body;
+
+    if (description !== undefined) {
+      const updateDescription = parseStructuredDescription(description);
+      const updateSizeChartError = updateDescription.isStructured
+        ? getSizeChartValidationError(updateDescription.sizeChart)
+        : "";
+      if (updateSizeChartError) {
+        return res.status(400).json({
+          success: false,
+          message: updateSizeChartError,
+          code: "SIZE_CHART_INVALID",
+        });
+      }
+    }
 
     const existingProduct = await prisma.product.findUnique({
       where: { id },
@@ -411,12 +502,12 @@ const updateProduct = async (req, res) => {
       const parsedDesc = parseStructuredDescription(description);
       if (parsedDesc.isStructured) {
         cleanDescription = JSON.stringify({
-          about: sanitizeText(parsedDesc.about),
-          fabricCare: sanitizeText(parsedDesc.fabricCare),
-          sizeFit: sanitizeText(parsedDesc.sizeFit),
+          about: sanitizeDescriptionSection(parsedDesc.about),
+          fabricCare: sanitizeDescriptionSection(parsedDesc.fabricCare),
+          sizeChart: sanitizeSizeChart(parsedDesc.sizeChart),
         });
       } else {
-        cleanDescription = sanitizeText(description);
+        cleanDescription = sanitizeText(description, { preserveWhitespace: true });
       }
     }
 
@@ -657,6 +748,7 @@ const listProducts = async (req, res) => {
         orderBy: [{ updatedAt: "desc" }, { date: "desc" }],
         skip: pagination.skip,
         take: pagination.limit,
+        ...(!isAdmin ? { select: STOREFRONT_PRODUCT_SELECT } : {}),
       }),
       prisma.product.count({ where: whereCondition }),
     ]);
@@ -683,6 +775,10 @@ const listProducts = async (req, res) => {
       const rStats = reviewStatsMap[item.id] || { sum: 0, count: 0 };
       const avgRating = rStats.count > 0 ? Number((rStats.sum / rStats.count).toFixed(1)) : 0;
 
+      if (!isAdmin) {
+        return toStorefrontProduct(item, { rating: avgRating, reviewCount: rStats.count });
+      }
+
       return {
         ...item,
         _id: item.id,
@@ -703,7 +799,7 @@ const listProducts = async (req, res) => {
     const district = String(req.query.district || "").trim();
     if (!isAdmin && province && district && products.length) {
       const locationPrices = await resolveLocationProductPrices({
-        items: products.map((product) => ({ productId: product.id, quantity: 1 })),
+        items: products.map((product) => ({ productId: product._id, quantity: 1 })),
         province,
         district,
       });
@@ -756,11 +852,20 @@ const singleProduct = async (req, res) => {
     // Sync stock from manufacturer inventory first
     await syncProductStock(productId);
 
+    const isAdmin = req.auth?.role === "ADMIN";
     const rawProduct = await prisma.product.findUnique({
       where: { id: productId },
-      include: { collaborationLink: { select: { id: true } } },
+      ...(isAdmin
+        ? { include: { collaborationLink: { select: { id: true } } } }
+        : {
+            select: {
+              ...STOREFRONT_PRODUCT_SELECT,
+              published: true,
+              deletedAt: true,
+              collaborationLink: { select: { id: true } },
+            },
+          }),
     });
-    const isAdmin = req.auth?.role === "ADMIN";
     if (!rawProduct || rawProduct.deletedAt || (!isAdmin && (!rawProduct.published || rawProduct.collaborationLink))) {
       return res.json({ success: false, message: "Product not found" });
     }
@@ -777,19 +882,21 @@ const singleProduct = async (req, res) => {
     const avgRating = productReviews.length > 0 ? Number((ratingSum / productReviews.length).toFixed(1)) : 0;
 
     const cats = normalizeCategories(rawProduct.category);
-    const product = {
-      ...rawProduct,
-      _id: rawProduct.id,
-      date: Number(rawProduct.date),
-      image: toImageArray(rawProduct.image),
-      categories: cats,
-      category: cats.join(", "),
-      newInStore: Boolean(rawProduct.newInStore),
-      costPrice: Number(rawProduct.costPrice || 0),
-      lowStockThreshold: rawProduct.lowStockThreshold || 5,
-      rating: avgRating,
-      reviewCount: productReviews.length,
-    };
+    const product = isAdmin
+      ? {
+          ...rawProduct,
+          _id: rawProduct.id,
+          date: Number(rawProduct.date),
+          image: toImageArray(rawProduct.image),
+          categories: cats,
+          category: cats.join(", "),
+          newInStore: Boolean(rawProduct.newInStore),
+          costPrice: Number(rawProduct.costPrice || 0),
+          lowStockThreshold: rawProduct.lowStockThreshold || 5,
+          rating: avgRating,
+          reviewCount: productReviews.length,
+        }
+      : toStorefrontProduct(rawProduct, { rating: avgRating, reviewCount: productReviews.length });
     if (!isAdmin && province && district) {
       const locationPrices = await resolveLocationProductPrices({
         items: [{ productId, quantity: 1 }],

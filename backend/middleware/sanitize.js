@@ -102,6 +102,7 @@ export const containsSqlInjection = (val) => {
  */
 const preservesContentWhitespace = (path) => (
   (path.length === 1 && path[0] === "footerDescription")
+  || path[0] === "description"
   || (path[0] === "termsAndConditions" && path[1] === "notice")
   || (path[0] === "termsAndConditions" && path[1] === "conditions" && path[3] === "description")
   || (path[0] === "aboutPage" && ["description", "missionDescription"].includes(path[1]))

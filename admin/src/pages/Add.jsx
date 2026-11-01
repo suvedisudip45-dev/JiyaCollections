@@ -21,7 +21,7 @@ import {
   Trash2,
 } from "lucide-react";
 import StructuredDescriptionEditor from "../components/StructuredDescriptionEditor";
-import { transliterateText } from "../utils/transliteration";
+import { getSizeChartValidationError, transliterateText } from "../utils/transliteration";
 
 const Add = ({ token }) => {
   // Gallery images (up to 8 gallery images supported)
@@ -41,9 +41,9 @@ const Add = ({ token }) => {
 
   // Structured Description
   const [descriptionSections, setDescriptionSections] = useState({
-    about: "",
-    fabricCare: "",
-    sizeFit: "",
+    about: { blocks: [] },
+    fabricCare: { blocks: [] },
+    sizeChart: null,
   });
 
   const [price, setPrice] = useState("");
@@ -263,6 +263,12 @@ const Add = ({ token }) => {
       return;
     }
 
+    const sizeChartError = getSizeChartValidationError(descriptionSections.sizeChart);
+    if (sizeChartError) {
+      toast.error(sizeChartError);
+      return;
+    }
+
     isSubmittingRef.current = true;
     setIsSubmitting(true);
     try {
@@ -280,9 +286,9 @@ const Add = ({ token }) => {
 
       // Serialize structured description
       const serializedDescription = JSON.stringify({
-        about: descriptionSections.about.trim(),
-        fabricCare: descriptionSections.fabricCare.trim(),
-        sizeFit: descriptionSections.sizeFit.trim(),
+        about: descriptionSections.about,
+        fabricCare: descriptionSections.fabricCare,
+        sizeChart: descriptionSections.sizeChart,
       });
 
       const formData = new FormData();
@@ -348,7 +354,7 @@ const Add = ({ token }) => {
         toast.success(response.data.message || "Product & Varieties Added Successfully!");
         setName("");
         setNepaliName("");
-        setDescriptionSections({ about: "", fabricCare: "", sizeFit: "" });
+        setDescriptionSections({ about: { blocks: [] }, fabricCare: { blocks: [] }, sizeChart: null });
         setImage1(false);
         setImage2(false);
         setImage3(false);

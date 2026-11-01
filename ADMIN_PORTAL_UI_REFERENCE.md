@@ -193,7 +193,7 @@ The listed permissions gate both the route content and sidebar link; a route wit
 |---|---|
 | `Pagination` | Reusable previous/next and up-to-five-page controls; displays “Showing X–Y of Z”; hides if there is no result count or only one page. |
 | `ProductImageCarousel` | Reusable product image viewing component. |
-| `StructuredDescriptionEditor` | Three tabs: About & Story, Fabric & Care, Size & Fit; character count, section hints, textareas, and Nepali transliteration action. |
+| `StructuredDescriptionEditor` | Three tabs: About & Story, Fabric & Care, and optional Size Chart. Description sections support whitespace-preserving paragraphs, bullet lists, and editable tables; the size chart has editable title/unit, arbitrary measurement columns and size rows, and an optional fit tip. A configured chart must contain a size column, at least one measurement column, and complete size rows before add/update. Existing products can be edited without requiring a chart. |
 | `PrintSheetModal` | Reusable print-sheet modal. |
 | `ShippingLabelModal` | One or batch 4×6 label preview/print; sender location form and up to five saved senders in local storage; batch preview navigation. |
 | `CustomerReturnRequestsPanel` | Embedded order-detail return request listing and review actions. |

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import ProductImageCarousel from "../components/ProductImageCarousel";
 import StructuredDescriptionEditor from "../components/StructuredDescriptionEditor";
-import { transliterateText, parseStructuredDescription } from "../utils/transliteration";
+import { getSizeChartValidationError, transliterateText, parseStructuredDescription } from "../utils/transliteration";
 import Pagination from "../components/Pagination";
 
 const PRODUCT_PAGE_SIZE = 10;
@@ -41,9 +41,9 @@ const List = ({ token }) => {
 
   // Structured description in edit modal
   const [editDescriptionSections, setEditDescriptionSections] = useState({
-    about: "",
-    fabricCare: "",
-    sizeFit: "",
+    about: { blocks: [] },
+    fabricCare: { blocks: [] },
+    sizeChart: null,
   });
 
   const [editPrice, setEditPrice] = useState("");
@@ -340,11 +340,17 @@ const List = ({ token }) => {
       return;
     }
 
+    const sizeChartError = getSizeChartValidationError(editDescriptionSections.sizeChart);
+    if (sizeChartError) {
+      toast.error(sizeChartError);
+      return;
+    }
+
     try {
       const serializedDescription = JSON.stringify({
-        about: editDescriptionSections.about.trim(),
-        fabricCare: editDescriptionSections.fabricCare.trim(),
-        sizeFit: editDescriptionSections.sizeFit.trim(),
+        about: editDescriptionSections.about,
+        fabricCare: editDescriptionSections.fabricCare,
+        sizeChart: editDescriptionSections.sizeChart,
       });
 
       const formData = new FormData();

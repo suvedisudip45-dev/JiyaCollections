@@ -1,9 +1,11 @@
-import React, { useContext, useEffect, useState, useRef } from "react";
+import { useContext, useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
+import axios from "axios";
 import { ShopContext } from "../context/ShopContext";
 import { assets } from "../assets/assets";
 import RelatedProducts from "../components/RelatedProducts";
 import ReviewSection from "../components/ReviewSection";
+import StructuredDescriptionContent from "../components/StructuredDescriptionContent";
 import { toast } from "react-toastify";
 import {
   Heart,
@@ -43,12 +45,80 @@ const getColorImage = (product, selectedColor) => {
   return colorImages.find((entry) => String(entry?.color || "").trim().toLowerCase() === key)?.image || "";
 };
 
+const getDescriptionSummary = (section) => {
+  if (typeof section === "string") return section;
+  if (!section || typeof section !== "object" || !Array.isArray(section.blocks)) return "";
+
+  return section.blocks.flatMap((block) => {
+    if (block?.type === "paragraph" && typeof block.text === "string") return [block.text];
+    if (block?.type === "list" && Array.isArray(block.items)) return block.items.filter((item) => typeof item === "string");
+    if (block?.type === "table" && Array.isArray(block.rows)) {
+      return block.rows.map((row) => Array.isArray(row) ? row.filter(Boolean).join(" · ") : "");
+    }
+    return [];
+  }).filter(Boolean).join(" ");
+};
+
+const getProductSizeChart = (description) => {
+  let parsed = description;
+  if (typeof description === "string") {
+    try {
+      parsed = JSON.parse(description);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const chart = parsed.sizeChart;
+  if (
+    chart
+    && Array.isArray(chart.headers)
+    && chart.headers.length >= 2
+    && Array.isArray(chart.rows)
+    && chart.rows.length > 0
+  ) {
+    return {
+      title: chart.title || "Garment Sizing Guide",
+      subtitle: chart.subtitle || "",
+      headers: chart.headers.map((header) => String(header ?? "")),
+      rows: chart.rows.map((row) => chart.headers.map((_, index) => String(row?.[index] ?? ""))),
+      fitTip: chart.fitTip || "",
+    };
+  }
+
+  const legacyBlocks = Array.isArray(parsed.sizeFit?.blocks) ? parsed.sizeFit.blocks : [];
+  const legacyTable = legacyBlocks.find((block) =>
+    block?.type === "table" && Array.isArray(block.headers) && Array.isArray(block.rows)
+  );
+  const fitTip = legacyBlocks.flatMap((block) => (
+    block?.type === "paragraph" ? [block.text] :
+      block?.type === "list" && Array.isArray(block.items) ? block.items : []
+  )).filter((text) => typeof text === "string" && text).join("\n");
+
+  if (
+    !legacyTable
+    || legacyTable.headers.length < 2
+    || legacyTable.rows.length === 0
+  ) return null;
+  return {
+    title: "Garment Sizing Guide",
+    subtitle: "",
+    headers: legacyTable ? legacyTable.headers.map((header) => String(header ?? "")) : [],
+    rows: legacyTable
+      ? legacyTable.rows.map((row) => legacyTable.headers.map((_, index) => String(row?.[index] ?? "")))
+      : [],
+    fitTip,
+  };
+};
+
 const Product = () => {
   const { productId } = useParams();
-  const { products, currency, addToCart, wishlist, toggleWishlist, navigate, priceLocation, resolveLocationPrices } =
+  const { products, backendUrl, currency, addToCart, wishlist, toggleWishlist, navigate, priceLocation, resolveLocationPrices } =
     useContext(ShopContext);
 
   const [productData, setProductData] = useState(false);
+  const [productLoadError, setProductLoadError] = useState("");
   const [image, setImage] = useState("");
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [size, setSize] = useState("");
@@ -75,49 +145,66 @@ const Product = () => {
   const touchStartY = useRef(0);
   const isDragging = useRef(false);
 
-  const fetchProductData = () => {
+  const initializeProductData = (matched) => {
+    setProductLoadError("");
+    setProductData(matched);
+    const imageList = [...new Set(parseJsonArray(matched.image).filter(Boolean))];
+    let initialImg = imageList[0] || "";
+    let initialSize = matched.sizes && matched.sizes.length > 0 ? matched.sizes[0] : "";
+    let initialColor = "";
+
+    const parsedVariants = parseJsonArray(matched.variants);
+    const featuredVariant = parsedVariants.find((variant) => variant.isFeatured && variant.image);
+    if (featuredVariant) {
+      initialImg = featuredVariant.image;
+      if (featuredVariant.size) initialSize = featuredVariant.size;
+      if (featuredVariant.color) initialColor = featuredVariant.color;
+    } else if (matched.colors && matched.colors.length > 0) {
+      const firstColor = typeof matched.colors[0] === "object"
+        ? matched.colors[0].name
+        : matched.colors[0];
+      initialColor = firstColor;
+      initialImg = getColorImage(matched, firstColor) || initialImg;
+    }
+
+    setImage(initialImg);
+    const foundIndex = imageList.indexOf(initialImg);
+    setActiveImageIndex(foundIndex >= 0 ? foundIndex : 0);
+    setSize(initialSize);
+    setColor(initialColor);
+    setQuantity(1);
+  };
+
+  useEffect(() => {
+    let active = true;
     const matched = products.find(
       (item) => item._id === productId || item.id === productId
     );
     if (matched) {
-      setProductData(matched);
-
-      const imageList = [...new Set(parseJsonArray(matched.image).filter(Boolean))];
-      let initialImg = imageList[0] || "";
-      let initialSize = matched.sizes && matched.sizes.length > 0 ? matched.sizes[0] : "";
-      let initialColor = "";
-
-      // Parse variants
-      const parsedVariants = parseJsonArray(matched.variants);
-
-      // If there's a featured variant with an image, select it first
-      const featVar = parsedVariants.find((v) => v.isFeatured && v.image);
-      if (featVar) {
-        initialImg = featVar.image;
-        if (featVar.size) initialSize = featVar.size;
-        if (featVar.color) initialColor = featVar.color;
-      } else if (matched.colors && matched.colors.length > 0) {
-        const firstCol =
-          typeof matched.colors[0] === "object"
-            ? matched.colors[0].name
-            : matched.colors[0];
-        initialColor = firstCol;
-        initialImg = getColorImage(matched, firstCol) || initialImg;
-      }
-
-      setImage(initialImg);
-      const foundIdx = imageList.indexOf(initialImg);
-      setActiveImageIndex(foundIdx >= 0 ? foundIdx : 0);
-      setSize(initialSize);
-      setColor(initialColor);
-      setQuantity(1);
+      initializeProductData(matched);
+    } else {
+      setProductData(false);
+      setProductLoadError("");
+      axios.post(`${backendUrl}/api/product/single`, {
+        productId,
+        province: priceLocation?.province || "",
+        district: priceLocation?.district || "",
+      }).then((response) => {
+        if (!response.data?.success || !response.data?.product) {
+          throw new Error(response.data?.message || "Product not found.");
+        }
+        if (active) initializeProductData(response.data.product);
+      }).catch((error) => {
+        if (active) {
+          setProductLoadError(error.response?.data?.message || error.message || "Unable to load this product.");
+        }
+      });
     }
-  };
-
-  useEffect(() => {
-    fetchProductData();
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [productId, products]);
+    return () => {
+      active = false;
+    };
+  }, [productId, products, backendUrl, priceLocation?.province, priceLocation?.district]);
 
   const locationPriceKey = JSON.stringify({
     productId: productData?._id || productData?.id || "",
@@ -350,10 +437,21 @@ const Product = () => {
   if (!productData) {
     return (
       <div className="min-h-[60vh] flex flex-col justify-center items-center gap-3">
-        <div className="w-10 h-10 border-3 border-black border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
-          Loading garment details...
-        </p>
+        {productLoadError ? (
+          <>
+            <p className="text-sm font-semibold text-gray-700">{productLoadError}</p>
+            <Link to="/shop" className="text-xs font-bold uppercase tracking-widest text-gray-500 underline">
+              Return to shop
+            </Link>
+          </>
+        ) : (
+          <>
+            <div className="w-10 h-10 border-3 border-black border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-gray-500">
+              Loading garment details...
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -406,6 +504,7 @@ const Product = () => {
     !isOutOfStock && currentVariantStock > 0 && currentVariantStock <= 5;
 
   const imageList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
+  const sizeChart = getProductSizeChart(productData.description);
 
   const currentActiveImage = image || imageList[0];
   const currentVariantPrice = variantPriceQuote?.key === locationPriceKey ? variantPriceQuote : null;
@@ -853,8 +952,10 @@ const Product = () => {
             if (typeof bioText === "string" && bioText.trim().startsWith("{")) {
               try {
                 const parsed = JSON.parse(bioText);
-                bioText = parsed.about || bioText;
-              } catch {}
+                bioText = getDescriptionSummary(parsed.about) || bioText;
+              } catch {
+                // Preserve the plain-text fallback if a legacy description is malformed JSON.
+              }
             }
             return bioText ? (
               <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
@@ -950,14 +1051,16 @@ const Product = () => {
                     {size || "Select size"}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsSizeGuideOpen(true)}
-                  className="text-xs font-semibold text-gray-700 hover:text-black flex items-center gap-1 underline underline-offset-4 cursor-pointer"
-                >
-                  <Ruler size={13} />
-                  <span>Size Chart</span>
-                </button>
+                {sizeChart && (
+                  <button
+                    type="button"
+                    onClick={() => setIsSizeGuideOpen(true)}
+                    className="text-xs font-semibold text-gray-700 hover:text-black flex items-center gap-1 underline underline-offset-4 cursor-pointer"
+                  >
+                    <Ruler size={13} />
+                    <span>Size Chart</span>
+                  </button>
+                )}
               </div>
 
               <div className="grid grid-cols-4 sm:grid-cols-6 gap-2.5">
@@ -1176,14 +1279,13 @@ const Product = () => {
 
         {activeTab === "description" && (
           (() => {
-            let aboutText = productData.description;
-            let sizeFitText = "";
-            if (typeof aboutText === "string" && aboutText.trim().startsWith("{")) {
+            let descriptionSections = { about: productData.description || "" };
+            if (typeof productData.description === "string" && productData.description.trim().startsWith("{")) {
               try {
-                const parsed = JSON.parse(aboutText);
-                aboutText = parsed.about || aboutText;
-                sizeFitText = parsed.sizeFit || "";
-              } catch {}
+                descriptionSections = JSON.parse(productData.description);
+              } catch {
+                // Preserve the original description if legacy JSON is malformed.
+              }
             }
 
             return (
@@ -1191,21 +1293,10 @@ const Product = () => {
                 <h3 className="text-lg font-bold text-gray-900">
                   About {productData.name}
                 </h3>
-                <p className="text-base text-gray-700 leading-relaxed max-w-3xl whitespace-pre-line">
-                  {aboutText ||
-                    "A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."}
-                </p>
-
-                {sizeFitText && (
-                  <div className="p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
-                    <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider mb-1">
-                      📏 Size &amp; Fit Guide
-                    </h4>
-                    <p className="text-xs text-gray-700 leading-relaxed">
-                      {sizeFitText}
-                    </p>
-                  </div>
-                )}
+                <StructuredDescriptionContent
+                  content={descriptionSections.about}
+                  fallback="A premium quality streetwear piece engineered for optimal comfort, modern silhouettes, and daily durability."
+                />
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-stone-100">
                   <div className="flex items-start gap-3 p-4 bg-stone-50 rounded-2xl border border-stone-200/80">
@@ -1239,13 +1330,13 @@ const Product = () => {
         {activeTab === "details" && (
           (() => {
             let customFabricCare = "";
-            let customSizeFit = "";
             if (typeof productData.description === "string" && productData.description.trim().startsWith("{")) {
               try {
                 const parsed = JSON.parse(productData.description);
                 customFabricCare = parsed.fabricCare || "";
-                customSizeFit = parsed.sizeFit || "";
-              } catch {}
+              } catch {
+                // Keep the default fabric description for malformed legacy JSON.
+              }
             }
 
             return (
@@ -1255,9 +1346,10 @@ const Product = () => {
                     <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
                       🧵 Fabric &amp; Material
                     </h4>
-                    <p className="text-xs text-gray-600 leading-relaxed whitespace-pre-line">
-                      {customFabricCare || "100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear."}
-                    </p>
+                    <StructuredDescriptionContent
+                      content={customFabricCare}
+                      fallback="100% Super-Combed Ring Spun Heavyweight Cotton (220-240 GSM). Preshrunk fabric for true-to-size wear."
+                    />
                   </div>
                   <div className="space-y-2">
                     <h4 className="text-xs font-black uppercase tracking-wider text-gray-900">
@@ -1346,7 +1438,7 @@ const Product = () => {
       )}
 
       {/* ================= SIZE GUIDE MODAL ================= */}
-      {isSizeGuideOpen && (
+      {isSizeGuideOpen && sizeChart && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl relative border border-stone-200 animate-scale-up">
             <button
@@ -1360,64 +1452,44 @@ const Product = () => {
             <div className="flex items-center gap-2 mb-1 text-gray-900">
               <Ruler size={20} className="text-[#d85b3f]" />
               <h3 className="text-lg font-black uppercase tracking-tight">
-                Garment Sizing Guide
+                {sizeChart.title}
               </h3>
             </div>
-            <p className="text-xs text-gray-500 mb-6">
-              All garment measurements are in inches. Standard relaxed fit.
-            </p>
+            {sizeChart.subtitle && (
+              <p className="text-xs text-gray-500 mb-6 whitespace-pre-line">{sizeChart.subtitle}</p>
+            )}
 
-            <div className="overflow-x-auto rounded-xl border border-stone-200 mb-6">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-stone-100 text-gray-900 font-bold border-b border-stone-200">
-                  <tr>
-                    <th className="py-2.5 px-3">Size</th>
-                    <th className="py-2.5 px-3">Chest (in)</th>
-                    <th className="py-2.5 px-3">Length (in)</th>
-                    <th className="py-2.5 px-3">Shoulder (in)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-100 text-gray-700">
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">S</td>
-                    <td className="py-2 px-3">38 - 40</td>
-                    <td className="py-2 px-3">27</td>
-                    <td className="py-2 px-3">18</td>
-                  </tr>
-                  <tr className="bg-stone-50/50">
-                    <td className="py-2 px-3 font-bold text-gray-900">M</td>
-                    <td className="py-2 px-3">40 - 42</td>
-                    <td className="py-2 px-3">28</td>
-                    <td className="py-2 px-3">19</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">L</td>
-                    <td className="py-2 px-3">42 - 44</td>
-                    <td className="py-2 px-3">29</td>
-                    <td className="py-2 px-3">20</td>
-                  </tr>
-                  <tr className="bg-stone-50/50">
-                    <td className="py-2 px-3 font-bold text-gray-900">XL</td>
-                    <td className="py-2 px-3">44 - 46</td>
-                    <td className="py-2 px-3">30</td>
-                    <td className="py-2 px-3">21</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 px-3 font-bold text-gray-900">XXL</td>
-                    <td className="py-2 px-3">46 - 48</td>
-                    <td className="py-2 px-3">31</td>
-                    <td className="py-2 px-3">22</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {sizeChart.headers.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-stone-200 mb-6">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-100 text-gray-900 font-bold border-b border-stone-200">
+                    <tr>
+                      {sizeChart.headers.map((header, index) => (
+                        <th key={`${header}-${index}`} className="py-2.5 px-3 whitespace-nowrap">{header}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100 text-gray-700">
+                    {sizeChart.rows.map((row, rowIndex) => (
+                      <tr key={rowIndex} className={rowIndex % 2 ? "bg-stone-50/50" : ""}>
+                        {sizeChart.headers.map((_, columnIndex) => (
+                          <td key={columnIndex} className={`py-2 px-3 ${columnIndex === 0 ? "font-bold text-gray-900" : ""}`}>
+                            {row[columnIndex] || "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-            <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200/80 text-xs text-gray-600 flex items-start gap-2.5">
-              <Info size={16} className="text-[#d85b3f] shrink-0 mt-0.5" />
-              <p>
-                <strong>Fit Tip:</strong> For an oversized streetwear fit, choose your normal size. For a regular fitted look, consider sizing down one size.
-              </p>
-            </div>
+            {sizeChart.fitTip && (
+              <div className="p-3.5 bg-stone-50 rounded-2xl border border-stone-200/80 text-xs text-gray-600 flex items-start gap-2.5">
+                <Info size={16} className="text-[#d85b3f] shrink-0 mt-0.5" />
+                <p className="whitespace-pre-line"><strong>Fit Tip:</strong> {sizeChart.fitTip}</p>
+              </div>
+            )}
           </div>
         </div>
       )}

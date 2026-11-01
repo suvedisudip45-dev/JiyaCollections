@@ -74,7 +74,7 @@ Previously posted accounting journals are retained for audit history.
 
 | Model | Core fields | Notes |
 | --- | --- | --- |
-| `Product` | `name`, `description`, `price`, `category`, `subCategory`, `sizes`, `colors`, `variants`, `stockQuantity`, `published` | Catalog fields plus a storefront-availability projection of unreserved stock held at active distributor hubs; factory and in-transit stock are excluded |
+| `Product` | `name`, `description`, `price`, `category`, `subCategory`, `sizes`, `colors`, `variants`, `stockQuantity`, `published` | `description` stores About and Fabric & Care as legacy plain text or structured paragraph/list/table blocks, plus an optional product-specific `sizeChart` (title, subtitle/unit, editable measurement headers/rows, and fit tip). Existing `sizeFit` descriptions are read as legacy size charts; whitespace and line breaks are preserved. Catalog stock is projected from unreserved stock held at active distributor hubs; factory and in-transit stock are excluded |
 | `Category` | `name` | root category |
 | `SubCategory` | `name`, `categoryId` | nested category structure |
 | `Color` | `name`, `nepaliName` | color catalog |

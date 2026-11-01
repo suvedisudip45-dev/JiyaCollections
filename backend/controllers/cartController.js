@@ -263,7 +263,7 @@ const syncCart = async (req, res) => {
       data: { cartData },
     });
 
-    res.json({ success: true, cartData });
+    res.json({ success: true });
   } catch (error) {
     console.error("syncCart error:", error);
     res.json({ success: false, message: error.message });
