@@ -14,7 +14,7 @@ const MOVEMENT_TYPES = new Set([
   "ADJUSTMENT",
 ]);
 
-const LOCATION_KINDS = new Set(["FACTORY", "DISTRIBUTOR", "IN_TRANSIT", "QUARANTINE", "DAMAGED", "LOST"]);
+const LOCATION_KINDS = new Set(["FACTORY", "DISTRIBUTOR", "IN_TRANSIT", "QUARANTINE", "DAMAGED", "LOST", "RETURN_HOLD", "RETURN_RECEIPT"]);
 
 const fail = (message, code, statusCode = 400) => Object.assign(new Error(message), { code, statusCode });
 
@@ -197,8 +197,12 @@ export const buildInventoryLocationKey = ({ kind, manufacturerId, distributorId,
     if (!referenceId || manufacturerId || distributorId) throw fail("An in-transit location requires a shipment reference.", "INVALID_LOCATION_OWNER");
     return `IN_TRANSIT:${referenceId}`;
   }
+  if (normalizedKind === "RETURN_RECEIPT") {
+    if (!referenceId || manufacturerId || distributorId) throw fail("A return-receipt location requires a stock return reference.", "INVALID_LOCATION_OWNER");
+    return `RETURN_RECEIPT:${referenceId}`;
+  }
   if (Boolean(manufacturerId) === Boolean(distributorId)) {
-    throw fail("A quarantine, damaged, or lost location must belong to exactly one custodian.", "INVALID_LOCATION_OWNER");
+    throw fail("This inventory location must belong to exactly one manufacturer or distributor custodian.", "INVALID_LOCATION_OWNER");
   }
   return `${normalizedKind}:${manufacturerId ? `MANUFACTURER:${manufacturerId}` : `DISTRIBUTOR:${distributorId}`}`;
 };

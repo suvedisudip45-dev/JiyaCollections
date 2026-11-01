@@ -44,6 +44,7 @@ const TreasuryCash = ({ token }) => {
     invoiceNumber: "",
     category: "MISC_INFLOW",
     description: "",
+    stockReturnId: "",
   });
 
   const fetchData = async (page = 1) => {
@@ -172,6 +173,9 @@ const TreasuryCash = ({ token }) => {
         invoiceNumber: directEntry.invoiceNumber,
         category: directEntry.category,
         description: directEntry.description,
+        stockReturnId: directEntry.type === "OUTFLOW" && directEntry.category === "EXPENSE"
+          ? directEntry.stockReturnId.trim()
+          : "",
         fromAccountId: directEntry.type === "OUTFLOW" ? directEntry.accountId : null,
         toAccountId: directEntry.type === "INFLOW" ? directEntry.accountId : null,
       };
@@ -190,6 +194,7 @@ const TreasuryCash = ({ token }) => {
           invoiceNumber: "",
           category: "MISC_INFLOW",
           description: "",
+          stockReturnId: "",
         });
         fetchData();
       } else {
@@ -737,6 +742,21 @@ const TreasuryCash = ({ token }) => {
                   <p className="text-[11px] text-slate-500">
                     Use this for simple, non-tax entries only. Sales, bills, loans, COD, and asset purchases use dedicated workflows.
                   </p>
+                  {directEntry.type === "OUTFLOW" && directEntry.category === "EXPENSE" && (
+                    <label className="block font-semibold text-slate-700">
+                      Stock return ID (optional)
+                      <input
+                        type="text"
+                        value={directEntry.stockReturnId}
+                        onChange={(e) => setDirectEntry({ ...directEntry, stockReturnId: e.target.value })}
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 font-normal outline-hidden focus:border-slate-900"
+                        placeholder="Paste the full stock-return ID"
+                      />
+                      <span className="mt-1 block font-normal text-slate-500">
+                        Links this non-tax operating expense to the return record. It records expense, not inventory value.
+                      </span>
+                    </label>
+                  )}
 
                   {/* Party Name & Invoice Number */}
                   <div className="grid grid-cols-2 gap-3">

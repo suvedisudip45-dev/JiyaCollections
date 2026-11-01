@@ -4,6 +4,7 @@ import { prisma } from "../config/db.js";
 export const DEFAULT_STOREFRONT_CONTENT = Object.freeze({
   announcementPrimary: "Free shipping on orders over Rs 3,000",
   announcementSecondary: "Made for everyday movement",
+  logoImage: "",
   footerDescription: "At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.",
   contactPhone: "+1-8515-56789",
   contactEmail: "contact@aamacollections.com",
@@ -82,6 +83,7 @@ export const DEFAULT_STOREFRONT_CONTENT = Object.freeze({
 const normalizeContent = (config) => ({
   announcementPrimary: config?.announcementPrimary ?? DEFAULT_STOREFRONT_CONTENT.announcementPrimary,
   announcementSecondary: config?.announcementSecondary ?? DEFAULT_STOREFRONT_CONTENT.announcementSecondary,
+  logoImage: config?.logoImage ?? DEFAULT_STOREFRONT_CONTENT.logoImage,
   footerDescription: config?.footerDescription ?? DEFAULT_STOREFRONT_CONTENT.footerDescription,
   contactPhone: config?.contactPhone ?? DEFAULT_STOREFRONT_CONTENT.contactPhone,
   contactEmail: config?.contactEmail ?? DEFAULT_STOREFRONT_CONTENT.contactEmail,
@@ -116,6 +118,7 @@ export const getStorefrontContent = async (client = prisma) => {
     select: {
       announcementPrimary: true,
       announcementSecondary: true,
+      logoImage: true,
       footerDescription: true,
       contactPhone: true,
       contactEmail: true,
@@ -208,6 +211,7 @@ export const updateStorefrontContent = async (content, client = prisma) => {
   const data = {
     announcementPrimary: requireText(content.announcementPrimary, "Primary announcement", 180),
     announcementSecondary: requireText(content.announcementSecondary, "Secondary announcement", 180),
+    logoImage: requireText(content.logoImage ?? "", "Storefront logo image", 2048),
     footerDescription: requireText(content.footerDescription, "Footer description", 5000, false, true),
     contactPhone: requireText(content.contactPhone, "Contact phone", 80),
     contactEmail: requireText(content.contactEmail, "Contact email", 254),
@@ -234,6 +238,12 @@ export const updateStorefrontContent = async (content, client = prisma) => {
       };
     }),
   };
+  if (data.logoImage && !/^https:\/\//i.test(data.logoImage)) {
+    const error = new Error("Storefront logo image must use a secure URL.");
+    error.status = 400;
+    error.code = "INVALID_STOREFRONT_CONTENT";
+    throw error;
+  }
   if (data.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.contactEmail)) {
     const error = new Error("Contact email must be a valid email address.");
     error.status = 400;
@@ -248,6 +258,7 @@ export const updateStorefrontContent = async (content, client = prisma) => {
     select: {
       announcementPrimary: true,
       announcementSecondary: true,
+      logoImage: true,
       footerDescription: true,
       contactPhone: true,
       contactEmail: true,

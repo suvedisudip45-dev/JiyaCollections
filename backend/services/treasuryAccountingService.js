@@ -82,6 +82,18 @@ export const getDirectCashOffsetAccountCode = (type, category) => {
   return accountCode;
 };
 
+export const normalizeStockReturnExpenseReference = ({ type, category, stockReturnId }) => {
+  const returnId = String(stockReturnId || "").trim();
+  if (!returnId) return null;
+  if (returnId.length > 191) {
+    throw mappingError("Stock return reference cannot exceed 191 characters.");
+  }
+  if (String(type || "").toUpperCase() !== "OUTFLOW" || String(category || "").toUpperCase() !== "EXPENSE") {
+    throw mappingError("A stock return can be linked only to a direct operating expense outflow.");
+  }
+  return returnId;
+};
+
 export const buildTreasuryGlReconciliation = (treasuryAccounts = []) => {
   const mappedGroups = new Map();
   const unmappedAccounts = [];

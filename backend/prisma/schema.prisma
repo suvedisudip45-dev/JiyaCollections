@@ -795,6 +795,7 @@ model StorefrontContentConfig {
   id                    String   @id @default("default")
   announcementPrimary   String   @default("Free shipping on orders over Rs 3,000") @db.VarChar(180)
   announcementSecondary String  @default("Made for everyday movement") @db.VarChar(180)
+  logoImage             String?  @db.Text
   footerDescription     String   @db.Text
   contactPhone          String   @default("+1-8515-56789") @db.VarChar(80)
   contactEmail          String   @default("contact@aamacollections.com") @db.VarChar(254)
@@ -1889,6 +1890,7 @@ model Distributor {
 
   stockLocations       InventoryLocation[] @relation("DistributorStockLocations")
   destinationTransfers StockTransfer[]     @relation("TransferDestinationDistributor")
+  stockReturns         DistributorStockReturn[]
   locations DistributorLocation[]
   locationProductDiscounts LocationProductDiscount[]
   assignments OrderAssignment[]
@@ -2091,7 +2093,7 @@ model DistributorSettlementRequestToken {
   financialAccount             FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
   settlement                   DistributorBalanceSettlement? @relation(fields: [settlementId], references: [id], onDelete: Restrict)
 
-  @@index([distributorId, status, createdAt])
+  @@index([distributorId, status, createdAt], map: "DistSettleReqToken_distributor_status_created_idx")
   @@index([status, createdAt])
 }
 
@@ -2255,6 +2257,7 @@ model InventorySku {
   transferLines StockTransferLine[]
   costLayers    ManufacturerInventoryCostLayer[]
   discrepancies InventoryDiscrepancy[]
+  stockReturnLines DistributorStockReturnLine[]
 
   @@unique([productId, sizeKey, colorKey])
   @@index([productId, isActive])
@@ -2264,7 +2267,7 @@ model InventoryLocation {
   id             String   @id @default(uuid())
   locationKey    String   @unique @db.VarChar(191)
   name           String   @db.VarChar(191)
-  kind           String   // FACTORY | DISTRIBUTOR | IN_TRANSIT | QUARANTINE | DAMAGED | LOST
+  kind           String   // FACTORY | DISTRIBUTOR | IN_TRANSIT | QUARANTINE | DAMAGED | LOST | RETURN_HOLD | RETURN_RECEIPT
   inventoryOwner String   @default("PLATFORM") @db.VarChar(32)
   manufacturerId String?
   distributorId  String?
@@ -2280,6 +2283,7 @@ model InventoryLocation {
   sourceTransfers   StockTransfer[]          @relation("TransferSourceLocation")
   destinationTransfers StockTransfer[]       @relation("TransferDestinationLocation")
   discrepancies     InventoryDiscrepancy[]
+  stockReturns      DistributorStockReturn[] @relation("DistributorStockReturnHoldLocation")
 
   @@index([kind, isActive])
   @@index([manufacturerId, kind])
@@ -2537,6 +2541,9 @@ model InventoryDiscrepancy {
   distributor                    Distributor?           @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   inventoryLocation              InventoryLocation?     @relation(fields: [inventoryLocationId], references: [id], onDelete: Restrict)
   inventorySku                   InventorySku           @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+  stockReturnCollectionLine      DistributorStockReturnCollectionLine? @relation(fields: [stockReturnCollectionLineId], references: [id], onDelete: Restrict)
+  stockReturnCollectionLineId    String?
+  investigationReviews           InventoryDiscrepancyReview[]
 
   @@index([stockTransferId, status, createdAt])
   @@index([distributorId, status, createdAt])
@@ -2544,6 +2551,163 @@ model InventoryDiscrepancy {
   @@index([shipmentId, status])
   @@index([receiptId])
   @@index([inventorySkuId, discrepancyType])
+  @@index([stockReturnCollectionLineId])
+}
+
+model InventoryDiscrepancyReview {
+  id             String                @id @default(uuid())
+  discrepancyId  String
+  idempotencyKey String                @unique @db.VarChar(191)
+  requestHash    String                @db.Char(64)
+  reviewedBy     String
+  notes          String                @db.Text
+  evidence       Json?
+  createdAt      DateTime              @default(now())
+  discrepancy    InventoryDiscrepancy  @relation(fields: [discrepancyId], references: [id], onDelete: Restrict)
+
+  @@index([discrepancyId, createdAt], map: "InvDiscrepReview_discrepancy_date_idx")
+}
+
+model DistributorStockReturn {
+  id                    String                       @id @default(uuid())
+  distributorId         String
+  status                String                       @default("PENDING_APPROVAL") @db.VarChar(32) // PENDING_APPROVAL | AUTHORIZED_FOR_COLLECTION | PARTIALLY_COLLECTED | IN_TRANSIT | PARTIALLY_RECEIVED | RECEIVED | REJECTED
+  reason                String                       @db.Text
+  idempotencyKey        String                       @unique @db.VarChar(191)
+  requestHash           String                       @db.Char(64)
+  holdLocationId        String?
+  createdByAccountId    String
+  reviewedByAccountId   String?
+  reviewedAt            DateTime?
+  reviewNotes           String?                      @db.Text
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+  distributor           Distributor                  @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  holdLocation          InventoryLocation?           @relation("DistributorStockReturnHoldLocation", fields: [holdLocationId], references: [id], onDelete: Restrict)
+  lines                 DistributorStockReturnLine[]
+  events                DistributorStockReturnEvent[]
+  collections           DistributorStockReturnCollection[]
+
+  @@index([distributorId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model DistributorStockReturnLine {
+  id                       String                  @id @default(uuid())
+  stockReturnId            String
+  inventorySkuId           String
+  productNameSnapshot      String                  @db.VarChar(191)
+  sizeSnapshot             String                  @db.VarChar(120)
+  colorSnapshot            String                  @db.VarChar(120)
+  requestedQuantity       Int
+  approvedQuantity        Int?
+  heldQuantity            Int                     @default(0)
+  costedQuantity           Int                     @default(0)
+  uncostedQuantity         Int                     @default(0)
+  layerCogsAmount          Decimal                 @default(0) @db.Decimal(20, 2)
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  stockReturn              DistributorStockReturn  @relation(fields: [stockReturnId], references: [id], onDelete: Restrict)
+  inventorySku             InventorySku            @relation(fields: [inventorySkuId], references: [id], onDelete: Restrict)
+  collections              DistributorStockReturnCollectionLine[]
+
+  @@unique([stockReturnId, inventorySkuId])
+  @@index([inventorySkuId, createdAt])
+}
+
+model DistributorStockReturnEvent {
+  id                    String                  @id @default(uuid())
+  stockReturnId         String
+  action                String                  @db.VarChar(40)
+  fromStatus            String?                 @db.VarChar(32)
+  toStatus              String                  @db.VarChar(32)
+  actorAccountId        String
+  notes                 String?                 @db.Text
+  metadata              Json?
+  createdAt             DateTime                @default(now())
+  stockReturn           DistributorStockReturn  @relation(fields: [stockReturnId], references: [id], onDelete: Restrict)
+
+  @@index([stockReturnId, createdAt])
+  @@index([actorAccountId, createdAt])
+}
+
+model DistributorStockReturnCollection {
+  id                    String                                  @id @default(uuid())
+  stockReturnId         String
+  status                String                                  @default("IN_TRANSIT") @db.VarChar(24) // IN_TRANSIT | RECEIVED
+  idempotencyKey        String                                  @unique @db.VarChar(191)
+  requestHash           String                                  @db.Char(64)
+  receiptIdempotencyKey String?                                 @unique @db.VarChar(191)
+  receiptRequestHash    String?                                 @db.Char(64)
+  carrier               String?                                 @db.VarChar(191)
+  trackingReference     String?                                 @db.VarChar(191)
+  handoverEvidence      Json?
+  collectionNotes       String?                                 @db.Text
+  collectedByAccountId  String
+  collectedAt           DateTime                                @default(now())
+  receiptNotes          String?                                 @db.Text
+  receivedByAccountId   String?
+  receivedAt            DateTime?
+  createdAt             DateTime                                @default(now())
+  updatedAt             DateTime                                @updatedAt
+  stockReturn           DistributorStockReturn                  @relation(fields: [stockReturnId], references: [id], onDelete: Restrict)
+  lines                 DistributorStockReturnCollectionLine[]
+  inspection            DistributorStockReturnInspection?
+
+  @@index([stockReturnId, status, collectedAt], map: "StockReturnCollection_return_status_idx")
+}
+
+model DistributorStockReturnCollectionLine {
+  id                    String                                  @id @default(uuid())
+  collectionId          String
+  stockReturnLineId     String
+  collectedQuantity     Int
+  receivedGoodQuantity  Int                                     @default(0)
+  receivedDamagedQuantity Int                                   @default(0)
+  missingQuantity       Int                                     @default(0)
+  damageType            String?                                 @db.VarChar(120)
+  evidence              Json?
+  receiptNotes          String?                                 @db.Text
+  createdAt             DateTime                                @default(now())
+  updatedAt             DateTime                                @updatedAt
+  collection            DistributorStockReturnCollection         @relation(fields: [collectionId], references: [id], onDelete: Restrict)
+  stockReturnLine       DistributorStockReturnLine               @relation(fields: [stockReturnLineId], references: [id], onDelete: Restrict)
+  discrepancies         InventoryDiscrepancy[]
+  inspectionLines       DistributorStockReturnInspectionLine[]
+
+  @@unique([collectionId, stockReturnLineId], map: "StockReturnCollectionLine_collection_line_key")
+  @@index([stockReturnLineId, createdAt], map: "StockReturnCollectionLine_return_line_idx")
+}
+
+model DistributorStockReturnInspection {
+  id                    String                                  @id @default(uuid())
+  collectionId          String                                  @unique
+  idempotencyKey        String                                  @unique @db.VarChar(191)
+  requestHash           String                                  @db.Char(64)
+  inspectedByAccountId  String
+  inspectedAt           DateTime                                @default(now())
+  notes                 String?                                 @db.Text
+  createdAt             DateTime                                @default(now())
+  collection            DistributorStockReturnCollection         @relation(fields: [collectionId], references: [id], onDelete: Restrict)
+  lines                 DistributorStockReturnInspectionLine[]
+
+  @@index([inspectedByAccountId, inspectedAt], map: "StockReturnInspection_actor_date_idx")
+}
+
+model DistributorStockReturnInspectionLine {
+  id                    String                                  @id @default(uuid())
+  inspectionId          String
+  collectionLineId      String
+  recommendedDisposition String                                 @db.VarChar(40) // RESTOCK_REVIEW | REPAIR_REVIEW | SALE_REVIEW | DONATION_REVIEW | DISPOSAL_REVIEW | UNRESOLVED
+  quantity              Int
+  conditionNotes        String                                  @db.Text
+  evidence              Json?
+  createdAt             DateTime                                @default(now())
+  inspection            DistributorStockReturnInspection        @relation(fields: [inspectionId], references: [id], onDelete: Restrict)
+  collectionLine        DistributorStockReturnCollectionLine     @relation(fields: [collectionLineId], references: [id], onDelete: Restrict)
+
+  @@unique([inspectionId, collectionLineId, recommendedDisposition], map: "StockReturnInspectLine_collection_route_key")
+  @@index([collectionLineId, createdAt], map: "StockReturnInspectLine_collection_date_idx")
 }
 
 // ============================================================

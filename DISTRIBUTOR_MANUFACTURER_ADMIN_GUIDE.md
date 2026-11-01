@@ -47,6 +47,55 @@ does not replace or combine with delivery, direct-hub, or phone-order income.
 Monthly target bonuses are configured separately and apply to completed
 distributor deliveries after the month closes.
 
+The Inventory section supports a separate distributor-stock-return
+authorization workflow. `GET /:id/stock-returns` lists requests;
+`GET /:id/stock-returns/:returnId/audit-report` returns the complete return
+history, including all workflow events and linked operating expenses for CSV
+export from the Admin page;
+`POST /:id/stock-returns` creates an idempotent request; and
+`PATCH /:id/stock-returns/:returnId/review` approves per-SKU quantities or
+rejects the request. Reading requires `distributor:admin_inventory_read`;
+mutations require `distributor:admin_stock_return`. Approval revalidates
+unreserved quantities and moves approved units into a distributor-scoped,
+non-sellable return-hold location while retaining cost-layer references where
+available. Uncosted quantities are exposed, not assigned guessed costs. This
+can be followed by `POST /:id/stock-returns/:returnId/collections` to record
+partial/full physical handovers and move handed-over quantities into a
+collection-specific transit location. Record warehouse counts at
+`POST /:id/stock-returns/:returnId/collections/:collectionId/receipt`; good
+and damaged units are moved into return quarantine, and damaged/missing counts
+open inventory discrepancies. Missing units remain in transit pending
+investigation rather than being written off. Then record a count-reconciled
+warehouse condition assessment at
+`POST /:id/stock-returns/:returnId/collections/:collectionId/inspection`.
+Restock, repair, sale, donation, disposal, and unresolved values are proposed
+review routes only; inspection does not move stock or authorize the action.
+Received units remain quarantined. These steps do not post an impairment,
+donation, disposal, sale, or GL journal. Inventory remains platform/admin-owned
+throughout; these movements record custody only. Production cost layers are
+the carrying-cost source where available. Do not assign new inventory cost
+when a later cash payment settles an already-recognized manufacturer payable;
+generic Treasury outflows post to expense/drawings and do not update cost
+layers. Costless stock remains explicitly uncosted until a source-backed
+valuation adjustment is implemented. Before accounting disposition is
+automated, the applicable Nepal financial-reporting framework, NRV/write-down
+rules, and Nepal tax treatment must be encoded and versioned.
+Open damaged/missing discrepancies can receive investigation notes and
+evidence at
+`POST /:id/stock-returns/:returnId/discrepancies/:discrepancyId/reviews`.
+Each note is idempotent and appended with the admin actor and timestamp. This
+only moves `OPEN` discrepancies to `UNDER_REVIEW`; it cannot close the case,
+assign financial responsibility, adjust stock, or post a journal. The CSV
+audit export includes each investigation record.
+Routine, non-tax storage or handling outflows can be entered in Finance >
+Treasury Cash as `Direct Operating Expense`; include the stock-return ID in
+the optional Stock return ID field to link the cash transaction to that return.
+The return detail displays linked outflows and their total. This records cash
+and an operating expense, not inventory value. The reference is validated
+against an existing stock return and stored for traceability; it does not
+change the amount or GL treatment. Do not use it to record acquisition,
+VAT-bearing, or capitalizable inventory costs.
+
 Manufacturer and distributor profiles remain independent when they share an
 `AuthAccount`; the distributor page links to the existing manufacturer detail
 page rather than mixing their inventory, production, or financial history.

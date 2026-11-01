@@ -98,7 +98,7 @@ const DistributorDetail = ({ token }) => {
 
       {activeTab === "profile" && <DistributorProfileSection distributor={distributor} token={token} onUpdated={loadProfile} />}
       {activeTab === "finance" && <DistributorFinanceSection distributorId={distributorId} token={token} />}
-      {activeTab === "inventory" && <DistributorInventorySection distributorId={distributorId} token={token} />}
+      {activeTab === "inventory" && <DistributorInventorySection distributorId={distributorId} token={token} canManageStockReturns={can("distributor:admin_stock_return")} />}
       {activeTab === "transfers" && <DistributorTransfersSection distributorId={distributorId} token={token} />}
       {activeTab === "fulfillment" && <DistributorFulfillmentSection distributorId={distributorId} token={token} />}
       {activeTab === "returns" && <DistributorReturnsSection distributorId={distributorId} token={token} />}

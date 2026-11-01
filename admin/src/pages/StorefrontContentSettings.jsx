@@ -11,6 +11,7 @@ const StorefrontContentSettings = ({ token }) => {
   const [uploadingTarget, setUploadingTarget] = useState(null);
   const fileInputs = useRef([]);
   const aboutImageInput = useRef(null);
+  const logoImageInput = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -132,7 +133,9 @@ const StorefrontContentSettings = ({ token }) => {
       toast.error(error.response?.data?.message || error.message || "Unable to upload the selected image.");
     } finally {
       setUploadingTarget(null);
-      if (target === "about") {
+      if (target === "logo") {
+        if (logoImageInput.current) logoImageInput.current.value = "";
+      } else if (target === "about") {
         if (aboutImageInput.current) aboutImageInput.current.value = "";
       } else {
         const index = Number(target.split("-")[1]);
@@ -167,6 +170,52 @@ const StorefrontContentSettings = ({ token }) => {
         <h1 className="mt-1 text-2xl font-black text-slate-950">Storefront content</h1>
         <p className="mt-2 text-sm text-slate-600">Manage the storefront announcement, footer, About page, policy/benefit cards, and sign-up Terms &amp; Conditions from one place.</p>
       </header>
+
+      <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+        <div>
+          <h2 className="text-base font-bold text-slate-900">Storefront logo</h2>
+          <p className="mt-1 text-xs text-slate-500">The selected logo is shared by the storefront header and footer.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex h-24 w-48 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {content.logoImage
+              ? <img src={content.logoImage} alt="Current storefront logo preview" className="max-h-full max-w-full object-contain" />
+              : <span className="text-center text-xs text-slate-500">Bundled storefront logo is currently in use</span>}
+          </div>
+          <div>
+            <input
+              ref={logoImageInput}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              aria-label="Choose storefront logo image"
+              onChange={(event) => uploadImage(
+                event.target.files?.[0],
+                "logo",
+                (imageUrl) => updateAnnouncement("logoImage", imageUrl),
+              )}
+            />
+            <button
+              type="button"
+              onClick={() => logoImageInput.current?.click()}
+              disabled={uploadingTarget !== null}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {uploadingTarget === "logo" ? "Uploading..." : content.logoImage ? "Update logo" : "Upload logo"}
+            </button>
+            {content.logoImage && (
+              <button
+                type="button"
+                onClick={() => updateAnnouncement("logoImage", "")}
+                className="ml-2 text-xs font-semibold text-rose-600 hover:text-rose-700"
+              >
+                Use default logo
+              </button>
+            )}
+            <p className="mt-1 text-[11px] text-slate-500">JPG, PNG or WebP; up to 10 MB. Save storefront content to publish the change.</p>
+          </div>
+        </div>
+      </section>
 
       <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         <h2 className="text-base font-bold text-slate-900">Announcement bar</h2>

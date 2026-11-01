@@ -8,6 +8,7 @@ import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   getDirectCashOffsetAccountCode,
+  normalizeStockReturnExpenseReference,
   validateTreasuryAccountingAccount,
   validateTreasuryAccountTypeMapping,
 } from "../services/treasuryAccountingService.js";
@@ -22,7 +23,8 @@ const responseForDuplicate = (existing, request) => {
     existing.type === request.type &&
     (existing.fromAccountId || null) === (request.fromAccountId || null) &&
     (existing.toAccountId || null) === (request.toAccountId || null) &&
-    existing.category === request.category;
+    existing.category === request.category &&
+    (existing.referenceId || null) === (request.referenceId || null);
 
   if (!sameRequest) {
     return { status: 409, body: { success: false, message: "This idempotency key was already used for a different Treasury transaction." } };
@@ -119,6 +121,11 @@ export const recordCashTransfer = async (req, res) => {
       : type === "INFLOW"
       ? String(req.body?.category || "MISC_INFLOW").toUpperCase()
       : String(req.body?.category || "EXPENSE").toUpperCase();
+    const referenceId = normalizeStockReturnExpenseReference({
+      type,
+      category,
+      stockReturnId: req.body?.stockReturnId,
+    });
 
     if (!amount.isFinite() || amount.lessThanOrEqualTo(0)) {
       return res.status(400).json({ success: false, message: "Enter a valid positive amount." });
@@ -128,7 +135,17 @@ export const recordCashTransfer = async (req, res) => {
     }
 
     const amountNumber = Number(amount.toFixed(2));
-    const request = { amount: amountNumber, type, fromAccountId, toAccountId, category };
+    if (referenceId) {
+      const stockReturn = await prisma.distributorStockReturn.findUnique({
+        where: { id: referenceId },
+        select: { id: true },
+      });
+      if (!stockReturn) {
+        return res.status(404).json({ success: false, message: "Stock return reference was not found." });
+      }
+    }
+
+    const request = { amount: amountNumber, type, fromAccountId, toAccountId, category, referenceId };
     const existing = await prisma.cashTransaction.findUnique({ where: { idempotencyKey } });
     if (existing) {
       const duplicate = responseForDuplicate(existing, request);
@@ -171,6 +188,15 @@ export const recordCashTransfer = async (req, res) => {
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      if (referenceId) {
+        const linkedReturn = await tx.distributorStockReturn.findUnique({
+          where: { id: referenceId },
+          select: { id: true },
+        });
+        if (!linkedReturn) {
+          throw Object.assign(new Error("Stock return reference was not found."), { statusCode: 404 });
+        }
+      }
       if (isPayment || isTransfer) {
         const debitResult = await tx.financialAccount.updateMany({
           where: { id: sourceId, currentBalance: { gte: amountNumber } },
@@ -195,6 +221,7 @@ export const recordCashTransfer = async (req, res) => {
           fromAccountId: isPayment || isTransfer ? sourceId : null,
           toAccountId: isReceipt || isTransfer ? destinationId : null,
           category,
+          referenceId: referenceId || undefined,
           partyName: String(req.body?.partyName || req.body?.payeeName || "").trim(),
           invoiceNumber: String(req.body?.invoiceNumber || "").trim(),
           description: description || `${type} - ${category}`,
@@ -241,6 +268,7 @@ export const recordCashTransfer = async (req, res) => {
           fromAccountId: req.body?.fromAccountId,
           toAccountId: req.body?.toAccountId,
           category: String(req.body?.category || (req.body?.type === "INFLOW" ? "MISC_INFLOW" : "EXPENSE")).toUpperCase(),
+          referenceId: req.body?.stockReturnId || null,
         });
         return res.status(duplicate.status).json(duplicate.body);
       }

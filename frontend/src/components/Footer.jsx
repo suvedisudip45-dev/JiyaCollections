@@ -9,7 +9,7 @@ const Footer = () => {
     <footer className="mt-20 border-t border-[#d9d6cc] pt-8 text-sm sm:mt-24 sm:pt-10 lg:mt-28 lg:pt-12">
       <div className="storefront-section storefront-footer-content grid gap-8 pb-8 sm:grid-cols-2 sm:gap-10 sm:pb-10 lg:grid-cols-[2fr_1fr_1fr] lg:gap-12 lg:pb-12">
         <div>
-          <img className="mb-4 w-32 sm:mb-5" src={assets.logo} alt="Aama Collections" />
+          <img className="mb-4 w-32 sm:mb-5" src={storefrontContent?.logoImage || assets.logo} alt="Aama Collections" />
           <p className="w-full max-w-md text-xs leading-6 text-[#77776e] sm:text-sm sm:leading-7">
             {storefrontContent?.footerDescription}
           </p>

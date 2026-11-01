@@ -86,7 +86,7 @@ const Navbar = () => {
       <nav className="relative z-40 border-b border-[var(--line)] bg-[var(--paper)] font-medium">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-4 py-4 sm:px-8 lg:px-12">
       <Link to={"/"} className="z-10 flex min-w-0 items-center gap-2 sm:gap-3" aria-label="Aama Clothings home">
-        <img src={assets.logo} className="w-28 sm:w-36" alt="Aama Clothings" />
+        <img src={announcement.logoImage || assets.logo} className="w-28 sm:w-36" alt="Aama Clothings" />
         <span className="hidden border-l border-[#c9c6bc] pl-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#77776e] sm:block">
           Kathmandu / Nepal
         </span>

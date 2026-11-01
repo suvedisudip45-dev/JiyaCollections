@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildTreasuryGlReconciliation,
   getDirectCashOffsetAccountCode,
+  normalizeStockReturnExpenseReference,
   validateTreasuryAccountingAccount,
   validateTreasuryAccountTypeMapping,
   validateTreasuryPayoutAccount,
@@ -79,6 +80,49 @@ test("direct cash entries allow only explicitly supported accounting categories"
   assert.throws(() => getDirectCashOffsetAccountCode("INFLOW", "CAPITAL_INJECTION"), { statusCode: 400 });
   assert.throws(() => getDirectCashOffsetAccountCode("INFLOW", "SALES"), { statusCode: 400 });
   assert.throws(() => getDirectCashOffsetAccountCode("OUTFLOW", "SUPPLIER_PAYMENT"), { statusCode: 400 });
+});
+
+test("stock return expense references are limited to direct operating outflows", () => {
+  assert.equal(
+    normalizeStockReturnExpenseReference({
+      type: "OUTFLOW",
+      category: "EXPENSE",
+      stockReturnId: "return-123",
+    }),
+    "return-123",
+  );
+  assert.equal(
+    normalizeStockReturnExpenseReference({
+      type: "OUTFLOW",
+      category: "DRAWINGS",
+      stockReturnId: "",
+    }),
+    null,
+  );
+  assert.throws(
+    () => normalizeStockReturnExpenseReference({
+      type: "INFLOW",
+      category: "EXPENSE",
+      stockReturnId: "return-123",
+    }),
+    /direct operating expense outflow/,
+  );
+  assert.throws(
+    () => normalizeStockReturnExpenseReference({
+      type: "OUTFLOW",
+      category: "DRAWINGS",
+      stockReturnId: "return-123",
+    }),
+    /direct operating expense outflow/,
+  );
+  assert.throws(
+    () => normalizeStockReturnExpenseReference({
+      type: "OUTFLOW",
+      category: "EXPENSE",
+      stockReturnId: `return-${"x".repeat(191)}`,
+    }),
+    /cannot exceed 191 characters/,
+  );
 });
 
 test("Treasury types map to their designated GL accounts and reject carrier-held COD", () => {

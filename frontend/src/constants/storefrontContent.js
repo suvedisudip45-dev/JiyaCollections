@@ -1,6 +1,7 @@
 export const DEFAULT_STOREFRONT_CONTENT = {
   announcementPrimary: "Free shipping on orders over Rs 3,000",
   announcementSecondary: "Made for everyday movement",
+  logoImage: "",
   footerDescription: "At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.",
   contactPhone: "+1-8515-56789",
   contactEmail: "contact@aamacollections.com",

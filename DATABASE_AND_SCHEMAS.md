@@ -23,13 +23,13 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Catalog | `Product`, `Category`, `SubCategory`, `Color`, `ComboBundle`, `Review`, `SpecialOffer` | products, variants, bundles, reviews |
 | Orders | `Order`, `OrderAssignment`, `DeliveryOrder`, `DeliveryEvent`, `DeliveryComment` | ordering, fulfillment, shipping lifecycle |
 | Returns & exchanges | `CustomerReturn`, `CustomerReturnEvent`, `OrderExchangeRequest`, `OrderExchangeEvent`, `ReturnExchangeNcmAttempt`, `DeliveryReturn` | customer requests, approvals, inspections, carrier attempts, and audit history |
-| Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; legacy manufacturer product/gift records remain distinct |
+| Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `DistributorStockReturn`, `DistributorStockReturnLine`, `DistributorStockReturnCollection`, `DistributorStockReturnCollectionLine`, `DistributorStockReturnInspection`, `DistributorStockReturnInspectionLine`, `DistributorStockReturnEvent`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; dead-stock retrieval custody and inspection are separate from customer returns and replenishment transfers; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `TaxFilingRecord` | double-entry accounting and operational finance |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, and carrier-fee settlement |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
-| Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content plus retained, versioned customer Terms & Conditions acceptance events |
+| Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content; optional HTTPS `logoImage` is shared by the storefront header/footer, alongside retained, versioned customer Terms & Conditions acceptance events |
 
 ## 3. Major Schemas
 
@@ -162,6 +162,9 @@ limited to known local NCM order IDs.
 | `ManufacturerProductionRequest` | Admin-assigned manufacturer, product/SKU quantities, fabric/GSM, target date and batch plan; manufacturer proposed/approved unit COGS and batch other cost, VAT treatment/rate and invoice verification; pre/post-production QA | Workflow moves from `PENDING_MANUFACTURER_QUOTE` to `PENDING_ADMIN_APPROVAL`, then `APPROVED` before manufacturer pre-check/start. Admin approval records whether the supplier VAT invoice was verified; `EXEMPT`, `VAT_INCLUSIVE`, or `VAT_EXCLUSIVE` are supported. |
 | `ManufacturerInventoryCostLayer` | produced/available/reserved/consumed quantities, capitalized unit COGS, unit VAT, VAT treatment/rate, invoice-verification state | Verified input VAT is posted at production receipt; unverified VAT remains in capitalized inventory cost |
 | `ManufacturerInventoryMovement` | `manufacturerId`, `productId`, `variantLabel`, `previousQty`, `newQty`, signed `changeQty`, `movementType`, `reason`, `note`, `actorId`, `createdAt` | immutable, per-variant manufacturer stock adjustment history |
+| `DistributorStockReturn` | distributor, status, reason, idempotency key and request hash, hold location, request/review actor and timestamps | admin request and authorization for distributor-held platform stock; no accounting journal is posted at this stage |
+| `DistributorStockReturnLine` | SKU and product/variant snapshots, requested/approved/held quantities, costed/uncosted units, traced layer COGS snapshot | preserves unit-level operational counts and existing cost-layer provenance; the snapshot is non-posting and not an accountant-approved valuation |
+| `DistributorStockReturnEvent` | return ID, action/status transition, actor, notes, metadata and timestamp | append-only request/review timeline |
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
@@ -169,6 +172,46 @@ Apply `backend/prisma/migrations/20261017120000_manufacturer_production_vat/migr
 Apply `backend/prisma/migrations/20261017130000_reconcile_manufacturer_freight_settlements/migration.sql` to persist the portion of each local shipment's freight charge settled through approved manufacturer logistics payments.
 
 Factory receipts from production remain in manufacturer-owned factory locations and are not available to customer checkout. Stock becomes storefront-eligible only when a distributor confirms receipt into an active distributor location. Product-level and variant-level stock fields mirror the sum of unreserved active distributor ledger balances; `InventoryBalance` and its ledger entries remain authoritative.
+
+Admin stock return authorization, collection, and warehouse receipt are a
+separate workflow from customer returns and distributor replenishment:
+
+All inventory in this flow is platform/admin-owned. Distributor and return
+locations identify custody, not legal title; approval, handover, and warehouse
+receipt are custody movements and must not create another inventory acquisition
+or ownership-transfer journal. Existing production cost layers remain the
+carrying-cost source when present. A later cash payment that settles the
+manufacturer payable is not a second inventory-cost recognition. Generic
+Treasury outflows post to expense/drawings and do not create or update inventory
+cost layers. Missing cost evidence must remain explicit until a source-backed
+inventory valuation adjustment is implemented.
+Non-tax direct operating expenses may optionally store the stock-return ID in
+`CashTransaction.referenceId`; the return API surfaces only linked
+`OUTFLOW`/`EXPENSE` transactions. This is a validated traceability reference,
+not an inventory valuation or a GL capitalization.
+The Admin audit-report endpoint fetches the complete event history (not only
+the recent-event preview used in the paginated list), collection/receipt/
+inspection records, evidence references, cost trace summaries, and linked
+expenses for export.
+
+| Model | Core fields | Notes |
+| --- | --- | --- |
+| `DistributorStockReturn` | distributor, status, reason, idempotency hash, hold location, request/review actors and timestamps | Approved unreserved platform-owned units move to a non-sellable, distributor-custodied `RETURN_HOLD` location. |
+| `DistributorStockReturnLine` | SKU/product snapshots, requested/approved/held quantities, costed/uncosted units, traced layer COGS | Cost snapshots are for traceability only; uncosted quantities are not assigned invented values. |
+| `DistributorStockReturnCollection` / `DistributorStockReturnCollectionLine` | idempotent collection batch, carrier/reference, collection/receipt actors and timestamps, collected and received-good/damaged/missing counts, evidence | Partial collections are supported. Each batch has a unique `IN_TRANSIT` location; physically received units enter a return-specific `RETURN_RECEIPT` quarantine location. |
+| `DistributorStockReturnInspection` / `DistributorStockReturnInspectionLine` | one idempotent inspection per received collection, inspector/time, count by proposed review route, condition notes, evidence | Every physically received unit must be accounted for. Suggested routes (restock, repair, sale, donation, disposal, unresolved) are recommendations only; inspection does not move stock or authorize a disposition. |
+| `DistributorStockReturnEvent` | action, from/to status, actor, notes, metadata | Append-only workflow history for request, review, collection, and receipt. |
+| `InventoryDiscrepancy` | optional stock-return collection-line reference, SKU, type, custody stage, quantity, evidence, status | Damaged/missing receipt quantities open discrepancies. Missing units remain in transit pending investigation; no loss posting is made here. Platform ownership does not by itself establish who is financially responsible for a discrepancy; return discrepancies use `UNDETERMINED` until reviewed. |
+| `InventoryDiscrepancyReview` | discrepancy, idempotency key/hash, reviewer, notes, evidence, timestamp | Append-only investigation notes; an open return discrepancy may move to `UNDER_REVIEW`. No responsibility assignment, closure, inventory adjustment, or journal is allowed in this stage. |
+
+Collection and receipt movements retain production cost-layer references where
+traceable. Good and damaged received units stay quarantined through inspection;
+inspection records condition and proposed route but does not execute it. This
+workflow does not post GL entries, impairment, donation, disposal, or sale
+accounting.
+Discrepancy investigation reviews preserve each finding/evidence entry
+separately and record an append-only event; the underlying missing/damaged
+quantity and financial responsibility remain unchanged.
 
 Bulk distributor replenishment uses a separate `StockTransfer` lifecycle:
 

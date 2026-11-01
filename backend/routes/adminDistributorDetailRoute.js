@@ -12,6 +12,16 @@ import {
   listAdminDistributors,
 } from "../controllers/adminDistributorDetailController.js";
 import {
+  collectDistributorStockReturn,
+  createDistributorStockReturnRequest,
+  getDistributorStockReturnAuditReportController,
+  getDistributorStockReturns,
+  inspectDistributorStockReturn,
+  receiveDistributorStockReturn,
+  reviewDistributorStockReturnDiscrepancy,
+  reviewDistributorStockReturnRequest,
+} from "../controllers/distributorStockReturnController.js";
+import {
   getAdminDistributorCashRemittances,
   reviewDistributorCashRemittance,
   approveDistributorRefundNetting,
@@ -41,6 +51,14 @@ adminDistributorDetailRouter.get("/", authorize("distributor:admin_list"), listA
 adminDistributorDetailRouter.get("/:id/profile", authorize("distributor:admin_detail"), getAdminDistributorProfile);
 adminDistributorDetailRouter.get("/:id/login-history", authorize("distributor:admin_sessions_read"), getAdminDistributorLoginHistory);
 adminDistributorDetailRouter.get("/:id/inventory", authorize("distributor:admin_inventory_read"), getAdminDistributorInventory);
+adminDistributorDetailRouter.get("/:id/stock-returns", authorize("distributor:admin_inventory_read"), getDistributorStockReturns);
+adminDistributorDetailRouter.get("/:id/stock-returns/:returnId/audit-report", authorize("distributor:admin_inventory_read"), getDistributorStockReturnAuditReportController);
+adminDistributorDetailRouter.post("/:id/stock-returns", authorize("distributor:admin_stock_return"), createDistributorStockReturnRequest);
+adminDistributorDetailRouter.patch("/:id/stock-returns/:returnId/review", authorize("distributor:admin_stock_return"), reviewDistributorStockReturnRequest);
+adminDistributorDetailRouter.post("/:id/stock-returns/:returnId/collections", authorize("distributor:admin_stock_return"), collectDistributorStockReturn);
+adminDistributorDetailRouter.post("/:id/stock-returns/:returnId/collections/:collectionId/receipt", authorize("distributor:admin_stock_return"), receiveDistributorStockReturn);
+adminDistributorDetailRouter.post("/:id/stock-returns/:returnId/collections/:collectionId/inspection", authorize("distributor:admin_stock_return"), inspectDistributorStockReturn);
+adminDistributorDetailRouter.post("/:id/stock-returns/:returnId/discrepancies/:discrepancyId/reviews", authorize("distributor:admin_stock_return"), reviewDistributorStockReturnDiscrepancy);
 adminDistributorDetailRouter.get("/:id/returns", authorize("distributor:admin_returns_read"), getAdminDistributorReturns);
 adminDistributorDetailRouter.get("/:id/exchanges", authorize("distributor:admin_exchanges_read"), getAdminDistributorExchanges);
 adminDistributorDetailRouter.get("/:id/finance", authorize("distributor:admin_finance_read"), getAdminDistributorFinance);

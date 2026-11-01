@@ -25,6 +25,7 @@ test("storefront content update saves announcements and benefit cards", async ()
   const content = {
     ...DEFAULT_STOREFRONT_CONTENT,
     announcementPrimary: "Free delivery",
+    logoImage: "https://res.cloudinary.com/store/logo.png",
     footerDescription: "A shorter store description.",
     contactPhone: "+977 9800000000",
     contactEmail: "hello@example.com",
@@ -58,6 +59,7 @@ test("storefront content update saves announcements and benefit cards", async ()
   const result = await updateStorefrontContent(content, client);
 
   assert.equal(result.announcementPrimary, "Free delivery");
+  assert.equal(result.logoImage, "https://res.cloudinary.com/store/logo.png");
   assert.equal(result.footerDescription, "A shorter store description.");
   assert.equal(result.contactPhone, "+977 9800000000");
   assert.equal(result.contactEmail, "hello@example.com");
@@ -66,6 +68,22 @@ test("storefront content update saves announcements and benefit cards", async ()
   assert.deepEqual(saved.update.termsAndConditions.conditions, content.termsAndConditions.conditions);
   assert.equal(result.benefits[0].image, content.benefits[0].image);
   assert.deepEqual(saved.update.benefits, content.benefits);
+});
+
+test("storefront logo must be an HTTPS URL or blank to use the bundled default", async () => {
+  const client = {
+    storefrontContentConfig: {
+      upsert: async ({ create }) => create,
+    },
+  };
+  assert.equal(
+    (await updateStorefrontContent({ ...DEFAULT_STOREFRONT_CONTENT, logoImage: "" }, client)).logoImage,
+    "",
+  );
+  await assert.rejects(
+    updateStorefrontContent({ ...DEFAULT_STOREFRONT_CONTENT, logoImage: "http://example.com/logo.png" }, client),
+    { code: "INVALID_STOREFRONT_CONTENT", status: 400 },
+  );
 });
 
 test("storefront terms allow an empty list but reject more than 50 conditions", async () => {

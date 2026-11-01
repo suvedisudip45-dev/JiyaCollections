@@ -29,6 +29,7 @@ The backend is the real source of truth for:
 - effective-dated VAT configuration and approved return tax snapshots
 - location-based discount resolution and distributor hub assignment for checkout
 - distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
+- distributor dead-stock return authorization, custody movements, receipt discrepancies, append-only investigation notes/evidence, condition assessments, and the prohibition on assigning responsibility, resolving discrepancies, releasing stock, or posting impairment/disposal journals before approved policy
 - distributor allocation requires active distributors with enough distributor-ledger stock and ranks candidates by configured (or default registered) service area, same district, NCM branch, same province, then nationwide; quality rating resolves ties within each tier
 - marketing card ownership, Own Store scan quotas, reward claims, and exclusive reward application at checkout
 - marketing partner analytics are protected by `marketing_card:analytics_read`; partner IDs and report scope are validated server-side, and customer scan reports use province/district snapshots only (never street-level addresses)
@@ -75,6 +76,7 @@ Examples:
 - return/exchange reconciliation belongs in the order exchange and delivery domain, not as isolated UI-only logic
 - Distributor-collected COD is a distributor receivable until an evidenced remittance is Admin-verified and posted to company treasury. Require the customer OTP before unpaid COD delivery; do not treat distributor cash collection as company cash.
 - Distributor-paid customer refunds require Admin-approved refund policy, return receipt/inspection, exact approved amount, distributor payment evidence, and Admin verification. Keep the resulting distributor payable separate from COD receivable; never mark receipt/inspection alone as a completed refund or automatically net balances. Only an explicit Admin-approved offset may clear both subledgers, capped by verified refund payable and open COD receivable less pending remittances, in one serializable balanced journal/allocation/audit transaction.
+- Dead-stock collection is not a write-off: move only quantities physically handed over into transit, receipt quantities into quarantine, and record damaged/missing quantities as open discrepancies. Investigation notes/evidence are append-only and do not resolve a discrepancy, determine financial responsibility, adjust stock, or post a journal. Keep missing units in transit until an authorized resolution; do not post inventory loss, impairment, donation, or sale accounting without accountant/auditor-approved ownership, valuation, and tax policy.
 - Snapshot return charges at Admin approval against returned product value; the original delivery fee is not refundable. Do not cache financial balances or use client-supplied amounts as accounting authority.
 
 ### 1.6 Match the repo’s naming and state conventions

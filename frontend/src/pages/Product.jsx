@@ -438,32 +438,6 @@ const Product = () => {
         >
           Shop
         </Link>
-        {productData.category && (
-          <>
-            <span className="text-gray-300">/</span>
-            <Link
-              to={`/shop?category=${encodeURIComponent(
-                productData.category
-              )}`}
-              className="hover:text-black transition-colors font-medium"
-            >
-              {productData.category}
-            </Link>
-          </>
-        )}
-        {productData.subCategory && (
-          <>
-            <span className="text-gray-300">/</span>
-            <Link
-              to={`/shop?subCategory=${encodeURIComponent(
-                productData.subCategory
-              )}`}
-              className="hover:text-black transition-colors font-medium"
-            >
-              {productData.subCategory}
-            </Link>
-          </>
-        )}
         <span className="text-gray-300">/</span>
         <span className="text-gray-900 font-semibold truncate max-w-[200px] sm:max-w-xs">
           {productData.name}

@@ -24,7 +24,7 @@ CREATE TABLE `DistributorSettlementRequestToken` (
   `createdByAccountId` VARCHAR(191) NULL,
   `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   `updatedAt` DATETIME(3) NOT NULL,
-  INDEX `DistributorSettlementRequestToken_distributorId_status_createdAt_idx` (`distributorId`, `status`, `createdAt`),
+  INDEX `DistSettleReqToken_distributor_status_created_idx` (`distributorId`, `status`, `createdAt`),
   INDEX `DistributorSettlementRequestToken_status_createdAt_idx` (`status`, `createdAt`),
   UNIQUE INDEX `DistributorSettlementRequestToken_idempotencyKey_key` (`idempotencyKey`),
   UNIQUE INDEX `DistributorSettlementRequestToken_settlementId_key` (`settlementId`),

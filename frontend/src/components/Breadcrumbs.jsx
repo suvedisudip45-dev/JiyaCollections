@@ -20,7 +20,7 @@ const LABELS = {
 const Breadcrumbs = () => {
   const { pathname } = useLocation();
   const segments = pathname.split("/").filter(Boolean);
-  if (segments[0] === "login") return null;
+  if (segments[0] === "login" || segments[0] === "product") return null;
   const crumbs = [{ label: "Home", to: "/" }];
   let path = "";
 
