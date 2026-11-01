@@ -98,6 +98,7 @@ The store is driven by `frontend/src/context/ShopContext.jsx` and manages:
 - `search` and `showSearch`
 - `shippingConfig`
 - `platformFeatures` (public feature flags fetched from `/api/features`)
+- `storefrontContent` (public announcement, three policy/benefit cards, footer details, About page, and ordered Terms & Conditions fetched from `/api/storefront-content`)
 
 The cart logic includes stock checks by size and color, quantity validation, localStorage persistence when no token exists, and backend cart sync when a logged-in customer is present. Cart product IDs are revalidated against the public catalog; valid products are loaded even when outside the initial catalog page, while deleted or unavailable products are removed from guest and authenticated carts.
 
@@ -106,6 +107,7 @@ The cart logic includes stock checks by size and color, quantity validation, loc
 The component tree includes:
 
 - `Navbar`
+- `OurPolicy`
 - `SearchBar`
 - `Footer`
 - `Hero`
@@ -343,22 +345,24 @@ This portal is clearly structured around the backend `marketing-cards` router an
 
 1. Product catalog loads from the backend.
 2. `ShopContext` handles cart state and local storage fallback.
-3. Checkout uses backend order creation plus shipping/config lookup.
-4. Customers scan a marketing card's QR directly without entering its card code. The server validates the QR, campaign, card status, order delivery, and customer eligibility before consuming the card; the scan response does not disclose whether the card has a reward or its value. Configured campaign advertising appears after a successful scan and before the scratch/reveal flow. Only after the scratch interaction completes does the storefront request and display the reward result. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account) for public, partner, and custom-organization assignments. Distributor-issued Own Store cards are order-bound, available only to the customer on the delivered order, and exempt from scan caps; distinct cards from multiple orders can each be claimed once. Every physical card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Eligible discount, voucher, and gift rewards can be claimed.
-5. Checkout retains its mutually exclusive reward selection and defaults to no reward. Physical gifts can be attached from Own Store card entitlements created after the customer scans and claims the card, or from the loyalty gift when the customer selects that reward. Loyalty gifts first try exact-value accepted stock held by distributors assigned to the checkout; if unavailable, the order is unaffected and the entitlement is retried on a later checkout after all shipments from the original checkout are packed. Gift catalog category is not a matching constraint. Order-value rules do not attach physical gifts.
-6. `Orders` page presents order history in a table with order ID, creation time, product summary, order status, total, payment status, delivery date, and any physical gift assigned to that shipment. The View invoice also identifies the gift. One checkout group receives at most one physical gift, even when it ships from multiple distributors.
-7. Return/exchange requests await admin approval. The Admin panel identifies the original delivery handler: NCM-delivered orders are submitted to NCM, while self-delivered orders are assigned to the original distributor. NCM-specific charge, attempt, and reconciliation controls are shown only on NCM cases; customers can see carrier failures, exchange progress, and recorded charges. Exchange selection shows replacement catalog prices and variant stock, an estimated price difference, and admin links to the posted journal/period and credit note. NCM exchange-create accepts only the original order ID, so any upgrade COD amount is an estimate and is not represented as carrier-confirmed.
-8. Customer tracking follows the actual fulfillment route: NCM orders show carrier tracking, while distributor self-delivery uses the assigned distributor's status and dispatch/on-the-way/delivery timestamps. A completed self-delivery COD order is shown as delivered and collected.
-9. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
+3. Customer registration and social-profile activation require explicit Terms & Conditions consent. The submitted version must still be current; the backend records the immutable terms snapshot, SHA-256 version, server timestamp, source, request IP, and user agent atomically with account creation/activation.
+4. Checkout uses backend order creation plus shipping/config lookup.
+5. Customers scan a marketing card's QR directly without entering its card code. The server validates the QR, campaign, card status, order delivery, and customer eligibility before consuming the card; the scan response does not disclose whether the card has a reward or its value. Configured campaign advertising appears after a successful scan and before the scratch/reveal flow. Only after the scratch interaction completes does the storefront request and display the reward result. Customer marketing-card scans report server-enforced Own Store quotas (five per campaign per calendar week, two per campaign/organization for the campaign lifetime, and the configured campaign lifetime cap per account) for public, partner, and custom-organization assignments. Distributor-issued Own Store cards are order-bound, available only to the customer on the delivered order, and exempt from scan caps; distinct cards from multiple orders can each be claimed once. Every physical card is consumable by one successful QR scan only; after scratching/reveal it cannot be scanned again by the same or another account. Eligible discount, voucher, and gift rewards can be claimed.
+6. Checkout retains its mutually exclusive reward selection and defaults to no reward. Physical gifts can be attached from Own Store card entitlements created after the customer scans and claims the card, or from the loyalty gift when the customer selects that reward. Loyalty gifts first try exact-value accepted stock held by distributors assigned to the checkout; if unavailable, the order is unaffected and the entitlement is retried on a later checkout after all shipments from the original checkout are packed. Gift catalog category is not a matching constraint. Order-value rules do not attach physical gifts.
+7. `Orders` page presents order history in a table with order ID, creation time, product summary, order status, total, payment status, delivery date, and any physical gift assigned to that shipment. The View invoice also identifies the gift. One checkout group receives at most one physical gift, even when it ships from multiple distributors.
+8. Return/exchange requests await admin approval. The Admin panel identifies the original delivery handler: NCM-delivered orders are submitted to NCM, while self-delivered orders are assigned to the original distributor. NCM-specific charge, attempt, and reconciliation controls are shown only on NCM cases; customers can see carrier failures, exchange progress, and recorded charges. Exchange selection shows replacement catalog prices and variant stock, an estimated price difference, and admin links to the posted journal/period and credit note. NCM exchange-create accepts only the original order ID, so any upgrade COD amount is an estimate and is not represented as carrier-confirmed.
+9. Customer tracking follows the actual fulfillment route: NCM orders show carrier tracking, while distributor self-delivery uses the assigned distributor's status and dispatch/on-the-way/delivery timestamps. A completed self-delivery COD order is shown as delivered and collected.
+10. Auth tokens are stored in `localStorage` and refreshed through the auth interceptor.
 
 ### Admin flow
 
 1. Admin logs in and receives a token.
 2. `PermissionsProvider` resolves role permissions.
 3. Shipping Rate Settings manage normal customer delivery tiers and four company-paid return/exchange settlement rates; the latter are snapshotted on approval and are not displayed as customer delivery charges.
-4. Route access is checked against the route-permission map.
-5. Each module calls the backend APIs for product, order, accounting, or access-management actions.
-6. The Returns page displays the distributor assigned to each distributor-handled order, its fulfillment status, and return-received date alongside evidence; settling a verified distributor refund still requires selecting the company treasury payout account.
+4. Storefront Content Settings updates the announcement bar and three policy/benefit cards, including image upload, title, and description. The storefront reloads these values from the public content endpoint.
+5. Route access is checked against the route-permission map.
+6. Each module calls the backend APIs for product, order, accounting, or access-management actions.
+7. The Returns page displays the distributor assigned to each distributor-handled order, its fulfillment status, and return-received date alongside evidence; settling a verified distributor refund still requires selecting the company treasury payout account.
 
 ### Manufacturer flow
 

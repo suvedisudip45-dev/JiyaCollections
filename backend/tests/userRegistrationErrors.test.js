@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { prisma } from "../config/db.js";
 import { registerUser } from "../controllers/userController.js";
+import {
+  DEFAULT_STOREFRONT_CONTENT,
+  getTermsAndConditionsVersion,
+} from "../services/storefrontContentService.js";
+
+const termsAcceptance = {
+  termsAccepted: true,
+  termsVersion: getTermsAndConditionsVersion(DEFAULT_STOREFRONT_CONTENT.termsAndConditions),
+};
 
 const stubMethod = (t, target, name, implementation) => {
   const original = target[name];
@@ -44,6 +53,7 @@ const registerWithUniqueConflict = async (t, target) => {
       email: "test.customer@example.com",
       phone: "9812345678",
       password: "valid-password",
+      ...termsAcceptance,
     },
   }, response);
   return response;
@@ -89,9 +99,30 @@ test("customer signup rejects a phone already used by an account before creating
       email: "new.customer@example.com",
       phone: "9812345678",
       password: "valid-password",
+      ...termsAcceptance,
     },
   }, response);
 
   assert.equal(response.statusCode, 409);
   assert.match(response.body.message, /mobile number is already registered/i);
+});
+
+test("customer signup requires an explicit Terms & Conditions acceptance", async (t) => {
+  stubMethod(t, prisma, "$transaction", async () => {
+    assert.fail("Registration transaction should not run without terms acceptance.");
+  });
+  const response = createResponse();
+
+  await registerUser({
+    body: {
+      firstName: "Test",
+      lastName: "Customer",
+      email: "test.customer@example.com",
+      phone: "9812345678",
+      password: "valid-password",
+    },
+  }, response);
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.code, "TERMS_ACCEPTANCE_REQUIRED");
 });

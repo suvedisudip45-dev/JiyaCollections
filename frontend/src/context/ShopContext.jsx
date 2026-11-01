@@ -3,6 +3,7 @@ import { toast } from "react-toastify";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { clearAuthTokens, getAccessToken } from "../auth/tokenStorage";
+import { DEFAULT_STOREFRONT_CONTENT } from "../constants/storefrontContent";
 
 export const ShopContext = createContext();
 
@@ -13,6 +14,7 @@ const ShopContextProvider = (props) => {
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [platformFeatures, setPlatformFeatures] = useState(null);
+  const [storefrontContent, setStorefrontContent] = useState(DEFAULT_STOREFRONT_CONTENT);
   const [cartItems, setCartItems] = useState({});
   const [products, setProducts] = useState([]);
   const [priceLocation, setPriceLocation] = useState(null);
@@ -35,6 +37,21 @@ const ShopContextProvider = (props) => {
       .catch((error) => {
         console.error("Unable to load platform feature settings:", error);
         if (mounted) setPlatformFeatures({});
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [backendUrl]);
+
+  useEffect(() => {
+    let mounted = true;
+    axios.get(`${backendUrl}/api/storefront-content`)
+      .then((response) => {
+        if (!response.data?.success) throw new Error(response.data?.message || "Unable to load storefront content.");
+        if (mounted) setStorefrontContent(response.data.content);
+      })
+      .catch((error) => {
+        console.error("Unable to load storefront content:", error);
       });
     return () => {
       mounted = false;
@@ -577,6 +594,8 @@ const ShopContextProvider = (props) => {
     navigate,
     backendUrl,
     platformFeatures,
+    storefrontContent,
+    setStorefrontContent,
     setToken,
     token,
     getMaxStock,

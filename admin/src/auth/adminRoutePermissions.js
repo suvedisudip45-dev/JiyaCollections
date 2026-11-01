@@ -51,6 +51,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/story-letter-library": ["storyletter:admin_manage"],
   "/shipping": ["shipping:config_update"],
   "/platform-features": ["platform:features_manage"],
+  "/storefront-content": ["platform:features_manage"],
   "/access-control/users": ["access:admin_users_read", "access:marketing_users_read", "access:manufacturer_users_read", "access:customer_users_read"],
   "/access-control/roles": ["access:roles_read"],
   "/access-control/permissions": ["access:permissions_read"],

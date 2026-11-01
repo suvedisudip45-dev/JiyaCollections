@@ -14,6 +14,7 @@ import {
 import { assignAccountRole } from "../services/rbacService.js";
 import { setRefreshCookie } from "../utils/refreshCookie.js";
 import { login as unifiedLogin } from "./authController.js";
+import { recordCustomerTermsAcceptance } from "../services/storefrontContentService.js";
 
 const createToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET);
@@ -96,7 +97,25 @@ const loginUser = async (req, res) => {
 // Route for user register
 const registerUser = async (req, res) => {
   try {
-    const { firstName, lastName, name, email, phone, password, gender } = req.body;
+    const {
+      firstName,
+      lastName,
+      name,
+      email,
+      phone,
+      password,
+      gender,
+      termsAccepted,
+      termsVersion,
+    } = req.body;
+
+    if (termsAccepted !== true || typeof termsVersion !== "string") {
+      return res.status(400).json({
+        success: false,
+        code: "TERMS_ACCEPTANCE_REQUIRED",
+        message: "You must accept the Terms & Conditions to register.",
+      });
+    }
 
     const normalizedGender = ["MALE", "FEMALE", "OTHER", "PREFER_NOT_TO_SAY"].includes(String(gender || "").trim().toUpperCase())
       ? String(gender).trim().toUpperCase()
@@ -230,6 +249,16 @@ const registerUser = async (req, res) => {
         },
       });
 
+      await recordCustomerTermsAcceptance({
+        client: tx,
+        customerId: newUser.id,
+        accepted: termsAccepted,
+        termsVersion,
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        source: "SELF_SERVICE",
+      });
+
       return { account: newAccount, user: newUser };
     });
 
@@ -272,6 +301,13 @@ const registerUser = async (req, res) => {
           ? "An account with this email already exists. Please sign in or use a different email address."
           : "An account with these details already exists. Please check your email and mobile number.";
       return res.status(409).json({ success: false, message });
+    }
+    if (error.status === 400 || error.status === 409) {
+      return res.status(error.status).json({
+        success: false,
+        code: error.code,
+        message: error.message,
+      });
     }
     console.error("Customer registration failed:", error);
     return res.status(500).json({
@@ -506,8 +542,17 @@ export const activateSocialCustomerProfile = async (req, res) => {
       lastName,
       gender,
       extraData = {},
+      termsAccepted,
+      termsVersion,
     } = req.body;
 
+    if (termsAccepted !== true || typeof termsVersion !== "string") {
+      return res.status(400).json({
+        success: false,
+        code: "TERMS_ACCEPTANCE_REQUIRED",
+        message: "You must accept the Terms & Conditions to continue.",
+      });
+    }
     const normalizedPhone = normalizePhoneNumber(phone);
     const normalizedCode = String(code || "").trim().toUpperCase();
 
@@ -572,27 +617,39 @@ export const activateSocialCustomerProfile = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const updatedUser = await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        firstName: finalFirstName,
-        lastName: finalLastName,
-        name: `${finalFirstName} ${finalLastName}`.trim() || "Social Customer",
-        email: candidateEmail,
-        password: hashedPassword,
-        phone: normalizedPhone,
-        gender: finalGender,
-        isInactiveProfile: false,
-        inactiveProfileData: {
-          ...inactiveProfileData,
+    const updatedUser = await prisma.$transaction(async (tx) => {
+      await recordCustomerTermsAcceptance({
+        client: tx,
+        customerId: user.id,
+        accepted: termsAccepted,
+        termsVersion,
+        ipAddress: req.ip || null,
+        userAgent: req.headers?.["user-agent"] || null,
+        source: "SOCIAL_PROFILE_ACTIVATION",
+      });
+
+      return tx.user.update({
+        where: { id: user.id },
+        data: {
+          firstName: finalFirstName,
+          lastName: finalLastName,
+          name: `${finalFirstName} ${finalLastName}`.trim() || "Social Customer",
           email: candidateEmail,
+          password: hashedPassword,
           phone: normalizedPhone,
           gender: finalGender,
-          activationCompletedAt: new Date().toISOString(),
-          ...extraData,
+          isInactiveProfile: false,
+          inactiveProfileData: {
+            ...inactiveProfileData,
+            email: candidateEmail,
+            phone: normalizedPhone,
+            gender: finalGender,
+            activationCompletedAt: new Date().toISOString(),
+            ...extraData,
+          },
+          addresses: mergedAddresses,
         },
-        addresses: mergedAddresses,
-      },
+      });
     });
 
     const token = createToken(updatedUser.id);
@@ -615,7 +672,11 @@ export const activateSocialCustomerProfile = async (req, res) => {
     });
   } catch (error) {
     console.error("Error activating social customer profile:", error);
-    res.json({ success: false, message: error.message || "Unable to activate loyalty profile" });
+    res.status(error.status || 500).json({
+      success: false,
+      code: error.code,
+      message: error.status ? error.message : "Unable to activate loyalty profile",
+    });
   }
 };
 

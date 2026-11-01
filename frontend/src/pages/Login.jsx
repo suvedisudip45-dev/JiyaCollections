@@ -34,7 +34,14 @@ const isValidNepalMobileNumber = (value = "") => {
 
 const Login = () => {
   const [currentState, setCurrentState] = useState("Login");
-  const { token, setToken, navigate, backendUrl } = useContext(ShopContext);
+  const {
+    token,
+    setToken,
+    navigate,
+    backendUrl,
+    storefrontContent,
+    setStorefrontContent,
+  } = useContext(ShopContext);
   const location = useLocation();
   const redirectTo = location.state?.from || "/";
 
@@ -52,6 +59,19 @@ const Login = () => {
   const [existingCustomerPhone, setExistingCustomerPhone] = useState("");
   const [existingCustomerCode, setExistingCustomerCode] = useState("");
   const [validatedExistingCustomer, setValidatedExistingCustomer] = useState(null);
+
+  const refreshTermsForAcceptance = async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/storefront-content`);
+      if (!response.data?.success) throw new Error(response.data?.message || "Unable to refresh Terms & Conditions.");
+      setStorefrontContent(response.data.content);
+    } catch (error) {
+      console.error("Unable to refresh Terms & Conditions:", error);
+      toast.error(error.response?.data?.message || error.message || "Unable to refresh Terms & Conditions.");
+    }
+    setAgreeTerms(false);
+    setIsTermsOpen(true);
+  };
 
   const onSubmitHandler = async (event) => {
     event.preventDefault();
@@ -113,6 +133,10 @@ const Login = () => {
         toast.error("Please agree to the Terms & Conditions to continue");
         return;
       }
+      if (!storefrontContent?.termsVersion) {
+        toast.error("Terms & Conditions are still loading. Please try again.");
+        return;
+      }
 
       try {
         setLoading(true);
@@ -124,6 +148,8 @@ const Login = () => {
           firstName: sanitizeInput(firstName, { stripAllHtml: true }),
           lastName: sanitizeInput(lastName, { stripAllHtml: true }),
           gender,
+          termsAccepted: true,
+          termsVersion: storefrontContent?.termsVersion,
         });
 
         if (response.data.success) {
@@ -133,6 +159,9 @@ const Login = () => {
           toast.error(response.data.message || "Unable to activate your customer account");
         }
       } catch (error) {
+        if (error.response?.data?.code === "TERMS_VERSION_CHANGED") {
+          await refreshTermsForAcceptance();
+        }
         console.log(error);
         toast.error(error.response?.data?.message || error.message);
       } finally {
@@ -163,6 +192,10 @@ const Login = () => {
         toast.error("Please agree to the Terms & Conditions to register");
         return;
       }
+      if (!storefrontContent?.termsVersion) {
+        toast.error("Terms & Conditions are still loading. Please try again.");
+        return;
+      }
     }
 
     try {
@@ -175,6 +208,8 @@ const Login = () => {
           email: sanitizeInput(email).toLowerCase(),
           phone: phone.trim(),
           password,
+          termsAccepted: true,
+          termsVersion: storefrontContent?.termsVersion,
         });
         if (response.data.success) {
           setToken(storeAuthTokens(response.data));
@@ -198,6 +233,9 @@ const Login = () => {
         }
       }
     } catch (error) {
+      if (error.response?.data?.code === "TERMS_VERSION_CHANGED") {
+        await refreshTermsForAcceptance();
+      }
       console.log(error);
       toast.error(error.response?.data?.message || error.message);
     } finally {

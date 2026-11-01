@@ -15,6 +15,7 @@ import ComboBundles from "./pages/ComboBundles";
 import Reviews from "./pages/Reviews";
 import ShippingSettings from "./pages/ShippingSettings";
 import PlatformFeatureSettings from "./pages/PlatformFeatureSettings";
+import StorefrontContentSettings from "./pages/StorefrontContentSettings";
 import Customers from "./pages/Customers";
 import CustomerDetail from "./pages/CustomerDetail";
 import LoyaltyLevels from "./pages/LoyaltyLevels";
@@ -252,6 +253,7 @@ const App = () => {
                   <Route path="/story-letter-library" element={withPermission("/story-letter-library", <StoryLetterLibrary token={token} />)} />
                   <Route path="/shipping" element={withPermission("/shipping", <ShippingSettings token={token} />)} />
                   <Route path="/platform-features" element={withPermission("/platform-features", <PlatformFeatureSettings token={token} />)} />
+                  <Route path="/storefront-content" element={withPermission("/storefront-content", <StorefrontContentSettings token={token} />)} />
                   <Route path="/change-password" element={<ChangePassword token={token} />} />
                   <Route path="/access-control/users" element={withPermission("/access-control/users", <AccessUsers token={token} />)} />
                   <Route path="/access-control/roles" element={withPermission("/access-control/roles", <AccessRoles token={token} />)} />

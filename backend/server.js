@@ -44,6 +44,7 @@ import marketingCardRouter from "./routes/marketingCardRoute.js";
 import productSalesAnalyticsRouter from "./routes/productSalesAnalyticsRoute.js";
 import discountAnalyticsRouter from "./routes/discountAnalyticsRoute.js";
 import platformFeatureRouter from "./routes/platformFeatureRoute.js";
+import storefrontContentRouter from "./routes/storefrontContentRoute.js";
 import authRouter from "./routes/authRoute.js";
 import accessManagementRouter from "./routes/accessManagementRoute.js";
 import locationPricingRouter from "./routes/locationPricingRoute.js";
@@ -168,6 +169,7 @@ app.use("/api/personalized-letter", personalizedLetterRouter);
 app.use("/api/admin/story-letter", storyLetterAdminRouter);
 app.use("/api/marketing-cards", marketingCardRouter);
 app.use("/api/features", platformFeatureRouter);
+app.use("/api/storefront-content", storefrontContentRouter);
 app.use("/webhooks", deliveryRouter);
 app.use("/api/ncm-webhook", deliveryRouter);
 

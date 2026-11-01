@@ -31,7 +31,7 @@ const permissionDefinitions = [
   ["color:create", "Create colors."], ["color:delete", "Delete colors."],
   ["review:admin_list", "Read administrative review listings."], ["review:admin_delete", "Delete reviews administratively."],
   ["shipping:config_update", "Update shipping configuration."], ["loyalty:level_manage", "Manage loyalty levels."],
-  ["platform:features_manage", "Enable or disable platform customer and fulfillment features."],
+  ["platform:features_manage", "Manage platform features and customer-facing storefront content."],
   ["customer:admin_list", "Search and list customer summaries administratively."], ["customer:admin_detail", "Read customer profile details administratively."], ["customer:admin_orders_read", "Read paginated customer order history administratively."], ["customer:letter_manage", "Manage customer letters."], ["customer:account_manage", "Disable and re-enable customer accounts."],
   ["offer:list", "List offers."], ["offer:create", "Create offers."], ["offer:update", "Update offers."], ["offer:delete", "Delete offers."],
   ["cogs:read", "Read cost of goods data."], ["cogs:proposals_read", "Read cost proposals."], ["cogs:price_approve", "Approve proposed prices."], ["cogs:price_reject", "Reject proposed prices."],

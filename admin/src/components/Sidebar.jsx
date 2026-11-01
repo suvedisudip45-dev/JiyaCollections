@@ -268,9 +268,10 @@ const Sidebar = ({ isOpen = false, onClose }) => {
           label="Platform Settings"
           icon={Icon.ops}
           requiredPermissions={ADMIN_SECTION_PERMISSIONS.platform}
-          routes={["/platform-features"]}
+          routes={["/platform-features", "/storefront-content"]}
         >
           <NavItem to="/platform-features" icon={Icon.ops} label="Feature Settings" />
+          <NavItem to="/storefront-content" icon={Icon.ops} label="Storefront Content" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />

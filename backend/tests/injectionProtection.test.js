@@ -86,6 +86,21 @@ test("Injection Protection - Prototype Pollution Prevention in Objects", () => {
   assert.equal(cleaned.nested.__proto__.isAdmin, undefined);
 });
 
+test("storefront long-form content preserves paragraph whitespace while remaining sanitized", () => {
+  const cleaned = sanitizeObject({
+    termsAndConditions: {
+      conditions: [
+        { title: "  Condition title  ", description: "  First paragraph.\n\n  Second paragraph.\n" },
+      ],
+    },
+    ordinaryText: "  trimmed text  ",
+  });
+
+  assert.equal(cleaned.termsAndConditions.conditions[0].title, "Condition title");
+  assert.equal(cleaned.termsAndConditions.conditions[0].description, "  First paragraph.\n\n  Second paragraph.\n");
+  assert.equal(cleaned.ordinaryText, "trimmed text");
+});
+
 test("Injection Protection - Express Middleware Handler", () => {
   const req = {
     body: {

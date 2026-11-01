@@ -407,6 +407,22 @@ model User {
   giftRewardEntitlements        GiftRewardEntitlement[]
   orderExchangeRequests         OrderExchangeRequest[]
   distributorReviews          DistributorReview[]
+  termsAcceptances            CustomerTermsAcceptance[]
+}
+
+model CustomerTermsAcceptance {
+  id            String   @id @default(uuid())
+  customerId    String
+  termsVersion  String   @db.Char(64)
+  termsSnapshot Json
+  acceptedAt    DateTime @default(now())
+  ipAddress     String?  @db.VarChar(64)
+  userAgent     String?  @db.VarChar(512)
+  source        String   @db.VarChar(32)
+  customer      User     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([customerId, acceptedAt])
+  @@index([termsVersion])
 }
 
 model Story {
@@ -772,6 +788,19 @@ model PlatformFeatureConfig {
   loyaltyEnabled        Boolean  @default(false)
   marketingCardsEnabled Boolean  @default(false)
   lettersEnabled        Boolean  @default(false)
+  updatedAt             DateTime @updatedAt
+}
+
+model StorefrontContentConfig {
+  id                    String   @id @default("default")
+  announcementPrimary   String   @default("Free shipping on orders over Rs 3,000") @db.VarChar(180)
+  announcementSecondary String  @default("Made for everyday movement") @db.VarChar(180)
+  footerDescription     String   @db.Text
+  contactPhone          String   @default("+1-8515-56789") @db.VarChar(80)
+  contactEmail          String   @default("contact@aamacollections.com") @db.VarChar(254)
+  benefits              Json
+  aboutPage             Json?
+  termsAndConditions    Json?
   updatedAt             DateTime @updatedAt
 }
 

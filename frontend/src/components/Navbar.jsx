@@ -19,6 +19,7 @@ const Navbar = () => {
     setCartItems,
     backendUrl,
     platformFeatures,
+    storefrontContent,
   } = useContext(ShopContext);
 
   const [navigationGroups, setNavigationGroups] = useState([]);
@@ -49,6 +50,7 @@ const Navbar = () => {
   }, [categoryLinks, activeMobileCategory]);
 
   const activeMobileGroup = categoryLinks.find((group) => group.name === activeMobileCategory) || categoryLinks[0];
+  const announcement = storefrontContent || {};
 
   const handleSearchClick = () => {
     setShowSearch(true);
@@ -68,15 +70,19 @@ const Navbar = () => {
 
   return (
     <>
-      <div className="announcement-bar" aria-label="Store announcements">
-        <div className="announcement-track">
-          {[1, 2].map((copy) => (
-            <span className="announcement-copy" key={copy} aria-hidden={copy === 2}>
-              Free shipping on orders over Rs 3,000 <b>•</b> Made for everyday movement
-            </span>
-          ))}
+      {(announcement.announcementPrimary || announcement.announcementSecondary) && (
+        <div className="announcement-bar" aria-label="Store announcements">
+          <div className="announcement-track">
+            {[1, 2].map((copy) => (
+              <span className="announcement-copy" key={copy} aria-hidden={copy === 2}>
+                {announcement.announcementPrimary}
+                {announcement.announcementPrimary && announcement.announcementSecondary && <b>•</b>}
+                {announcement.announcementSecondary}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
       <nav className="relative z-40 border-b border-[var(--line)] bg-[var(--paper)] font-medium">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-4 py-4 sm:px-8 lg:px-12">
       <Link to={"/"} className="z-10 flex min-w-0 items-center gap-2 sm:gap-3" aria-label="Aama Clothings home">
