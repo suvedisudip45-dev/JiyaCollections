@@ -750,6 +750,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
     deliveryCharge: 120,
     returnCharge: 60,
     ncmTransferCharge: 35,
+    counterSaleCharge: 20,
     commissionRate: 10,
     bonusRate: 25,
     incentiveRate: 0,
@@ -776,6 +777,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
     deliveryCharge: 120,
     returnCharge: 60,
     ncmTransferCharge: 75,
+    counterSaleCharge: 45,
     commissionRate: 10,
     bonusRate: 25,
     vatRate: 13,
@@ -784,12 +786,14 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
   assert.equal(saved.deliveryCharge, 120);
   assert.equal(saved.returnCharge, 60);
   assert.equal(saved.ncmTransferCharge, 75);
+  assert.equal(saved.counterSaleCharge, 45);
   assert.equal(saved.bonusRate, 0);
 
   const resolved = await resolveActiveRateCard({ distributorId: "dist-1" });
   assert.equal(resolved.deliveryCharge, 120);
   assert.equal(resolved.returnCharge, 60);
   assert.equal(resolved.ncmTransferCharge, 75);
+  assert.equal(resolved.counterSaleCharge, 45);
   assert.equal(resolved.bonusRate, 0);
   assert.equal(resolved.commissionRate, 10);
   assert.equal(resolved.vatRate, 13);
@@ -876,6 +880,31 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
       accountingDocumentId: "ncm-transfer-doc-1",
       journalEntryId: "ncm-transfer-je-1",
     },
+    {
+      id: "counter-sale-earning-1",
+      serviceType: "COUNTER_SALE",
+      assignmentId: "a-6",
+      orderId: "o-6",
+      effectiveAt: new Date(),
+      otherCharges: 25,
+      vatAmount: 0,
+      payableAmount: 25,
+      accountingDocumentId: "counter-sale-doc-1",
+      journalEntryId: "counter-sale-je-1",
+    },
+    {
+      id: "counter-sale-reversal-1",
+      serviceType: "COUNTER_SALE_REVERSAL",
+      assignmentId: "a-6",
+      orderId: "o-6",
+      effectiveAt: new Date(),
+      otherCharges: -10,
+      vatAmount: 0,
+      payableAmount: -10,
+      snapshot: { returnId: "return-6" },
+      accountingDocumentId: "counter-sale-credit-note-1",
+      journalEntryId: "counter-sale-reversal-je-1",
+    },
   ]);
   stubMethod(t, prisma.distributorBonusPlan, "findMany", async () => []);
   stubMethod(t, prisma.distributorSettlementRequest, "findMany", async () => settlements);
@@ -892,9 +921,9 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   // Per-delivery incentives are disabled for new earnings.
   // Return and exchange charges are separate from completed delivery earnings.
   // Admin Commission/Discount: 3 * 10 = 30
-  // Subtotal before VAT = 300 + 50 return + 25 exchange + 70 NCM transfer - 30 = 415
+  // Subtotal includes the net hub counter-sale earning: 415 + 25 - 10 = 430.
   // VAT = 270 legacy delivery subtotal * 0.13 + 6.50 snapshotted return VAT = 41.60
-  // Total With VAT = 456.60
+  // Total With VAT = 471.60
   // Settled Paid = 100
   // Net Payable = 386.60 - 100 paid - 20 pending = 266.60
   assert.equal(statementWithVat.summary.grossDeliveryEarnings, 300);
@@ -903,20 +932,24 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   assert.equal(statementWithVat.summary.exchangeFeesEarned, 25);
   assert.equal(statementWithVat.summary.ncmTransferFeesEarned, 70);
   assert.equal(statementWithVat.summary.adminDiscountsApplied, 30);
-  assert.equal(statementWithVat.summary.subtotalBeforeVat, 415);
+  assert.equal(statementWithVat.summary.counterSaleEarnings, 25);
+  assert.equal(statementWithVat.summary.counterSaleReturns, 10);
+  assert.equal(statementWithVat.summary.subtotalBeforeVat, 430);
   assert.equal(statementWithVat.summary.vatAmount, 41.60);
-  assert.equal(statementWithVat.summary.totalWithVat, 456.60);
-  assert.equal(statementWithVat.summary.totalWithoutVat, 415);
+  assert.equal(statementWithVat.summary.totalWithVat, 471.60);
+  assert.equal(statementWithVat.summary.totalWithoutVat, 430);
   assert.equal(statementWithVat.summary.totalSettledPaid, 100);
-  assert.equal(statementWithVat.summary.netPayableBalance, 336.60);
-  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 356.60);
+  assert.equal(statementWithVat.summary.netPayableBalance, 351.60);
+  assert.equal(statementWithVat.summary.grossOutstandingPayableBalance, 371.60);
   assert.equal(statementWithVat.summary.pendingSettlementAmount, 20);
   assert.equal(statementWithVat.vatMode, "WITH_VAT");
-  assert.equal(statementWithVat.transactions.length, 8); // 3 deliveries + return + exchange + NCM transfer + 2 settlements
+  assert.equal(statementWithVat.transactions.length, 10); // 3 deliveries + service earnings + hub sale net + 2 settlements
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "DELIVERY").length, 3);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "RETURN").length, 1);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "EXCHANGE").length, 1);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "NCM_TRANSFER").length, 1);
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "COUNTER_SALE").length, 1);
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "COUNTER_SALE_REVERSAL").length, 1);
   assert.equal(
     statementWithVat.transactions.find((item) => item.type === "DELIVERY" && item.referenceId === "o-3").grossAmount,
     100,
@@ -940,7 +973,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     withVat: false,
   });
   assert.equal(statementWithoutVat.vatMode, "WITHOUT_VAT");
-  assert.equal(statementWithoutVat.summary.netPayableBalance, 295); // 415 - 100 paid - 20 pending
+  assert.equal(statementWithoutVat.summary.netPayableBalance, 310); // 430 - 100 paid - 20 pending
 });
 
 test("7. submitDistributorSettlementRequest creates pending request and guards against exceeding balance", async (t) => {

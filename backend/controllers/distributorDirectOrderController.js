@@ -6,6 +6,10 @@ import {
   postDeliveredOrderAccounting,
 } from "../services/accountingPostingEngine.js";
 import { consumeDistributorOrderInventory } from "../services/distributorOrderInventoryService.js";
+import {
+  accrueDistributorCounterSaleEarning,
+  accrueDistributorDeliveryEarning,
+} from "../services/distributorServiceEarningService.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { createOrderIdentity } from "../utils/orderReference.js";
@@ -289,6 +293,15 @@ export const createDistributorDirectOrder = async (req, res) => {
       if (isWalkIn) {
         await postDeliveredOrderAccounting({ order: finalized, client: tx });
         await accrueCollaborationSalesForOrder({ orderId: created.id, deliveredAt: acceptedAt, client: tx });
+        await accrueDistributorCounterSaleEarning({
+          distributorId,
+          distributorName: distributor.name,
+          assignmentId: assignment.id,
+          orderId: created.id,
+          saleBaseAmount: frozenItems.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0),
+          effectiveAt: acceptedAt,
+          client: tx,
+        });
       }
       return finalized;
     }, { isolationLevel: "Serializable" });
@@ -341,6 +354,27 @@ export const updateDistributorDirectOrderStatus = async (req, res) => {
       if (normalizedStatus === "Delivered" && order.status !== "Delivered") {
         await postDeliveredOrderAccounting({ order: updatedOrder, client: tx });
         await accrueCollaborationSalesForOrder({ orderId: order.id, deliveredAt: new Date(), client: tx });
+        if (order.directOrderType === "PHONE_ORDER") {
+          const [assignment, distributor] = await Promise.all([
+            tx.orderAssignment.findFirst({
+              where: { orderId: order.id, distributorId: req.distributorId },
+            }),
+            tx.distributor.findUnique({
+              where: { id: req.distributorId },
+              select: { name: true },
+            }),
+          ]);
+          if (assignment && distributor) {
+            await accrueDistributorDeliveryEarning({
+              distributorId: req.distributorId,
+              distributorName: distributor.name,
+              assignmentId: assignment.id,
+              orderId: order.id,
+              effectiveAt: new Date(),
+              client: tx,
+            });
+          }
+        }
       } else if (order.status === "Delivered" && !order.payment && updatedOrder.payment) {
         const paymentMethod = String(updatedOrder.paymentMethod || "CASH").toUpperCase();
         await postCustomerPaymentAccounting({

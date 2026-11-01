@@ -6,16 +6,32 @@ import {
   Boxes,
   Truck,
   Plus,
+  Minus,
   Trash2,
   CheckCircle2,
   RotateCw,
   PackageCheck,
+  Search,
+  ImageOff,
 } from "lucide-react";
 import { backendUrl, useManufacturer } from "../context/ManufacturerContext";
 import Pagination from "../components/Pagination";
 
 const emptyRow = () => ({ inventorySkuId: "", quantity: 1 });
 const TRANSFER_PAGE_SIZE = 10;
+const getProductImage = (image) => {
+  let candidate = Array.isArray(image) ? image.find(Boolean) : image;
+  if (typeof candidate === "string" && candidate.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(candidate);
+      candidate = Array.isArray(parsed) ? parsed.find(Boolean) : parsed;
+    } catch {
+      return candidate;
+    }
+  }
+  if (typeof candidate === "string") return candidate;
+  return typeof candidate?.url === "string" ? candidate.url : "";
+};
 
 const DistributorDemandReceipt = () => {
   const { transferId } = useParams();
@@ -28,6 +44,7 @@ const DistributorDemandReceipt = () => {
   const [pagination, setPagination] = useState(null);
   const [manufacturerId, setManufacturerId] = useState("");
   const [requestLines, setRequestLines] = useState([emptyRow()]);
+  const [productSearch, setProductSearch] = useState("");
   const [receivingLine, setReceivingLine] = useState(null);
   const [receiptDraft, setReceiptDraft] = useState({
     goodQuantity: 0,
@@ -45,6 +62,31 @@ const DistributorDemandReceipt = () => {
   const selectedManufacturer = useMemo(
     () => catalog.find((item) => item.id === manufacturerId),
     [catalog, manufacturerId]
+  );
+  const products = useMemo(() => {
+    const grouped = new Map();
+    for (const sku of selectedManufacturer?.stock || []) {
+      if (!grouped.has(sku.productId)) {
+        grouped.set(sku.productId, {
+          id: sku.productId,
+          name: sku.productName,
+          image: sku.productImage,
+          variants: [],
+        });
+      }
+      grouped.get(sku.productId).variants.push(sku);
+    }
+    return [...grouped.values()].filter((product) =>
+      product.name.toLocaleLowerCase().includes(productSearch.trim().toLocaleLowerCase())
+    );
+  }, [productSearch, selectedManufacturer]);
+  const selectedSkuById = useMemo(
+    () => new Map((selectedManufacturer?.stock || []).map((sku) => [sku.inventorySkuId, sku])),
+    [selectedManufacturer],
+  );
+  const requestedUnits = requestLines.reduce(
+    (sum, line) => sum + (line.inventorySkuId ? Number(line.quantity) || 0 : 0),
+    0,
   );
 
   const loadData = useCallback(async () => {
@@ -102,19 +144,29 @@ const DistributorDemandReceipt = () => {
     return () => window.removeEventListener("focus", refreshWhenFocused);
   }, [loadData]);
 
-  const updateRequestLine = (index, field, value) => {
-    setRequestLines((current) =>
-      current.map((line, lineIndex) =>
-        lineIndex === index ? { ...line, [field]: value } : line
-      )
-    );
+  const changeSkuQuantity = (inventorySkuId, delta) => {
+    const sku = selectedSkuById.get(inventorySkuId);
+    if (!sku) return;
+    setRequestLines((current) => {
+      const existing = current.find((line) => line.inventorySkuId === inventorySkuId);
+      if (!existing) {
+        return delta > 0 ? [...current.filter((line) => line.inventorySkuId), { inventorySkuId, quantity: 1 }] : current;
+      }
+      return current.map((line) => {
+        if (line.inventorySkuId !== inventorySkuId) return line;
+        const quantity = Math.min(sku.availableQuantity, Math.max(0, Number(line.quantity || 0) + delta));
+        return { ...line, quantity };
+      }).filter((line) => line.inventorySkuId && Number(line.quantity) > 0);
+    });
   };
-
-  const addLine = () => setRequestLines((curr) => [...curr, emptyRow()]);
-  const removeLine = (idx) => {
-    if (requestLines.length === 1) return;
-    setRequestLines((curr) => curr.filter((_, i) => i !== idx));
+  const setSkuQuantity = (inventorySkuId, quantity) => {
+    setRequestLines((current) => current.map((line) => (
+      line.inventorySkuId === inventorySkuId ? { ...line, quantity } : line
+    )));
   };
+  const removeSku = (inventorySkuId) => setRequestLines((current) =>
+    current.filter((line) => line.inventorySkuId !== inventorySkuId)
+  );
 
   const submitDemandRequest = async (e) => {
     e.preventDefault();
@@ -125,6 +177,13 @@ const DistributorDemandReceipt = () => {
     const validLines = requestLines.filter((l) => l.inventorySkuId && Number(l.quantity) > 0);
     if (!validLines.length) {
       toast.error("Add at least one valid product SKU variant with quantity.");
+      return;
+    }
+    if (validLines.some((line) => {
+      const sku = selectedSkuById.get(line.inventorySkuId);
+      return !Number.isSafeInteger(Number(line.quantity)) || !sku || Number(line.quantity) > sku.availableQuantity;
+    })) {
+      toast.error("Each requested quantity must be a whole number within the selected variant's available stock.");
       return;
     }
 
@@ -325,6 +384,7 @@ const DistributorDemandReceipt = () => {
                   onChange={(e) => {
                     setManufacturerId(e.target.value);
                     setRequestLines([emptyRow()]);
+                    setProductSearch("");
                   }}
                   className="w-full text-xs p-2.5 rounded-xl border border-[#dedbd3] bg-[#ffffff] text-[#171717] focus:outline-none focus:border-[#171717]"
                   required
@@ -350,58 +410,120 @@ const DistributorDemandReceipt = () => {
 
               {selectedManufacturer && (
                 <div className="space-y-3 pt-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#171717]">Requested SKU Variants</span>
-                    <button
-                      type="button"
-                      onClick={addLine}
-                      className="flex items-center gap-1 text-[11px] font-bold text-[#171717] bg-[#f8f7f4] hover:bg-[#dedbd3]/50 px-2.5 py-1 rounded-lg border border-[#dedbd3] transition-colors"
-                    >
-                      <Plus className="w-3 h-3" /> Add Variant
-                    </button>
+                  <div className="flex flex-col gap-3 border-t border-[#dedbd3] pt-4 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#171717]">Choose products and variants</h3>
+                      <p className="mt-1 text-xs text-[#575757]">Browse product photos, check variant stock, then add the sizes and colors you need.</p>
+                    </div>
+                    <label className="relative block w-full sm:max-w-xs">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#777]" />
+                      <input
+                        type="search"
+                        value={productSearch}
+                        onChange={(event) => setProductSearch(event.target.value)}
+                        placeholder="Search factory products"
+                        aria-label="Search factory products"
+                        className="w-full rounded-lg border border-[#dedbd3] bg-white py-2 pl-9 pr-3 text-xs text-[#171717] outline-none focus:border-[#171717]"
+                      />
+                    </label>
                   </div>
 
-                  <div className="space-y-2">
-                    {requestLines.map((line, idx) => (
-                      <div key={idx} className="flex items-center gap-2 p-2 rounded-xl bg-[#f8f7f4] border border-[#dedbd3]">
-                        <select
-                          value={line.inventorySkuId}
-                          onChange={(e) => updateRequestLine(idx, "inventorySkuId", e.target.value)}
-                          className="flex-1 text-xs p-2 rounded-lg border border-[#dedbd3] bg-[#ffffff] text-[#171717] focus:outline-none focus:border-[#171717]"
-                          required
-                        >
-                          <option value="">-- Select SKU Variant --</option>
-                          {selectedManufacturer.stock?.map((sku) => (
-                            <option key={sku.inventorySkuId} value={sku.inventorySkuId}>
-                              {sku.productName} • {sku.size} / {sku.color} (Available: {sku.availableQuantity})
-                            </option>
-                          ))}
-                        </select>
-                        <input
-                          type="number"
-                          min="1"
-                          value={line.quantity}
-                          onChange={(e) => updateRequestLine(idx, "quantity", e.target.value)}
-                          placeholder="Qty"
-                          className="w-20 text-xs p-2 rounded-lg border border-[#dedbd3] bg-[#ffffff] text-[#171717] text-center font-bold focus:outline-none focus:border-[#171717]"
-                          required
-                        />
-                        {requestLines.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => removeLine(idx)}
-                            className="p-2 text-[#575757] hover:text-rose-600 rounded-lg hover:bg-[#ffffff] transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                  {products.length ? (
+                    <div className="grid gap-3 xl:grid-cols-2">
+                      {products.map((product) => {
+                        const imageUrl = getProductImage(product.image);
+                        return (
+                          <article key={product.id} className="overflow-hidden rounded-xl border border-[#dedbd3] bg-white">
+                            <div className="flex min-w-0 items-center gap-3 border-b border-[#eeeae2] bg-[#f8f7f4] p-3">
+                              <div className="flex h-16 w-14 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-[#dedbd3] bg-white">
+                                {imageUrl ? (
+                                  <img src={imageUrl} alt={product.name} loading="lazy" className="h-full w-full object-cover" />
+                                ) : <ImageOff className="h-5 w-5 text-[#999]" aria-label="No product image" />}
+                              </div>
+                              <div className="min-w-0">
+                                <h4 className="truncate text-sm font-bold text-[#171717]" title={product.name}>{product.name}</h4>
+                                <p className="mt-1 text-[11px] text-[#575757]">{product.variants.length} available size/color variants</p>
+                              </div>
+                            </div>
+                            <div className="divide-y divide-[#eeeae2]">
+                              {product.variants.map((sku) => {
+                                const line = requestLines.find((item) => item.inventorySkuId === sku.inventorySkuId);
+                                const quantity = Number(line?.quantity || 0);
+                                return (
+                                  <div key={sku.inventorySkuId} className="flex items-center justify-between gap-2 px-3 py-2.5">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-xs font-semibold text-[#171717]">{sku.size || "One size"} <span className="text-[#aaa]">/</span> {sku.color || "Standard"}</p>
+                                      <p className="mt-0.5 text-[10px] text-[#666]">{sku.availableQuantity} available</p>
+                                    </div>
+                                    {line ? (
+                                      <div className="flex shrink-0 items-center gap-2">
+                                        <div className="flex items-center rounded-lg border border-[#dedbd3] bg-white">
+                                          <button type="button" onClick={() => changeSkuQuantity(sku.inventorySkuId, -1)} aria-label={`Decrease ${product.name} ${sku.size} ${sku.color}`} className="p-1.5 text-[#444] hover:bg-[#f8f7f4]"><Minus className="h-3 w-3" /></button>
+                                          <input
+                                            type="number"
+                                            min="1"
+                                            max={sku.availableQuantity}
+                                            step="1"
+                                            inputMode="numeric"
+                                            aria-label={`Requested quantity for ${product.name} ${sku.size} ${sku.color}`}
+                                            value={line.quantity}
+                                            onChange={(event) => setSkuQuantity(sku.inventorySkuId, event.target.value)}
+                                            className="w-10 border-0 bg-transparent p-0 text-center text-xs font-bold tabular-nums text-[#171717] outline-none focus:ring-0"
+                                          />
+                                          <button type="button" onClick={() => changeSkuQuantity(sku.inventorySkuId, 1)} disabled={quantity >= sku.availableQuantity} aria-label={`Increase ${product.name} ${sku.size} ${sku.color}`} className="p-1.5 text-[#444] hover:bg-[#f8f7f4] disabled:opacity-40"><Plus className="h-3 w-3" /></button>
+                                        </div>
+                                        <button type="button" onClick={() => removeSku(sku.inventorySkuId)} aria-label={`Remove ${product.name} ${sku.size} ${sku.color}`} className="rounded-md p-1.5 text-[#777] hover:bg-rose-50 hover:text-rose-700"><Trash2 className="h-3.5 w-3.5" /></button>
+                                      </div>
+                                    ) : (
+                                      <button type="button" onClick={() => changeSkuQuantity(sku.inventorySkuId, 1)} className="shrink-0 rounded-lg border border-[#dedbd3] bg-white px-2.5 py-1.5 text-[11px] font-bold text-[#171717] hover:border-[#171717] hover:bg-[#f8f7f4]">
+                                        <span className="inline-flex items-center gap-1"><Plus className="h-3 w-3" /> Add</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="rounded-xl border border-dashed border-[#dedbd3] px-4 py-8 text-center text-xs text-[#666]">
+                      {selectedManufacturer.stock?.length ? "No factory products match your search." : "No available variants for this factory."}
+                    </p>
+                  )}
+
+                  <section className="rounded-xl border border-[#dedbd3] bg-[#f8f7f4] p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-xs font-bold text-[#171717]">Your request</h3>
+                        <p className="mt-0.5 text-[11px] text-[#666]">{requestLines.filter((line) => line.inventorySkuId && Number(line.quantity) > 0).length} variants · {requestedUnits} units</p>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                    {requestLines.some((line) => line.inventorySkuId && Number(line.quantity) > 0) ? (
+                      <div className="mt-3 space-y-2">
+                        {requestLines.filter((line) => line.inventorySkuId && Number(line.quantity) > 0).map((line) => {
+                          const sku = selectedSkuById.get(line.inventorySkuId);
+                          if (!sku) return null;
+                          return (
+                            <div key={line.inventorySkuId} className="flex items-center justify-between gap-3 rounded-lg border border-[#e7e2d9] bg-white px-3 py-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-semibold text-[#171717]">{sku.productName}</p>
+                                <p className="text-[10px] text-[#666]">{sku.size || "One size"} / {sku.color || "Standard"} · {sku.availableQuantity} available</p>
+                              </div>
+                              <span className="shrink-0 text-xs font-bold text-[#171717]">Qty {line.quantity}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="mt-3 rounded-lg border border-dashed border-[#dedbd3] bg-white px-3 py-4 text-center text-[11px] text-[#777]">Add available variants above to build your request.</p>
+                    )}
+                  </section>
 
                   <button
                     type="submit"
-                    disabled={saving || loading || Boolean(catalogError) || !selectedManufacturer}
+                    disabled={saving || loading || Boolean(catalogError) || !selectedManufacturer || requestedUnits < 1}
                     className="w-full mt-4 py-2.5 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#262626] transition-colors disabled:opacity-50"
                   >
                     {saving ? "Submitting Request..." : "Send Request for Admin Approval"}

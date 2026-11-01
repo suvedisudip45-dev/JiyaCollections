@@ -147,7 +147,7 @@ const DistributorFinanceDashboard = () => {
       </div>
 
       {/* Financial Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-7 gap-4">
         {/* Net Outstanding Balance */}
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-5 shadow-xs space-y-2">
           <div className="flex items-center justify-between text-[#575757]">
@@ -159,8 +159,19 @@ const DistributorFinanceDashboard = () => {
             {(summary.netPayableBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </p>
           <p className="text-[11px] text-[#575757]">
-            Approved delivery, NCM transfer, service, and bonus earnings owed to you; excludes COD and customer-return balances.
+            Delivery, hub-sale, NCM transfer, service, and bonus earnings owed to you; excludes COD and customer-return balances.
           </p>
+        </div>
+
+        <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-5 shadow-xs space-y-2">
+          <div className="flex items-center justify-between text-[#575757]">
+            <span className="text-xs font-bold uppercase tracking-wider">Hub counter sales (net)</span>
+            <ArrowUpRight className="w-4 h-4 text-indigo-600" />
+          </div>
+          <p className="text-2xl font-bold text-[#171717]">
+            {currency}{Number(Number(summary.counterSaleEarnings || 0) - Number(summary.counterSaleReturns || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          </p>
+          <p className="text-[11px] text-[#575757]">Approved counter-sale compensation less proportional return reversals.</p>
         </div>
 
         {/* Gross Delivery Earnings */}
@@ -521,9 +532,9 @@ const DistributorFinanceDashboard = () => {
                     <td className="p-3">
                       <span
                         className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
-                          tx.type === "DELIVERY"
+                          ["DELIVERY", "COUNTER_SALE"].includes(tx.type)
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                            : ["RETURN", "EXCHANGE"].includes(tx.type)
+                            : ["RETURN", "EXCHANGE", "COUNTER_SALE_REVERSAL"].includes(tx.type)
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
                               : tx.type === "NCM_TRANSFER"
                                 ? "bg-cyan-50 text-cyan-800 border border-cyan-200"
@@ -547,11 +558,12 @@ const DistributorFinanceDashboard = () => {
                           <summary className="cursor-pointer font-semibold text-indigo-700">Settlement breakdown · {tx.statementSnapshot.lineItems.filter((line) => line.type === "DELIVERY").length} deliveries</summary>
                           <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-[#dedbd3]">
                             <table className="w-full text-left">
-                              <thead className="sticky top-0 bg-[#f8f7f4]"><tr><th className="p-2">Unit / period</th><th className="p-2 text-right">Delivery / return</th><th className="p-2 text-right">NCM transfer</th><th className="p-2 text-right">Incentive</th><th className="p-2 text-right">Bonus</th><th className="p-2 text-right">Deduction</th><th className="p-2 text-right">Net</th></tr></thead>
+                              <thead className="sticky top-0 bg-[#f8f7f4]"><tr><th className="p-2">Unit / period</th><th className="p-2 text-right">Delivery / return</th><th className="p-2 text-right">Hub sale</th><th className="p-2 text-right">NCM transfer</th><th className="p-2 text-right">Incentive</th><th className="p-2 text-right">Bonus</th><th className="p-2 text-right">Deduction</th><th className="p-2 text-right">Net</th></tr></thead>
                               <tbody>{tx.statementSnapshot.lineItems.map((line, index) => (
                                 <tr key={`${line.referenceId}-${index}`} className="border-t border-[#dedbd3]">
                                   <td className="p-2">{line.type === "BONUS" ? `${line.referenceId} · ${line.eligibleDeliveryCount} deliveries` : `${line.type} · ${line.referenceId}`}</td>
                                   <td className="p-2 text-right">{Number(line.deliveryCharge || line.returnCharge || line.exchangeCharge || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-right">{Number(line.counterSaleCharge || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.ncmTransferCharge || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.incentiveAmount || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.bonusAmount || 0).toFixed(2)}</td>
@@ -565,7 +577,9 @@ const DistributorFinanceDashboard = () => {
                       )}
                     </td>
                     <td className="p-3 text-right font-medium text-[#171717]">
-                      {["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER"].includes(tx.type) ? `+${Number(tx.grossAmount || 0).toFixed(2)}` : "—"}
+                      {["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE", "COUNTER_SALE_REVERSAL"].includes(tx.type)
+                        ? `${Number(tx.grossAmount || 0) > 0 ? "+" : ""}${Number(tx.grossAmount || 0).toFixed(2)}`
+                        : "—"}
                     </td>
                     <td className="p-3 text-right text-emerald-700 font-semibold">
                       {tx.incentiveAmount > 0 ? `+${tx.incentiveAmount.toFixed(2)}` : "—"}

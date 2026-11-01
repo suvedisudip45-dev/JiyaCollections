@@ -287,6 +287,7 @@ export const getAdminDistributorProfile = async (req, res) => {
             deliveryCharge: true,
             returnCharge: true,
             ncmTransferCharge: true,
+            counterSaleCharge: true,
             commissionRate: true,
             bonusRate: true,
             incentiveRate: true,
@@ -544,12 +545,20 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       return res.status(404).json({ success: false, message: "Distributor profile not found." });
     }
 
-    const [rateCard, deliveries, returns, settlements, ncmTransferEarnings, rows] = await Promise.all([
+    const [rateCard, deliveryCountRows, returns, settlements, ncmTransferEarnings, counterSaleEarnings, rows] = await Promise.all([
       resolveActiveRateCard({ distributorId }),
-      prisma.orderAssignment.count({ where: { distributorId, status: { in: ["delivered", "Delivered"] } } }),
+      prisma.$queryRaw(Prisma.sql`
+        SELECT COUNT(*) AS total
+        FROM OrderAssignment a
+        LEFT JOIN \`Order\` o ON o.id = a.orderId
+        WHERE a.distributorId = ${distributorId}
+          AND a.status IN ('delivered', 'Delivered')
+          AND (o.id IS NULL OR NOT (o.orderType = 'DIRECT_DISTRIBUTOR' AND o.directOrderType = 'HUB_VISIT'))
+      `),
       prisma.orderAssignment.count({ where: { distributorId, status: { in: ["returned", "Returned"] } } }),
       prisma.distributorSettlementRequest.count({ where: { distributorId } }),
       prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: "NCM_TRANSFER" } }),
+      prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: { in: ["COUNTER_SALE", "COUNTER_SALE_REVERSAL"] } } }),
       prisma.$queryRaw(Prisma.sql`
         SELECT *
         FROM (
@@ -568,6 +577,7 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
           LEFT JOIN \`Order\` o ON o.id = a.orderId
           WHERE a.distributorId = ${distributorId}
             AND a.status IN ('delivered', 'Delivered')
+            AND (o.id IS NULL OR NOT (o.orderType = 'DIRECT_DISTRIBUTOR' AND o.directOrderType = 'HUB_VISIT'))
           UNION ALL
           SELECT
             'RETURN' AS transactionType,
@@ -598,6 +608,21 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
           FROM DistributorServiceEarning e
           WHERE e.distributorId = ${distributorId}
             AND e.serviceType = 'NCM_TRANSFER'
+          UNION ALL
+          SELECT
+            e.serviceType AS transactionType,
+            e.id AS sourceId,
+            e.orderId AS referenceId,
+            e.effectiveAt AS transactionDate,
+            0 AS orderAmount,
+            'N/A' AS paymentMethod,
+            e.payableAmount AS settlementAmount,
+            NULL AS status,
+            NULL AS notes,
+            NULL AS financialAccountId
+          FROM DistributorServiceEarning e
+          WHERE e.distributorId = ${distributorId}
+            AND e.serviceType IN ('COUNTER_SALE', 'COUNTER_SALE_REVERSAL')
           UNION ALL
           SELECT
             'SETTLEMENT' AS transactionType,
@@ -640,6 +665,25 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
           referenceId: row.referenceId,
           date: row.transactionDate,
           description: `NCM customer delivery transfer fee for Order ${String(row.referenceId).slice(0, 8)}`,
+          grossAmount: amount,
+          incentiveAmount: 0,
+          discountChargeAmount: 0,
+          netAmount: amount,
+          orderAmount: 0,
+          paymentMethod: "N/A",
+          isRateSnapshotted: true,
+        };
+      }
+      if (row.transactionType === "COUNTER_SALE" || row.transactionType === "COUNTER_SALE_REVERSAL") {
+        const amount = Number(row.settlementAmount || 0);
+        const isReversal = row.transactionType === "COUNTER_SALE_REVERSAL";
+        return {
+          id: `tx-${isReversal ? "counter-return" : "counter-sale"}-${row.sourceId}`,
+          type: row.transactionType,
+          earningId: row.sourceId,
+          referenceId: row.referenceId,
+          date: row.transactionDate,
+          description: `${isReversal ? "Hub counter sale return reversal" : "Hub counter sale earning"} for Order ${String(row.referenceId).slice(0, 8)}`,
           grossAmount: amount,
           incentiveAmount: 0,
           discountChargeAmount: 0,
@@ -714,7 +758,8 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
         financialAccountId: row.financialAccountId || null,
       };
     });
-    return res.json(paginatedResponse("transactions", transactions, pagination, deliveries + returns + settlements + ncmTransferEarnings));
+    const deliveries = Number(deliveryCountRows[0]?.total || 0);
+    return res.json(paginatedResponse("transactions", transactions, pagination, deliveries + returns + settlements + ncmTransferEarnings + counterSaleEarnings));
   } catch (error) {
     return sendError(res, error, "getAdminDistributorFinanceTransactions");
   }

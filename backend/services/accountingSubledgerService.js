@@ -126,6 +126,11 @@ export const allocatePaymentToDocuments = async ({
   const updatedDocs = [];
 
   for (const doc of openDocs) {
+    const isExplicitCreditNoteOffset = normalizedAllocationType === "OFFSET" &&
+      Array.isArray(targetDocumentIds) &&
+      targetDocumentIds.includes(doc.id) &&
+      sourceTypes.includes("DISTRIBUTOR_SERVICE_EARNING_REVERSAL");
+    if (doc.documentType === "CREDIT_NOTE" && !isExplicitCreditNoteOffset) continue;
     if (remainingToAllocate.lessThanOrEqualTo(0)) break;
 
     const docRemaining = new Prisma.Decimal(String(doc.remainingAmount));
@@ -226,7 +231,10 @@ export const reconcileSubledgerToControl = async ({
   });
 
   const subledgerTotal = openDocuments.reduce(
-    (acc, doc) => acc.plus(new Prisma.Decimal(String(doc.remainingAmount))),
+    (acc, doc) => {
+      const amount = new Prisma.Decimal(String(doc.remainingAmount));
+      return doc.documentType === "CREDIT_NOTE" ? acc.minus(amount) : acc.plus(amount);
+    },
     new Prisma.Decimal(0)
   );
 

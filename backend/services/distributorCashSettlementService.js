@@ -974,7 +974,10 @@ const listLegacyDistributorLogisticsPayables = async (client, distributorId) => 
 };
 
 const sumDocumentBalances = (documents) => documents.reduce(
-  (sum, document) => sum.plus(new Prisma.Decimal(String(document.remainingAmount))),
+  (sum, document) => {
+    const amount = new Prisma.Decimal(String(document.remainingAmount));
+    return document.documentType === "CREDIT_NOTE" ? sum.minus(amount) : sum.plus(amount);
+  },
   new Prisma.Decimal(0),
 );
 

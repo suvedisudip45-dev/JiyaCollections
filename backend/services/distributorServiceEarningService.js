@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
-import { createAccountingDocument } from "./accountingSubledgerService.js";
+import { allocatePaymentToDocuments, createAccountingDocument } from "./accountingSubledgerService.js";
 import { postJournalEntry } from "./accountingPostingEngine.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 
@@ -18,6 +18,58 @@ const commissionFor = (rate, base) => {
   return commissionRate.greaterThan(0) && commissionRate.lessThanOrEqualTo(100)
     ? base.mul(commissionRate).div(100).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP)
     : commissionRate;
+};
+
+const applyOutstandingCounterSaleReversals = async ({ distributorId, distributorName, document, client }) => {
+  if (!document?.id || !client.distributorServiceEarning?.findMany) return;
+  const party = await ensureAccountingParty({
+    partyType: "DISTRIBUTOR",
+    sourceEntityId: distributorId,
+    displayName: distributorName,
+  }, { client });
+  const reversals = await client.distributorServiceEarning.findMany({
+    where: { distributorId, serviceType: "COUNTER_SALE_REVERSAL" },
+    orderBy: { effectiveAt: "asc" },
+  });
+  for (const reversal of reversals) {
+    if (!reversal.accountingDocumentId) {
+      throw new Error(`Counter-sale reversal ${reversal.id} is missing its payable credit note.`);
+    }
+    const remaining = new Prisma.Decimal(String(reversal.payableAmount)).abs()
+      .minus(new Prisma.Decimal(String(reversal.appliedReversalAmount || 0)));
+    if (!remaining.greaterThan(0)) continue;
+    const allocation = await allocatePaymentToDocuments({
+      partyId: party.id,
+      side: "PAYABLE",
+      amount: remaining,
+      journalEntryId: reversal.journalEntryId,
+      allocationType: "OFFSET",
+      targetDocumentIds: [document.id],
+      sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING"],
+      notes: `Apply hub sale return reversal ${reversal.id} against distributor payable.`,
+      idempotencyKey: `${reversal.id}:OFFSET:${document.id}`,
+    }, { client });
+    if (allocation.totalAllocated.greaterThan(0)) {
+      const creditNoteAllocation = await allocatePaymentToDocuments({
+        partyId: party.id,
+        side: "PAYABLE",
+        amount: allocation.totalAllocated,
+        journalEntryId: reversal.journalEntryId,
+        allocationType: "OFFSET",
+        targetDocumentIds: [reversal.accountingDocumentId],
+        sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING_REVERSAL"],
+        notes: `Apply hub sale return credit note ${reversal.accountingDocumentId}.`,
+        idempotencyKey: `${reversal.id}:CREDIT_NOTE_OFFSET:${document.id}`,
+      }, { client });
+      if (!creditNoteAllocation.totalAllocated.equals(allocation.totalAllocated)) {
+        throw new Error(`Counter-sale reversal credit note ${reversal.accountingDocumentId} is out of balance.`);
+      }
+      await client.distributorServiceEarning.update({
+        where: { id: reversal.id },
+        data: { appliedReversalAmount: new Prisma.Decimal(String(reversal.appliedReversalAmount || 0)).plus(allocation.totalAllocated) },
+      });
+    }
+  }
 };
 
 export const accrueDistributorDeliveryEarning = async ({
@@ -142,13 +194,15 @@ export const accrueDistributorDeliveryEarning = async ({
     notes: JSON.stringify(rateSnapshot),
   }, { client });
 
-  return client.distributorServiceEarning.update({
+  const updatedEarning = await client.distributorServiceEarning.update({
     where: { id: earning.id },
     data: {
       accountingDocumentId: document.id,
       journalEntryId: journal.id,
     },
   });
+  await applyOutstandingCounterSaleReversals({ distributorId, distributorName, document, client });
+  return updatedEarning;
 };
 
 export const accrueDistributorServiceCharge = async ({
@@ -160,14 +214,15 @@ export const accrueDistributorServiceCharge = async ({
   rateCardId = null,
   serviceType,
   chargeAmount,
+  snapshotDetails = {},
   vatRate = 0,
   effectiveAt = new Date(),
   client = prisma,
   journalPoster = postJournalEntry,
 } = {}) => {
   const normalizedType = String(serviceType || "").trim().toUpperCase();
-  if (!["RETURN", "EXCHANGE", "NCM_TRANSFER"].includes(normalizedType)) {
-    throw new Error("Distributor service charge must be a RETURN, EXCHANGE, or NCM_TRANSFER.");
+  if (!["RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE"].includes(normalizedType)) {
+    throw new Error("Distributor service charge must be a RETURN, EXCHANGE, NCM_TRANSFER, or COUNTER_SALE.");
   }
   if (!distributorId || !distributorName || !assignmentId || !orderId || !sourceId) {
     throw new Error("Distributor, assignment, order, and service source details are required.");
@@ -202,7 +257,10 @@ export const accrueDistributorServiceCharge = async ({
     vatAmount: vatAmount.toFixed(2),
     taxTreatment: normalizedType === "NCM_TRANSFER"
       ? "NCM_TRANSFER_FEE_NO_VAT"
-      : "RATE_CARD_SERVICE_CHARGE",
+      : normalizedType === "COUNTER_SALE"
+        ? "HUB_COUNTER_SALE_FEE_NO_VAT"
+        : "RATE_CARD_SERVICE_CHARGE",
+    ...snapshotDetails,
   };
   const earning = await client.distributorServiceEarning.create({
     data: {
@@ -233,7 +291,9 @@ export const accrueDistributorServiceCharge = async ({
   }, { client });
   const expenseMappingKey = normalizedType === "NCM_TRANSFER"
     ? "DISTRIBUTOR_NCM_TRANSFER_EXPENSE"
-    : "DELIVERY_EXPENSE";
+    : normalizedType === "COUNTER_SALE"
+      ? "DISTRIBUTOR_COUNTER_SALE_EXPENSE"
+      : "DELIVERY_EXPENSE";
   const journal = await journalPoster({
     transactionDate: effectiveAt,
     sourceType: "DISTRIBUTOR_SERVICE_EARNING",
@@ -273,11 +333,204 @@ export const accrueDistributorServiceCharge = async ({
     notes: JSON.stringify(snapshot),
   }, { client });
 
-  return client.distributorServiceEarning.update({
+  const updatedEarning = await client.distributorServiceEarning.update({
     where: { id: earning.id },
     data: {
       accountingDocumentId: document.id,
       journalEntryId: journal.id,
+    },
+  });
+  await applyOutstandingCounterSaleReversals({ distributorId, distributorName, document, client });
+  return updatedEarning;
+};
+
+export const accrueDistributorCounterSaleEarning = async ({
+  distributorId,
+  distributorName,
+  assignmentId,
+  orderId,
+  saleBaseAmount,
+  effectiveAt = new Date(),
+  client = prisma,
+  rateCardResolver = resolveActiveRateCard,
+  journalPoster = postJournalEntry,
+} = {}) => {
+  const rateCard = await rateCardResolver({ distributorId, effectiveAt, client });
+  const chargeAmount = money(rateCard.counterSaleCharge ?? 0, "Hub counter sale charge");
+  if (chargeAmount.isZero()) return null;
+  return accrueDistributorServiceCharge({
+    distributorId,
+    distributorName,
+    assignmentId,
+    orderId,
+    sourceId: orderId,
+    rateCardId: rateCard.rateCardId || null,
+    serviceType: "COUNTER_SALE",
+    chargeAmount,
+    vatRate: 0,
+    effectiveAt,
+    snapshotDetails: { saleBaseAmount: money(saleBaseAmount, "Hub sale merchandise amount").toFixed(2) },
+    client,
+    journalPoster,
+  });
+};
+
+export const reverseDistributorCounterSaleEarning = async ({
+  returnRecord,
+  distributorName,
+  effectiveAt = new Date(),
+  client = prisma,
+  journalPoster = postJournalEntry,
+} = {}) => {
+  if (!returnRecord?.id || !returnRecord.orderId || !returnRecord.distributorId) return null;
+  const idempotencyKey = `DISTRIBUTOR_COUNTER_SALE_REVERSAL:${returnRecord.id}`;
+  const prior = await client.distributorServiceEarning.findUnique({ where: { idempotencyKey } });
+  if (prior) return prior;
+
+  const order = await client.order.findUnique({
+    where: { id: returnRecord.orderId },
+    select: { id: true, orderType: true, directOrderType: true, items: true, distributorId: true },
+  });
+  if (
+    !order ||
+    order.orderType !== "DIRECT_DISTRIBUTOR" ||
+    order.directOrderType !== "HUB_VISIT" ||
+    order.distributorId !== returnRecord.distributorId
+  ) return null;
+
+  const originalEarning = await client.distributorServiceEarning.findUnique({
+    where: { idempotencyKey: `DISTRIBUTOR_COUNTER_SALE_EARNING:${order.id}` },
+  });
+  if (!originalEarning) return null;
+  const originalBase = new Prisma.Decimal(String(originalEarning.snapshot?.saleBaseAmount || 0));
+  if (!originalBase.greaterThan(0)) return null;
+
+  const items = Array.isArray(returnRecord.items)
+    ? returnRecord.items
+    : typeof returnRecord.items === "string"
+      ? JSON.parse(returnRecord.items)
+      : [];
+  const returnedBase = items.reduce((total, item) => {
+    const value = Number(item.refundAmount ?? (Number(item.unitPrice || 0) * Number(item.quantity || 0)));
+    return total + (Number.isFinite(value) && value > 0 ? value : 0);
+  }, 0);
+  if (returnedBase <= 0) return null;
+
+  const existingReversals = await client.distributorServiceEarning.findMany({
+    where: { distributorId: returnRecord.distributorId, orderId: order.id, serviceType: "COUNTER_SALE_REVERSAL" },
+  });
+  const alreadyReversed = existingReversals.reduce(
+    (total, earning) => total.plus(new Prisma.Decimal(String(earning.payableAmount)).abs()),
+    new Prisma.Decimal(0),
+  );
+  const originalPayable = new Prisma.Decimal(String(originalEarning.payableAmount));
+  const proportionalAmount = originalPayable.mul(returnedBase).div(originalBase)
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const reversalAmount = Prisma.Decimal.min(proportionalAmount, Prisma.Decimal.max(new Prisma.Decimal(0), originalPayable.minus(alreadyReversed)));
+  if (!reversalAmount.greaterThan(0)) return null;
+
+  const earning = await client.distributorServiceEarning.create({
+    data: {
+      distributorId: returnRecord.distributorId,
+      assignmentId: returnRecord.assignmentId || originalEarning.assignmentId,
+      orderId: order.id,
+      serviceType: "COUNTER_SALE_REVERSAL",
+      idempotencyKey,
+      rateCardId: originalEarning.rateCardId,
+      effectiveAt,
+      deliveryCharge: new Prisma.Decimal(0),
+      incentiveAmount: new Prisma.Decimal(0),
+      commissionAmount: new Prisma.Decimal(0),
+      otherCharges: reversalAmount.negated(),
+      vatRate: new Prisma.Decimal(0),
+      vatAmount: new Prisma.Decimal(0),
+      vatInvoiceVerified: false,
+      payableAmount: reversalAmount.negated(),
+      appliedReversalAmount: new Prisma.Decimal(0),
+      snapshot: {
+        serviceType: "COUNTER_SALE_REVERSAL",
+        originalEarningId: originalEarning.id,
+        returnId: returnRecord.id,
+        returnedMerchandiseAmount: returnedBase.toFixed(2),
+        originalMerchandiseAmount: originalBase.toFixed(2),
+        reversalAmount: reversalAmount.toFixed(2),
+      },
+    },
+  });
+  const party = await ensureAccountingParty({
+    partyType: "DISTRIBUTOR",
+    sourceEntityId: returnRecord.distributorId,
+    displayName: distributorName,
+  }, { client });
+  const journal = await journalPoster({
+    transactionDate: effectiveAt,
+    sourceType: "DISTRIBUTOR_SERVICE_EARNING",
+    sourceId: earning.id,
+    idempotencyKey,
+    referenceNumber: `DIST-COUNTER-RETURN-${String(returnRecord.id).slice(-8)}`,
+    description: `Reverse hub counter sale earning for return ${returnRecord.id}`,
+    lines: [
+      {
+        mappingKey: "DISTRIBUTOR_PAYABLE",
+        debit: reversalAmount,
+        credit: 0,
+        description: `Reduce distributor payable for returned hub sale ${order.id}`,
+        accountingPartyId: party.id,
+      },
+      {
+        mappingKey: "DISTRIBUTOR_COUNTER_SALE_EXPENSE",
+        debit: 0,
+        credit: reversalAmount,
+        description: `Reverse hub counter sale compensation for order ${order.id}`,
+        accountingPartyId: party.id,
+      },
+    ],
+    client,
+  });
+  const creditNote = await createAccountingDocument({
+    documentType: "CREDIT_NOTE",
+    documentNumber: `DIST-COUNTER-RETURN-${earning.id}`,
+    partyId: party.id,
+    side: "PAYABLE",
+    sourceType: "DISTRIBUTOR_SERVICE_EARNING_REVERSAL",
+    sourceId: earning.id,
+    issueDate: effectiveAt,
+    amount: reversalAmount,
+    idempotencyKey: `${idempotencyKey}:CREDIT_NOTE`,
+    notes: JSON.stringify(earning.snapshot),
+  }, { client });
+  const allocation = await allocatePaymentToDocuments({
+    partyId: party.id,
+    side: "PAYABLE",
+    amount: reversalAmount,
+    journalEntryId: journal.id,
+    allocationType: "OFFSET",
+    sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING"],
+    notes: `Apply hub sale return reversal for return ${returnRecord.id}.`,
+    idempotencyKey: `${idempotencyKey}:OFFSET`,
+  }, { client });
+  if (allocation.totalAllocated.greaterThan(0)) {
+    const creditNoteAllocation = await allocatePaymentToDocuments({
+      partyId: party.id,
+      side: "PAYABLE",
+      amount: allocation.totalAllocated,
+      journalEntryId: journal.id,
+      allocationType: "OFFSET",
+      targetDocumentIds: [creditNote.id],
+      sourceTypes: ["DISTRIBUTOR_SERVICE_EARNING_REVERSAL"],
+      notes: `Apply hub sale return credit note for return ${returnRecord.id}.`,
+      idempotencyKey: `${idempotencyKey}:CREDIT_NOTE_OFFSET`,
+    }, { client });
+    if (!creditNoteAllocation.totalAllocated.equals(allocation.totalAllocated)) {
+      throw new Error(`Counter-sale reversal credit note ${creditNote.id} is out of balance.`);
+    }
+  }
+  return client.distributorServiceEarning.update({
+    where: { id: earning.id },
+    data: {
+      journalEntryId: journal.id,
+      accountingDocumentId: creditNote.id,
+      appliedReversalAmount: allocation.totalAllocated,
     },
   });
 };

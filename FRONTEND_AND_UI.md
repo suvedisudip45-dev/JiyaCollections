@@ -316,7 +316,9 @@ the default API response; Hub Inventory requests product grouping explicitly.
 
 Distributor self-delivery and NCM order lists allow selecting orders for a shared compact 80 mm thermal parcel slip. The slip includes recipient and sender contact/location, order and carrier references where available, item variants, quantities, unit and line prices, assigned gifts, totals, and the amount to collect. Print slips separately from dispatch or NCM booking; attach each printed slip to the outside of its parcel. The browser print dialog should use the printer's 80 mm roll setting.
 
-The distributor Finance dashboard keeps COD balances distinct from delivery-service earnings: open company receivable, pending remittance, verified refund payable, and eligibility for an Admin-approved offset are shown separately. The cash panel spans the dashboard width rather than being squeezed into the earnings summary grid. Distributors submit COD transfers with a bank/wallet reference and a JPG/PNG image; Admin verification posts the receipt. Admins can explicitly approve a partial or full offset in distributor detail after reviewing refund evidence; the UI presents the available cap and offset history. The self-delivery return panel requires a JPG/PNG photo of returned goods and lets the distributor submit customer-refund method/reference/image for review. Delivery/refund money flows are not browser-cached because stale financial balances could permit invalid submissions.
+The distributor Finance dashboard keeps COD balances distinct from delivery-service earnings: open company receivable, pending remittance, verified refund payable, and eligibility for an Admin-approved offset are shown separately. Earnings include delivery compensation, NCM transfer fees, and a separate net hub counter-sale summary; itemized transactions and settlement breakdowns display hub-sale compensation and return reversals. The cash panel spans the dashboard width rather than being squeezed into the earnings summary grid. Distributors submit COD transfers with a bank/wallet reference and a JPG/PNG image; Admin verification posts the receipt. Admins can explicitly approve a partial or full offset in distributor detail after reviewing refund evidence; the UI presents the available cap and offset history. The self-delivery return panel requires a JPG/PNG photo of returned goods and lets the distributor submit customer-refund method/reference/image for review. Delivery/refund money flows are not browser-cached because stale financial balances could permit invalid submissions.
+
+The Admin distributor profile's general rate card separates self-delivery/phone-order compensation, NCM transfer fees, and hub counter-sale compensation. Rate changes create immutable approved versions; portal earnings are snapshots, and verified hub-sale returns appear as proportional negative adjustments.
 
 The public `GET /api/features` response includes company contact values configured through the backend's `COMPANY_CONTACT_EMAIL` and `COMPANY_CONTACT_PHONE` environment variables. The Manufacturer/Distributor portal displays those values on parcel slips; blank values are omitted.
 
@@ -328,6 +330,11 @@ the SKU variant list used to compose a request. A successfully loaded empty
 selector means there is no eligible factory stock in that catalog response,
 not that a request can be submitted against legacy-only inventory; catalog
 authorization or loading failures are shown separately.
+The stock-request composer groups these variants by product, displays the
+product image and available size/color stock, and supports searching products.
+Distributors can set each selected variant's quantity by typing it directly or
+using the increment/decrement controls. Submitted quantities must be positive
+whole numbers and cannot exceed the displayed unreserved factory stock.
 
 ## 5. Marketing Portal (`marketing/`)
 

@@ -702,7 +702,7 @@ const DistributorApplications = ({ token }) => {
                                 <tbody>{req.metadata.statementSnapshot.lineItems.map((line, index) => (
                                   <tr key={`${line.referenceId}-${index}`} className="border-t border-slate-100">
                                     <td className="p-2">{line.type === "BONUS" ? `${line.referenceId} · ${line.eligibleDeliveryCount} deliveries` : `${line.type} · ${line.referenceId}`}</td>
-                                    <td className="p-2 text-right">Rs {Number(line.deliveryCharge || line.returnCharge || 0).toFixed(2)}</td>
+                                    <td className="p-2 text-right">Rs {Number(line.deliveryCharge || line.returnCharge || line.counterSaleCharge || 0).toFixed(2)}</td>
                                     <td className="p-2 text-right">Rs {Number(line.incentiveAmount || 0).toFixed(2)}</td>
                                     <td className="p-2 text-right">Rs {Number(line.bonusAmount || 0).toFixed(2)}</td>
                                     <td className="p-2 text-right">Rs {Number(line.commissionDeduction || 0).toFixed(2)}</td>

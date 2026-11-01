@@ -2119,6 +2119,7 @@ model DistributorDeliveryChargeNegotiation {
   deliveryCharge      Decimal  @db.Decimal(20, 2)
   returnCharge        Decimal  @db.Decimal(20, 2)
   ncmTransferCharge   Decimal  @default(0) @db.Decimal(20, 2)
+  counterSaleCharge  Decimal  @default(0) @db.Decimal(20, 2)
   commissionRate      Decimal  @default(0) @db.Decimal(20, 2)
   bonusRate           Decimal  @default(0) @db.Decimal(20, 2)
   incentiveRate       Decimal  @default(0) @db.Decimal(20, 2)
@@ -2158,6 +2159,7 @@ model DistributorServiceEarning {
   vatAmount             Decimal     @default(0) @db.Decimal(20, 2)
   vatInvoiceVerified    Boolean     @default(false)
   payableAmount         Decimal     @db.Decimal(20, 2)
+  appliedReversalAmount Decimal     @default(0) @db.Decimal(20, 2)
   accountingDocumentId  String?     @unique @db.VarChar(191)
   journalEntryId        String?     @db.VarChar(191)
   snapshot              Json

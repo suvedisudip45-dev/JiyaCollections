@@ -1707,6 +1707,7 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
             <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-bold text-slate-900">Earnings overview</h2><p className="mt-1 text-xs text-slate-500">Based on the distributor financial statement and current rate card.</p></div><button type="button" onClick={() => setReloadSummary((value) => value + 1)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">Refresh</button></div>
             <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <p><span className="text-slate-500">Delivery earnings</span><br /><b>{amountText(summary.summary?.grossDeliveryEarnings)}</b></p>
+              <p><span className="text-slate-500">Hub counter sales</span><br /><b>{amountText(Number(summary.summary?.counterSaleEarnings || 0) - Number(summary.summary?.counterSaleReturns || 0))}</b></p>
               <p><span className="text-slate-500">Return fees</span><br /><b>{amountText(summary.summary?.returnFeesEarned)}</b></p>
               <p><span className="text-slate-500">Incentives</span><br /><b>{amountText(summary.summary?.earnedIncentives)}</b></p>
               <p><span className="text-slate-500">Commission / discounts</span><br /><b>{amountText(summary.summary?.adminDiscountsApplied)}</b></p>

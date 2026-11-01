@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import {
+  accrueDistributorCounterSaleEarning,
   accrueDistributorDeliveryEarning,
   accrueDistributorServiceCharge,
 } from "./distributorServiceEarningService.js";
@@ -147,9 +148,24 @@ const accrueUnrecordedDeliveryEarnings = async ({
     select: { orderId: true },
   });
   const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
+  const hubOrders = client.order?.findMany
+    ? await client.order.findMany({
+        where: {
+          id: { in: assignments.map((assignment) => assignment.orderId) },
+          orderType: "DIRECT_DISTRIBUTOR",
+          directOrderType: "HUB_VISIT",
+        },
+        select: { id: true },
+      })
+    : [];
+  const directHubOrderIds = new Set(hubOrders.map((order) => order.id));
 
   for (const assignment of assignments) {
-    if (existingAssignmentIds.has(assignment.id) || ncmOrderIds.has(assignment.orderId)) continue;
+    if (
+      existingAssignmentIds.has(assignment.id) ||
+      ncmOrderIds.has(assignment.orderId) ||
+      directHubOrderIds.has(assignment.orderId)
+    ) continue;
     await accrueDelivery({
       distributorId,
       distributorName,
@@ -370,6 +386,15 @@ export const getDistributorFinancialStatement = async ({
   });
 
   const deliveredOrderIds = deliveredAssignments.map((a) => a.orderId);
+  const allDeliveredOrders = deliveredOrderIds.length
+    ? await client.order.findMany({
+        where: { id: { in: deliveredOrderIds } },
+        select: { id: true, orderType: true, directOrderType: true },
+      })
+    : [];
+  const directHubOrderIds = new Set(allDeliveredOrders
+    .filter((order) => order.orderType === "DIRECT_DISTRIBUTOR" && order.directOrderType === "HUB_VISIT")
+    .map((order) => order.id));
   const ncmDeliveries = deliveredOrderIds.length
     ? await client.deliveryOrder.findMany({
         where: { orderId: { in: deliveredOrderIds } },
@@ -377,12 +402,40 @@ export const getDistributorFinancialStatement = async ({
       })
     : [];
   const ncmOrderIds = new Set(ncmDeliveries.map((delivery) => delivery.orderId));
-  const selfDeliveredAssignments = deliveredAssignments.filter((assignment) => !ncmOrderIds.has(assignment.orderId));
+  const selfDeliveredAssignments = deliveredAssignments.filter(
+    (assignment) => !ncmOrderIds.has(assignment.orderId) && !directHubOrderIds.has(assignment.orderId),
+  );
   const selfDeliveredOrderIds = selfDeliveredAssignments.map((assignment) => assignment.orderId);
   const deliveredOrders = await client.order.findMany({
     where: { id: { in: selfDeliveredOrderIds } },
   });
   const orderMap = new Map(deliveredOrders.map((o) => [o.id, o]));
+  const completedHubOrders = (await client.order.findMany({
+    where: { distributorId, orderType: "DIRECT_DISTRIBUTOR", directOrderType: "HUB_VISIT", status: "Delivered" },
+  })).filter((order) => order.orderType === "DIRECT_DISTRIBUTOR" && order.directOrderType === "HUB_VISIT");
+  for (const order of completedHubOrders) {
+    const assignment = order.assignmentId
+      ? { id: order.assignmentId }
+      : await client.orderAssignment.findFirst({
+          where: { orderId: order.id, distributorId },
+          select: { id: true },
+        });
+    if (!assignment) continue;
+    const items = parseJSON(order.items, []);
+    const saleBaseAmount = items.reduce(
+      (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+      0,
+    );
+    await accrueDistributorCounterSaleEarning({
+      distributorId,
+      distributorName: distributor.name,
+      assignmentId: assignment.id,
+      orderId: order.id,
+      saleBaseAmount,
+      effectiveAt: new Date(Number(order.date)),
+      client,
+    });
+  }
 
   // 2. Fetch returned assignments
   const returnedAssignmentsFromQuery = await client.orderAssignment.findMany({
@@ -423,7 +476,7 @@ export const getDistributorFinancialStatement = async ({
     ? await client.distributorServiceEarning.findMany({
         where: {
           distributorId,
-          serviceType: { in: ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER"] },
+          serviceType: { in: ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE", "COUNTER_SALE_REVERSAL"] },
           ...(Object.keys(dateFilter).length ? { effectiveAt: dateFilter } : {}),
         },
         orderBy: { effectiveAt: "desc" },
@@ -441,6 +494,8 @@ export const getDistributorFinancialStatement = async ({
   );
   const exchangeEarnings = serviceEarnings.filter((earning) => earning.serviceType === "EXCHANGE");
   const ncmTransferEarnings = serviceEarnings.filter((earning) => earning.serviceType === "NCM_TRANSFER");
+  const counterSaleEarnings = serviceEarnings.filter((earning) => earning.serviceType === "COUNTER_SALE");
+  const counterSaleReversals = serviceEarnings.filter((earning) => earning.serviceType === "COUNTER_SALE_REVERSAL");
 
   let grossDeliveryEarnings = 0;
   let earnedIncentives = 0;
@@ -448,6 +503,8 @@ export const getDistributorFinancialStatement = async ({
   let returnFeesEarned = 0;
   let exchangeFeesEarned = 0;
   let ncmTransferFeesEarned = 0;
+  let counterSaleEarningsTotal = 0;
+  let counterSaleReturnsTotal = 0;
   let snapshottedDeliverySubtotal = 0;
   let snapshottedServiceSubtotal = 0;
   let snapshottedVatAmount = 0;
@@ -639,6 +696,51 @@ export const getDistributorFinancialStatement = async ({
     });
   }
 
+  for (const earning of counterSaleEarnings) {
+    const amount = Number(earning.payableAmount || 0);
+    counterSaleEarningsTotal += amount;
+    snapshottedServiceSubtotal += amount;
+    itemizedTransactions.push({
+      id: `tx-counter-sale-${earning.id}`,
+      type: "COUNTER_SALE",
+      referenceId: earning.orderId,
+      date: earning.effectiveAt,
+      description: `Hub counter sale earning for Order ${earning.orderId.slice(0, 8)}`,
+      grossAmount: Number(earning.otherCharges || 0),
+      incentiveAmount: 0,
+      discountChargeAmount: 0,
+      netAmount: amount,
+      earningId: earning.id,
+      assignmentId: earning.assignmentId,
+      accountingDocumentId: earning.accountingDocumentId,
+      journalEntryId: earning.journalEntryId,
+      rateCardId: earning.rateCardId,
+      isRateSnapshotted: true,
+    });
+  }
+
+  for (const earning of counterSaleReversals) {
+    const amount = Number(earning.payableAmount || 0);
+    counterSaleReturnsTotal += Math.abs(amount);
+    snapshottedServiceSubtotal += amount;
+    itemizedTransactions.push({
+      id: `tx-counter-sale-return-${earning.id}`,
+      type: "COUNTER_SALE_REVERSAL",
+      referenceId: earning.orderId,
+      date: earning.effectiveAt,
+      description: `Hub counter sale earning reversed for return ${earning.snapshot?.returnId || earning.id}`,
+      grossAmount: Number(earning.otherCharges || 0),
+      incentiveAmount: 0,
+      discountChargeAmount: 0,
+      netAmount: amount,
+      earningId: earning.id,
+      assignmentId: earning.assignmentId,
+      accountingDocumentId: earning.accountingDocumentId,
+      journalEntryId: earning.journalEntryId,
+      isRateSnapshotted: true,
+    });
+  }
+
   // Itemize settlements
   let totalSettledPaid = 0;
   let pendingSettlementAmount = 0;
@@ -684,7 +786,7 @@ export const getDistributorFinancialStatement = async ({
 
   // Compute subtotal before VAT
   const subtotalBeforeVat = Number(
-    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned + exchangeFeesEarned + ncmTransferFeesEarned - adminDiscountsApplied).toFixed(2)
+    (grossDeliveryEarnings + earnedIncentives + earnedBonuses + returnFeesEarned + exchangeFeesEarned + ncmTransferFeesEarned + counterSaleEarningsTotal - counterSaleReturnsTotal - adminDiscountsApplied).toFixed(2)
   );
   const legacyDeliverySubtotal = Math.max(0, subtotalBeforeVat - snapshottedDeliverySubtotal - snapshottedServiceSubtotal);
   const taxableLegacySubtotal = Math.max(0, legacyDeliverySubtotal - legacyReturnFees);
@@ -708,6 +810,8 @@ export const getDistributorFinancialStatement = async ({
       returnFeesEarned: Number(returnFeesEarned.toFixed(2)),
       exchangeFeesEarned: Number(exchangeFeesEarned.toFixed(2)),
       ncmTransferFeesEarned: Number(ncmTransferFeesEarned.toFixed(2)),
+      counterSaleEarnings: Number(counterSaleEarningsTotal.toFixed(2)),
+      counterSaleReturns: Number(counterSaleReturnsTotal.toFixed(2)),
       adminDiscountsApplied: Number(adminDiscountsApplied.toFixed(2)),
       subtotalBeforeVat,
       vatRate,
@@ -844,8 +948,8 @@ export const submitDistributorSettlementRequest = async ({
       }
       const openSourceIds = new Set(earningDocuments.map((document) => document.sourceId));
       const settlementLineItems = statement.transactions
-        .filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "BONUS"].includes(item.type))
-        .filter((item) => !item.earningId || openSourceIds.has(item.earningId));
+        .filter((item) => ["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE", "COUNTER_SALE_REVERSAL", "BONUS"].includes(item.type))
+        .filter((item) => item.type === "COUNTER_SALE_REVERSAL" || !item.earningId || openSourceIds.has(item.earningId));
       const statementSnapshot = {
         createdAt: new Date().toISOString(),
         vatMode: withVat ? "WITH_VAT" : "WITHOUT_VAT",
@@ -869,6 +973,7 @@ export const submitDistributorSettlementRequest = async ({
             returnCharge: item.type === "RETURN" ? item.grossAmount : 0,
             exchangeCharge: item.type === "EXCHANGE" ? item.grossAmount : 0,
             ncmTransferCharge: item.type === "NCM_TRANSFER" ? item.grossAmount : 0,
+            counterSaleCharge: ["COUNTER_SALE", "COUNTER_SALE_REVERSAL"].includes(item.type) ? item.grossAmount : 0,
             commissionDeduction: item.discountChargeAmount || 0,
             netAmount: item.netAmount,
             eligibleDeliveryCount: item.eligibleDeliveryCount,

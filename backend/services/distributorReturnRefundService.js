@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { postDistributorCustomerRefundAccounting } from "./accountingPostingEngine.js";
+import { reverseDistributorCounterSaleEarning } from "./distributorServiceEarningService.js";
 import { recordSystemAudit } from "./auditService.js";
 
 const fail = (message, statusCode = 400, code = "DISTRIBUTOR_RETURN_REFUND_ERROR") => {
@@ -303,6 +304,17 @@ export const reviewDistributorCustomerRefund = async ({
 
       const journal = await postDistributorCustomerRefundAccounting({
         returnRecord: { ...returnRecord, completedAt: now },
+        client: tx,
+      });
+      const distributor = await tx.distributor.findUnique({
+        where: { id: distributorId },
+        select: { name: true },
+      });
+      if (!distributor) throw fail("Distributor profile not found while posting return accounting.", 404, "DISTRIBUTOR_NOT_FOUND");
+      await reverseDistributorCounterSaleEarning({
+        returnRecord,
+        distributorName: distributor.name,
+        effectiveAt: now,
         client: tx,
       });
       const document = await tx.accountingDocument.findUnique({

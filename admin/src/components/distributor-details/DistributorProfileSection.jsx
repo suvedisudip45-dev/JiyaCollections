@@ -44,6 +44,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       deliveryCharge: numericValue(generalRate.deliveryCharge),
       returnCharge: numericValue(generalRate.returnCharge),
       ncmTransferCharge: numericValue(generalRate.ncmTransferCharge),
+      counterSaleCharge: numericValue(generalRate.counterSaleCharge),
       commissionRate: numericValue(generalRate.commissionRate),
       vatRate: numericValue(generalRate.vatRate, 13),
       vatInclusive: Boolean(generalRate.vatInclusive),
@@ -246,7 +247,11 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
           </label>
         </div>
         {[
-          ["deliveryCharge", `Delivery charge (${currency})`], ["returnCharge", `Return service charge (${currency})`], ["commissionRate", "Commission deduction (%)"], ["vatRate", "VAT rate (%)"],
+          ["deliveryCharge", `Self-delivery / phone order compensation (${currency})`],
+          ["counterSaleCharge", `Hub counter sale compensation (${currency})`],
+          ["returnCharge", `Return service charge (${currency})`],
+          ["commissionRate", "Commission deduction (%)"],
+          ["vatRate", "VAT rate (%)"],
         ].map(([field, label]) => (
           <label key={field} className="block text-xs font-semibold text-slate-600">{label}
             <input type="number" min="0" step="0.01" value={rate[field] ?? 0} onChange={(event) => setRateValue(field, event.target.value)} readOnly={!canEdit} className={`${fieldClass} read-only:bg-slate-50`} />
