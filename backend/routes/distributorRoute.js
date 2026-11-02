@@ -41,6 +41,10 @@ import {
   acknowledgeDistributorSettlementRequest,
   listDistributorRates,
 } from "../controllers/distributorFinanceController.js";
+import {
+  acceptDistributorPaperBillAllocationController,
+  getDistributorPaperBillAllocations,
+} from "../controllers/paperBillController.js";
 import { authenticate, authorize, setDistributorContext } from "../middleware/unifiedAuth.js";
 import { publicRegistrationRateLimit } from "../middleware/authRateLimit.js";
 import { secureEvidenceUpload } from "../middleware/secureUpload.js";
@@ -52,6 +56,21 @@ import {
 } from "../controllers/productSalesAnalyticsController.js";
 
 const distributorRouter = express.Router();
+
+distributorRouter.get(
+  "/paper-bills/allocations",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  getDistributorPaperBillAllocations,
+);
+distributorRouter.post(
+  "/paper-bills/allocations/:id/accept",
+  authenticate,
+  authorize("distributor:profile_read"),
+  setDistributorContext,
+  acceptDistributorPaperBillAllocationController,
+);
 
 distributorRouter.get(
   "/finance/remittances",

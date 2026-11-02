@@ -15,6 +15,23 @@ const parsePositiveInteger = (value, label) => {
 const formatNumber = (prefix, serial, width) =>
   `${prefix}${String(serial).padStart(width || 0, "0")}`;
 
+const ISSUED_PAPER_BILL_STATUSES = new Set([
+  "ISSUED",
+  "VOIDED",
+  "CREDITED",
+  "PARTIALLY_CREDITED",
+]);
+
+const classifyPaperBill = (assignment) => {
+  const isIssued = Boolean(
+    assignment?.paperBillNumber &&
+    ISSUED_PAPER_BILL_STATUSES.has(String(assignment.paperBillStatus || "").toUpperCase()) &&
+    ["VAT_TAX_INVOICE", "PAN_BILL"].includes(assignment.paperBillDocumentType)
+  );
+  if (!isIssued) return "NO_BILL";
+  return assignment.paperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT_BILL" : "PAN_BILL";
+};
+
 const parsePeriodDate = (value, endOfDay = false) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
   const [year, month, day] = value.split("-").map(Number);
@@ -110,6 +127,69 @@ export const listPaperBillControlData = async ({ client = prisma } = {}) => {
   return { books, distributors };
 };
 
+export const listDistributorPaperBillAllocations = async ({
+  distributorId,
+  client = prisma,
+} = {}) => {
+  if (!distributorId) throw fail("An approved distributor profile is required.", 403, "DISTRIBUTOR_REQUIRED");
+  return client.paperBillBookAllocation.findMany({
+    where: {
+      distributorId,
+      status: { in: ["PENDING_ACCEPTANCE", "ACTIVE"] },
+      book: { is: { status: "ACTIVE" } },
+    },
+    include: { book: true },
+    orderBy: [{ status: "asc" }, { allocatedAt: "desc" }],
+  });
+};
+
+export const acceptDistributorPaperBillAllocation = async ({
+  id,
+  distributorId,
+  acceptedBy = null,
+  afterAccept = null,
+  client = prisma,
+} = {}) => {
+  if (!id || !distributorId) {
+    throw fail("A bill allocation and approved distributor profile are required.", 400, "PAPER_BILL_ALLOCATION_REQUIRED");
+  }
+  return client.$transaction(async (tx) => {
+    const allocation = await tx.paperBillBookAllocation.findUnique({
+      where: { id: String(id) },
+      include: { book: true },
+    });
+    if (!allocation || allocation.distributorId !== distributorId) {
+      throw fail("Bill allocation not found for this distributor.", 404, "PAPER_BILL_ALLOCATION_NOT_FOUND");
+    }
+    if (allocation.status === "ACTIVE" && allocation.acceptedAt) return allocation;
+    if (allocation.status !== "PENDING_ACCEPTANCE") {
+      throw fail("Only a pending bill allocation can be accepted.", 409, "PAPER_BILL_ALLOCATION_NOT_PENDING");
+    }
+    const acceptedAt = new Date();
+    const updated = await tx.paperBillBookAllocation.updateMany({
+      where: {
+        id: allocation.id,
+        distributorId,
+        status: "PENDING_ACCEPTANCE",
+      },
+      data: {
+        status: "ACTIVE",
+        acceptedAt,
+        acceptedBy: acceptedBy ? String(acceptedBy).slice(0, 191) : null,
+      },
+    });
+    if (updated.count !== 1) {
+      throw fail("This bill allocation has already been updated. Refresh and check its status.", 409, "PAPER_BILL_ALLOCATION_ALREADY_UPDATED");
+    }
+    const accepted = await tx.paperBillBookAllocation.findUnique({
+      where: { id: allocation.id },
+      include: { book: true },
+    });
+    if (afterAccept) await afterAccept(accepted, tx);
+    return accepted;
+  }, { isolationLevel: "Serializable" });
+};
+
 export const createPaperBillBook = async ({
   documentType,
   bookLabel,
@@ -201,6 +281,7 @@ export const allocatePaperBillRange = async ({
         distributorId: distributor.id,
         startNumber: start,
         endNumber: end,
+        status: "PENDING_ACCEPTANCE",
         allocatedBy: allocatedBy ? String(allocatedBy).slice(0, 191) : null,
         notes: note || null,
       },
@@ -218,7 +299,7 @@ export const returnPaperBillAllocation = async ({
   client = prisma,
 } = {}) => client.$transaction(async (tx) => {
   const allocation = await tx.paperBillBookAllocation.findUnique({ where: { id: String(id || "") } });
-  if (!allocation || allocation.status !== "ACTIVE") {
+  if (!allocation || !["ACTIVE", "PENDING_ACCEPTANCE"].includes(allocation.status)) {
     throw fail("Active bill-book allocation not found.", 404, "PAPER_BILL_ALLOCATION_NOT_FOUND");
   }
   const updated = await tx.paperBillBookAllocation.update({
@@ -247,8 +328,13 @@ export const listPaperBillOrderReport = async ({
     throw fail("Select a valid inclusive order date range.", 400, "INVALID_PAPER_BILL_REPORT_PERIOD");
   }
   const normalizedFilter = String(billFilter || "ALL").toUpperCase();
-  if (!["ALL", "WITH_VAT_BILL", "WITHOUT_VAT_BILL"].includes(normalizedFilter)) {
-    throw fail("Choose all orders, orders with VAT bills, or orders without VAT bills.", 400, "INVALID_PAPER_BILL_REPORT_FILTER");
+  const filterAliases = {
+    WITH_VAT_BILL: "VAT_BILL",
+    WITHOUT_VAT_BILL: "NO_VAT_BILL",
+  };
+  const effectiveFilter = filterAliases[normalizedFilter] || normalizedFilter;
+  if (!["ALL", "VAT_BILL", "PAN_BILL", "NO_BILL", "VOIDED", "NO_VAT_BILL"].includes(effectiveFilter)) {
+    throw fail("Choose all orders, VAT bills, PAN bills, orders without a bill, or voided bills.", 400, "INVALID_PAPER_BILL_REPORT_FILTER");
   }
   const currentPage = Math.max(1, Number(page) || 1);
   const pageSize = Math.min(250, Math.max(1, Number(limit) || 100));
@@ -259,6 +345,7 @@ export const listPaperBillOrderReport = async ({
     date: true,
     amount: true,
     status: true,
+    orderType: true,
     address: true,
     salesInvoice: {
       select: {
@@ -300,7 +387,7 @@ export const listPaperBillOrderReport = async ({
     const orderIds = orders.map(({ id }) => id);
     const [assignments, returns, exchanges] = await Promise.all([
       client.orderAssignment.findMany({
-        where: { orderId: { in: orderIds }, distributorId: { not: null } },
+        where: { orderId: { in: orderIds } },
         include: {
           distributor: { select: { id: true, name: true } },
           paperBillAllocation: { include: { book: { select: { seriesPrefix: true, documentType: true } } } },
@@ -338,26 +425,37 @@ export const listPaperBillOrderReport = async ({
     }
     for (const order of orders) {
       const assignment = assignmentsByOrder.get(order.id);
-      if (!assignment) continue;
-      const hasVatBill = assignment.paperBillDocumentType === "VAT_TAX_INVOICE" && Boolean(assignment.paperBillNumber);
-      if (normalizedFilter === "WITH_VAT_BILL" && !hasVatBill) continue;
-      if (normalizedFilter === "WITHOUT_VAT_BILL" && hasVatBill) continue;
+      const billClassification = classifyPaperBill(assignment);
+      if (effectiveFilter === "VAT_BILL" && billClassification !== "VAT_BILL") continue;
+      if (effectiveFilter === "PAN_BILL" && billClassification !== "PAN_BILL") continue;
+      if (effectiveFilter === "NO_BILL" && billClassification !== "NO_BILL") continue;
+      if (effectiveFilter === "VOIDED" && assignment?.paperBillStatus !== "VOIDED") continue;
+      if (effectiveFilter === "NO_VAT_BILL" && billClassification === "VAT_BILL") continue;
+      const isBillIssued = billClassification !== "NO_BILL";
+      const hasVatBill = billClassification === "VAT_BILL";
       if (total >= skip && records.length < pageSize) {
         records.push({
           orderId: order.id,
           orderReference: order.orderReference,
           orderDate: new Date(Number(order.date)).toISOString(),
           orderStatus: order.status,
+          orderType: order.orderType || null,
           amount: Number(order.amount || 0),
           customerName: String(order.address?.name || `${order.address?.firstName || ""} ${order.address?.lastName || ""}`).trim(),
-          distributor: assignment.distributor,
-          assignmentStatus: assignment.status,
-          billRequested: assignment.paperBillRequested,
-          billStatus: assignment.paperBillStatus,
-          billType: assignment.paperBillDocumentType,
-          billNumber: assignment.paperBillNumber,
-          billIssuedAt: assignment.paperBillIssuedAt,
-          allocation: assignment.paperBillAllocation ? {
+          distributor: assignment?.distributor || null,
+          assignmentStatus: assignment?.status || null,
+          billRequested: assignment?.paperBillRequested || false,
+          billStatus: assignment?.paperBillStatus || "NOT_SELECTED",
+          billType: assignment?.paperBillDocumentType || null,
+          billNumber: assignment?.paperBillNumber || null,
+          billIssuedAt: assignment?.paperBillIssuedAt || null,
+          billVoidedAt: assignment?.paperBillVoidedAt || null,
+          billVoidReason: assignment?.paperBillVoidReason || null,
+          billAdjustedAt: assignment?.paperBillAdjustedAt || null,
+          billAdjustmentReason: assignment?.paperBillAdjustmentReason || null,
+          billClassification,
+          billIssued: isBillIssued,
+          allocation: assignment?.paperBillAllocation ? {
             bookPrefix: assignment.paperBillAllocation.book.seriesPrefix,
             rangeStart: assignment.paperBillAllocation.startNumber,
             rangeEnd: assignment.paperBillAllocation.endNumber,

@@ -280,6 +280,7 @@ const buildOrderListItem = (order) => {
     directNotes: order.directNotes,
     delivery: order.deliveryOrder || null,
     deliveryOrder: order.deliveryOrder || null,
+    paperBill: order.paperBill || null,
     distributorReview: order.distributorReview || null,
     assignedDistributorId: order.assignedDistributorId || order.distributorId || null,
     distributorAssignment: order.distributorAssignment || null,
@@ -299,6 +300,15 @@ const attachDistributorAssignmentHistory = async (orders) => {
         orderId: true,
         distributorId: true,
         assignedAt: true,
+        paperBillRequested: true,
+        paperBillStatus: true,
+        paperBillDocumentType: true,
+        paperBillNumber: true,
+        paperBillIssuedAt: true,
+        paperBillVoidedAt: true,
+        paperBillVoidReason: true,
+        paperBillAdjustedAt: true,
+        paperBillAdjustmentReason: true,
         distributor: { select: { id: true, name: true } },
       },
     }),
@@ -347,6 +357,17 @@ const attachDistributorAssignmentHistory = async (orders) => {
     return {
       ...order,
       assignedDistributorId: currentDistributorId,
+      paperBill: {
+        requested: Boolean(assignment?.paperBillRequested),
+        status: assignment?.paperBillStatus || "NOT_SELECTED",
+        documentType: assignment?.paperBillDocumentType || null,
+        number: assignment?.paperBillNumber || null,
+        issuedAt: assignment?.paperBillIssuedAt || null,
+        voidedAt: assignment?.paperBillVoidedAt || null,
+        voidReason: assignment?.paperBillVoidReason || null,
+        adjustedAt: assignment?.paperBillAdjustedAt || null,
+        adjustmentReason: assignment?.paperBillAdjustmentReason || null,
+      },
       distributorAssignment: {
         initial: initialDistributorId
           ? {
@@ -1328,8 +1349,7 @@ const allAdminOrders = async (req, res) => {
       }),
       prisma.order.count({ where }),
     ]);
-    const adminOrders = rawOrders;
-    const orders = adminOrders.map((item) => buildOrderListItem(item));
+    const orders = rawOrders.map((item) => buildOrderListItem(item));
     res.json(paginatedResponse("orders", orders, pagination, total));
   } catch (error) {
     console.log(error);

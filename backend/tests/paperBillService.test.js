@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  acceptDistributorPaperBillAllocation,
   allocatePaperBillRange,
   createPaperBillBook,
+  listDistributorPaperBillAllocations,
   listPaperBillOrderReport,
   parsePaperBillSerial,
   validatePaperBillChoice,
@@ -66,6 +68,81 @@ test("paper bill ranges must fit the registered book and cannot overlap prior al
   });
   assert.equal(allocation.startNumber, 1);
   assert.equal(allocation.endNumber, 20);
+  assert.equal(allocation.status, "PENDING_ACCEPTANCE");
+});
+
+test("distributor must accept a pending physical bill range before it becomes active", async () => {
+  const allocation = {
+    id: "allocation-1",
+    distributorId: "dist-1",
+    bookId: "book-1",
+    startNumber: 1,
+    endNumber: 20,
+    status: "PENDING_ACCEPTANCE",
+    acceptedAt: null,
+    book: { documentType: "VAT_TAX_INVOICE", bookLabel: "VAT Book 1" },
+  };
+  let updatedData;
+  const client = transactionClient({
+    paperBillBookAllocation: {
+      findUnique: async () => ({ ...allocation, ...updatedData }),
+      updateMany: async ({ where, data }) => {
+        assert.equal(where.id, allocation.id);
+        assert.equal(where.distributorId, "dist-1");
+        assert.equal(where.status, "PENDING_ACCEPTANCE");
+        updatedData = data;
+        return { count: 1 };
+      },
+    },
+  });
+  const accepted = await acceptDistributorPaperBillAllocation({
+    id: allocation.id,
+    distributorId: "dist-1",
+    acceptedBy: "account-1",
+    client,
+  });
+  assert.equal(updatedData.status, "ACTIVE");
+  assert.equal(updatedData.acceptedBy, "account-1");
+  assert.ok(updatedData.acceptedAt instanceof Date);
+  assert.equal(accepted.status, "ACTIVE");
+});
+
+test("distributor cannot accept another distributor's paper bill allocation", async () => {
+  const client = transactionClient({
+    paperBillBookAllocation: {
+      findUnique: async () => ({
+        id: "allocation-1",
+        distributorId: "dist-owner",
+        status: "PENDING_ACCEPTANCE",
+      }),
+      updateMany: async () => assert.fail("allocation ownership must be checked before update"),
+    },
+  });
+  await assert.rejects(
+    acceptDistributorPaperBillAllocation({
+      id: "allocation-1",
+      distributorId: "dist-other",
+      client,
+    }),
+    { code: "PAPER_BILL_ALLOCATION_NOT_FOUND" },
+  );
+});
+
+test("distributor bill allocation listing is scoped and only returns pending or active allocations", async () => {
+  let query;
+  await listDistributorPaperBillAllocations({
+    distributorId: "dist-1",
+    client: {
+      paperBillBookAllocation: {
+        findMany: async (args) => {
+          query = args;
+          return [];
+        },
+      },
+    },
+  });
+  assert.equal(query.where.distributorId, "dist-1");
+  assert.deepEqual(query.where.status.in, ["PENDING_ACCEPTANCE", "ACTIVE"]);
 });
 
 test("physical bill number must match the distributor's active document-type allocation", async () => {
@@ -200,6 +277,103 @@ test("order report filters VAT bills separately for the selected order-date peri
   assert.equal(withVatBill.records[0].hasVatBill, true);
   assert.deepEqual(withoutVatBill.records.map((record) => record.orderReference), ["ORD-PAN"]);
   assert.equal(withoutVatBill.records[0].billRequested, false);
+});
+
+test("order report separates VAT, PAN, no-bill, and voided records including unassigned orders", async () => {
+  const orders = ["vat", "pan", "requested", "unassigned", "voided"].map((kind) => ({
+    id: `order-${kind}`,
+    orderReference: `ORD-${kind.toUpperCase()}`,
+    date: BigInt(new Date("2026-03-10T10:00:00Z").getTime()),
+    amount: 100,
+    status: "Delivered",
+    address: { name: "Customer" },
+    salesInvoice: null,
+  }));
+  const assignments = [
+    {
+      orderId: "order-vat",
+      paperBillRequested: true,
+      paperBillStatus: "ISSUED",
+      paperBillDocumentType: "VAT_TAX_INVOICE",
+      paperBillNumber: "VAT-1",
+    },
+    {
+      orderId: "order-pan",
+      paperBillRequested: true,
+      paperBillStatus: "ISSUED",
+      paperBillDocumentType: "PAN_BILL",
+      paperBillNumber: "PAN-1",
+    },
+    {
+      orderId: "order-requested",
+      paperBillRequested: true,
+      paperBillStatus: "NOT_SELECTED",
+      paperBillDocumentType: "PAN_BILL",
+      paperBillNumber: null,
+    },
+    {
+      orderId: "order-voided",
+      paperBillRequested: true,
+      paperBillStatus: "VOIDED",
+      paperBillDocumentType: "VAT_TAX_INVOICE",
+      paperBillNumber: "VAT-2",
+      paperBillVoidReason: "Returned order",
+    },
+  ];
+  const client = {
+    order: { findMany: async () => orders },
+    orderAssignment: { findMany: async () => assignments },
+    customerReturn: { findMany: async () => [] },
+    orderExchangeRequest: { findMany: async () => [] },
+  };
+  const query = (billFilter) => listPaperBillOrderReport({
+    from: "2026-03-01",
+    to: "2026-03-31",
+    billFilter,
+    client,
+  });
+
+  const [vat, pan, noBill, voided] = await Promise.all([
+    query("VAT_BILL"),
+    query("PAN_BILL"),
+    query("NO_BILL"),
+    query("VOIDED"),
+  ]);
+  assert.deepEqual(vat.records.map(({ orderReference }) => orderReference), ["ORD-VAT", "ORD-VOIDED"]);
+  assert.deepEqual(pan.records.map(({ orderReference }) => orderReference), ["ORD-PAN"]);
+  assert.deepEqual(noBill.records.map(({ orderReference }) => orderReference), ["ORD-REQUESTED", "ORD-UNASSIGNED"]);
+  assert.equal(noBill.records[0].billClassification, "NO_BILL");
+  assert.equal(noBill.records[1].billStatus, "NOT_SELECTED");
+  assert.deepEqual(voided.records.map(({ orderReference }) => orderReference), ["ORD-VOIDED"]);
+  assert.equal(voided.records[0].billVoidReason, "Returned order");
+});
+
+test("order report applies Nepal-local inclusive date boundaries", async () => {
+  let where;
+  const client = {
+    order: {
+      findMany: async (args) => {
+        where = args.where;
+        return [];
+      },
+    },
+    orderAssignment: { findMany: async () => [] },
+    customerReturn: { findMany: async () => [] },
+    orderExchangeRequest: { findMany: async () => [] },
+  };
+  await listPaperBillOrderReport({
+    from: "2026-03-01",
+    to: "2026-03-31",
+    client,
+  });
+  assert.equal(
+    Number(where.date.gte),
+    new Date("2026-03-01T00:00:00+05:45").getTime(),
+  );
+  assert.equal(
+    Number(where.date.lte),
+    new Date("2026-03-31T23:59:59.999+05:45").getTime(),
+  );
 });
 
 test("order report includes matching orders beyond the first 5,000", async () => {

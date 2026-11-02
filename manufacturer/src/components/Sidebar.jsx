@@ -16,6 +16,7 @@ import {
   Gift,
   Truck,
   Building,
+  ReceiptText,
 } from "lucide-react";
 import { useManufacturer, backendUrl } from "../context/ManufacturerContext";
 
@@ -170,6 +171,13 @@ const Sidebar = () => {
                 <div className="flex items-center gap-3">
                   <Wallet className="w-4 h-4 text-emerald-600" />
                   <span>Distributor Finance</span>
+                </div>
+              </NavLink>
+
+              <NavLink to="/distributor/paper-bills" className={navLinkStyle}>
+                <div className="flex items-center gap-3">
+                  <ReceiptText className="w-4 h-4 text-emerald-600" />
+                  <span>Physical Bill Books</span>
                 </div>
               </NavLink>
 

@@ -16,6 +16,7 @@ const LABELS = {
   demand: "Stock Demand & Receipts",
   "distributor/demand": "Stock Demand & Receipts",
   "distributor/finance": "Distributor Finance",
+  "distributor/paper-bills": "Physical Bill Books",
   "customer-loyalty": "Customer Loyalty",
   "gift-inventory": "Gift Inventory",
   "marketing-cards": "Marketing Cards",

@@ -1,0 +1,4 @@
+ALTER TABLE `PaperBillBookAllocation`
+    MODIFY COLUMN `status` VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+    ADD COLUMN `acceptedAt` DATETIME(3) NULL,
+    ADD COLUMN `acceptedBy` VARCHAR(191) NULL;

@@ -1,7 +1,9 @@
 import { recordSystemAudit } from "../services/auditService.js";
 import {
   allocatePaperBillRange,
+  acceptDistributorPaperBillAllocation,
   createPaperBillBook,
+  listDistributorPaperBillAllocations,
   listPaperBillControlData,
   listPaperBillOrderReport,
   returnPaperBillAllocation,
@@ -17,6 +19,50 @@ const responseError = (res, error, fallbackMessage) => {
 };
 
 const actorId = (req) => req.auth?.accountId || req.auth?.userId || null;
+
+export const getDistributorPaperBillAllocations = async (req, res) => {
+  try {
+    const allocations = await listDistributorPaperBillAllocations({
+      distributorId: req.distributorId,
+    });
+    return res.status(200).json({ success: true, allocations });
+  } catch (error) {
+    return responseError(res, error, "Allocated bill ranges could not be loaded.");
+  }
+};
+
+export const acceptDistributorPaperBillAllocationController = async (req, res) => {
+  try {
+    const record = await acceptDistributorPaperBillAllocation({
+      id: req.params.id,
+      distributorId: req.distributorId,
+      acceptedBy: actorId(req),
+      afterAccept: (accepted, tx) => recordSystemAudit(
+        { actorId: actorId(req), actorRole: "DISTRIBUTOR", portalSource: "DISTRIBUTOR" },
+        {
+          action: "PAPER_BILL_RANGE_ACCEPTED",
+          entityType: "PaperBillBookAllocation",
+          entityId: accepted.id,
+          afterState: {
+            distributorId: accepted.distributorId,
+            bookId: accepted.bookId,
+            startNumber: accepted.startNumber,
+            endNumber: accepted.endNumber,
+            acceptedAt: accepted.acceptedAt,
+          },
+        },
+        { client: tx },
+      ),
+    });
+    return res.status(200).json({
+      success: true,
+      message: "Physical bill range accepted and ready for use.",
+      record,
+    });
+  } catch (error) {
+    return responseError(res, error, "Bill range could not be accepted.");
+  }
+};
 
 export const getPaperBillControlDataAdmin = async (_req, res) => {
   try {
@@ -71,12 +117,13 @@ export const allocatePaperBillRangeAdmin = async (req, res) => {
             distributorId: allocated.distributorId,
             startNumber: allocated.startNumber,
             endNumber: allocated.endNumber,
+            status: allocated.status,
           },
         },
         { client: tx },
       ),
     });
-    return res.status(201).json({ success: true, message: "Bill range allocated to distributor.", record });
+    return res.status(201).json({ success: true, message: "Bill range assigned; distributor confirmation is pending.", record });
   } catch (error) {
     return responseError(res, error, "Bill range could not be allocated.");
   }

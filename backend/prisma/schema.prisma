@@ -1611,9 +1611,11 @@ model PaperBillBookAllocation {
   distributor     Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
   startNumber     Int
   endNumber       Int
-  status          String   @default("ACTIVE") @db.VarChar(16) // ACTIVE | RETURNED
+  status          String   @default("ACTIVE") @db.VarChar(24) // PENDING_ACCEPTANCE | ACTIVE | RETURNED
   allocatedAt     DateTime @default(now())
   allocatedBy     String?  @db.VarChar(191)
+  acceptedAt      DateTime?
+  acceptedBy      String?  @db.VarChar(191)
   returnedAt      DateTime?
   returnedBy      String?  @db.VarChar(191)
   notes           String?  @db.VarChar(500)

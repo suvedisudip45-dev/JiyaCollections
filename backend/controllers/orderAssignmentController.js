@@ -1368,7 +1368,6 @@ const rejectOrder = async (req, res) => {
       });
     }
 
-    let paperBillAuditState = null;
     await prisma.$transaction(async (tx) => {
       const orderBefore = await tx.order.findUnique({
         where: { id: assignment.orderId },
@@ -1533,6 +1532,7 @@ const updateAssignmentStatus = async (req, res) => {
       updateData.notes = JSON.stringify(payload);
     }
 
+    let paperBillAuditState = null;
     await prisma.$transaction(async (tx) => {
       const orderBefore = await tx.order.findUnique({
         where: { id: assignment.orderId },

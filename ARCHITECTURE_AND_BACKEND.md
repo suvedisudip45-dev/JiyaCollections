@@ -89,9 +89,18 @@ The backend mounts the following major route groups in `backend/server.js`:
 
 `/api/finance/paper-bill-books`, `/paper-bill-allocations`, and
 `/paper-bill-orders` provide Admin bill-book/range management and date-filtered
-distributor order reporting. Read operations use `finance:tax_report_read`;
+order reporting with VAT-bill, PAN-bill, no-bill, and voided-bill filters.
+Inclusive order-date ranges use Nepal-local day boundaries and the report
+includes unassigned orders. Admin order-list and order-control details expose
+the recorded physical bill type, number, issue time, and void/adjustment
+metadata. Read operations use `finance:tax_report_read`;
 book creation, allocation, and return use `finance:tax_configure`. Distributor
-packing records an explicit requested/not-requested physical-copy choice and,
+`GET /api/distributor/paper-bills/allocations` and
+`POST /api/distributor/paper-bills/allocations/:id/accept` list only the
+authenticated distributor's allocations and record explicit physical receipt.
+New allocations remain unusable while `PENDING_ACCEPTANCE`; successful
+acceptance records the account/timestamp and activates the serial range.
+Distributor packing records an explicit requested/not-requested physical-copy choice and,
 when requested, the allocated bill number. The backend validates ownership and
 range before accepting it and blocks subsequent packing, NCM handoff, and
 self-delivery dispatch until the choice exists. Delivered-sale posting copies
@@ -105,6 +114,13 @@ number against the settlement distributor's active allocation. Distributor
 exchange inspection and dispatch endpoints remain restricted to distributor
 routes. These endpoints do not print or submit statutory
 invoices/credit notes or call an IRD/third-party e-billing provider.
+
+New physical bill-range allocations begin in `PENDING_ACCEPTANCE`. A distributor
+can list only its own ranges and explicitly accept receipt through the
+distributor-scoped paper-bills endpoints. Acceptance records the account and
+timestamp, changes the range to `ACTIVE`, and is required before bill-number
+validation for order packing. Existing active allocations remain usable for
+backward compatibility; they predate receipt-confirmation tracking.
 
 Newly initialized databases seed loyalty, marketing cards, and customer letters as disabled by default. Their admin-controlled feature flags do not affect core production, stock transfer, customer order, or delivery operations.
 

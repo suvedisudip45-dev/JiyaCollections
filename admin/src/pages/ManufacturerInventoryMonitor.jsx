@@ -1,14 +1,13 @@
-import React, { useEffect, useState, useCallback } from "react";
+/* eslint-disable react/prop-types */
+import { useEffect, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import {
   Boxes,
   Search,
-  AlertTriangle,
   RefreshCw,
   Building2,
   Package,
-  Layers,
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
@@ -31,8 +30,8 @@ const ManufacturerInventoryMonitor = ({ token }) => {
       if (res.data.success) {
         setInventoryList(res.data.inventory || []);
       }
-    } catch (err) {
-      toast.error("Failed to load multi-hub inventory");
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Failed to load multi-hub inventory");
     } finally {
       setLoading(false);
     }
@@ -52,20 +51,37 @@ const ManufacturerInventoryMonitor = ({ token }) => {
         totalStock: 0,
         totalReserved: 0,
         totalAvailable: 0,
+        skuIds: new Set(),
         hubs: [],
+        hubMap: new Map(),
       };
     }
-    const available = Math.max(0, (item.quantity || 0) - (item.reservedQty || 0));
-    productMap[pId].totalStock += item.quantity || 0;
-    productMap[pId].totalReserved += item.reservedQty || 0;
-    productMap[pId].totalAvailable += available;
-    productMap[pId].hubs.push({
-      manufacturer: item.manufacturer,
-      quantity: item.quantity,
-      reservedQty: item.reservedQty,
-      available,
-      threshold: item.lowStockThreshold,
-    });
+    const product = productMap[pId];
+    const quantity = Number(item.quantity || 0);
+    const reservedQty = Number(item.reservedQty || 0);
+    const available = Math.max(0, quantity - reservedQty);
+    product.totalStock += quantity;
+    product.totalReserved += reservedQty;
+    product.totalAvailable += available;
+    if (item.sku?.id) product.skuIds.add(item.sku.id);
+
+    const hubKey = `${item.hub?.type}:${item.hub?.id}`;
+    let hub = product.hubMap.get(hubKey);
+    if (!hub) {
+      hub = {
+        ...item.hub,
+        quantity: 0,
+        reservedQty: 0,
+        available: 0,
+        skus: [],
+      };
+      product.hubMap.set(hubKey, hub);
+      product.hubs.push(hub);
+    }
+    hub.quantity += quantity;
+    hub.reservedQty += reservedQty;
+    hub.available += available;
+    hub.skus.push({ ...item.sku, quantity, reservedQty, available });
   });
 
   const productsList = Object.values(productMap);
@@ -84,7 +100,6 @@ const ManufacturerInventoryMonitor = ({ token }) => {
     return true;
   });
 
-  const totalSKUs = productsList.length;
   const totalPhysicalNetworkStock = productsList.reduce((sum, p) => sum + p.totalStock, 0);
   const totalReservedAcrossNepal = productsList.reduce((sum, p) => sum + p.totalReserved, 0);
 
@@ -97,7 +112,7 @@ const ManufacturerInventoryMonitor = ({ token }) => {
             Multi-Hub Network Stock Monitor
           </h1>
           <p className="text-xs text-slate-500">
-            Real-time aggregate fabric and product stock distributed across all regional manufacturer warehouses
+            Real-time SKU stock across active manufacturer factories and distributor hubs
           </p>
         </div>
 
@@ -114,9 +129,9 @@ const ManufacturerInventoryMonitor = ({ token }) => {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            Total Catalog SKUs
+            Products with Ledger Stock
           </span>
-          <p className="text-2xl font-black text-slate-900 mt-1">{totalSKUs} Products</p>
+          <p className="text-2xl font-black text-slate-900 mt-1">{productsList.length} Products</p>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
@@ -194,7 +209,7 @@ const ManufacturerInventoryMonitor = ({ token }) => {
               const isExpanded = expandedProduct === p?.id;
 
               return (
-                <div key={p?.id || Math.random()} className="p-4 hover:bg-slate-50/50 transition-colors">
+                <div key={p?.id || item.productId} className="p-4 hover:bg-slate-50/50 transition-colors">
                   <div
                     onClick={() => setExpandedProduct(isExpanded ? null : p?.id)}
                     className="flex items-center justify-between gap-4 cursor-pointer"
@@ -222,7 +237,9 @@ const ManufacturerInventoryMonitor = ({ token }) => {
                           </span>
                           <span>•</span>
                           <span className="font-semibold text-slate-700">
-                            {item.hubs.length} Regional Hub{item.hubs.length > 1 ? "s" : ""}
+                            {item.skuIds.size} SKU variant{item.skuIds.size === 1 ? "" : "s"}
+                            {" · "}
+                            {item.hubs.length} Hub{item.hubs.length === 1 ? "" : "s"}
                           </span>
                         </div>
                       </div>
@@ -266,35 +283,55 @@ const ManufacturerInventoryMonitor = ({ token }) => {
                     <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/80 rounded-xl p-4">
                       <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                         <Building2 className="w-3.5 h-3.5 text-slate-600" />
-                        Per-Manufacturer Warehouse Breakdown
+                        Manufacturer and Distributor Inventory by SKU
                       </h5>
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                        {item.hubs.map((hub, idx) => (
+                        {item.hubs.map((hub) => (
                           <div
-                            key={idx}
+                            key={`${hub.type}:${hub.id}`}
                             className="bg-white p-3 rounded-xl border border-slate-200/80 text-xs space-y-1.5 shadow-2xs"
                           >
                             <div className="flex items-center justify-between font-bold text-slate-900">
-                              <span>{hub.manufacturer?.businessName}</span>
+                              <span>{hub.name}</span>
                               <span className="text-[11px] text-emerald-600 font-semibold">
-                                {hub.manufacturer?.city}
+                                {hub.type === "FACTORY" ? "Manufacturer" : "Distributor"}
                               </span>
                             </div>
+                            <p className="text-[11px] text-slate-500">{hub.city || hub.locationName}</p>
 
                             <div className="flex items-center justify-between text-slate-600 pt-1 border-t border-slate-100">
-                              <span>Physical Units:</span>
+                              <span>Hub physical units:</span>
                               <strong>{hub.quantity}</strong>
                             </div>
 
                             <div className="flex items-center justify-between text-amber-700">
-                              <span>Reserved:</span>
+                              <span>Hub reserved:</span>
                               <strong>{hub.reservedQty}</strong>
                             </div>
 
                             <div className="flex items-center justify-between text-emerald-700 font-bold">
-                              <span>Ready to Dispatch:</span>
+                              <span>Hub available:</span>
                               <span>{hub.available} units</span>
+                            </div>
+
+                            <div className="mt-2 border-t border-slate-100 pt-2">
+                              <p className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">SKU breakdown</p>
+                              <div className="space-y-2">
+                                {hub.skus.map((sku) => (
+                                  <div key={sku.id} className="rounded-lg bg-slate-50 p-2">
+                                    <div className="font-semibold text-slate-800">
+                                      {sku.size} / {sku.color}
+                                      {sku.code && <span className="ml-1 font-mono text-[10px] text-slate-500">({sku.code})</span>}
+                                    </div>
+                                    <div className="mt-1 grid grid-cols-3 gap-1 text-[10px]">
+                                      <span>On hand <strong>{sku.quantity}</strong></span>
+                                      <span>Reserved <strong className="text-amber-700">{sku.reservedQty}</strong></span>
+                                      <span>Available <strong className="text-emerald-700">{sku.available}</strong></span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           </div>
                         ))}

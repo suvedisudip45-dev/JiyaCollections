@@ -22,7 +22,22 @@ const createClient = ({ order = null } = {}) => {
       findMany: async (args) => {
         calls.assignments = args;
         return [
-          { id: "assignment-1", orderId: "order-1", status: "assigned", deliveryType: "NCM", distributor: { id: "hub-1", name: "Hub One" } },
+          {
+            id: "assignment-1",
+            orderId: "order-1",
+            status: "assigned",
+            deliveryType: "NCM",
+            paperBillRequested: true,
+            paperBillStatus: "ISSUED",
+            paperBillDocumentType: "VAT_TAX_INVOICE",
+            paperBillNumber: "VAT-001",
+            paperBillIssuedAt: new Date("2026-10-10T10:00:00Z"),
+            paperBillVoidedAt: null,
+            paperBillVoidReason: null,
+            paperBillAdjustedAt: null,
+            paperBillAdjustmentReason: null,
+            distributor: { id: "hub-1", name: "Hub One" },
+          },
           { id: "assignment-2", orderId: "order-2", status: "in_transit", deliveryType: "NCM", distributor: { id: "hub-2", name: "Hub Two" } },
         ];
       },
@@ -75,6 +90,9 @@ test("Admin order control details return bounded operational history and all che
   assert.equal(result.checkoutShipments[0].currentShipment, true);
   assert.equal(result.checkoutShipments[0].distributor.name, "Hub One");
   assert.equal(result.checkoutShipments[1].distributor.name, "Hub Two");
+  assert.equal(result.order.orderAssignment.paperBillDocumentType, "VAT_TAX_INVOICE");
+  assert.equal(result.order.orderAssignment.paperBillNumber, "VAT-001");
+  assert.equal(calls.assignments.select.paperBillStatus, true);
   assert.deepEqual(result.deliveryAttempts, [{ id: "attempt-1", result: "UNKNOWN" }]);
   assert.equal(calls.audit.take, 50);
   assert.equal(calls.attempts.take, 10);

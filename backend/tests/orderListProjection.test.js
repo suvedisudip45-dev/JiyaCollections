@@ -41,6 +41,13 @@ test('buildOrderListItem preserves required order list fields while removing unn
       current: { distributorId: 'dist_2', distributorName: 'Current Hub', assignedAt: '2026-10-11T10:00:00.000Z', status: 'assigned' },
       changed: true,
     },
+    paperBill: {
+      requested: true,
+      status: 'ISSUED',
+      documentType: 'PAN_BILL',
+      number: 'PAN-42',
+      issuedAt: '2026-10-11T10:00:00.000Z',
+    },
     __internal: 'remove-me',
   };
 
@@ -55,6 +62,8 @@ test('buildOrderListItem preserves required order list fields while removing unn
   assert.equal(result.distributorAssignment.initial.distributorName, 'Initial Hub');
   assert.equal(result.distributorAssignment.current.distributorName, 'Current Hub');
   assert.equal(result.distributorAssignment.changed, true);
+  assert.equal(result.paperBill.documentType, 'PAN_BILL');
+  assert.equal(result.paperBill.number, 'PAN-42');
   assert.equal(result.__internal, undefined);
   assert.equal(result.delivery, result.deliveryOrder);
 });

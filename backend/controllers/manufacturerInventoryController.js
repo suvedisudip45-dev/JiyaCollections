@@ -1,4 +1,5 @@
 import { prisma } from "../config/db.js";
+import { Prisma } from "@prisma/client";
 import { syncProductStock } from "../services/stockSyncService.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
@@ -400,61 +401,113 @@ const getMyInventoryMovements = async (req, res) => {
 };
 
 // ─── ADMIN: GET ALL INVENTORY (Multi-Hub Monitor) ─────────────────────────────
-const buildAdminInventoryItem = (inventory, product) => ({
-  id: inventory.id,
+const buildAdminInventoryItem = (inventory) => ({
+  id: inventory.id || `${inventory.locationId}:${inventory.inventorySkuId}`,
   productId: inventory.productId,
   productName: inventory.productName,
-  quantity: inventory.quantity,
-  reservedQty: inventory.reservedQty,
-  manufacturer: {
-    id: inventory.manufacturer.id,
-    name: inventory.manufacturer.name,
-    city: inventory.manufacturer.city,
-    businessName: inventory.manufacturer.name,
+  quantity: Number(inventory.quantity || 0),
+  reservedQty: Number(inventory.reservedQty || 0),
+  sku: {
+    id: inventory.inventorySkuId,
+    size: inventory.size,
+    color: inventory.color,
+    code: inventory.skuCode || null,
   },
-  product: product || {
+  hub: {
+    id: inventory.hubId,
+    type: inventory.hubType,
+    name: inventory.hubName,
+    city: inventory.hubCity || null,
+    locationId: inventory.locationId,
+    locationName: inventory.locationName,
+  },
+  product: {
     id: inventory.productId,
     name: inventory.productName,
+    image: inventory.productImage,
+    price: Number(inventory.productPrice || 0),
+    category: inventory.productCategory,
   },
-  availableQty: Math.max(0, inventory.quantity - inventory.reservedQty),
+  availableQty: Math.max(0, Number(inventory.quantity || 0) - Number(inventory.reservedQty || 0)),
   lowStockThreshold: 5,
 });
 
 const getAllInventory = async (req, res) => {
   try {
-    const pagination = getPagination(req.query);
-    const [allInventory, total] = await prisma.$transaction([
-      prisma.manufacturerInventory.findMany({
-      select: {
-        id: true,
-        productId: true,
-        productName: true,
-        quantity: true,
-        reservedQty: true,
-        manufacturer: {
-          select: { id: true, name: true, city: true },
-        },
-      },
-      orderBy: { productName: "asc" },
-      skip: pagination.skip,
-      take: pagination.limit,
-      }),
-      prisma.manufacturerInventory.count(),
+    const inventory = await prisma.$queryRaw(Prisma.sql`
+      SELECT
+        s.productId AS productId,
+        s.id AS inventorySkuId,
+        s.skuCode AS skuCode,
+        s.size AS size,
+        s.color AS color,
+        l.id AS locationId,
+        l.name AS locationName,
+        l.kind AS hubType,
+        COALESCE(m.id, d.id) AS hubId,
+        COALESCE(m.name, d.name) AS hubName,
+        COALESCE(m.city, d.city) AS hubCity,
+        SUM(b.quantityOnHand) AS quantity,
+        SUM(b.reservedQuantity) AS reservedQty
+      FROM InventoryBalance b
+      INNER JOIN InventoryLocation l ON l.id = b.locationId
+      INNER JOIN InventorySku s ON s.id = b.inventorySkuId
+      LEFT JOIN Manufacturer m ON m.id = l.manufacturerId
+      LEFT JOIN Distributor d ON d.id = l.distributorId
+      WHERE l.inventoryOwner = 'PLATFORM'
+        AND l.isActive = 1
+        AND (
+          (l.kind = 'FACTORY' AND m.isActive = 1)
+          OR
+          (l.kind = 'DISTRIBUTOR' AND d.isActive = 1 AND d.status = 'ACTIVE')
+        )
+      GROUP BY
+        s.productId,
+        s.id,
+        s.skuCode,
+        s.size,
+        s.color,
+        l.id,
+        l.name,
+        l.kind,
+        m.id,
+        d.id,
+        m.name,
+        d.name,
+        m.city,
+        d.city
+    `);
+
+    const productIds = [...new Set(inventory.map((row) => row.productId))];
+    const [products] = await Promise.all([
+      productIds.length
+        ? prisma.product.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, name: true, image: true, price: true, category: true },
+        })
+        : [],
     ]);
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const enriched = inventory.map((row) => {
+      const product = productMap.get(row.productId);
+      if (!product) {
+        throw new Error(`Inventory balance references missing product (${row.productId}).`);
+      }
+      return buildAdminInventoryItem({
+        ...row,
+        productName: product.name,
+        productImage: product.image,
+        productPrice: product.price,
+        productCategory: product.category,
+      });
+    }).sort((left, right) =>
+      left.productName.localeCompare(right.productName) ||
+      left.hub.name.localeCompare(right.hub.name) ||
+      left.sku.size.localeCompare(right.sku.size) ||
+      left.sku.color.localeCompare(right.sku.color)
+    );
 
-    const productIds = [...new Set(allInventory.map((i) => i.productId))];
-    const products = await prisma.product.findMany({
-      where: { id: { in: productIds } },
-      select: { id: true, name: true, image: true, price: true, category: true },
-    });
-    const productMap = {};
-    products.forEach((p) => {
-      productMap[p.id] = p;
-    });
-
-    const enriched = allInventory.map((inv) => buildAdminInventoryItem(inv, productMap[inv.productId]));
-
-    res.json(paginatedResponse("inventory", enriched, pagination, total));
+    res.json({ success: true, inventory: enriched });
   } catch (error) {
     console.error("getAllInventory error:", error);
     res.json({ success: false, message: error.message });

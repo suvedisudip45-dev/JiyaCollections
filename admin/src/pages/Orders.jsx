@@ -139,8 +139,39 @@ const toAdminOrderCardData = (order) => ({
   _id: order.id,
   delivery: order.deliveryOrder || null,
   assignedDistributorId: order.orderAssignment?.distributorId || order.distributorId || null,
+  paperBill: order.paperBill || order.orderAssignment || null,
   distributorAssignment: order.orderAssignment || null,
 });
+
+const getPaperBillSummary = (record = {}) => {
+  const bill = record.paperBill || record;
+  const status = bill.paperBillStatus || bill.status || "NOT_SELECTED";
+  const documentType = bill.paperBillDocumentType || bill.documentType;
+  const number = bill.paperBillNumber || bill.number;
+  const requested = bill.paperBillRequested ?? bill.requested ?? false;
+  const issued = Boolean(
+    number &&
+    ["ISSUED", "VOIDED", "CREDITED", "PARTIALLY_CREDITED"].includes(status) &&
+    ["VAT_TAX_INVOICE", "PAN_BILL"].includes(documentType)
+  );
+  const typeLabel = documentType === "VAT_TAX_INVOICE" ? "VAT bill" : "PAN bill";
+  let label = "Bill choice not recorded";
+  if (issued && status === "VOIDED") label = `${typeLabel} voided / reverted`;
+  else if (issued) label = `${typeLabel} issued`;
+  else if (requested) label = "Bill requested; number not recorded";
+  else if (status === "NO_PHYSICAL_COPY") label = "No bill issued";
+
+  return {
+    label,
+    number,
+    issuedAt: bill.paperBillIssuedAt || bill.issuedAt || null,
+    voidedAt: bill.paperBillVoidedAt || bill.voidedAt || null,
+    voidReason: bill.paperBillVoidReason || bill.voidReason || null,
+    adjustedAt: bill.paperBillAdjustedAt || bill.adjustedAt || null,
+    adjustmentReason: bill.paperBillAdjustmentReason || bill.adjustmentReason || null,
+    status,
+  };
+};
 
 // ─── ORDER CARD — Admin-managed (with full controls) ─────────────────────────
 const AdminOrderCard = ({
@@ -321,6 +352,19 @@ const AdminOrderCard = ({
               </span>
             </div>
           </div>
+          {(() => {
+            const bill = getPaperBillSummary(order);
+            return (
+              <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2.5 text-[10px]">
+                <p className="font-bold uppercase tracking-wide text-slate-600">Customer bill</p>
+                <p className="mt-1 font-semibold text-slate-800">{bill.label}</p>
+                {bill.number && <p className="mt-1 font-mono text-slate-600">No. {bill.number}</p>}
+                {bill.issuedAt && <p className="mt-1 text-slate-500">Issued {new Date(bill.issuedAt).toLocaleString()}</p>}
+                {bill.voidReason && <p className="mt-1 text-amber-700">{bill.voidReason}</p>}
+                {bill.adjustmentReason && <p className="mt-1 text-amber-700">{bill.adjustmentReason}</p>}
+              </div>
+            );
+          })()}
 
           <p className="mt-3 text-[10px] text-gray-500">Fulfilment is handled by the manufacturer hub.</p>
         </div>
@@ -432,6 +476,19 @@ const MonitorOrderCard = ({ order, onPrint, customerLoyaltyMap }) => {
           <span className={`inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${order.payment ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
             {order.payment ? "Paid" : "COD - Pending"}
           </span>
+          {(() => {
+            const bill = getPaperBillSummary(order);
+            return (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-white p-2.5 text-[10px]">
+                <p className="font-bold uppercase tracking-wide text-slate-600">Customer bill</p>
+                <p className="mt-1 font-semibold text-slate-800">{bill.label}</p>
+                {bill.number && <p className="mt-1 font-mono text-slate-600">No. {bill.number}</p>}
+                {bill.issuedAt && <p className="mt-1 text-slate-500">Issued {new Date(bill.issuedAt).toLocaleString()}</p>}
+                {bill.voidedAt && <p className="mt-1 text-amber-700">Voided {new Date(bill.voidedAt).toLocaleString()}{bill.voidReason ? ` · ${bill.voidReason}` : ""}</p>}
+                {bill.adjustmentReason && <p className="mt-1 text-amber-700">{bill.adjustmentReason}</p>}
+              </div>
+            );
+          })()}
           <div className="mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-2.5 text-[10px]">
             <p className="font-bold uppercase tracking-wide text-indigo-700">Distributor assignment</p>
             {order.distributorAssignment?.initial ? (
@@ -1251,6 +1308,7 @@ export const AdminOrderDetail = ({ token }) => {
     const dateTime = (value) => value ? new Date(value).toLocaleString() : "—";
     const fulfillmentChoices = getAdminFulfillmentChoices(assignment);
     const deliveryControlLocked = Boolean(delivery || ["cancelled", "delivered"].includes(String(operational.status || "").toLowerCase()));
+    const paperBill = getPaperBillSummary(assignment || {});
 
     return (
       <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
@@ -1296,6 +1354,15 @@ export const AdminOrderDetail = ({ token }) => {
               <p className="mt-1 break-words text-xs font-semibold text-slate-800">{value || "—"}</p>
             </div>
           ))}
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-3">
+          <h3 className="text-xs font-bold uppercase tracking-wide text-slate-600">Customer bill</h3>
+          <p className="mt-1 text-sm font-semibold text-slate-900">{paperBill.label}</p>
+          {paperBill.number && <p className="mt-1 font-mono text-xs text-slate-700">Bill number: {paperBill.number}</p>}
+          {paperBill.issuedAt && <p className="mt-1 text-xs text-slate-500">Issued: {dateTime(paperBill.issuedAt)}</p>}
+          {paperBill.voidedAt && <p className="mt-1 text-xs text-amber-700">Voided: {dateTime(paperBill.voidedAt)}{paperBill.voidReason ? ` · ${paperBill.voidReason}` : ""}</p>}
+          {paperBill.adjustedAt && <p className="mt-1 text-xs text-amber-700">Adjusted: {dateTime(paperBill.adjustedAt)}{paperBill.adjustmentReason ? ` · ${paperBill.adjustmentReason}` : ""}</p>}
         </div>
 
         {operational.cancelledAt && (

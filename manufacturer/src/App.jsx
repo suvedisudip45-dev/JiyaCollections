@@ -28,6 +28,7 @@ const DistributorSelfDelivery = lazy(() => import("./pages/DistributorSelfDelive
 const NcmDeliveries = lazy(() => import("./pages/NcmDeliveries"));
 const DistributorDemandReceipt = lazy(() => import("./pages/DistributorDemandReceipt"));
 const DistributorFinanceDashboard = lazy(() => import("./pages/DistributorFinanceDashboard"));
+const DistributorPaperBills = lazy(() => import("./pages/DistributorPaperBills"));
 
 installAuthInterceptor();
 
@@ -93,6 +94,7 @@ const MainLayout = () => {
                 <Route path="/distributor/demand" element={<DistributorDemandReceipt />} />
                 <Route path="/distributor/demand/:transferId" element={<DistributorDemandReceipt />} />
                 <Route path="/distributor/finance" element={<DistributorFinanceDashboard />} />
+                <Route path="/distributor/paper-bills" element={activeWorkspace === "DISTRIBUTOR" ? <DistributorPaperBills /> : <Navigate to="/" replace />} />
                 <Route path="/customer-loyalty" element={activeWorkspace === "DISTRIBUTOR" && platformFeatures?.loyaltyEnabled !== undefined ? (platformFeatures.loyaltyEnabled ? <CustomerLoyalty /> : <Navigate to="/" replace />) : null} />
                 <Route path="/gift-inventory" element={activeWorkspace === "DISTRIBUTOR" ? <GiftInventory /> : <Navigate to="/" replace />} />
                 <Route path="/marketing-cards" element={activeWorkspace === "DISTRIBUTOR" && platformFeatures?.marketingCardsEnabled !== undefined ? (platformFeatures.marketingCardsEnabled ? <MarketingCards /> : <Navigate to="/" replace />) : null} />
