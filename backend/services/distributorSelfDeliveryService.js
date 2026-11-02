@@ -14,6 +14,7 @@ import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
 } from "./returnExchangeSettlementService.js";
+import { postDistributorReturnInventoryAccounting } from "./accountingPostingEngine.js";
 import {
   formatCollectionAmount,
   isDistributorDeliveryOtpEnabled,
@@ -676,6 +677,7 @@ export const processSelfDeliveryReturn = async ({
   actorContext = {},
   client = prisma,
   accrueServiceCharge = accrueDistributorServiceCharge,
+  postReturnInventoryAccounting = postDistributorReturnInventoryAccounting,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
   if (!assignmentIdOrOrderId) throw fail("Order or Assignment ID is required.", 400);
@@ -809,11 +811,22 @@ export const processSelfDeliveryReturn = async ({
       ) || orderItems[0] || {};
 
       const unitPrice = Number(matchingOrderLine.purchasedUnitPrice ?? matchingOrderLine.price ?? 0);
-      const unitCostPrice = Number(
-        matchingOrderLine.agreedUnitCogsVatInclusiveAtAcceptance ??
-        matchingOrderLine.costPrice ??
-        0,
-      );
+      const rawUnitCostPrice = matchingOrderLine.agreedUnitCogsVatInclusiveAtAcceptance
+        ?? matchingOrderLine.costPrice;
+      const unitCostPrice = Number(rawUnitCostPrice);
+      if (
+        rawUnitCostPrice === undefined ||
+        rawUnitCostPrice === null ||
+        String(rawUnitCostPrice).trim() === "" ||
+        !Number.isFinite(unitCostPrice) ||
+        unitCostPrice < 0
+      ) {
+        throw fail(
+          `A valid original unit cost is required for returned item ${matchingOrderLine.name || productId}.`,
+          409,
+          "RETURN_COST_INVALID",
+        );
+      }
       const lineRefund = unitPrice * quantity;
       totalRefundAmount += lineRefund;
 
@@ -937,7 +950,7 @@ export const processSelfDeliveryReturn = async ({
 
     // 2. Create CustomerReturn record
     const now = new Date();
-    const customerReturn = await tx.customerReturn.update({
+    let customerReturn = await tx.customerReturn.update({
       where: { id: approvedReturn.id },
       data: {
         items: processedItems,
@@ -953,6 +966,16 @@ export const processSelfDeliveryReturn = async ({
         inspectedAt: now,
       },
     });
+    const inventoryAccountingJournalEntry = await postReturnInventoryAccounting({
+      returnRecord: customerReturn,
+      client: tx,
+    });
+    if (inventoryAccountingJournalEntry) {
+      customerReturn = await tx.customerReturn.update({
+        where: { id: customerReturn.id },
+        data: { inventoryAccountingJournalEntryId: inventoryAccountingJournalEntry.id },
+      });
+    }
     const distributorProfile = await tx.distributor.findUnique({
       where: { id: distributorId },
       select: { id: true, name: true },
@@ -994,7 +1017,12 @@ export const processSelfDeliveryReturn = async ({
         actorId: actorContext.actorId || distributorId,
         actorRole: "DISTRIBUTOR",
         reason: reason.trim(),
-        metadata: { items: processedItems, damageType, damageNotes },
+        metadata: {
+          items: processedItems,
+          damageType,
+          damageNotes,
+          inventoryAccountingJournalEntryId: inventoryAccountingJournalEntry?.id || null,
+        },
         idempotencyKey: `RETURN:${customerReturn.id}:DISTRIBUTOR_RECEIVED`,
       },
     });
@@ -1035,6 +1063,7 @@ export const processSelfDeliveryReturn = async ({
           approvedRefundAmount: approvedReturn.approvedRefundAmount.toString(),
           hasDamagedItems,
           inventoryAction: customerReturn.inventoryAction,
+          inventoryAccountingJournalEntryId: inventoryAccountingJournalEntry?.id || null,
         },
       },
       { client: tx }

@@ -190,11 +190,6 @@ const FinancialStatements = ({ token }) => {
           General Ledger statements are unavailable. Values are not being filled from operational estimates.
         </div>
       )}
-      {activeTab === "CF" && (
-        <div role="status" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
-          Cash flow is an operational estimate and is not yet generated from classified GL cash movements.
-        </div>
-      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
@@ -277,7 +272,7 @@ const FinancialStatements = ({ token }) => {
 
       {/* 1. INCOME STATEMENT (P&L) */}
       {activeTab === "PL" && (
-        <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
+        <div id="financial-statement-print" className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
           <div className="text-center pb-4 border-b border-slate-100">
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Profit &amp; Loss</p>
@@ -342,7 +337,7 @@ const FinancialStatements = ({ token }) => {
                 )}
                 {Number(plCogs.scrapLoss || 0) > 0 && (
                   <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                    <span>Inventory Write-off &amp; Expiry Loss (Account 5500)</span>
+                    <span>Inventory Damage, Scrap &amp; Expiry Loss (Account 5500)</span>
                     <span className="font-mono">(Rs {Number(plCogs.scrapLoss).toLocaleString()})</span>
                   </div>
                 )}
@@ -462,7 +457,7 @@ const FinancialStatements = ({ token }) => {
 
       {/* 2. BALANCE SHEET */}
       {activeTab === "BS" && (
-        <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
+        <div id="financial-statement-print" className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
           <div className="text-center pb-4 border-b border-slate-100">
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Financial Position (Balance Sheet)</p>
@@ -656,11 +651,14 @@ const FinancialStatements = ({ token }) => {
 
       {/* 3. CASH FLOW STATEMENT */}
       {activeTab === "CF" && (
-        <div className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
+        <div id="financial-statement-print" className="bg-white p-6 sm:p-8 rounded-2xl border border-slate-200/80 shadow-xs max-w-4xl space-y-6">
           <div className="text-center pb-4 border-b border-slate-100">
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Cash Flows (Direct Method &amp; Reconciled)</p>
             <p className="text-xs text-slate-500 font-medium mt-1">For Period: {selectedMonth}</p>
+          </div>
+          <div role="status" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
+            Cash flow is an operational estimate and is not yet generated from classified GL cash movements.
           </div>
 
           <div className="space-y-6 text-xs text-slate-700">
@@ -776,6 +774,59 @@ const FinancialStatements = ({ token }) => {
           </div>
         </div>
       )}
+      <style>{`
+        @media print {
+          @page {
+            size: auto;
+            margin: 12mm;
+          }
+
+          html,
+          body {
+            width: auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            background: #fff !important;
+          }
+
+          body *:not(#financial-statement-print):not(#financial-statement-print *) {
+            display: none !important;
+          }
+
+          body *:has(#financial-statement-print):not(#financial-statement-print) {
+            display: contents !important;
+          }
+
+          #financial-statement-print {
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100% !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            color: #111 !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+
+          #financial-statement-print .grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          #financial-statement-print .flex.justify-between {
+            break-inside: avoid;
+            page-break-inside: avoid;
+          }
+        }
+      `}</style>
     </div>
   );
 };

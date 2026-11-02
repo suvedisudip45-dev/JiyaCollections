@@ -6,6 +6,7 @@ import {
   postConfirmedDeliveryReturnAccounting,
   postCustomerPaymentAccounting,
   postDistributorCustomerRefundAccounting,
+  postDistributorReturnInventoryAccounting,
   postCustomerReturnAccounting,
   postOrderExchangeAccounting,
   postMarketingCpaRedemptionAccounting,
@@ -364,6 +365,39 @@ test("self-delivered COD posts to distributor receivable and creates an idempote
   assert.equal(state.documents[0].side, "RECEIVABLE");
 });
 
+test("distributor return inspection posts restock and defective loss at inspection once", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const returnRecord = {
+    id: "return-inventory-001",
+    inspectedAt: new Date("2026-11-02T10:00:00.000Z"),
+    items: [
+      { condition: "RESTOCKABLE", unitCostPrice: "50.00", quantity: 2 },
+      { condition: "DAMAGED", unitCostPrice: "80.00", quantity: 1 },
+    ],
+  };
+
+  const first = await postDistributorReturnInventoryAccounting({ returnRecord, client });
+  const replay = await postDistributorReturnInventoryAccounting({ returnRecord, client });
+
+  assert.equal(first.id, replay.id);
+  assert.equal(state.entries.length, 1);
+  assert.equal(first.transactionDate.toISOString(), returnRecord.inspectedAt.toISOString());
+  assert.equal(first.totalDebit.toFixed(2), "180.00");
+  assert.equal(first.totalCredit.toFixed(2), "180.00");
+  assert.deepEqual(
+    first.lines.map(({ account, debit, credit }) => ({
+      accountCode: account.accountCode,
+      debit: debit.toFixed(2),
+      credit: credit.toFixed(2),
+    })),
+    [
+      { accountCode: "1140", debit: "100.00", credit: "0.00" },
+      { accountCode: "5500", debit: "80.00", credit: "0.00" },
+      { accountCode: "5100", debit: "0.00", credit: "180.00" },
+    ],
+  );
+});
+
 test("verified distributor-paid customer refund creates balanced GL and distributor AP", async () => {
   const { client, state } = createComprehensiveHarness();
   const journal = await postDistributorCustomerRefundAccounting({
@@ -380,6 +414,10 @@ test("verified distributor-paid customer refund creates balanced GL and distribu
       ],
     },
   });
+  assert.equal(state.entries.length, 1);
+  assert.equal(journal.lines.some(({ account }) => ["1140", "5100", "5500"].includes(account.accountCode)), false);
+  assert.equal(journal.totalDebit.toFixed(2), "900.00");
+  assert.equal(journal.totalCredit.toFixed(2), "900.00");
 
   test("customer return accounting posts on inspection date and includes cost even for a zero refund", async () => {
     const { client, state } = createComprehensiveHarness();
@@ -458,11 +496,10 @@ test("verified distributor-paid customer refund creates balanced GL and distribu
     assert.equal(state.documents[0].side, "PAYABLE");
     assert.equal(state.documents[0].sourceType, "DISTRIBUTOR_CUSTOMER_REFUND");
   });
-  assert.equal(journal.totalDebit.toFixed(2), "1080.00");
-  assert.equal(journal.totalCredit.toFixed(2), "1080.00");
+  assert.equal(journal.totalDebit.toFixed(2), "900.00");
+  assert.equal(journal.totalCredit.toFixed(2), "900.00");
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2190").credit.toFixed(2), "900.00");
-  assert.equal(journal.lines.find((line) => line.account.accountCode === "1140").debit.toFixed(2), "100.00");
-  assert.equal(journal.lines.find((line) => line.account.accountCode === "5500").debit.toFixed(2), "80.00");
+  assert.equal(journal.lines.some((line) => ["1140", "5100", "5500"].includes(line.account.accountCode)), false);
   assert.equal(state.documents.length, 1);
   assert.equal(state.documents[0].side, "PAYABLE");
   assert.equal(state.documents[0].originalAmount.toFixed(2), "900.00");

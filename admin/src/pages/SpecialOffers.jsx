@@ -1,9 +1,11 @@
-/* eslint-disable react/prop-types */
 /* eslint-disable no-unused-vars */
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { backendUrl, currency } from "../App";
 import { toast } from "react-toastify";
+
+const DEFAULT_THEME_COLOR = "#7c3aed";
+const DEFAULT_THEME_COLOR_SECONDARY = "#f59e0b";
 
 const SpecialOffers = ({ token }) => {
   const [offers, setOffers] = useState([]);
@@ -16,6 +18,8 @@ const SpecialOffers = ({ token }) => {
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [badgeText, setBadgeText] = useState("FESTIVE OFFER");
+  const [themeColor, setThemeColor] = useState(DEFAULT_THEME_COLOR);
+  const [themeColorSecondary, setThemeColorSecondary] = useState(DEFAULT_THEME_COLOR_SECONDARY);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [discount, setDiscount] = useState("");
@@ -54,6 +58,8 @@ const SpecialOffers = ({ token }) => {
     setTitle("");
     setSubtitle("Special holiday discounts and limited-time festive deals");
     setBadgeText("FESTIVE OFFER");
+    setThemeColor(DEFAULT_THEME_COLOR);
+    setThemeColorSecondary(DEFAULT_THEME_COLOR_SECONDARY);
     const now = new Date();
     const inAWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     setStartDate(now.toISOString().slice(0, 16));
@@ -69,6 +75,12 @@ const SpecialOffers = ({ token }) => {
     setTitle(offer.title ? offer.title.replace(/🎉|✨|🎁|🔥/g, "").trim() : "");
     setSubtitle(offer.subtitle || "");
     setBadgeText(offer.badgeText ? offer.badgeText.replace(/🎉|✨|🎁|🔥/g, "").trim() : "FESTIVE OFFER");
+    setThemeColor(/^#[0-9a-f]{6}$/i.test(offer.themeColor || "") ? offer.themeColor : DEFAULT_THEME_COLOR);
+    setThemeColorSecondary(
+      /^#[0-9a-f]{6}$/i.test(offer.themeColorSecondary || "")
+        ? offer.themeColorSecondary
+        : DEFAULT_THEME_COLOR_SECONDARY
+    );
     setStartDate(offer.startDate ? new Date(offer.startDate).toISOString().slice(0, 16) : "");
     setEndDate(offer.endDate ? new Date(offer.endDate).toISOString().slice(0, 16) : "");
     setDiscount(offer.discount || "");
@@ -123,6 +135,8 @@ const SpecialOffers = ({ token }) => {
         title: title.trim(),
         subtitle: subtitle.trim(),
         badgeText: badgeText.trim(),
+        themeColor,
+        themeColorSecondary,
         startDate,
         endDate,
         discount: discount ? Number(discount) : 0,
@@ -185,23 +199,23 @@ const SpecialOffers = ({ token }) => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gradient-to-r from-red-50 via-rose-50 to-amber-50 p-6 rounded-2xl border border-red-200 shadow-xs">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-gradient-to-r from-violet-50 via-indigo-50 to-fuchsia-50 p-6 rounded-2xl border border-violet-200 shadow-xs">
         <div>
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-red-600 text-white flex items-center justify-center shadow-xs">
+            <div className="w-8 h-8 rounded-lg bg-violet-600 text-white flex items-center justify-center shadow-xs">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
               </svg>
             </div>
-            <h1 className="text-xl sm:text-2xl font-bold text-red-950">Festival &amp; Special Offers</h1>
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-950">Festival &amp; Special Offers</h1>
           </div>
-          <p className="text-xs sm:text-sm text-red-800/80 mt-1 max-w-xl">
+          <p className="text-xs sm:text-sm text-slate-700 mt-1 max-w-xl">
             Create automated holiday promotions (Dashain, Tihar, Festive Deals) with bright celebratory themes, live countdowns, and auto-expiry.
           </p>
         </div>
         <button
           onClick={openNewModal}
-          className="bg-red-600 hover:bg-red-700 text-white font-semibold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-xs transition-all"
+          className="bg-violet-600 hover:bg-violet-700 text-white font-semibold text-xs sm:text-sm px-5 py-2.5 rounded-xl shadow-xs transition-all"
         >
           + Create Festival Offer
         </button>
@@ -241,6 +255,19 @@ const SpecialOffers = ({ token }) => {
                     <span className={`text-xs px-2.5 py-0.5 rounded-full border ${status.color}`}>
                       {status.label}
                     </span>
+                    <span
+                      className="w-10 h-4 rounded-full border border-gray-300"
+                      style={{
+                        background: `linear-gradient(90deg, ${
+                          /^#[0-9a-f]{6}$/i.test(offer.themeColor || "") ? offer.themeColor : DEFAULT_THEME_COLOR
+                        }, ${
+                          /^#[0-9a-f]{6}$/i.test(offer.themeColorSecondary || "")
+                            ? offer.themeColorSecondary
+                            : DEFAULT_THEME_COLOR_SECONDARY
+                        })`,
+                      }}
+                      title={`Campaign gradient: ${offer.themeColor || DEFAULT_THEME_COLOR} to ${offer.themeColorSecondary || DEFAULT_THEME_COLOR_SECONDARY}`}
+                    />
                     <span className="text-xs font-semibold text-gray-800 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md uppercase">
                       {offer.badgeText ? offer.badgeText.replace(/🎉|✨|🎁|🔥/g, "").trim() || "FESTIVE OFFER" : "FESTIVE OFFER"}
                     </span>
@@ -326,6 +353,50 @@ const SpecialOffers = ({ token }) => {
                 />
               </div>
 
+              <div className="space-y-3 rounded-xl border border-gray-200 p-3">
+                <p className="text-xs font-bold text-gray-700">Campaign Gradient Colors</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="offer-theme-color" className="block text-xs font-semibold text-gray-600 mb-1">
+                      Start Color
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="offer-theme-color"
+                        type="color"
+                        value={themeColor}
+                        onChange={(e) => setThemeColor(e.target.value)}
+                        className="h-10 w-14 cursor-pointer rounded border border-gray-300 bg-white p-1"
+                        aria-label="Choose the start color for the storefront campaign gradient"
+                      />
+                      <span className="text-xs text-gray-600">{themeColor.toUpperCase()}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="offer-theme-color-secondary" className="block text-xs font-semibold text-gray-600 mb-1">
+                      End Color
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="offer-theme-color-secondary"
+                        type="color"
+                        value={themeColorSecondary}
+                        onChange={(e) => setThemeColorSecondary(e.target.value)}
+                        className="h-10 w-14 cursor-pointer rounded border border-gray-300 bg-white p-1"
+                        aria-label="Choose the end color for the storefront campaign gradient"
+                      />
+                      <span className="text-xs text-gray-600">{themeColorSecondary.toUpperCase()}</span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  className="rounded-lg px-4 py-3 text-sm font-semibold text-white"
+                  style={{ background: `linear-gradient(110deg, ${themeColor}, ${themeColorSecondary})` }}
+                >
+                  Live storefront gradient preview
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1">
@@ -334,7 +405,7 @@ const SpecialOffers = ({ token }) => {
                   <input
                     type="text"
                     value={badgeText}
-                    onChange={(e) => setsetBadgeText(e.target.value)}
+                    onChange={(e) => setBadgeText(e.target.value)}
                     placeholder="FESTIVE OFFER"
                     className="w-full px-3 py-2 border rounded-lg text-sm focus:border-black focus:outline-none"
                   />

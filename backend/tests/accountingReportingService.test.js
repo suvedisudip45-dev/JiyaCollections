@@ -17,6 +17,9 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
       line("4100", "CREDIT", 0, "1000.00", "2026-09-30T10:00:00.000Z"),
       line("4100", "CREDIT", 0, "2400.00", "2026-10-05T10:00:00.000Z"),
       line("5100", "DEBIT", "800.00", 0, "2026-10-05T10:00:00.000Z"),
+      line("5100", "DEBIT", 0, "180.00", "2026-10-15T10:00:00.000Z", "DISTRIBUTOR_RETURN_INVENTORY"),
+      line("5500", "DEBIT", "80.00", 0, "2026-10-15T10:00:00.000Z", "DISTRIBUTOR_RETURN_INVENTORY"),
+      line("1140", "DEBIT", "100.00", 0, "2026-10-15T10:00:00.000Z", "DISTRIBUTOR_RETURN_INVENTORY"),
       line("6430", "DEBIT", "1200.00", 0, "2026-10-06T10:00:00.000Z"),
       line("6430", "DEBIT", "250.00", 0, "2026-10-06T10:00:00.000Z", "DELIVERY_SALE"),
       line("6440", "DEBIT", "80.00", 0, "2026-10-06T10:00:00.000Z", "DISTRIBUTOR_SERVICE_EARNING"),
@@ -36,20 +39,21 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
 
   assert.equal(snapshot.basis, "POSTED_JOURNALS");
   assert.equal(snapshot.incomeStatement.netRevenue, 2400);
-  assert.equal(snapshot.incomeStatement.totalCogs, 800);
+  assert.equal(snapshot.incomeStatement.totalCogs, 700);
   assert.equal(snapshot.incomeStatement.totalOperatingExpenses, 1280);
   assert.equal(snapshot.vat.outputVat, 276.11);
   assert.equal(snapshot.vat.inputVat, 50);
   assert.equal(snapshot.vat.carriedForwardInputVat, 20);
   assert.equal(snapshot.vat.carriedForwardOutputVat, 10);
   assert.equal(snapshot.vat.netVatPayable, 196.11);
-  assert.equal(snapshot.balanceSheet.totalAssets, 16745);
+  assert.equal(snapshot.balanceSheet.totalAssets, 16845);
   assert.equal(snapshot.balanceSheet.totalLiabilities, 18011.11);
-  assert.equal(snapshot.balanceSheet.inventory, 15200);
+  assert.equal(snapshot.balanceSheet.inventory, 15300);
   assert.equal(snapshot.balanceSheet.distributorCodReceivable, 1500);
   assert.equal(snapshot.balanceSheet.manufacturerPayable, 17200);
   assert.equal(snapshot.balanceSheet.distributorPayable, 600);
   assert.equal(snapshot.periodAccounts["4100"].balance, 2400);
+  assert.equal(snapshot.periodAccounts["5500"].balance, 80);
   assert.equal(snapshot.closingAccounts["4100"].balance, 3400);
 });
 

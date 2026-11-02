@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildDistributorReturnInventoryAccountingLines,
   buildCustomerReturnAccountingLines,
   resolveCustomerReturnTreasuryGlAccountId,
 } from "../services/accountingPostingEngine.js";
@@ -74,4 +75,51 @@ test("zero-refund return still records a costed inventory adjustment", () => {
     { accountCode: "1140", debit: 25, credit: 0 },
     { accountCode: "5100", debit: 0, credit: 25 },
   ]);
+});
+
+test("distributor return cost is split between restockable inventory and defective loss", () => {
+  const lines = buildDistributorReturnInventoryAccountingLines({
+    returnId: "return-123456",
+    items: [
+      { condition: "RESTOCKABLE", unitCostPrice: "50.00", quantity: 2 },
+      { condition: "DAMAGED", unitCostPrice: "80.00", quantity: 1 },
+    ],
+  });
+
+  assert.deepEqual(
+    lines.map(({ accountCode, mappingKey, debit, credit }) => ({
+      account: accountCode || mappingKey,
+      debit: Number(debit),
+      credit: Number(credit),
+    })),
+    [
+      { account: "INVENTORY", debit: 100, credit: 0 },
+      { account: "5500", debit: 80, credit: 0 },
+      { account: "COGS", debit: 0, credit: 180 },
+    ],
+  );
+});
+
+test("distributor return inventory accounting rejects unknown conditions and invalid costs", () => {
+  assert.throws(
+    () => buildDistributorReturnInventoryAccountingLines({
+      returnId: "return-123456",
+      items: [{ condition: "MISSING", unitCostPrice: 20, quantity: 1 }],
+    }),
+    /Unsupported distributor return condition/,
+  );
+  assert.throws(
+    () => buildDistributorReturnInventoryAccountingLines({
+      returnId: "return-123456",
+      items: [{ condition: "RESTOCKABLE", unitCostPrice: -1, quantity: 1 }],
+    }),
+    /valid non-negative unit cost/,
+  );
+  assert.throws(
+    () => buildDistributorReturnInventoryAccountingLines({
+      returnId: "return-123456",
+      items: [{ condition: "RESTOCKABLE", quantity: 1 }],
+    }),
+    /original unit cost/,
+  );
 });

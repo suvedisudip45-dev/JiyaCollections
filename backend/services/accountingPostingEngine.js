@@ -2061,6 +2061,92 @@ export const resolveCustomerReturnTreasuryGlAccountId = async (client, financial
   return treasuryGlAccountId;
 };
 
+export const buildDistributorReturnInventoryAccountingLines = ({ returnId, items = [] } = {}) => {
+  if (!returnId) throw new Error("Distributor return inventory accounting requires a return ID.");
+  let restockedCost = new Prisma.Decimal(0);
+  let damagedCost = new Prisma.Decimal(0);
+
+  for (const item of parseItemsForAccounting(items)) {
+    const condition = String(item.condition || "").trim().toUpperCase();
+    if (!["RESTOCKABLE", "DAMAGED"].includes(condition)) {
+      throw new Error(`Unsupported distributor return condition: ${condition || "missing"}.`);
+    }
+    const quantity = new Prisma.Decimal(String(item.quantity ?? 0));
+    if (item.unitCostPrice === undefined || item.unitCostPrice === null || String(item.unitCostPrice).trim() === "") {
+      throw new Error("Distributor return accounting requires the original unit cost.");
+    }
+    const unitCost = new Prisma.Decimal(String(item.unitCostPrice));
+    if (!quantity.isFinite() || quantity.lessThanOrEqualTo(0)) {
+      throw new Error("Distributor return accounting requires a positive item quantity.");
+    }
+    if (!unitCost.isFinite() || unitCost.isNegative()) {
+      throw new Error("Distributor return accounting requires a valid non-negative unit cost.");
+    }
+    const itemCost = unitCost.mul(quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+    if (condition === "RESTOCKABLE") restockedCost = restockedCost.plus(itemCost);
+    else damagedCost = damagedCost.plus(itemCost);
+  }
+
+  restockedCost = restockedCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  damagedCost = damagedCost.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const totalCost = restockedCost.plus(damagedCost);
+  if (totalCost.isZero()) return [];
+
+  const lines = [];
+  if (restockedCost.greaterThan(0)) {
+    lines.push({
+      mappingKey: "INVENTORY",
+      debit: restockedCost,
+      credit: 0,
+      description: `Restock returned inventory for RMA #${returnId.slice(-6)}`,
+    });
+  }
+  if (damagedCost.greaterThan(0)) {
+    lines.push({
+      accountCode: "5500",
+      debit: damagedCost,
+      credit: 0,
+      description: `Write off defective returned goods for RMA #${returnId.slice(-6)}`,
+    });
+  }
+  lines.push({
+    mappingKey: "COGS",
+    debit: 0,
+    credit: totalCost,
+    description: `Reverse sold COGS for inspected return RMA #${returnId.slice(-6)}`,
+  });
+  return lines;
+};
+
+export const postDistributorReturnInventoryAccounting = async ({
+  returnRecord,
+  client = prisma,
+} = {}) => {
+  if (!returnRecord?.id) {
+    throw new Error("Distributor return inventory accounting requires a persisted return.");
+  }
+  const lines = buildDistributorReturnInventoryAccountingLines({
+    returnId: returnRecord.id,
+    items: returnRecord.items,
+  });
+  if (!lines.length) return null;
+
+  const transactionDate = returnRecord.inspectedAt;
+  if (!transactionDate || Number.isNaN(new Date(transactionDate).getTime())) {
+    throw new Error("Distributor return inventory accounting requires a valid inspection date.");
+  }
+  return postJournalEntry({
+    transactionDate: new Date(transactionDate),
+    sourceType: "DISTRIBUTOR_RETURN_INVENTORY",
+    sourceId: returnRecord.id,
+    idempotencyKey: `DISTRIBUTOR_RETURN_INVENTORY:${returnRecord.id}`,
+    referenceNumber: `RMA-${returnRecord.id.slice(-6)}`,
+    description: `Inventory and cost adjustment for inspected distributor return RMA #${returnRecord.id.slice(-6)}`,
+    lines,
+    client,
+  });
+};
+
 const recordSalesInvoiceReturnAdjustment = async ({
   client,
   orderId,
@@ -2236,20 +2322,6 @@ export const postDistributorCustomerRefundAccounting = async ({
     displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
   }, { client });
 
-  const items = parseItemsForAccounting(returnRecord.items);
-  const restockedInventoryCost = items.reduce((total, item) => {
-    if (String(item.condition || "").toUpperCase() !== "RESTOCKABLE") return total;
-    const unitCost = new Prisma.Decimal(String(item.unitCostPrice || 0));
-    const quantity = new Prisma.Decimal(String(item.quantity || 0));
-    return total.plus(unitCost.mul(quantity));
-  }, new Prisma.Decimal(0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-  const damagedInventoryCost = items.reduce((total, item) => {
-    if (String(item.condition || "").toUpperCase() !== "DAMAGED") return total;
-    const unitCost = new Prisma.Decimal(String(item.unitCostPrice || 0));
-    const quantity = new Prisma.Decimal(String(item.quantity || 0));
-    return total.plus(unitCost.mul(quantity));
-  }, new Prisma.Decimal(0)).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-
   const lines = [
     {
       mappingKey: "SALES_RETURNS",
@@ -2272,39 +2344,6 @@ export const postDistributorCustomerRefundAccounting = async ({
       accountingPartyId: distributorParty.id,
     },
   ];
-  if (restockedInventoryCost.greaterThan(0)) {
-    lines.push(
-      {
-        mappingKey: "INVENTORY",
-        debit: restockedInventoryCost,
-        credit: 0,
-        description: `Returned inventory received by distributor for RMA #${returnRecord.id.slice(-6)}`,
-      },
-      {
-        mappingKey: "COGS",
-        debit: 0,
-        credit: restockedInventoryCost,
-        description: `Reverse COGS for returned inventory in RMA #${returnRecord.id.slice(-6)}`,
-      },
-    );
-  }
-  if (damagedInventoryCost.greaterThan(0)) {
-    lines.push(
-      {
-        accountCode: "5500",
-        debit: damagedInventoryCost,
-        credit: 0,
-        description: `Write off damaged returned inventory for RMA #${returnRecord.id.slice(-6)}`,
-      },
-      {
-        mappingKey: "COGS",
-        debit: 0,
-        credit: damagedInventoryCost,
-        description: `Relieve sold COGS for damaged RMA #${returnRecord.id.slice(-6)}`,
-      },
-    );
-  }
-
   const transactionDate = returnRecord.completedAt || returnRecord.inspectedAt || new Date();
   return postJournalEntry({
     transactionDate: new Date(transactionDate),

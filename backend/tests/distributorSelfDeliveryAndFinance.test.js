@@ -600,8 +600,8 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     id: "order-1",
     userId: "cust-1",
     items: JSON.stringify([
-      { productId: "prod-1", size: "M", color: "Black", quantity: 1, purchasedUnitPrice: 1000 },
-      { productId: "prod-2", size: "L", color: "Blue", quantity: 1, purchasedUnitPrice: 1200 },
+      { productId: "prod-1", size: "M", color: "Black", quantity: 1, purchasedUnitPrice: 1000, agreedUnitCogsVatInclusiveAtAcceptance: 50 },
+      { productId: "prod-2", size: "L", color: "Blue", quantity: 1, purchasedUnitPrice: 1200, agreedUnitCogsVatInclusiveAtAcceptance: 80 },
     ]),
     address: JSON.stringify({ firstName: "Ram", lastName: "Sharma", phone: "9841000000" }),
   };
@@ -614,6 +614,8 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const discrepancies = [];
   const createdLocations = [];
   const serviceCharges = [];
+  let inventoryAccountingRecord;
+  const updatedCustomerReturn = { id: "return-1" };
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.customerReturn, "findFirst", async () => ({
@@ -662,7 +664,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
       },
       customerReturn: {
         updateMany: async () => ({ count: 1 }),
-        update: async ({ data }) => ({ id: "return-1", ...data }),
+        update: async ({ data }) => Object.assign(updatedCustomerReturn, data),
       },
       distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
       distributorDeliveryChargeNegotiation: {
@@ -692,6 +694,10 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     damageNotes: "Torn collar seam on arrival",
     inspectionEvidenceUrl: "https://res.cloudinary.com/demo/return-photo.png",
     accrueServiceCharge: async (charge) => serviceCharges.push(charge),
+    postReturnInventoryAccounting: async ({ returnRecord }) => {
+    inventoryAccountingRecord = returnRecord;
+    return { id: "return-inventory-journal-1" };
+    },
   });
 
   assert.equal(res.success, true);
@@ -701,6 +707,9 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   assert.equal(res.customerReturn.refundStatus, "PENDING");
   assert.equal(res.customerReturn.refundMethod, "CASH");
   assert.equal(res.customerReturn.inspectionEvidenceUrl, "https://res.cloudinary.com/demo/return-photo.png");
+  assert.equal(res.customerReturn.inventoryAccountingJournalEntryId, "return-inventory-journal-1");
+  assert.equal(inventoryAccountingRecord.items.length, 2);
+  assert.deepEqual(inventoryAccountingRecord.items.map(({ unitCostPrice }) => unitCostPrice), [50, 80]);
   assert.equal(movements.length, 2);
   assert.equal(movements.find((m) => m.movementType === "RETURN").destinationLocationId, "loc-stock");
   assert.equal(movements.find((m) => m.movementType === "DAMAGE").destinationLocationId, "loc-damaged");

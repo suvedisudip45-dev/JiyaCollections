@@ -400,6 +400,16 @@ const ReturnsManagement = ({ token }) => {
                     } catch {
                       items = [];
                     }
+                    const restockedCost = items.reduce((total, item) => {
+                      const lineCost = Number(item.unitCostPrice || 0) * Number(item.quantity || 0);
+                      return total + (Number.isFinite(lineCost) && String(item.condition || "").toUpperCase() === "RESTOCKABLE" ? lineCost : 0);
+                    }, 0);
+                    const damagedCost = items.reduce((total, item) => {
+                      const lineCost = Number(item.unitCostPrice || 0) * Number(item.quantity || 0);
+                      return total + (Number.isFinite(lineCost) && String(item.condition || "").toUpperCase() === "DAMAGED" ? lineCost : 0);
+                    }, 0);
+                    const hasRestockableItems = items.some((item) => String(item.condition || "").toUpperCase() === "RESTOCKABLE");
+                    const hasDamagedItems = items.some((item) => String(item.condition || "").toUpperCase() === "DAMAGED");
                     return (
                       <tr key={ret.id} className="hover:bg-slate-50/50 transition-colors">
                         <td className="p-3">
@@ -414,19 +424,47 @@ const ReturnsManagement = ({ token }) => {
                           {items.map((it, i) => (
                             <p key={i} className="text-slate-700">
                               {it.name} <span className="text-slate-400">({it.quantity}x {it.size || ""})</span>
+                              {it.condition && (
+                                <span className="ml-1 text-[10px] font-semibold text-slate-500">
+                                  · {String(it.condition).toLowerCase()}
+                                </span>
+                              )}
                             </p>
                           ))}
                         </td>
                         <td className="p-3">
                           <span
                             className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              ret.inventoryAction === "RESTOCKED"
+                              hasRestockableItems && !hasDamagedItems
                                 ? "bg-emerald-50 text-emerald-700"
                                 : "bg-rose-50 text-rose-700"
                             }`}
                           >
-                            {ret.inventoryAction === "RESTOCKED" ? "📦 Restocked to Inventory" : "🔥 Damaged Scrap Loss"}
+                            {hasRestockableItems && hasDamagedItems
+                              ? "Mixed: Restocked & Damaged"
+                              : hasDamagedItems
+                                ? "Damaged Scrap Loss"
+                                : hasRestockableItems
+                                  ? "Restocked to Inventory"
+                                  : ret.inventoryAction || "Not inspected"}
                           </span>
+                          {(restockedCost > 0 || damagedCost > 0) && (
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              Restocked {currency}{restockedCost.toLocaleString()} · write-off {currency}{damagedCost.toLocaleString()}
+                            </p>
+                          )}
+                          {ret.inventoryAccountingJournalEntryId ? (
+                            <p className="mt-1 text-[10px] text-emerald-700">
+                              Cost journal posted · {ret.inventoryAccountingJournalEntryId.slice(0, 12)}
+                            </p>
+                          ) : ret.deliveryRoute === "DISTRIBUTOR" && ret.inspectedAt && (restockedCost > 0 || damagedCost > 0) ? (
+                            <p className="mt-1 text-[10px] font-semibold text-amber-700">Cost journal not recorded</p>
+                          ) : null}
+                          {ret.accountingJournalEntryId && (
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              {ret.deliveryRoute === "DISTRIBUTOR" ? "Refund journal" : "Return journal"} · {ret.accountingJournalEntryId.slice(0, 12)}
+                            </p>
+                          )}
                         </td>
                         <td className="p-3 text-slate-600">{ret.reason}</td>
                         <td className="p-3 text-right font-black text-rose-600">

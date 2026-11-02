@@ -8,6 +8,8 @@ The request-signing value is configured through `.env.example` values such as `V
 
 Portal auth interceptors do not treat backend `HMAC_*` errors as expired-token responses, so a signature failure is surfaced directly rather than causing refresh-and-retry loops.
 
+Admins can create multiple festival/special-offer campaigns; every campaign whose schedule is active appears as its own storefront banner with only its selected, published products. Each campaign uses two admin-selected six-digit hex colors with a fade between them and contrasting text for readability. Campaign banners remain visible even if no selected products are currently published. The storefront refreshes active campaigns every 60 seconds and when it regains focus, so campaign edits appear without requiring a full page reload.
+
 ## 1. UI Architecture
 
 The project uses a multi-app frontend architecture:
@@ -224,6 +226,8 @@ The application exposes modules such as:
 - `/finance`, `/treasury`, `/assets`, `/partners`, `/expenses`, `/tax`
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
 - `/returns` includes Admin review of distributor-paid customer refund evidence and the separate treasury payout action for the resulting distributor payable.
+- The Admin Returns table shows each returned item's inspection condition and cost split, plus the inventory/cost journal reference. Distributor inspection cost posts are distinct from the later refund/credit-note journal; manufacturer/NCM returns continue showing their combined return journal.
+- Financial Statements' Export / Print action prints only the selected P&L, Balance Sheet, or Cash Flow statement; portal navigation, date controls, banners, and other page content are excluded. The cash-flow estimate warning remains on its printed statement.
 - `/distributors/:distributorId` Finance shows gross company receivables/payables, the signed net position, open source documents, pending COD remittances, issued settlement requests, and settlement history. Admins issue partial/full requests for the net amount; collection proof is submitted by the distributor for Admin verification, while Admin records payout proof and the distributor acknowledges receipt.
 - Legacy return/exchange logistics payables that remain only in Accounts Payable are itemized, included in the gross payable/net balance, and block unified settlement until paid through that existing workflow.
 - `/payables` now includes a distributor-wise settlement summary with gross receivable, payable, per-distributor net due, and pending COD remittances. Its aggregate net receivable/payable totals are computed per distributor and never cross-offset one distributor against another; the original legacy liability tabs remain separate.

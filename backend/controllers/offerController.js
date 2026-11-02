@@ -1,5 +1,9 @@
 import { prisma } from "../config/db.js";
 
+const DEFAULT_THEME_COLOR = "#7c3aed";
+const DEFAULT_THEME_COLOR_SECONDARY = "#f59e0b";
+const isValidThemeColor = (value) => typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value);
+
 // Helper: Safely parse JSON array field from Prisma
 const parseJsonArray = (val) => {
   if (!val) return [];
@@ -31,77 +35,84 @@ const getActiveOffer = async (req, res) => {
     const now = new Date();
 
     // 1. Check for active Campaign in SpecialOffer table
-    let activeCampaign = null;
-    try {
-      activeCampaign = await prisma.specialOffer.findFirst({
-        where: {
-          isActive: true,
-          startDate: { lte: now },
-          endDate: { gte: now },
-        },
-        orderBy: { createdAt: "desc" },
-      });
-    } catch (e) {
-      // Model might not have synced yet
-      console.warn("SpecialOffer table query fallback:", e.message);
-    }
-
-    // 2. Query products that belong to this campaign OR have isSpecialOffer = true
-    let campaignProductIds = activeCampaign ? parseJsonArray(activeCampaign.productIds) : [];
-    
-    // Find products participating in campaign or tagged directly
-    const rawProducts = await prisma.product.findMany({
+    const activeCampaigns = await prisma.specialOffer.findMany({
       where: {
-        published: true,
-        OR: [
-          ...(campaignProductIds.length > 0 ? [{ id: { in: campaignProductIds } }] : []),
-          { isSpecialOffer: true },
-        ],
+        isActive: true,
+        startDate: { lte: now },
+        endDate: { gte: now },
       },
+      orderBy: { createdAt: "desc" },
     });
 
-    const products = rawProducts.map((p) => ({
+    const toCustomerProduct = (p) => ({
       ...p,
       _id: p.id,
       date: Number(p.date),
       image: toImageArray(p.image),
       categories: typeof p.category === "string" ? [p.category] : parseJsonArray(p.category),
-    }));
+    });
 
-    if (!activeCampaign && products.length === 0) {
-      return res.json({ success: true, activeOffer: null });
-    }
+    if (activeCampaigns.length > 0) {
+      const campaignProductIds = [
+        ...new Set(activeCampaigns.flatMap((campaign) => parseJsonArray(campaign.productIds))),
+      ];
+      const rawProducts = campaignProductIds.length > 0
+        ? await prisma.product.findMany({
+          where: {
+            published: true,
+            id: { in: campaignProductIds },
+          },
+        })
+        : [];
+      const productsById = new Map(rawProducts.map((product) => [product.id, toCustomerProduct(product)]));
+      const activeOffers = activeCampaigns.map((campaign) => ({
+        id: campaign.id,
+        title: campaign.title,
+        subtitle: campaign.subtitle,
+        badgeText: campaign.badgeText,
+        themeColor: campaign.themeColor || DEFAULT_THEME_COLOR,
+        themeColorSecondary: campaign.themeColorSecondary || DEFAULT_THEME_COLOR_SECONDARY,
+        bannerImage: campaign.bannerImage,
+        startDate: campaign.startDate,
+        endDate: campaign.endDate,
+        discount: campaign.discount,
+        products: parseJsonArray(campaign.productIds)
+          .map((productId) => productsById.get(productId))
+          .filter(Boolean),
+      }));
 
-    // If campaign is set, return it with computed expiry timestamp
-    if (activeCampaign) {
       return res.json({
         success: true,
-        activeOffer: {
-          id: activeCampaign.id,
-          title: activeCampaign.title,
-          subtitle: activeCampaign.subtitle,
-          badgeText: activeCampaign.badgeText,
-          bannerImage: activeCampaign.bannerImage,
-          startDate: activeCampaign.startDate,
-          endDate: activeCampaign.endDate,
-          discount: activeCampaign.discount,
-          products,
-        },
+        activeOffers,
+        activeOffer: activeOffers[0],
       });
     }
 
     // If no campaign table entry, but individual products have special offers
+    const rawProducts = await prisma.product.findMany({
+      where: { published: true, isSpecialOffer: true },
+    });
+    const products = rawProducts.map(toCustomerProduct);
+    if (products.length === 0) {
+      return res.json({ success: true, activeOffers: [], activeOffer: null });
+    }
+
+    const legacyOffer = {
+      id: "product_special_deals",
+      title: "🎉 Special Festive Deals",
+      subtitle: "Hand-picked festival discounts & limited-time special prices",
+      badgeText: "🎉 FESTIVE OFFER",
+      themeColor: DEFAULT_THEME_COLOR,
+      themeColorSecondary: DEFAULT_THEME_COLOR_SECONDARY,
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      products,
+    };
+
     return res.json({
       success: true,
-      activeOffer: {
-        id: "product_special_deals",
-        title: "🎉 Special Festive Deals",
-        subtitle: "Hand-picked festival discounts & limited-time special prices",
-        badgeText: "🎉 FESTIVE OFFER",
-        startDate: new Date(),
-        endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        products,
-      },
+      activeOffers: [legacyOffer],
+      activeOffer: legacyOffer,
     });
   } catch (error) {
     console.error("Error fetching active special offer:", error);
@@ -129,6 +140,8 @@ const createOffer = async (req, res) => {
       title,
       subtitle,
       badgeText,
+      themeColor,
+      themeColorSecondary,
       bannerImage,
       startDate,
       endDate,
@@ -139,6 +152,12 @@ const createOffer = async (req, res) => {
 
     if (!title || !startDate || !endDate) {
       return res.json({ success: false, message: "Title, start date, and end date are required." });
+    }
+    if (themeColor !== undefined && !isValidThemeColor(themeColor)) {
+      return res.json({ success: false, message: "Theme color must be a valid six-digit hex color." });
+    }
+    if (themeColorSecondary !== undefined && !isValidThemeColor(themeColorSecondary)) {
+      return res.json({ success: false, message: "Secondary theme color must be a valid six-digit hex color." });
     }
 
     const start = new Date(startDate);
@@ -157,6 +176,8 @@ const createOffer = async (req, res) => {
         title,
         subtitle: subtitle || "Exclusive festive deals and limited-time discounts",
         badgeText: badgeText || "🎉 FESTIVE OFFER",
+        themeColor: themeColor || DEFAULT_THEME_COLOR,
+        themeColorSecondary: themeColorSecondary || DEFAULT_THEME_COLOR_SECONDARY,
         bannerImage: bannerImage || "",
         startDate: start,
         endDate: end,
@@ -181,6 +202,8 @@ const updateOffer = async (req, res) => {
       title,
       subtitle,
       badgeText,
+      themeColor,
+      themeColorSecondary,
       bannerImage,
       startDate,
       endDate,
@@ -191,6 +214,12 @@ const updateOffer = async (req, res) => {
 
     if (!id) {
       return res.json({ success: false, message: "Offer ID is required" });
+    }
+    if (themeColor !== undefined && !isValidThemeColor(themeColor)) {
+      return res.json({ success: false, message: "Theme color must be a valid six-digit hex color." });
+    }
+    if (themeColorSecondary !== undefined && !isValidThemeColor(themeColorSecondary)) {
+      return res.json({ success: false, message: "Secondary theme color must be a valid six-digit hex color." });
     }
 
     let validatedDiscount = undefined;
@@ -212,6 +241,8 @@ const updateOffer = async (req, res) => {
       ...(title && { title }),
       ...(subtitle !== undefined && { subtitle }),
       ...(badgeText && { badgeText }),
+      ...(themeColor !== undefined && { themeColor }),
+      ...(themeColorSecondary !== undefined && { themeColorSecondary }),
       ...(bannerImage !== undefined && { bannerImage }),
       ...(parsedStart && { startDate: parsedStart }),
       ...(parsedEnd && { endDate: parsedEnd }),

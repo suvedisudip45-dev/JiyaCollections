@@ -976,6 +976,8 @@ model SpecialOffer {
   title       String
   subtitle    String?  @default("Exclusive festive deals and limited-time discounts")
   badgeText   String   @default("🎉 FESTIVE OFFER")
+  themeColor  String   @default("#7c3aed") @db.VarChar(7)
+  themeColorSecondary String @default("#f59e0b") @db.VarChar(7)
   bannerImage String?  @default("")
   startDate   DateTime
   endDate     DateTime
@@ -1303,6 +1305,7 @@ model CustomerReturn {
   inspectionEvidenceUrl String? @db.Text
   completedAt       DateTime?
   accountingJournalEntryId String? @db.VarChar(191)
+  inventoryAccountingJournalEntryId String? @db.VarChar(191)
   taxCreditNoteNumber String? @db.VarChar(128)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
