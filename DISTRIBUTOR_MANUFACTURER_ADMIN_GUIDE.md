@@ -40,10 +40,12 @@ endpoints and `distributor:admin_*` permissions; remittance verification also
 requires `finance:receivable_collect`. Every detail endpoint requires the
 `ADMIN` role. The distributor
 profile editor reuses the existing audited application-profile update flow,
-while delivery, return, NCM transfer, commission, and VAT values reuse the
-approved distributor rate-card workflow. The per-distributor NCM transfer fee
-is accrued as a separate payable only after NCM confirms customer delivery; it
-does not replace or combine with delivery, direct-hub, or phone-order income.
+while delivery, return, stock-transfer, commission, and VAT values reuse the
+approved distributor rate-card workflow. Per-unit stock-transfer compensation
+is accrued as a separate payable after each product unit is successfully
+delivered by NCM, self-delivery, phone order, or hub sale. It is additional to
+channel-specific delivery or counter-sale compensation and is not the NCM
+carrier fee.
 Monthly target bonuses are configured separately and apply to completed
 distributor deliveries after the month closes.
 
@@ -719,11 +721,11 @@ transfer flow:
      NCM status/detail endpoints. The webhook is acknowledged only after the
      event and status update are persisted.
 9. Negotiated Charge & Rate Card Engine:
-   - Admin controls distributor self-delivery/phone-delivery compensation, hub counter-sale compensation, return service charges, and NCM transfer fees through `POST /api/admin/distributor-rates`. Phone-order compensation is earned when delivery completes; hub counter-sale compensation is earned when the walk-in sale completes. New delivery earnings do not include a per-delivery incentive; previously posted earning snapshots remain unchanged.
+   - Admin controls distributor self-delivery/phone-delivery compensation, hub counter-sale compensation, per-product stock-transfer compensation, and return service charges through `POST /api/admin/distributor-rates`. Stock-transfer compensation is paid per product unit only after successful delivery through NCM, self-delivery, phone order, or hub sale, and is additive to the channel-specific compensation. Phone-order compensation is earned when delivery completes; hub counter-sale compensation is earned when the walk-in sale completes. New delivery earnings do not include a per-delivery incentive; previously posted earning snapshots remain unchanged.
    - Admin configures additive monthly completed-self-delivery bonus tiers through `POST /api/admin/distributor-rates/bonus-plans`. Only full Kathmandu-time calendar months covered by the plan qualify. Each reached tier adds its configured amount, and closed periods are accrued idempotently when a distributor requests settlement.
    - Active rate cards can be queried by distributors via `GET /api/distributor/rates`.
 10. Distributor Financial Dashboard & Accounting:
-   - `GET /api/distributor/finance/statement`: Itemized self-delivery, phone-delivery, hub counter-sale, return, exchange, and NCM-transfer earnings, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. A later merchandise return does not reverse a completed delivery earning. A verified return of a hub counter sale reverses the counter-sale earning proportionally to the returned merchandise value; a payable credit note offsets open service-earning bills and any unapplied credit remains in the subledger for future service-earning documents. The Rate Card return charge is an additional distributor earning, and a completed distributor exchange settlement is included in the distributor's net settlement. The separately configured company-paid return logistics settlement remains its own payable. New service charges and return reversals use immutable `DistributorServiceEarning` snapshots.
+   - `GET /api/distributor/finance/statement`: Itemized self-delivery, phone-delivery, stock-transfer, hub counter-sale, return, and exchange earnings, historical incentive amounts (if any), monthly target bonus progress/accruals, deductions, VAT, and balances. Stock-transfer compensation snapshots delivered unit counts and per-unit rates; historical NCM-only earnings display in the same category. A later merchandise return does not reverse a completed delivery earning. A verified return of a hub counter sale reverses the counter-sale earning proportionally to the returned merchandise value; a payable credit note offsets open service-earning bills and any unapplied credit remains in the subledger for future service-earning documents. The Rate Card return charge is an additional distributor earning, and a completed distributor exchange settlement is included in the distributor's net settlement. The separately configured company-paid return logistics settlement remains its own payable. New service charges and return reversals use immutable `DistributorServiceEarning` snapshots.
    - Admin issues a partial or full net-settlement request from the distributor profile after reviewing the open receivable/payable position. Distributors cannot initiate a settlement or submit unsolicited remittance evidence.
    - For `COMPANY_COLLECTS` requests, the distributor submits the bank/wallet reference and proof against the issued request; Admin verifies it and the settlement is then posted. For `COMPANY_PAYS`, Admin records the completed payout and proof; the distributor acknowledges receipt. A request is not an accounting settlement until the corresponding transfer is verified/recorded.
    - Before creating a new request, missing delivery earnings are accrued from completed self-delivery assignments using the rate card effective at delivery; missing return charges are accrued from completed returns. Older requests without accounting documents remain reconciliation-required: Admin can explicitly backfill only earnings supported by completed delivery/return records, then link the resulting documents. No payable is created from a requested amount alone.

@@ -221,8 +221,8 @@ export const accrueDistributorServiceCharge = async ({
   journalPoster = postJournalEntry,
 } = {}) => {
   const normalizedType = String(serviceType || "").trim().toUpperCase();
-  if (!["RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE"].includes(normalizedType)) {
-    throw new Error("Distributor service charge must be a RETURN, EXCHANGE, NCM_TRANSFER, or COUNTER_SALE.");
+  if (!["RETURN", "EXCHANGE", "NCM_TRANSFER", "STOCK_TRANSFER", "COUNTER_SALE"].includes(normalizedType)) {
+    throw new Error("Distributor service charge must be a RETURN, EXCHANGE, STOCK_TRANSFER, or COUNTER_SALE.");
   }
   if (!distributorId || !distributorName || !assignmentId || !orderId || !sourceId) {
     throw new Error("Distributor, assignment, order, and service source details are required.");
@@ -255,8 +255,8 @@ export const accrueDistributorServiceCharge = async ({
     rateCardId,
     vatRate: normalizedVatRate.toFixed(2),
     vatAmount: vatAmount.toFixed(2),
-    taxTreatment: normalizedType === "NCM_TRANSFER"
-      ? "NCM_TRANSFER_FEE_NO_VAT"
+    taxTreatment: ["NCM_TRANSFER", "STOCK_TRANSFER"].includes(normalizedType)
+      ? "STOCK_TRANSFER_FEE_NO_VAT"
       : normalizedType === "COUNTER_SALE"
         ? "HUB_COUNTER_SALE_FEE_NO_VAT"
         : "RATE_CARD_SERVICE_CHARGE",
@@ -289,11 +289,13 @@ export const accrueDistributorServiceCharge = async ({
     sourceEntityId: distributorId,
     displayName: distributorName,
   }, { client });
-  const expenseMappingKey = normalizedType === "NCM_TRANSFER"
-    ? "DISTRIBUTOR_NCM_TRANSFER_EXPENSE"
-    : normalizedType === "COUNTER_SALE"
-      ? "DISTRIBUTOR_COUNTER_SALE_EXPENSE"
-      : "DELIVERY_EXPENSE";
+  const expenseMappingKey = normalizedType === "STOCK_TRANSFER"
+    ? "DISTRIBUTOR_STOCK_TRANSFER_EXPENSE"
+    : normalizedType === "NCM_TRANSFER"
+      ? "DISTRIBUTOR_NCM_TRANSFER_EXPENSE"
+      : normalizedType === "COUNTER_SALE"
+        ? "DISTRIBUTOR_COUNTER_SALE_EXPENSE"
+        : "DELIVERY_EXPENSE";
   const journal = await journalPoster({
     transactionDate: effectiveAt,
     sourceType: "DISTRIBUTOR_SERVICE_EARNING",
@@ -564,5 +566,74 @@ export const accrueDistributorNcmTransferEarning = async ({
     chargeAmount,
     effectiveAt,
     client,
+  });
+};
+
+const countOrderUnits = (items) => {
+  let normalizedItems = items;
+  if (typeof normalizedItems === "string") {
+    try {
+      normalizedItems = JSON.parse(normalizedItems);
+    } catch {
+      throw new Error("Delivered order items are not valid JSON.");
+    }
+  }
+  if (!Array.isArray(normalizedItems) || normalizedItems.length === 0) {
+    throw new Error("Delivered order must contain at least one product item.");
+  }
+  return normalizedItems.reduce((total, item) => {
+    const quantity = Number(item?.quantity ?? item?.qty);
+    if (!Number.isSafeInteger(quantity) || quantity < 1) {
+      throw new Error("Every delivered product must have a positive whole-number quantity.");
+    }
+    const nextTotal = total + quantity;
+    if (!Number.isSafeInteger(nextTotal)) {
+      throw new Error("Delivered product quantity exceeds the supported whole-number range.");
+    }
+    return nextTotal;
+  }, 0);
+};
+
+export const accrueDistributorStockTransferEarning = async ({
+  distributorId,
+  distributorName,
+  assignmentId,
+  orderId,
+  items,
+  effectiveAt = new Date(),
+  client = prisma,
+  rateCardResolver = resolveActiveRateCard,
+  accrueServiceCharge = accrueDistributorServiceCharge,
+  journalPoster = postJournalEntry,
+} = {}) => {
+  if (!distributorId || !distributorName || !assignmentId || !orderId) {
+    throw new Error("Distributor, assignment, and order details are required for stock-transfer compensation.");
+  }
+  const quantity = countOrderUnits(items);
+  const rateCard = await rateCardResolver({ distributorId, effectiveAt, client });
+  const unitCharge = money(
+    rateCard.stockTransferCharge ?? rateCard.ncmTransferCharge ?? 0,
+    "Stock transfer charge per product",
+  );
+  const chargeAmount = unitCharge.mul(quantity).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  if (chargeAmount.isZero()) return null;
+
+  return accrueServiceCharge({
+    distributorId,
+    distributorName,
+    assignmentId,
+    orderId,
+    sourceId: orderId,
+    rateCardId: rateCard.rateCardId || null,
+    serviceType: "STOCK_TRANSFER",
+    chargeAmount,
+    effectiveAt,
+    snapshotDetails: {
+      quantity,
+      unitCharge: unitCharge.toFixed(2),
+      fulfillmentType: "SUCCESSFULLY_DELIVERED_PRODUCT_UNITS",
+    },
+    client,
+    journalPoster,
   });
 };

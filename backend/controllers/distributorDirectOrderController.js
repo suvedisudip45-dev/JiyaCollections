@@ -9,6 +9,7 @@ import { consumeDistributorOrderInventory } from "../services/distributorOrderIn
 import {
   accrueDistributorCounterSaleEarning,
   accrueDistributorDeliveryEarning,
+  accrueDistributorStockTransferEarning,
 } from "../services/distributorServiceEarningService.js";
 import { calculateUserLoyalty } from "./loyaltyController.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
@@ -302,6 +303,15 @@ export const createDistributorDirectOrder = async (req, res) => {
           effectiveAt: acceptedAt,
           client: tx,
         });
+        await accrueDistributorStockTransferEarning({
+          distributorId,
+          distributorName: distributor.name,
+          assignmentId: assignment.id,
+          orderId: created.id,
+          items: frozenItems,
+          effectiveAt: acceptedAt,
+          client: tx,
+        });
       }
       return finalized;
     }, { isolationLevel: "Serializable" });
@@ -370,6 +380,15 @@ export const updateDistributorDirectOrderStatus = async (req, res) => {
               distributorName: distributor.name,
               assignmentId: assignment.id,
               orderId: order.id,
+              effectiveAt: new Date(),
+              client: tx,
+            });
+            await accrueDistributorStockTransferEarning({
+              distributorId: req.distributorId,
+              distributorName: distributor.name,
+              assignmentId: assignment.id,
+              orderId: order.id,
+              items: updatedOrder.items,
               effectiveAt: new Date(),
               client: tx,
             });

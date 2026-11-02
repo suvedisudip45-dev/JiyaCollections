@@ -4,6 +4,7 @@ import {
   accrueDistributorDeliveryEarning,
   accrueDistributorCounterSaleEarning,
   accrueDistributorNcmTransferEarning,
+  accrueDistributorStockTransferEarning,
   accrueDistributorServiceCharge,
   reverseDistributorCounterSaleEarning,
 } from "../services/distributorServiceEarningService.js";
@@ -363,4 +364,38 @@ test("NCM transfer earning snapshots the configured distributor fee and skips a 
   });
   assert.equal(zeroFee, null);
   assert.equal(captured.length, 1);
+});
+
+test("stock-transfer compensation is paid per successfully delivered product unit", async () => {
+  const { client, state } = createHarness();
+  const earning = await accrueDistributorStockTransferEarning({
+    distributorId: "dist-1",
+    distributorName: "Distributor One",
+    assignmentId: "assignment-1",
+    orderId: "order-1",
+    items: JSON.stringify([{ quantity: 2 }, { qty: 3 }]),
+    client,
+    rateCardResolver: async () => ({ rateCardId: "rate-1", stockTransferCharge: 12.5 }),
+    journalPoster: async (journal) => {
+      state.journals.push(journal);
+      return { id: "stock-transfer-journal-1" };
+    },
+  });
+
+  assert.equal(earning.serviceType, "STOCK_TRANSFER");
+  assert.equal(earning.otherCharges.toString(), "62.5");
+  assert.equal(earning.payableAmount.toString(), "62.5");
+  assert.equal(earning.snapshot.quantity, 5);
+  assert.equal(earning.snapshot.unitCharge, "12.50");
+  assert.equal(state.journals[0].lines[0].mappingKey, "DISTRIBUTOR_STOCK_TRANSFER_EXPENSE");
+
+  await assert.rejects(() => accrueDistributorStockTransferEarning({
+    distributorId: "dist-1",
+    distributorName: "Distributor One",
+    assignmentId: "assignment-1",
+    orderId: "order-2",
+    items: [{ quantity: 0 }],
+    client,
+    rateCardResolver: async () => ({ stockTransferCharge: 12.5 }),
+  }), /positive whole-number quantity/);
 });

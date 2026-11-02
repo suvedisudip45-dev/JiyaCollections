@@ -43,7 +43,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
     setRate({
       deliveryCharge: numericValue(generalRate.deliveryCharge),
       returnCharge: numericValue(generalRate.returnCharge),
-      ncmTransferCharge: numericValue(generalRate.ncmTransferCharge),
+      stockTransferCharge: numericValue(generalRate.stockTransferCharge ?? generalRate.ncmTransferCharge),
       counterSaleCharge: numericValue(generalRate.counterSaleCharge),
       commissionRate: numericValue(generalRate.commissionRate),
       vatRate: numericValue(generalRate.vatRate, 13),
@@ -229,18 +229,18 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
       <form onSubmit={saveRate} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div><h2 className="font-bold text-slate-900">General rate card</h2><p className="mt-1 text-xs text-slate-500">Saving records an approved general rate using the existing rate-card workflow.</p></div>
         <div className="rounded-xl border border-cyan-200 bg-cyan-50 p-4">
-          <h3 className="text-sm font-bold text-cyan-950">NCM delivery payment to this distributor</h3>
+          <h3 className="text-sm font-bold text-cyan-950">Stock-transfer compensation</h3>
           <p className="mt-1 text-xs leading-5 text-cyan-900">
-            Set the amount paid to this distributor for each customer order successfully delivered by NCM. This is separate from the NCM carrier fee and the distributor&apos;s other income.
+            Set the amount paid for each product unit successfully delivered by this distributor, regardless of NCM, self-delivery, phone order, or hub sale. This is additional to the channel-specific delivery or counter-sale compensation and is not the NCM carrier fee.
           </p>
           <label className="mt-3 block text-xs font-bold text-cyan-950">
-            Amount per successful NCM delivery ({currency})
+            Amount per successfully delivered product unit ({currency})
             <input
               type="number"
               min="0"
               step="0.01"
-              value={rate.ncmTransferCharge ?? 0}
-              onChange={(event) => setRateValue("ncmTransferCharge", event.target.value)}
+              value={rate.stockTransferCharge ?? 0}
+              onChange={(event) => setRateValue("stockTransferCharge", event.target.value)}
               readOnly={!canEdit}
               className={`${fieldClass} border-cyan-300 bg-white read-only:bg-slate-50`}
             />
@@ -258,7 +258,7 @@ const DistributorProfileSection = ({ distributor, token, onUpdated }) => {
           </label>
         ))}
         <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><input type="checkbox" checked={Boolean(rate.vatInclusive)} onChange={(event) => setRate((current) => ({ ...current, vatInclusive: event.target.checked }))} disabled={!canEdit} /> VAT inclusive</label>
-        <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">The NCM delivery amount above is the total payable per successful delivery; no VAT is added. No per-delivery incentive is added; configure monthly target bonuses separately below.</p>
+        <p className="rounded-lg bg-blue-50 p-3 text-xs leading-5 text-blue-800">Stock-transfer compensation is calculated per product unit in the order and is payable only after successful delivery. It is additional to channel-specific compensation; no VAT is added. Configure monthly target bonuses separately below.</p>
         {canEdit && <button type="submit" disabled={savingRate} className="w-full rounded-lg bg-indigo-700 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50">{savingRate ? "Saving…" : "Save approved rates"}</button>}
       </form>
       </div>

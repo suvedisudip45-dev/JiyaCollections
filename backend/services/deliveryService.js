@@ -24,7 +24,7 @@ import { applyExchangeNcmStatus } from "./orderExchangeService.js";
 import { applyCustomerReturnNcmStatus } from "./customerReturnWorkflowService.js";
 import { applyGiftDeliveryTransition } from "./giftService.js";
 import { consumeDistributorOrderInventory } from "./distributorOrderInventoryService.js";
-import { accrueDistributorNcmTransferEarning } from "./distributorServiceEarningService.js";
+import { accrueDistributorStockTransferEarning } from "./distributorServiceEarningService.js";
 
 const VALID_READY_STATES = new Set(["package_details_complete", "ready_for_pickup"]);
 const MAX_NCM_WEBHOOK_ORDER_IDS = 100;
@@ -334,7 +334,7 @@ const findDeliveryOrdersForNcmId = async (ncmId) => {
   return prisma.deliveryOrder.findMany({
     where: { OR: candidates },
     include: {
-      order: { select: { paymentMethod: true, payment: true } },
+      order: { select: { id: true, items: true, paymentMethod: true, payment: true } },
       events: {
         where: { source: { in: ["NCM_WEBHOOK", "ADMIN_RECONCILIATION", "ADMIN_RECONCILIATION_DECISION"] } },
         orderBy: { occurredAt: "desc" },
@@ -1237,14 +1237,14 @@ export const applyNcmStatus = async ({
               },
             });
             if (!assignment?.distributor) {
-              throw new Error("Cannot accrue the NCM transfer fee because the distributor assignment is missing.");
+              throw new Error("Cannot accrue stock-transfer compensation because the distributor assignment is missing.");
             }
-            await accrueDistributorNcmTransferEarning({
+            await accrueDistributorStockTransferEarning({
               distributorId: assignment.distributor.id,
               distributorName: assignment.distributor.name,
               assignmentId: assignment.id,
               orderId: delivery.orderId,
-              deliveryOrderId: delivery.id,
+              items: delivery.order.items,
               effectiveAt: delivery.deliveredAt || occurredAt,
               client: tx,
             });

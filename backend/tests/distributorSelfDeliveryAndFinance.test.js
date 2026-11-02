@@ -521,6 +521,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     assignmentIdOrOrderId: "assign-1",
     status: "Delivered",
     accrueDeliveryEarning: async (earning) => deliveryEarnings.push(earning),
+    accrueStockTransferEarning: async () => null,
   });
 
   assert.equal(res.success, true);
@@ -543,6 +544,7 @@ test("3. updateSelfDeliveryStatus transitions to Delivered, updates inventory an
     collectionConfirmed: true,
     notificationConfig: { enabled: false, sms: { enabled: false } },
     accrueDeliveryEarning: async (earning) => deliveryEarnings.push(earning),
+    accrueStockTransferEarning: async () => null,
   });
   assert.equal(codResult.order.payment, true);
   assert.equal(cashEvents[0].amount, "200.00");
@@ -749,7 +751,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
     productId: null,
     deliveryCharge: 120,
     returnCharge: 60,
-    ncmTransferCharge: 35,
+    stockTransferCharge: 35,
     counterSaleCharge: 20,
     commissionRate: 10,
     bonusRate: 25,
@@ -776,7 +778,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
     distributorId: "dist-1",
     deliveryCharge: 120,
     returnCharge: 60,
-    ncmTransferCharge: 75,
+    stockTransferCharge: 75,
     counterSaleCharge: 45,
     commissionRate: 10,
     bonusRate: 25,
@@ -785,6 +787,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
 
   assert.equal(saved.deliveryCharge, 120);
   assert.equal(saved.returnCharge, 60);
+  assert.equal(saved.stockTransferCharge, 75);
   assert.equal(saved.ncmTransferCharge, 75);
   assert.equal(saved.counterSaleCharge, 45);
   assert.equal(saved.bonusRate, 0);
@@ -792,6 +795,7 @@ test("5. Rate Card Engine records and resolves negotiated rates", async (t) => {
   const resolved = await resolveActiveRateCard({ distributorId: "dist-1" });
   assert.equal(resolved.deliveryCharge, 120);
   assert.equal(resolved.returnCharge, 60);
+  assert.equal(resolved.stockTransferCharge, 75);
   assert.equal(resolved.ncmTransferCharge, 75);
   assert.equal(resolved.counterSaleCharge, 45);
   assert.equal(resolved.bonusRate, 0);
@@ -930,6 +934,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   assert.equal(statementWithVat.summary.earnedIncentives, 0);
   assert.equal(statementWithVat.summary.returnFeesEarned, 50);
   assert.equal(statementWithVat.summary.exchangeFeesEarned, 25);
+  assert.equal(statementWithVat.summary.stockTransferFeesEarned, 70);
   assert.equal(statementWithVat.summary.ncmTransferFeesEarned, 70);
   assert.equal(statementWithVat.summary.adminDiscountsApplied, 30);
   assert.equal(statementWithVat.summary.counterSaleEarnings, 25);
@@ -947,7 +952,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "DELIVERY").length, 3);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "RETURN").length, 1);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "EXCHANGE").length, 1);
-  assert.equal(statementWithVat.transactions.filter((item) => item.type === "NCM_TRANSFER").length, 1);
+  assert.equal(statementWithVat.transactions.filter((item) => item.type === "STOCK_TRANSFER").length, 1);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "COUNTER_SALE").length, 1);
   assert.equal(statementWithVat.transactions.filter((item) => item.type === "COUNTER_SALE_REVERSAL").length, 1);
   assert.equal(
@@ -963,7 +968,7 @@ test("6. Distributor Financial Statement calculates earnings, VAT breakdown, and
     25,
   );
   assert.equal(
-    statementWithVat.transactions.find((item) => item.type === "NCM_TRANSFER" && item.referenceId === "o-4").netAmount,
+    statementWithVat.transactions.find((item) => item.type === "STOCK_TRANSFER" && item.referenceId === "o-4").netAmount,
     70,
   );
 

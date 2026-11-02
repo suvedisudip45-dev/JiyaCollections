@@ -2,7 +2,7 @@ import { prisma } from "../config/db.js";
 
 const DEFAULT_DELIVERY_CHARGE = 100;
 const DEFAULT_RETURN_CHARGE = 50;
-const DEFAULT_NCM_TRANSFER_CHARGE = 0;
+const DEFAULT_STOCK_TRANSFER_CHARGE = 0;
 const DEFAULT_COUNTER_SALE_CHARGE = 0;
 const DEFAULT_COMMISSION_RATE = 0;
 const DEFAULT_BONUS_RATE = 0;
@@ -27,7 +27,8 @@ export const recordDistributorRateCard = async ({
   productId = null,
   deliveryCharge = DEFAULT_DELIVERY_CHARGE,
   returnCharge = DEFAULT_RETURN_CHARGE,
-  ncmTransferCharge = DEFAULT_NCM_TRANSFER_CHARGE,
+  stockTransferCharge = undefined,
+  ncmTransferCharge = undefined,
   counterSaleCharge = DEFAULT_COUNTER_SALE_CHARGE,
   commissionRate = DEFAULT_COMMISSION_RATE,
   bonusRate = DEFAULT_BONUS_RATE,
@@ -71,7 +72,10 @@ export const recordDistributorRateCard = async ({
 
   const numDeliveryCharge = nonNegativeRateValue(deliveryCharge, "Delivery charge");
   const numReturnCharge = nonNegativeRateValue(returnCharge, "Return charge");
-  const numNcmTransferCharge = nonNegativeRateValue(ncmTransferCharge, "NCM transfer charge");
+  const numStockTransferCharge = nonNegativeRateValue(
+    stockTransferCharge ?? ncmTransferCharge ?? DEFAULT_STOCK_TRANSFER_CHARGE,
+    "Stock transfer charge per product",
+  );
   const numCounterSaleCharge = nonNegativeRateValue(counterSaleCharge, "Hub counter sale charge");
   const numCommissionRate = nonNegativeRateValue(commissionRate, "Commission rate", 100);
   nonNegativeRateValue(bonusRate, "Legacy delivery incentive");
@@ -122,7 +126,8 @@ export const recordDistributorRateCard = async ({
     productId: productId || null,
     deliveryCharge: numDeliveryCharge,
     returnCharge: numReturnCharge,
-    ncmTransferCharge: numNcmTransferCharge,
+    stockTransferCharge: numStockTransferCharge,
+    ncmTransferCharge: numStockTransferCharge,
     counterSaleCharge: numCounterSaleCharge,
     commissionRate: numCommissionRate,
     bonusRate: numBonusRate,
@@ -216,7 +221,8 @@ export const resolveActiveRateCard = async ({
     return {
       deliveryCharge: DEFAULT_DELIVERY_CHARGE,
       returnCharge: DEFAULT_RETURN_CHARGE,
-      ncmTransferCharge: DEFAULT_NCM_TRANSFER_CHARGE,
+      stockTransferCharge: DEFAULT_STOCK_TRANSFER_CHARGE,
+      ncmTransferCharge: DEFAULT_STOCK_TRANSFER_CHARGE,
       counterSaleCharge: DEFAULT_COUNTER_SALE_CHARGE,
       commissionRate: DEFAULT_COMMISSION_RATE,
       bonusRate: DEFAULT_BONUS_RATE,
@@ -243,7 +249,8 @@ export const resolveActiveRateCard = async ({
       return {
         deliveryCharge: Number(productRate.deliveryCharge),
         returnCharge: Number(productRate.returnCharge),
-        ncmTransferCharge: Number(productRate.ncmTransferCharge ?? DEFAULT_NCM_TRANSFER_CHARGE),
+        stockTransferCharge: Number(productRate.stockTransferCharge ?? DEFAULT_STOCK_TRANSFER_CHARGE),
+        ncmTransferCharge: Number(productRate.stockTransferCharge ?? DEFAULT_STOCK_TRANSFER_CHARGE),
         counterSaleCharge: Number(productRate.counterSaleCharge ?? DEFAULT_COUNTER_SALE_CHARGE),
         commissionRate: Number(productRate.commissionRate || 0),
         bonusRate: DEFAULT_BONUS_RATE,
@@ -272,7 +279,8 @@ export const resolveActiveRateCard = async ({
     return {
       deliveryCharge: Number(generalRate.deliveryCharge),
       returnCharge: Number(generalRate.returnCharge),
-      ncmTransferCharge: Number(generalRate.ncmTransferCharge ?? DEFAULT_NCM_TRANSFER_CHARGE),
+      stockTransferCharge: Number(generalRate.stockTransferCharge ?? DEFAULT_STOCK_TRANSFER_CHARGE),
+      ncmTransferCharge: Number(generalRate.stockTransferCharge ?? DEFAULT_STOCK_TRANSFER_CHARGE),
       counterSaleCharge: Number(generalRate.counterSaleCharge ?? DEFAULT_COUNTER_SALE_CHARGE),
       commissionRate: Number(generalRate.commissionRate || 0),
       bonusRate: DEFAULT_BONUS_RATE,
@@ -288,7 +296,8 @@ export const resolveActiveRateCard = async ({
   return {
     deliveryCharge: DEFAULT_DELIVERY_CHARGE,
     returnCharge: DEFAULT_RETURN_CHARGE,
-    ncmTransferCharge: DEFAULT_NCM_TRANSFER_CHARGE,
+    stockTransferCharge: DEFAULT_STOCK_TRANSFER_CHARGE,
+    ncmTransferCharge: DEFAULT_STOCK_TRANSFER_CHARGE,
     counterSaleCharge: DEFAULT_COUNTER_SALE_CHARGE,
     commissionRate: DEFAULT_COMMISSION_RATE,
     bonusRate: DEFAULT_BONUS_RATE,

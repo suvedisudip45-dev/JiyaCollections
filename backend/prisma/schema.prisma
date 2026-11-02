@@ -2118,6 +2118,8 @@ model DistributorDeliveryChargeNegotiation {
   productId           String?
   deliveryCharge      Decimal  @db.Decimal(20, 2)
   returnCharge        Decimal  @db.Decimal(20, 2)
+  stockTransferCharge Decimal  @default(0) @db.Decimal(20, 2)
+  /// Legacy column mirrored for older application instances during rollout.
   ncmTransferCharge   Decimal  @default(0) @db.Decimal(20, 2)
   counterSaleCharge  Decimal  @default(0) @db.Decimal(20, 2)
   commissionRate      Decimal  @default(0) @db.Decimal(20, 2)

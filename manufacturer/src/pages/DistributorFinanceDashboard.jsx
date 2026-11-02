@@ -159,7 +159,7 @@ const DistributorFinanceDashboard = () => {
             {(summary.netPayableBalance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </p>
           <p className="text-[11px] text-[#575757]">
-            Delivery, hub-sale, NCM transfer, service, and bonus earnings owed to you; excludes COD and customer-return balances.
+            Delivery, stock-transfer, hub-sale, service, and bonus earnings owed to you; excludes COD and customer-return balances.
           </p>
         </div>
 
@@ -202,13 +202,13 @@ const DistributorFinanceDashboard = () => {
 
         <div className="bg-[#ffffff] border border-[#dedbd3] rounded-2xl p-5 shadow-xs space-y-2">
           <div className="flex items-center justify-between text-[#575757]">
-            <span className="text-xs font-bold uppercase tracking-wider">NCM transfer fees</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Delivered product compensation</span>
             <ArrowUpRight className="w-4 h-4 text-cyan-700" />
           </div>
           <p className="text-2xl font-bold text-[#171717]">
-            {currency}{Number(summary.ncmTransferFeesEarned || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {currency}{Number(summary.stockTransferFeesEarned ?? summary.ncmTransferFeesEarned ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </p>
-          <p className="text-[11px] text-[#575757]">Admin-set fee for NCM customer orders successfully delivered.</p>
+          <p className="text-[11px] text-[#575757]">Stock-transfer fee for each product unit successfully delivered, regardless of delivery channel.</p>
         </div>
 
         {/* VAT Component */}
@@ -489,7 +489,7 @@ const DistributorFinanceDashboard = () => {
             <span className="text-[#575757] ml-2">
               Fee per Delivery: <strong className="text-[#171717]">{currency}{statement.rateCard.deliveryCharge}</strong> •
               Return Fee: <strong className="text-[#171717]">{currency}{statement.rateCard.returnCharge}</strong> •
-              NCM transfer fee per successful delivery: <strong className="text-[#171717]">{currency}{statement.rateCard.ncmTransferCharge || 0}</strong> •
+              Stock-transfer fee per delivered product unit: <strong className="text-[#171717]">{currency}{statement.rateCard.stockTransferCharge ?? statement.rateCard.ncmTransferCharge ?? 0}</strong> •
               Commission Deduction: <strong className="text-[#171717]">{statement.rateCard.commissionRate}%</strong> •
               No per-delivery incentive; monthly bonuses use the completed-delivery target plan shown below.
             </span>
@@ -536,14 +536,14 @@ const DistributorFinanceDashboard = () => {
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                             : ["RETURN", "EXCHANGE", "COUNTER_SALE_REVERSAL"].includes(tx.type)
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
-                              : tx.type === "NCM_TRANSFER"
+                              : tx.type === "STOCK_TRANSFER"
                                 ? "bg-cyan-50 text-cyan-800 border border-cyan-200"
                             : tx.type === "BONUS"
                               ? "bg-purple-50 text-purple-700 border border-purple-200"
                               : "bg-blue-50 text-blue-700 border border-blue-200"
                         }`}
                       >
-                        {tx.type}
+                        {tx.type === "STOCK_TRANSFER" ? "STOCK TRANSFER" : tx.type === "NCM_TRANSFER" ? "STOCK TRANSFER" : tx.type}
                       </span>
                     </td>
                     <td className="p-3 text-[#575757]">
@@ -558,13 +558,13 @@ const DistributorFinanceDashboard = () => {
                           <summary className="cursor-pointer font-semibold text-indigo-700">Settlement breakdown · {tx.statementSnapshot.lineItems.filter((line) => line.type === "DELIVERY").length} deliveries</summary>
                           <div className="mt-2 max-h-56 overflow-auto rounded-lg border border-[#dedbd3]">
                             <table className="w-full text-left">
-                              <thead className="sticky top-0 bg-[#f8f7f4]"><tr><th className="p-2">Unit / period</th><th className="p-2 text-right">Delivery / return</th><th className="p-2 text-right">Hub sale</th><th className="p-2 text-right">NCM transfer</th><th className="p-2 text-right">Incentive</th><th className="p-2 text-right">Bonus</th><th className="p-2 text-right">Deduction</th><th className="p-2 text-right">Net</th></tr></thead>
+                              <thead className="sticky top-0 bg-[#f8f7f4]"><tr><th className="p-2">Unit / period</th><th className="p-2 text-right">Delivery / return</th><th className="p-2 text-right">Hub sale</th><th className="p-2 text-right">Stock transfer</th><th className="p-2 text-right">Incentive</th><th className="p-2 text-right">Bonus</th><th className="p-2 text-right">Deduction</th><th className="p-2 text-right">Net</th></tr></thead>
                               <tbody>{tx.statementSnapshot.lineItems.map((line, index) => (
                                 <tr key={`${line.referenceId}-${index}`} className="border-t border-[#dedbd3]">
                                   <td className="p-2">{line.type === "BONUS" ? `${line.referenceId} · ${line.eligibleDeliveryCount} deliveries` : `${line.type} · ${line.referenceId}`}</td>
                                   <td className="p-2 text-right">{Number(line.deliveryCharge || line.returnCharge || line.exchangeCharge || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.counterSaleCharge || 0).toFixed(2)}</td>
-                                  <td className="p-2 text-right">{Number(line.ncmTransferCharge || 0).toFixed(2)}</td>
+                                  <td className="p-2 text-right">{Number(line.stockTransferCharge ?? line.ncmTransferCharge ?? 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.incentiveAmount || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.bonusAmount || 0).toFixed(2)}</td>
                                   <td className="p-2 text-right">{Number(line.commissionDeduction || 0).toFixed(2)}</td>
@@ -577,7 +577,7 @@ const DistributorFinanceDashboard = () => {
                       )}
                     </td>
                     <td className="p-3 text-right font-medium text-[#171717]">
-                      {["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "COUNTER_SALE", "COUNTER_SALE_REVERSAL"].includes(tx.type)
+                      {["DELIVERY", "RETURN", "EXCHANGE", "NCM_TRANSFER", "STOCK_TRANSFER", "COUNTER_SALE", "COUNTER_SALE_REVERSAL"].includes(tx.type)
                         ? `${Number(tx.grossAmount || 0) > 0 ? "+" : ""}${Number(tx.grossAmount || 0).toFixed(2)}`
                         : "—"}
                     </td>

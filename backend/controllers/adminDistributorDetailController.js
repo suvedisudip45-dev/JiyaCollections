@@ -286,7 +286,7 @@ export const getAdminDistributorProfile = async (req, res) => {
             productId: true,
             deliveryCharge: true,
             returnCharge: true,
-            ncmTransferCharge: true,
+            stockTransferCharge: true,
             counterSaleCharge: true,
             commissionRate: true,
             bonusRate: true,
@@ -557,7 +557,7 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       `),
       prisma.orderAssignment.count({ where: { distributorId, status: { in: ["returned", "Returned"] } } }),
       prisma.distributorSettlementRequest.count({ where: { distributorId } }),
-      prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: "NCM_TRANSFER" } }),
+      prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: { in: ["NCM_TRANSFER", "STOCK_TRANSFER"] } } }),
       prisma.distributorServiceEarning.count({ where: { distributorId, serviceType: { in: ["COUNTER_SALE", "COUNTER_SALE_REVERSAL"] } } }),
       prisma.$queryRaw(Prisma.sql`
         SELECT *
@@ -595,7 +595,7 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
             AND a.status IN ('returned', 'Returned')
           UNION ALL
           SELECT
-            'NCM_TRANSFER' AS transactionType,
+            'STOCK_TRANSFER' AS transactionType,
             e.id AS sourceId,
             e.orderId AS referenceId,
             e.effectiveAt AS transactionDate,
@@ -607,7 +607,7 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
             NULL AS financialAccountId
           FROM DistributorServiceEarning e
           WHERE e.distributorId = ${distributorId}
-            AND e.serviceType = 'NCM_TRANSFER'
+            AND e.serviceType IN ('NCM_TRANSFER', 'STOCK_TRANSFER')
           UNION ALL
           SELECT
             e.serviceType AS transactionType,
@@ -656,15 +656,15 @@ export const getAdminDistributorFinanceTransactions = async (req, res) => {
       ? rateCard.deliveryCharge * (rateCard.commissionRate / 100)
       : rateCard.commissionRate;
     const transactions = rows.map((row) => {
-      if (row.transactionType === "NCM_TRANSFER") {
+      if (row.transactionType === "STOCK_TRANSFER") {
         const amount = Number(row.settlementAmount || 0);
         return {
-          id: `tx-ncm-transfer-${row.sourceId}`,
-          type: "NCM_TRANSFER",
+          id: `tx-stock-transfer-${row.sourceId}`,
+          type: "STOCK_TRANSFER",
           earningId: row.sourceId,
           referenceId: row.referenceId,
           date: row.transactionDate,
-          description: `NCM customer delivery transfer fee for Order ${String(row.referenceId).slice(0, 8)}`,
+          description: `Delivered product stock-transfer fee for Order ${String(row.referenceId).slice(0, 8)}`,
           grossAmount: amount,
           incentiveAmount: 0,
           discountChargeAmount: 0,

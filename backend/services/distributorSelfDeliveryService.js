@@ -7,6 +7,7 @@ import { isDistributorLocalDeliveryEligible } from "./deliveryLocationService.js
 import { resolveActiveRateCard } from "./distributorRateCardService.js";
 import {
   accrueDistributorDeliveryEarning,
+  accrueDistributorStockTransferEarning,
   accrueDistributorServiceCharge,
 } from "./distributorServiceEarningService.js";
 import {
@@ -378,6 +379,7 @@ export const updateSelfDeliveryStatus = async ({
   notes = null,
   actorContext = {},
   accrueDeliveryEarning = accrueDistributorDeliveryEarning,
+  accrueStockTransferEarning = accrueDistributorStockTransferEarning,
   client = prisma,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
@@ -507,6 +509,15 @@ export const updateSelfDeliveryStatus = async ({
         distributorName: distributor.name,
         assignmentId: assignment.id,
         orderId: order.id,
+        effectiveAt: now,
+        client: tx,
+      });
+      await accrueStockTransferEarning({
+        distributorId: distributor.id,
+        distributorName: distributor.name,
+        assignmentId: assignment.id,
+        orderId: order.id,
+        items: parseJSON(order.items, []),
         effectiveAt: now,
         client: tx,
       });

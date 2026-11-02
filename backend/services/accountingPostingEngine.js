@@ -78,7 +78,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "6410", accountName: "Manufacturer Commission Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6420", accountName: "Marketing Partner CPA Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6430", accountName: "Delivery & Carrier Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
-  { accountCode: "6440", accountName: "Distributor NCM Fulfillment Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6440", accountName: "Distributor Stock Transfer Compensation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6450", accountName: "Distributor Hub Counter Sale Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6500", accountName: "Software & Technology Tools", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6600", accountName: "Fixed Asset Depreciation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
@@ -116,6 +116,7 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "MARKETING_PARTNER_CPA_EXPENSE", accountCode: "6420" },
   { mappingKey: "DELIVERY_EXPENSE", accountCode: "6430" },
   { mappingKey: "DISTRIBUTOR_NCM_TRANSFER_EXPENSE", accountCode: "6440" },
+  { mappingKey: "DISTRIBUTOR_STOCK_TRANSFER_EXPENSE", accountCode: "6440" },
   { mappingKey: "DISTRIBUTOR_COUNTER_SALE_EXPENSE", accountCode: "6450" },
 ];
 

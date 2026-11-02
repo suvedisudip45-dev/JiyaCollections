@@ -554,7 +554,7 @@ export const listAdminDistributorSettlements = async (req, res) => {
 
 /**
  * POST /api/admin/distributor-rates
- * Negotiate and record charge per product delivery, return delivery fee, commission/bonus/incentive rates between Admin and Distributor.
+ * Record approved distributor delivery, stock-transfer, return, and sales-compensation rates.
  */
 export const adminRecordDistributorRates = async (req, res) => {
   try {
@@ -563,6 +563,7 @@ export const adminRecordDistributorRates = async (req, res) => {
       productId,
       deliveryCharge,
       returnCharge,
+      stockTransferCharge,
       ncmTransferCharge,
       counterSaleCharge,
       commissionRate,
@@ -589,7 +590,7 @@ export const adminRecordDistributorRates = async (req, res) => {
       productId,
       deliveryCharge,
       returnCharge,
-      ncmTransferCharge,
+      stockTransferCharge: stockTransferCharge ?? ncmTransferCharge,
       counterSaleCharge,
       commissionRate,
       bonusRate,
@@ -700,7 +701,7 @@ export const adminUpdateDistributorRateCard = async (req, res) => {
         productId: current.productId,
         deliveryCharge: req.body.deliveryCharge ?? current.deliveryCharge,
         returnCharge: req.body.returnCharge ?? current.returnCharge,
-        ncmTransferCharge: req.body.ncmTransferCharge ?? current.ncmTransferCharge,
+        stockTransferCharge: req.body.stockTransferCharge ?? req.body.ncmTransferCharge ?? current.stockTransferCharge,
         counterSaleCharge: req.body.counterSaleCharge ?? current.counterSaleCharge,
         commissionRate: req.body.commissionRate ?? current.commissionRate,
         bonusRate: req.body.bonusRate ?? current.bonusRate,
@@ -725,14 +726,14 @@ export const adminUpdateDistributorRateCard = async (req, res) => {
           beforeState: {
             id: current.id,
             deliveryCharge: String(current.deliveryCharge),
-            ncmTransferCharge: String(current.ncmTransferCharge || 0),
+            stockTransferCharge: String(current.stockTransferCharge || 0),
             counterSaleCharge: String(current.counterSaleCharge || 0),
             status: current.status,
           },
           afterState: {
             id: next.id,
             deliveryCharge: String(next.deliveryCharge),
-            ncmTransferCharge: String(next.ncmTransferCharge || 0),
+            stockTransferCharge: String(next.stockTransferCharge || 0),
             counterSaleCharge: String(next.counterSaleCharge || 0),
             supersedesRateCardId: current.id,
           },
