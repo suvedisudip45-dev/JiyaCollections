@@ -37,6 +37,7 @@ export const calculateProductionUnitCost = ({
   vatTreatment = "EXEMPT",
   vatRate = 13,
   vatInvoiceVerified = false,
+  buyerVatRegistered = true,
   vatInvoiceReference = "",
 }) => {
   const enteredAmount = new Prisma.Decimal(String(unitAmount));
@@ -57,8 +58,8 @@ export const calculateProductionUnitCost = ({
       .toDecimalPlaces(14, Prisma.Decimal.ROUND_HALF_UP);
     grossAmount = enteredAmount.plus(vatAmount);
   }
-  const recoverableVat = vatInvoiceVerified ? vatAmount : new Prisma.Decimal(0);
-  const capitalizedAmount = vatInvoiceVerified ? netAmount : grossAmount;
+  const recoverableVat = vatInvoiceVerified && buyerVatRegistered ? vatAmount : new Prisma.Decimal(0);
+  const capitalizedAmount = recoverableVat.greaterThan(0) ? netAmount : grossAmount;
   return {
     vatTreatment: terms.vatTreatment,
     vatRate: terms.vatRate,
@@ -187,6 +188,7 @@ export const allocateProductionLayersForOrderItem = async ({
       unitCogs: layer.unitCogs.toFixed(14),
       unitVatAmount: layer.unitVatAmount?.toFixed(14) ?? "0.00000000000000",
       vatInvoiceVerified: layer.vatInvoiceVerified === true,
+      inputVatRecoverable: layer.inputVatRecoverable === true,
       unitDeliveryCost: layer.unitDeliveryCost.toFixed(2),
     });
     remaining -= take;

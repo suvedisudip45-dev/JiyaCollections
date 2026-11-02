@@ -19,6 +19,8 @@ import Pagination from "../components/Pagination";
 
 const defaultFormData = {
   businessName: "",
+  taxIdType: "PAN",
+  taxIdNumber: "",
   email: "",
   password: "",
   phone: "",
@@ -235,6 +237,10 @@ const Manufacturers = ({ token }) => {
       e.preventDefault();
       if (!formData.businessName.trim()) {
         toast.error("Please enter a business name.");
+        return;
+      }
+      if (!["PAN", "VAT"].includes(formData.taxIdType) || !/^\d{9}$/.test(formData.taxIdNumber)) {
+        toast.error("Enter a PAN or VAT registration number containing exactly 9 digits.");
         return;
       }
 
@@ -702,6 +708,8 @@ const Manufacturers = ({ token }) => {
                       setFormData({
                         ...defaultFormData,
                         businessName: m.businessName || m.name || "",
+                        taxIdType: m.taxIdType || "PAN",
+                        taxIdNumber: m.taxIdNumber || "",
                         email: m.email || "",
                         password: "",
                         phone: m.phone || "",
@@ -803,6 +811,36 @@ const Manufacturers = ({ token }) => {
                       onChange={(e) => setFormData({ ...formData, businessName: e.target.value })}
                       className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 font-medium focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
                     />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Tax registration type <span className="text-rose-500">*</span>
+                      <select
+                        required
+                        value={formData.taxIdType}
+                        onChange={(e) => setFormData({ ...formData, taxIdType: e.target.value })}
+                        className="mt-1 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      >
+                        <option value="PAN">PAN registered</option>
+                        <option value="VAT">VAT registered</option>
+                      </select>
+                    </label>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      {formData.taxIdType || "PAN"} number (9 digits) <span className="text-rose-500">*</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        required
+                        maxLength={9}
+                        pattern="[0-9]{9}"
+                        value={formData.taxIdNumber}
+                        onChange={(e) => setFormData({ ...formData, taxIdNumber: e.target.value.replace(/\D/g, "").slice(0, 9) })}
+                        placeholder="123456789"
+                        className="mt-1 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:outline-none focus:border-slate-900 focus:ring-1 focus:ring-slate-900"
+                      />
+                    </label>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

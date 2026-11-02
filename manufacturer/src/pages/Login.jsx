@@ -28,6 +28,8 @@ const isValidNepalMobileNumber = (value = "") => {
 
 const defaultRegisterForm = {
   businessName: "",
+  taxIdType: "PAN",
+  taxIdNumber: "",
   email: "",
   password: "",
   phone: "",
@@ -316,6 +318,10 @@ const Login = () => {
     e.preventDefault();
     if (!registerForm.businessName.trim()) {
       toast.error("Please enter a business name");
+      return;
+    }
+    if (!["PAN", "VAT"].includes(registerForm.taxIdType) || !/^\d{9}$/.test(registerForm.taxIdNumber)) {
+      toast.error("Enter a PAN or VAT registration number containing exactly 9 digits.");
       return;
     }
     if (!registerForm.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.email.trim())) {
@@ -611,6 +617,35 @@ const Login = () => {
                       placeholder="e.g. 9841234567"
                       value={registerForm.phone}
                       onChange={(e) => setRegisterForm({ ...registerForm, phone: e.target.value.replace(/[^0-9]/g, "") })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">Tax Registration Type *</label>
+                    <select
+                      required
+                      value={registerForm.taxIdType}
+                      onChange={(e) => setRegisterForm({ ...registerForm, taxIdType: e.target.value })}
+                      className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 transition-colors"
+                    >
+                      <option value="PAN">PAN registered</option>
+                      <option value="VAT">VAT registered</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5">{registerForm.taxIdType || "PAN"} Number (9 digits) *</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      required
+                      maxLength={9}
+                      pattern="[0-9]{9}"
+                      placeholder="123456789"
+                      value={registerForm.taxIdNumber}
+                      onChange={(e) => setRegisterForm({ ...registerForm, taxIdNumber: e.target.value.replace(/\D/g, "").slice(0, 9) })}
                       className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
                     />
                   </div>

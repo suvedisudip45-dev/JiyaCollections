@@ -251,6 +251,18 @@ Equity includes:
 
 ---
 
+## PAN/VAT and bill records
+
+The Admin Tax Compliance page starts in `PAN_ONLY` mode. Save the seller's legal name, PAN, and registered address, then record VAT registration as an effective-dated change only after the actual IRD registration is confirmed. Sales output VAT is determined by the registration state at the recorded transaction tax point; a configured rate alone does not activate VAT.
+
+For the current paper-bill process, issue the official bill through the business's approved paper stationery and record its actual bill number/date against the system invoice. Keep the original bill and supporting evidence. The system record is not itself a legally issued bill, does not print or submit one, and does not provide an IRD electronic billing integration.
+
+VAT return drafts are posted-ledger reconciliations, not ready-to-submit IRD returns. Check the IRD-assigned period, taxable sales, the complete purchase/invoice and credit-note registers, the carried-forward credit, and all adjustments with the accountant before marking the return filed. Record the IRD reference and assessed amount. A variance reason is audited, but this release does not classify/post an accounting journal for assessment differences. Record each actual payment once, using its reference and the matching cash/bank Treasury account; partial and outstanding amounts remain visible.
+
+Do not claim supplier input VAT solely because a supplier bill is marked verified: the business must also be VAT-registered at acquisition. Non-recoverable VAT is included in inventory/COGS. The acquisition-time cost-layer snapshot prevents a later VAT registration from retrospectively creating an input credit.
+
+---
+
 ## 8. Cash, bank, and reconciliation workflow
 
 ### 8.1 Bank/Cash health check

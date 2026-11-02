@@ -1,14 +1,40 @@
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import { usePermissions } from "../auth/PermissionsContext";
 
+// The admin route provides this shared authentication prop.
+// eslint-disable-next-line react/prop-types
 const TaxCompliance = ({ token }) => {
   const [taxData, setTaxData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [vatVersions, setVatVersions] = useState([]);
+  const [sellerTaxProfile, setSellerTaxProfile] = useState({ legalName: "", panNumber: "", address: "" });
+  const [taxRegistrationVersions, setTaxRegistrationVersions] = useState([]);
+  const [currentTaxStatus, setCurrentTaxStatus] = useState("PAN_ONLY");
+  const [registrationStatus, setRegistrationStatus] = useState("VAT_REGISTERED");
+  const [registrationVatNumber, setRegistrationVatNumber] = useState("");
+  const [registrationEffectiveDate, setRegistrationEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  const [savingSellerProfile, setSavingSellerProfile] = useState(false);
+  const [savingRegistration, setSavingRegistration] = useState(false);
+  const [vatFilings, setVatFilings] = useState([]);
+  const [salesInvoices, setSalesInvoices] = useState([]);
+  const [treasuryAccounts, setTreasuryAccounts] = useState([]);
+  const [filingDraft, setFilingDraft] = useState(() => {
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return {
+      periodKey: month,
+      periodStart: `${month}-01`,
+      periodEnd: new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10),
+    };
+  });
+  const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", filedReference: "", adjustmentReason: "" });
+  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: new Date().toISOString().slice(0, 10) });
+  const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
+  const [savingTaxAction, setSavingTaxAction] = useState(false);
   const [vatRate, setVatRate] = useState("13");
   const [vatEffectiveDate, setVatEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
   const [savingVatRate, setSavingVatRate] = useState(false);
@@ -19,7 +45,7 @@ const TaxCompliance = ({ token }) => {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
-  const fetchTaxReport = async (month) => {
+  const fetchTaxReport = useCallback(async (month) => {
     try {
       setLoading(true);
       const res = await axios.get(`${backendUrl}/api/finance/tax-report?month=${month}`, {
@@ -36,9 +62,9 @@ const TaxCompliance = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
-  const fetchVatVersions = async () => {
+  const fetchVatVersions = useCallback(async () => {
     try {
       const response = await axios.get(`${backendUrl}/api/finance/vat-rates`, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "Failed to load VAT rate history.");
@@ -46,6 +72,186 @@ const TaxCompliance = ({ token }) => {
     } catch (error) {
       console.error(error);
       toast.error(error.response?.data?.message || error.message || "Failed to load VAT rate history.");
+    }
+  }, [token]);
+
+  const fetchSellerTaxProfile = useCallback(async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/finance/tax-profile`, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Failed to load seller tax details.");
+      setSellerTaxProfile({
+        legalName: response.data.profile?.legalName || "",
+        panNumber: response.data.profile?.panNumber || "",
+        address: response.data.profile?.address || "",
+      });
+      setTaxRegistrationVersions(response.data.registrations || []);
+      setCurrentTaxStatus(response.data.currentRegistration?.taxStatus || "PAN_ONLY");
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Failed to load seller tax details.");
+    }
+  }, [token]);
+
+  const fetchTaxRecords = useCallback(async () => {
+    try {
+      const [filingResponse, invoiceResponse] = await Promise.all([
+        axios.get(`${backendUrl}/api/finance/tax-filings`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/finance/sales-invoices`, { headers: { token } }),
+      ]);
+      if (!filingResponse.data?.success || !invoiceResponse.data?.success) {
+        throw new Error("One or more tax filing or sales bill records could not be loaded.");
+      }
+      setVatFilings(filingResponse.data.records || []);
+      setSalesInvoices(invoiceResponse.data.records || []);
+      const treasuryResponse = await axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } });
+      if (!treasuryResponse.data?.success) throw new Error(treasuryResponse.data?.message || "Treasury accounts could not be loaded.");
+      const accounts = (treasuryResponse.data.accounts || []).filter((account) =>
+        account.status === "ACTIVE" &&
+        account.currency === "NPR" &&
+        ["1110", "1120"].includes(account.accountingAccount?.accountCode)
+      );
+      setTreasuryAccounts(accounts);
+      setVatPayment((current) => ({
+        ...current,
+        treasuryAccountId: accounts.some((account) => account.id === current.treasuryAccountId)
+          ? current.treasuryAccountId
+          : accounts[0]?.id || "",
+      }));
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Failed to load tax records.");
+    }
+  }, [token]);
+
+  const createFilingDraft = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/tax-filings`, {
+        ...filingDraft,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "VAT return draft could not be prepared.");
+      toast.success(response.data.message || "VAT return draft prepared.");
+      await fetchTaxRecords();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "VAT return draft could not be prepared.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitVatFiling = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${filingSubmission.id}/file`, {
+        assessedAmount: filingSubmission.assessedAmount,
+        filedReference: filingSubmission.filedReference,
+        adjustmentReason: filingSubmission.adjustmentReason,
+        filedDate: new Date().toISOString(),
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "VAT filing could not be recorded.");
+      toast.success(response.data.message || "VAT filing recorded.");
+      setFilingSubmission({ id: "", assessedAmount: "", filedReference: "", adjustmentReason: "" });
+      await fetchTaxRecords();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "VAT filing could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitVatPayment = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${vatPayment.filingId}/payments`, {
+        amount: vatPayment.amount,
+        paymentReference: vatPayment.paymentReference,
+        treasuryAccountId: vatPayment.treasuryAccountId,
+        paymentDate: `${vatPayment.paymentDate}T12:00:00.000Z`,
+        idempotencyKey: `VATPAY:${vatPayment.filingId}:${vatPayment.paymentReference.trim()}`,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "VAT payment could not be recorded.");
+      toast.success(response.data.message || "VAT payment recorded.");
+      setVatPayment((current) => ({ ...current, filingId: "", amount: "", paymentReference: "" }));
+      await fetchTaxRecords();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "VAT payment could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitPaperBill = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/sales-invoices/${paperBill.invoiceId}/paper-issue`, {
+        invoiceNumber: paperBill.invoiceNumber,
+        issueDate: `${paperBill.issueDate}T12:00:00.000Z`,
+        evidenceUrl: paperBill.evidenceUrl,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Paper bill details could not be recorded.");
+      toast.success(response.data.message || "Paper bill details recorded.");
+      setPaperBill({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
+      await fetchTaxRecords();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Paper bill details could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const saveSellerTaxProfile = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingSellerProfile(true);
+      const response = await axios.patch(`${backendUrl}/api/finance/tax-profile`, sellerTaxProfile, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Seller tax profile could not be saved.");
+      toast.success(response.data.message || "Seller tax profile saved.");
+      await fetchSellerTaxProfile();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Seller tax profile could not be saved.");
+    } finally {
+      setSavingSellerProfile(false);
+    }
+  };
+
+  const scheduleTaxRegistration = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingRegistration(true);
+      const response = await axios.post(`${backendUrl}/api/finance/tax-registration-versions`, {
+        taxStatus: registrationStatus,
+        vatNumber: registrationVatNumber,
+        effectiveFrom: `${registrationEffectiveDate}T00:00:00+05:45`,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Tax registration change could not be scheduled.");
+      toast.success(response.data.message || "Tax registration change scheduled.");
+      await fetchSellerTaxProfile();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Tax registration change could not be scheduled.");
+    } finally {
+      setSavingRegistration(false);
+    }
+  };
+
+  const cancelTaxRegistration = async (versionId) => {
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/tax-registration-versions/${versionId}/cancel`, {}, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Tax registration change could not be cancelled.");
+      toast.success(response.data.message || "Tax registration change cancelled.");
+      await fetchSellerTaxProfile();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Tax registration change could not be cancelled.");
     }
   };
 
@@ -59,7 +265,7 @@ const TaxCompliance = ({ token }) => {
       setSavingVatRate(true);
       const response = await axios.post(`${backendUrl}/api/finance/vat-rates`, {
         vatRate,
-        effectiveFrom: `${vatEffectiveDate}T00:00:00.000Z`,
+        effectiveFrom: `${vatEffectiveDate}T00:00:00+05:45`,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT rate could not be scheduled.");
       toast.success(response.data.message || "VAT rate scheduled.");
@@ -86,11 +292,19 @@ const TaxCompliance = ({ token }) => {
 
   useEffect(() => {
     if (token) fetchTaxReport(selectedMonth);
-  }, [token, selectedMonth]);
+  }, [fetchTaxReport, selectedMonth, token]);
 
   useEffect(() => {
     if (token) fetchVatVersions();
-  }, [token]);
+  }, [fetchVatVersions, token]);
+
+  useEffect(() => {
+    if (token) fetchSellerTaxProfile();
+  }, [fetchSellerTaxProfile, token]);
+
+  useEffect(() => {
+    if (token) fetchTaxRecords();
+  }, [fetchTaxRecords, token]);
 
   if (loading && !taxData) {
     return (
@@ -148,6 +362,122 @@ const TaxCompliance = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Seller identity and PAN/VAT status</h2>
+            <p className="mt-1 max-w-3xl text-xs text-slate-500">
+              PAN-only is the safe default. Output VAT is posted only for transactions whose tax point falls inside an effective VAT-registration period.
+            </p>
+          </div>
+          <span className={`rounded-lg border px-3 py-1.5 text-[11px] font-bold ${
+            currentTaxStatus === "VAT_REGISTERED"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-slate-200 bg-slate-100 text-slate-700"
+          }`}>
+            Current: {currentTaxStatus === "VAT_REGISTERED" ? "VAT registered" : "PAN-only"}
+          </span>
+        </div>
+
+        <form onSubmit={saveSellerTaxProfile} className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <label className="text-xs font-semibold text-slate-700">
+            Legal seller name
+            <input
+              value={sellerTaxProfile.legalName}
+              onChange={(event) => setSellerTaxProfile((current) => ({ ...current, legalName: event.target.value }))}
+              maxLength={255}
+              className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              disabled={!canConfigureVat}
+            />
+          </label>
+          <label className="text-xs font-semibold text-slate-700">
+            PAN number
+            <input
+              value={sellerTaxProfile.panNumber}
+              onChange={(event) => setSellerTaxProfile((current) => ({ ...current, panNumber: event.target.value }))}
+              maxLength={32}
+              className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              disabled={!canConfigureVat}
+            />
+          </label>
+          <label className="text-xs font-semibold text-slate-700 md:col-span-2">
+            Registered business address
+            <textarea
+              value={sellerTaxProfile.address}
+              onChange={(event) => setSellerTaxProfile((current) => ({ ...current, address: event.target.value }))}
+              maxLength={5000}
+              rows={2}
+              className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              disabled={!canConfigureVat}
+            />
+          </label>
+          {canConfigureVat && (
+            <div className="md:col-span-2">
+              <button type="submit" disabled={savingSellerProfile} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                {savingSellerProfile ? "Saving..." : "Save seller details"}
+              </button>
+            </div>
+          )}
+        </form>
+
+        {canConfigureVat && (
+          <form onSubmit={scheduleTaxRegistration} className="mt-5 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">
+              Registration status
+              <select value={registrationStatus} onChange={(event) => setRegistrationStatus(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                <option value="PAN_ONLY">PAN-only</option>
+                <option value="VAT_REGISTERED">VAT registered</option>
+              </select>
+            </label>
+            {registrationStatus === "VAT_REGISTERED" && (
+              <label className="text-xs font-semibold text-slate-700">
+                VAT registration number
+                <input value={registrationVatNumber} onChange={(event) => setRegistrationVatNumber(event.target.value)} maxLength={32} required className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+            )}
+            <label className="text-xs font-semibold text-slate-700">
+              Effective from (UTC)
+              <input type="date" value={registrationEffectiveDate} onChange={(event) => setRegistrationEffectiveDate(event.target.value)} required className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+            </label>
+            <button type="submit" disabled={savingRegistration} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+              {savingRegistration ? "Scheduling..." : "Schedule status"}
+            </button>
+          </form>
+        )}
+
+        {taxRegistrationVersions.length > 0 && (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="py-2 pr-4">Tax status</th>
+                  <th className="py-2 pr-4">VAT number</th>
+                  <th className="py-2 pr-4">Effective from UTC</th>
+                  <th className="py-2 pr-4">Effective until UTC</th>
+                  <th className="py-2 pr-4">Version status</th>
+                  {canConfigureVat && <th className="py-2 text-right">Action</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {taxRegistrationVersions.map((version) => {
+                  const isFuture = version.status === "ACTIVE" && new Date(version.effectiveFrom) > new Date();
+                  return (
+                    <tr key={version.id} className="text-slate-700">
+                      <td className="py-3 pr-4 font-semibold">{version.taxStatus === "VAT_REGISTERED" ? "VAT registered" : "PAN-only"}</td>
+                      <td className="py-3 pr-4">{version.vatNumber || "—"}</td>
+                      <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
+                      <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                      <td className="py-3 pr-4">{version.status}</td>
+                      {canConfigureVat && <td className="py-3 text-right">{isFuture && <button type="button" onClick={() => cancelTaxRegistration(version.id)} className="font-semibold text-rose-700 hover:text-rose-900">Cancel change</button>}</td>}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
         <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
@@ -243,6 +573,98 @@ const TaxCompliance = ({ token }) => {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900">Paper sales bills</h2>
+          <p className="mt-1 text-xs text-slate-500">Delivered sales create an internal tax snapshot. Record the matching paper bill number and date after issuing the physical PAN bill or VAT tax invoice.</p>
+        </div>
+        {paperBill.invoiceId && canConfigureVat && (
+          <form onSubmit={submitPaperBill} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">Official paper bill number<input required value={paperBill.invoiceNumber} onChange={(event) => setPaperBill((current) => ({ ...current, invoiceNumber: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Issue date<input type="date" required value={paperBill.issueDate} onChange={(event) => setPaperBill((current) => ({ ...current, issueDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Evidence URL (optional)<input value={paperBill.evidenceUrl} onChange={(event) => setPaperBill((current) => ({ ...current, evidenceUrl: event.target.value }))} maxLength={5000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Saving..." : "Record issued bill"}</button>
+          </form>
+        )}
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-4">Order</th><th className="py-2 pr-4">Bill type</th><th className="py-2 pr-4">Tax point</th><th className="py-2 pr-4">Total</th><th className="py-2 pr-4">VAT</th><th className="py-2 pr-4">Paper number</th><th className="py-2 pr-4">Status</th>{canConfigureVat && <th className="py-2 text-right">Action</th>}</tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {salesInvoices.map((invoice) => (
+                <tr key={invoice.id} className="text-slate-700">
+                  <td className="py-3 pr-4">{invoice.order?.orderReference || invoice.documentNumber}</td>
+                  <td className="py-3 pr-4 font-semibold">{invoice.documentType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : "PAN bill"}</td>
+                  <td className="py-3 pr-4">{new Date(invoice.taxPoint).toLocaleDateString()}</td>
+                  <td className="py-3 pr-4">{currency}{Number(invoice.totalAmount).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{currency}{Number(invoice.vatAmount).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{invoice.invoiceNumber || "Not recorded"}</td>
+                  <td className="py-3 pr-4">{invoice.status}</td>
+                  {canConfigureVat && <td className="py-3 text-right">{invoice.status === "PENDING_PAPER_DETAILS" && <button type="button" onClick={() => setPaperBill((current) => ({ ...current, invoiceId: invoice.id }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Record paper bill</button>}</td>}
+                </tr>
+              ))}
+              {salesInvoices.length === 0 && <tr><td colSpan={canConfigureVat ? 8 : 7} className="py-6 text-center text-slate-400">No delivered-sale bill snapshots are available.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900">VAT return filings and settlement</h2>
+          <p className="mt-1 text-xs text-slate-500">Prepare a draft from posted journal data for the period assigned by IRD. Record the official assessed amount, filing reference, and each actual payment separately.</p>
+        </div>
+        {canConfigureVat && (
+          <form onSubmit={createFilingDraft} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">IRD period label<input required value={filingDraft.periodKey} onChange={(event) => setFilingDraft((current) => ({ ...current, periodKey: event.target.value }))} maxLength={64} placeholder="As assigned by IRD" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Period start<input type="date" required value={filingDraft.periodStart} onChange={(event) => setFilingDraft((current) => ({ ...current, periodStart: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Period end<input type="date" required value={filingDraft.periodEnd} onChange={(event) => setFilingDraft((current) => ({ ...current, periodEnd: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Preparing..." : "Prepare VAT return draft"}</button>
+          </form>
+        )}
+        {filingSubmission.id && canConfigureVat && (
+          <form onSubmit={submitVatFiling} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">IRD-assessed amount<input type="number" min="0" step="0.01" required value={filingSubmission.assessedAmount} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">IRD filing reference<input required value={filingSubmission.filedReference} onChange={(event) => setFilingSubmission((current) => ({ ...current, filedReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Reason if assessment differs<input value={filingSubmission.adjustmentReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Saving..." : "Record filed return"}</button>
+          </form>
+        )}
+        {vatPayment.filingId && canConfigureVat && (
+          <form onSubmit={submitVatPayment} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">Payment amount<input type="number" min="0.01" step="0.01" required value={vatPayment.amount} onChange={(event) => setVatPayment((current) => ({ ...current, amount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Payment reference<input required value={vatPayment.paymentReference} onChange={(event) => setVatPayment((current) => ({ ...current, paymentReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Paid from<select required value={vatPayment.treasuryAccountId} onChange={(event) => setVatPayment((current) => ({ ...current, treasuryAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select cash/bank</option>{treasuryAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName} ({account.accountingAccount?.accountCode})</option>)}</select></label>
+            <label className="text-xs font-semibold text-slate-700">Payment date<input type="date" required value={vatPayment.paymentDate} onChange={(event) => setVatPayment((current) => ({ ...current, paymentDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction || !treasuryAccounts.length} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record payment"}</button>
+          </form>
+        )}
+        {canConfigureVat && treasuryAccounts.length === 0 && <p className="mt-3 text-xs text-amber-800">Map an active NPR cash or bank Treasury account to GL account 1110 or 1120 before recording a tax payment.</p>}
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-4">IRD period</th><th className="py-2 pr-4">Date range</th><th className="py-2 pr-4">Output VAT</th><th className="py-2 pr-4">Input VAT</th><th className="py-2 pr-4">Brought-forward credit</th><th className="py-2 pr-4">Ledger position</th><th className="py-2 pr-4">Assessed</th><th className="py-2 pr-4">Paid</th><th className="py-2 pr-4">Outstanding</th><th className="py-2 pr-4">Status</th>{canConfigureVat && <th className="py-2 text-right">Action</th>}</tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {vatFilings.map((filing) => (
+                <tr key={filing.id} className="text-slate-700">
+                  <td className="py-3 pr-4 font-semibold">{filing.periodKey}</td>
+                  <td className="py-3 pr-4">{filing.periodStart ? new Date(filing.periodStart).toLocaleDateString() : "—"} – {filing.periodEnd ? new Date(filing.periodEnd).toLocaleDateString() : "—"}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.outputVat).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.inputVat).toLocaleString()}</td>
+                  <td className="py-3 pr-4" title={`Input VAT credit: ${currency}${Number(filing.carriedForwardInputVat).toLocaleString()} · Output VAT credit: ${currency}${Number(filing.carriedForwardOutputVat).toLocaleString()}`}>{currency}{(Number(filing.carriedForwardInputVat) + Number(filing.carriedForwardOutputVat)).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.netVatPayable).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{filing.assessedAmount === null ? "Not filed" : `${currency}${Number(filing.assessedAmount).toLocaleString()}`}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.taxPaid).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{filing.outstandingAmount === null ? "—" : `${currency}${Number(filing.outstandingAmount).toLocaleString()}`}</td>
+                  <td className="py-3 pr-4">{filing.status}</td>
+                  {canConfigureVat && <td className="py-3 text-right">{filing.status === "DRAFT" ? <button type="button" onClick={() => setFilingSubmission({ id: filing.id, assessedAmount: Math.max(Number(filing.netVatPayable), 0).toFixed(2), filedReference: "", adjustmentReason: "" })} className="font-semibold text-indigo-700 hover:text-indigo-900">Record filing</button> : Number(filing.outstandingAmount || 0) > 0 ? <button type="button" onClick={() => setVatPayment((current) => ({ ...current, filingId: filing.id, amount: filing.outstandingAmount }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Record payment</button> : "Settled"}</td>}
+                </tr>
+              ))}
+              {vatFilings.length === 0 && <tr><td colSpan={canConfigureVat ? 11 : 10} className="py-6 text-center text-slate-400">No VAT returns recorded.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-[10px] text-slate-500">The draft is a posted-ledger reconciliation, not an IRD return. Taxable purchase totals and complete invoice/credit-note registers are not yet generated; verify these, the filing period, and all submitted figures against IRD instructions and supporting documents before filing. Payment records post to VAT payable and the selected mapped cash/bank account.</p>
       </section>
 
       {/* MONTHLY VAT RECONCILER */}

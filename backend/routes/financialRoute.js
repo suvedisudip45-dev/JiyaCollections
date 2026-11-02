@@ -38,10 +38,25 @@ import {
 } from "../controllers/treasuryAccountingController.js";
 import { authenticate, authorize } from "../middleware/unifiedAuth.js";
 import {
+  cancelTaxRegistrationVersionAdmin,
   cancelVatRateVersionAdmin,
+  createTaxRegistrationVersionAdmin,
   createVatRateVersionAdmin,
+  getSellerTaxProfileAdmin,
+  getTaxRegistrationVersionsAdmin,
   getVatRateVersions,
+  updateSellerTaxProfileAdmin,
 } from "../controllers/vatRateController.js";
+import {
+  createVatFilingDraftAdmin,
+  createVatFilingPaymentAdmin,
+  fileVatReturnAdmin,
+  getVatFilingRecordsAdmin,
+} from "../controllers/vatFilingController.js";
+import {
+  getSalesInvoicesAdmin,
+  recordPaperSalesInvoiceAdmin,
+} from "../controllers/salesInvoiceController.js";
 
 const financialRouter = express.Router();
 
@@ -105,6 +120,17 @@ financialRouter.post("/revert-settlement", authenticate, authorize("finance:paya
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);
+financialRouter.get("/tax-profile", authenticate, authorize("finance:tax_report_read"), getSellerTaxProfileAdmin);
+financialRouter.patch("/tax-profile", authenticate, authorize("finance:tax_configure"), updateSellerTaxProfileAdmin);
+financialRouter.get("/tax-registration-versions", authenticate, authorize("finance:tax_report_read"), getTaxRegistrationVersionsAdmin);
+financialRouter.post("/tax-registration-versions", authenticate, authorize("finance:tax_configure"), createTaxRegistrationVersionAdmin);
+financialRouter.post("/tax-registration-versions/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelTaxRegistrationVersionAdmin);
+financialRouter.get("/tax-filings", authenticate, authorize("finance:tax_report_read"), getVatFilingRecordsAdmin);
+financialRouter.post("/tax-filings", authenticate, authorize("finance:tax_configure"), createVatFilingDraftAdmin);
+financialRouter.post("/tax-filings/:id/file", authenticate, authorize("finance:tax_configure"), fileVatReturnAdmin);
+financialRouter.post("/tax-filings/:id/payments", authenticate, authorize("finance:tax_configure"), createVatFilingPaymentAdmin);
+financialRouter.get("/sales-invoices", authenticate, authorize("finance:tax_report_read"), getSalesInvoicesAdmin);
+financialRouter.post("/sales-invoices/:id/paper-issue", authenticate, authorize("finance:tax_configure"), recordPaperSalesInvoiceAdmin);
 financialRouter.get("/vat-rates", authenticate, authorize("finance:tax_report_read"), getVatRateVersions);
 financialRouter.post("/vat-rates", authenticate, authorize("finance:tax_configure"), createVatRateVersionAdmin);
 financialRouter.post("/vat-rates/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelVatRateVersionAdmin);

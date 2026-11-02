@@ -58,7 +58,9 @@ The account code is not proof that a particular workflow actually uses the accou
 
 ### VAT rate configuration
 
-Admin can schedule an immutable `VatRateVersion` for a future UTC effective timestamp from the Tax Compliance page. Versions are append-only; only the latest future version can be cancelled, and effective or historical rates cannot be edited or deleted. New delivered-sale and full delivery-return postings resolve the rate against the source order timestamp. Customer return approval stores the applicable rate in the refund-policy snapshot so later rate changes do not alter an approved refund. Until a version exists for the source date, the legacy singleton `TaxConfiguration.vatRate` is used, with 13% as the final fallback. Pre-version historical tax therefore still needs accountant-reviewed reconciliation; do not treat this configuration as a legal tax opinion.
+`VatRateVersion` stores append-only VAT rates with effective UTC intervals; only a future rate can be scheduled, and only the latest scheduled rate can be cancelled. Separately, `TaxRegistrationVersion` controls whether the seller is `PAN_ONLY` or `VAT_REGISTERED`; no effective VAT-registration version means PAN-only, regardless of the configured rate. Delivered-sale and return tax snapshots use the registration and rate effective at the transaction tax point. Historical transactions without reliable registration evidence require accountant-reviewed reconciliation.
+
+The Tax Compliance page stores seller identity, effective tax-registration history, internal sales-invoice snapshots, paper invoice number/date/evidence, VAT return drafts, filing references, and partial/full payment history. The initial workflow records manually issued paper bills; it does not generate or submit a statutory bill or connect to an IRD-approved online billing provider. VAT return drafts are ledger reconciliations only. The taxable purchase register and sales credit-note workflow are incomplete, so an accountant must reconcile source invoices, credit notes, and IRD-assessed adjustments before filing.
 
 ## 3. Customer orders, checkout price and delivery charges
 
@@ -143,17 +145,17 @@ be addressed independently.
 
 Manufacturer approval records `approvedUnitCogs`, MOQ, `approvedDeliveryCost`, and VAT treatment. A production request must pass its pre-production requirements, and completion validates actual good/damaged size-color quantities. Good quantities are received into manufacturer inventory through `backend/services/inventoryLedgerService.js` as production cost layers containing `unitCogs`, unit VAT, VAT treatment/rate, supplier invoice reference/verification state, and `unitDeliveryCost`.
 
-For a verified VAT invoice, production completion capitalizes the net unit cost, debits verified VAT to input VAT receivable, and credits manufacturer payable for the gross payable (plus any batch cost). If the invoice has not been verified, VAT remains part of inventory cost and no input-VAT credit is posted. The VAT report reads output VAT and input VAT from posted journal entries; it does not estimate input VAT by reapplying 13% to product or freight costs.
+For a verified VAT invoice, production completion recognizes input VAT only if the business was VAT-registered on the recorded supplier invoice date; otherwise the supplier VAT is capitalized into inventory cost. Manufacturer payable reflects the gross supplier amount. The cost layer snapshots whether input VAT was actually recoverable so later registration does not retroactively create a credit.
 
 The production completion flow posts the production value for good units to inventory and manufacturer payable: in concept, `DR inventory 1140 / DR input VAT receivable 1150 (verified invoice only) / CR manufacturer payable 2160`. Batch other cost remains allocated across actual good units under the current cost-terms version.
 
 Production cost layers retain:
 
-- `unitCogs`: capitalized cost used as product inventory value and later COGS, excluding verified recoverable input VAT.
-- `unitVatAmount`, `vatTreatment`, `vatRate`, and `vatInvoiceVerified`: VAT evidence snapshot; VAT is recognized once at production receipt.
+- `unitCogs`: capitalized cost used as product inventory value and later COGS, excluding input VAT only when actually recoverable.
+- `unitVatAmount`, `vatTreatment`, `vatRate`, `vatInvoiceVerified`, and `inputVatRecoverable`: VAT evidence and acquisition-time recoverability snapshot; VAT is recognized at most once.
 - `unitDeliveryCost`: packaging/other delivery overhead tracked separately from product cost.
 
-At delivery, production-layer allocations are used to recognize `DR COGS 5100 / CR inventory 1140`. Legacy order cost snapshots can instead recognize COGS and manufacturer payable directly. For a valid manufacturer tax invoice in supported legacy-cost cases, the poster can split the gross approved amount into net COGS, input VAT receivable 1150, and manufacturer payable 2160.
+At delivery, production-layer allocations are used to recognize `DR COGS 5100 / CR inventory 1140`. Legacy order cost snapshots can instead recognize COGS and manufacturer payable directly. Legacy costs without an acquisition-time recoverability snapshot remain gross cost; they are not split into a new input-VAT claim based only on a delivery-time invoice flag.
 
 ### Cost formula the user described versus implementation
 
@@ -307,7 +309,7 @@ The following items are directly relevant to improving the accounting design:
 5. **COGS source differences:** cost-layer allocations, legacy manufacturer cost snapshots, product `costPrice`, and percentage-estimated COGS all coexist.
 6. **Profit distributions are estimates:** fixed 55% estimated COGS is not actual batch COGS or GL net income; retained earnings are recorded in the distribution model but not proven to post to 3300.
 7. **Payable/receivable systems coexist:** operational `AccountPayable`/`AccountReceivable`, accounting-party journals, supplier settlements and legacy distributor settlements require explicit reconciliation.
-8. **VAT treatment varies by pathway:** production supplier VAT now captures inclusive/exclusive/exempt terms and only posts input VAT after Admin invoice verification. Other legacy supplier-cost and sale/delivery paths retain their existing assumptions; do not treat VAT as income or apply the production rule to unrelated flows.
+8. **VAT treatment varies by pathway:** output VAT is gated by effective seller VAT registration, while input VAT requires verified supplier evidence and VAT registration at acquisition. Legacy costs without this snapshot remain gross cost; reconcile historical VAT journals before filing.
 
 ## 15. Recommended guardrails for an accounting enhancement
 

@@ -62,6 +62,20 @@ test("unverified manufacturer VAT invoice remains in inventory cost and is not r
   assert.equal(cost.capitalizedAmount.toFixed(2), "1130.00");
 });
 
+test("PAN-only buyer capitalizes verified supplier VAT instead of claiming input VAT", () => {
+  const cost = calculateProductionUnitCost({
+    unitAmount: "1000",
+    vatTreatment: "VAT_EXCLUSIVE",
+    vatRate: "13",
+    vatInvoiceReference: "INV-PAN-001",
+    vatInvoiceVerified: true,
+    buyerVatRegistered: false,
+  });
+
+  assert.equal(cost.recoverableVat.toFixed(2), "0.00");
+  assert.equal(cost.capitalizedAmount.toFixed(2), "1130.00");
+});
+
 test("VAT-applicable manufacturer production requires a supplier invoice reference", () => {
   assert.throws(() => calculateProductionUnitCost({
     unitAmount: "1000",

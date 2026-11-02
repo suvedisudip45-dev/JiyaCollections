@@ -18,7 +18,7 @@ const statusClass = {
   REJECTED: "bg-rose-100 text-rose-800",
 };
 
-const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) => {
+const getUnitCostBreakdown = (amount, treatment, vatRate) => {
   const enteredAmount = Number(amount) || 0;
   const rate = Number(vatRate) || 0;
   let net = enteredAmount;
@@ -35,7 +35,7 @@ const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) =
     net: net.toFixed(2),
     vat: vat.toFixed(2),
     gross: gross.toFixed(2),
-    inventoryCost: (vatVerified ? net : gross).toFixed(2),
+    inventoryCost: gross.toFixed(2),
   };
 };
 
@@ -139,6 +139,7 @@ const ManufacturerProductionRequests = ({ token }) => {
             vatTreatment: request.vatTreatment || "EXEMPT",
             vatRate: request.vatRate ?? 13,
             vatInvoiceReference: request.vatInvoiceReference || "",
+            vatInvoiceDate: "",
             vatInvoiceVerified: false,
           };
         });
@@ -257,6 +258,9 @@ const ManufacturerProductionRequests = ({ token }) => {
           approvedVatTreatment: approved.vatTreatment,
           approvedVatRate: approved.vatRate,
           approvedVatInvoiceReference: approved.vatInvoiceReference,
+          approvedVatInvoiceDate: approved.vatInvoiceDate
+            ? `${approved.vatInvoiceDate}T00:00:00+05:45`
+            : null,
           approvedVatInvoiceVerified: approved.vatTreatment !== "EXEMPT" && approved.vatInvoiceVerified === true,
         } : {}),
       }, { headers: { token } });
@@ -354,15 +358,30 @@ const ManufacturerProductionRequests = ({ token }) => {
             const pendingAcceptance = request.status === "PENDING_ADMIN_ACCEPTANCE";
             const awaitingQuote = request.status === "PENDING_MANUFACTURER_QUOTE";
             const approvedTerms = terms[request.id] || {};
+            const supplierTaxIdType = pending ? request.manufacturer?.taxIdType : request.approvedSupplierTaxIdType;
+            const supplierTaxIdNumber = pending ? request.manufacturer?.taxIdNumber : request.approvedSupplierTaxIdNumber;
+            const validVatSupplier = supplierTaxIdType === "VAT" && /^\d{9}$/.test(String(supplierTaxIdNumber || ""));
+            const invoiceVerified = pending
+              ? approvedTerms.vatInvoiceVerified === true
+              : request.approvedVatInvoiceVerified === true;
+            const invoiceDatePresent = pending
+              ? Boolean(approvedTerms.vatInvoiceDate)
+              : Boolean(request.approvedVatInvoiceDate);
             const unitCostBreakdown = getUnitCostBreakdown(
               pending ? approvedTerms.unitCogs : (request.approvedUnitCogs ?? request.proposedUnitCogs),
               pending ? approvedTerms.vatTreatment : (request.approvedVatTreatment || request.vatTreatment || "EXEMPT"),
               pending ? approvedTerms.vatRate : (request.approvedVatRate ?? request.vatRate),
-              pending ? approvedTerms.vatInvoiceVerified === true : request.approvedVatInvoiceVerified === true,
             );
             const batchOtherCost = Number(pending
               ? approvedTerms.otherCost
               : (request.approvedDeliveryCost ?? request.proposedDeliveryCost)) || 0;
+            const inputVatEstimate = Number(unitCostBreakdown.vat) * quantity;
+            const otherCostTotal = request.costTermsVersion >= 2 ? batchOtherCost : 0;
+            const postedInputVat = (request.costLayers || []).reduce((total, layer) =>
+              layer.inputVatRecoverable === true
+                ? total + Number(layer.unitVatAmount || 0) * Number(layer.producedQuantity || 0)
+                : total, 0);
+            const accountingBill = request.accountingBill;
             return <article key={request.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div><h2 className="font-bold text-slate-900">{request.productName}</h2><p className="mt-1 text-xs text-slate-500">{request.manufacturer?.name} · {quantity} units · Requested {new Date(request.requestedAt).toLocaleDateString()}</p></div>
@@ -433,13 +452,14 @@ const ManufacturerProductionRequests = ({ token }) => {
               {(pending || request.approvedUnitCogs) && <section className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4">
                 <h3 className="text-xs font-bold text-sky-950">{pending ? "Review manufacturer quote" : "Approved cost breakdown"}</h3>
                 <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                  <p className="text-slate-600">Manufacturer tax identity <strong className="mt-1 block text-slate-900">{accountingBill?.partyTaxIdType || supplierTaxIdType || "Not recorded"}{accountingBill?.partyTaxIdNumber || supplierTaxIdNumber ? ` · ${accountingBill?.partyTaxIdNumber || supplierTaxIdNumber}` : ""}</strong></p>
                   <p className="text-slate-600">Goods cost before VAT <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.net} / unit</strong></p>
                   <p className="text-slate-600">Supplier VAT ({(pending ? approvedTerms.vatTreatment : request.approvedVatTreatment) === "EXEMPT" ? "exempt" : `${pending ? approvedTerms.vatRate : request.approvedVatRate}%`}) <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.vat} / unit</strong></p>
                   <p className="text-slate-600">Goods total incl. VAT <strong className="mt-1 block text-slate-900">{currency}{unitCostBreakdown.gross} / unit</strong></p>
                   <p className="text-slate-600">Other production charges <strong className="mt-1 block text-slate-900">{currency}{batchOtherCost.toFixed(2)} {request.costTermsVersion >= 2 ? "/ batch" : "/ unit (legacy)"}</strong></p>
-                  <p className="text-slate-600 sm:col-span-2">Inventory unit cost <strong className="text-slate-900">{currency}{unitCostBreakdown.inventoryCost}</strong> · {pending
-                    ? approvedTerms.vatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."
-                    : request.approvedVatInvoiceVerified ? "VAT invoice verified; VAT is recoverable." : "VAT is not verified; VAT remains in inventory cost."}</p>
+                  <p className="text-slate-600">{accountingBill ? "Recorded manufacturer payable" : "Estimated manufacturer payable"} <strong className="mt-1 block text-slate-900">{currency}{accountingBill?.originalAmount || (Number(unitCostBreakdown.gross) * quantity + otherCostTotal).toFixed(2)}</strong><span className="mt-1 block">{accountingBill ? `${accountingBill.documentNumber} · ${currency}${accountingBill.remainingAmount} remains outstanding on the gross bill.` : "Gross goods plus production charges; posts after Admin accepts good units."}</span></p>
+                  <p className="text-slate-600">{accountingBill ? "Posted input VAT receivable" : "Potential input VAT receivable"} <strong className="mt-1 block text-slate-900">{currency}{accountingBill ? postedInputVat.toFixed(2) : validVatSupplier && invoiceVerified && invoiceDatePresent ? inputVatEstimate.toFixed(2) : "0.00"}</strong><span className="mt-1 block">{accountingBill ? "Recognized in the accounting ledger only for eligible verified invoice layers." : validVatSupplier && invoiceVerified && invoiceDatePresent ? "Estimate only; posts only if our VAT registration was effective on the supplier invoice date." : "Not recognized without the supplier VAT ID and verified, dated VAT invoice."}</span></p>
+                  <p className="text-slate-600 sm:col-span-2">Provisional inventory unit cost <strong className="text-slate-900">{currency}{unitCostBreakdown.inventoryCost}</strong> · VAT stays in inventory cost until input-tax eligibility is verified.</p>
                   <p className="text-slate-600 sm:col-span-2">Delivery to distributor <strong className="text-slate-900">separate shipment cost</strong> · recorded at transfer dispatch, not included above.</p>
                 </div>
               </section>}
@@ -487,8 +507,8 @@ const ManufacturerProductionRequests = ({ token }) => {
                 <label className="text-xs font-semibold text-slate-600">Manufacturer COGS VAT treatment
                   <select value={approvedTerms.vatTreatment ?? "EXEMPT"} onChange={(event) => setTerm(request.id, "vatTreatment", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
                     <option value="EXEMPT">No VAT / exempt</option>
-                    <option value="VAT_INCLUSIVE">VAT inclusive</option>
-                    <option value="VAT_EXCLUSIVE">VAT exclusive</option>
+                    <option value="VAT_INCLUSIVE" disabled={!validVatSupplier}>VAT inclusive</option>
+                    <option value="VAT_EXCLUSIVE" disabled={!validVatSupplier}>VAT exclusive</option>
                   </select>
                 </label>
                 {approvedTerms.vatTreatment !== "EXEMPT" && <>
@@ -498,9 +518,12 @@ const ManufacturerProductionRequests = ({ token }) => {
                   <label className="text-xs font-semibold text-slate-600">Supplier VAT invoice reference
                     <input type="text" maxLength={120} required value={approvedTerms.vatInvoiceReference ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceReference", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                   </label>
+                  <label className="text-xs font-semibold text-slate-600">Supplier VAT invoice date
+                    <input type="date" required={approvedTerms.vatInvoiceVerified === true} value={approvedTerms.vatInvoiceDate ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceDate", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
+                  </label>
                   <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900 sm:col-span-3">
                     <input type="checkbox" checked={approvedTerms.vatInvoiceVerified === true} onChange={(event) => setTerm(request.id, "vatInvoiceVerified", event.target.checked)} className="mt-0.5" />
-                    I verified the supplier VAT invoice; recognize this amount as recoverable input VAT. If unchecked, VAT stays in product inventory cost.
+                    I verified the supplier VAT invoice and confirmed its supplier ID matches this manufacturer&apos;s VAT profile. Input VAT is recoverable only if our VAT registration was effective on the invoice date; otherwise VAT stays in product inventory cost.
                   </label>
                 </>}
               </div>}

@@ -24,7 +24,7 @@
 | Manufacturer COGS | Admin-approved agreed COGS, VAT-inclusive, at NCM `DELIVERED`; never proposed/global cost |
 | Cost snapshot | Lock the agreed unit cost at manufacturer acceptance; no retroactive edits |
 | Manufacturer return | After confirmed receipt, reverse linked sales/VAT/customer settlement and manufacturer COGS/payable; restock only after inspection |
-| Input VAT | Split from gross COGS only when a valid manufacturer tax invoice is recorded; otherwise gross cost is non-recoverable |
+| Input VAT | Recover only when a verified supplier invoice exists and the business is VAT-registered at acquisition; otherwise capitalize the VAT into inventory/COGS |
 | Direct manufacturer sale margin | Platform receivable is direct-sale product revenue less approved COGS; no manufacturer commission rate or accrual |
 | Marketing CPA | Accrue per verified benefit redemption; settlement approval controls payout, not recognition |
 | NCM settlement | Keep COD receivable and carrier-fee payable gross until bank settlement is confirmed |
@@ -68,7 +68,7 @@ AccountingReconciliationRun ── GL/control account/subledger result
 | `AccountingDocument` | Bill or credit note with `RECEIVABLE/PAYABLE` side, party, source, original/allocated/outstanding amounts, currency, dates, due date and status. |
 | `AccountingPayment` / `AccountingReceipt` | Immutable cash/bank movement, counterparty, account, method/reference, effective date, amount and stable idempotency/provider reference. |
 | `AccountingAllocation` | Applies payment/receipt/credit to open AR/AP documents. Partial payment, advances and unallocated amounts are explicit; allocation cannot exceed open balances. |
-| `TaxTransaction` | Tax code/rate snapshot, taxable base, tax amount, invoice/evidence reference and linked journal line. Input VAT requires valid invoice evidence. |
+| `TaxTransaction` | Tax code/rate snapshot, taxable base, tax amount, invoice/evidence reference and linked journal line. Input VAT requires verified invoice evidence and eligible buyer VAT-registration status at acquisition. |
 | `AccountingAuditEvent` | Append-only actor/action/time/source/reason/event/journal/document references; never stores credentials or payment secrets. |
 | `AccountingReconciliationRun` | Period/scope/run metadata and differences for GL-to-AR/AP, party, treasury, NCM, inventory ownership events and trial balance. Differences remain visible. |
 
@@ -87,6 +87,14 @@ Exact account codes are configurable mappings and require accountant approval. T
 | Verified Marketing Partner redemption | Marketing CPA expense | Marketing Partner AP | One accrual per verified redemption; settlement approval controls payout |
 | NCM bank remittance | Bank | NCM COD receivable | Clear only on verified bank settlement |
 | NCM carrier fee settlement | NCM carrier AP | Bank | Preserve gross COD receivable and carrier payable; any netting is a settlement/offset record |
+
+## PAN-First Tax And Invoice Operations
+
+The seller tax profile defaults to `PAN_ONLY`; output VAT is zero unless an active VAT-registration version covers the transaction tax point. PAN status does not represent an income-tax exemption. Paper-bill records preserve the seller, buyer, sale, and tax snapshots and let Admin record the official paper number/date after issuance; the application does not print, submit, or certify an IRD invoice.
+
+Supplier input VAT is recoverable only when the supplier invoice is verified and the buyer is VAT-registered at acquisition. Non-recoverable supplier VAT is included in inventory/COGS and the cost layer records whether input VAT was actually recognized, so subsequent VAT registration cannot retroactively create a credit.
+
+VAT filing drafts use posted operational VAT journals, exclude filing netting/payment journals, include opening input/output VAT credits as carry-forward balances, and block overlapping periods or preparation before an earlier return is filed. Drafts are reconciliation aids only: the purchase-taxable-base/invoice register and sales credit-note workflow are incomplete, assessed variances are recorded but do not yet create a classified accounting adjustment, and an external IRD-compatible e-billing provider is not connected. Do not treat the current workflow as a complete return, statutory invoice, or electronic billing compliance.
 
 ## Recognition And Event Contracts
 

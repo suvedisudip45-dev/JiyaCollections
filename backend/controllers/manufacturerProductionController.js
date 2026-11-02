@@ -5,6 +5,8 @@ import { syncProductStock } from "../services/stockSyncService.js";
 import { buildManufacturerStockMovements, normalizeStockAdjustmentReason } from "../services/manufacturerInventoryAudit.js";
 import { ensureInventoryLocation, receiveCompletedProductionLine } from "../services/inventoryLedgerService.js";
 import { postManufacturerProductionAccounting } from "../services/accountingPostingEngine.js";
+import { hasValidVatSupplierIdentity } from "../services/manufacturerTaxIdentity.js";
+import { resolveSellerTaxTreatment } from "../services/sellerTaxProfileService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   calculateProductionUnitCost,
@@ -123,9 +125,10 @@ export const listProductionRequests = async (req, res) => {
       prisma.manufacturerProductionRequest.findMany({
         where,
         include: {
-          manufacturer: { select: { id: true, name: true, city: true } },
+          manufacturer: { select: { id: true, name: true, city: true, taxIdType: true, taxIdNumber: true } },
           product: { select: { id: true, name: true, image: true } },
           lines: { orderBy: [{ size: "asc" }, { color: "asc" }] },
+          costLayers: { select: { producedQuantity: true, unitVatAmount: true, inputVatRecoverable: true } },
         },
         orderBy: { requestedAt: "desc" },
         skip: pagination.skip,
@@ -133,7 +136,37 @@ export const listProductionRequests = async (req, res) => {
       }),
       prisma.manufacturerProductionRequest.count({ where }),
     ]);
-    return res.json(paginatedResponse("requests", requests, pagination, total));
+    const productionBills = req.auth?.role === "ADMIN" && requests.length
+      ? await prisma.accountingDocument.findMany({
+        where: {
+          sourceType: "MANUFACTURER_PRODUCTION",
+          sourceId: { in: requests.map((request) => request.id) },
+          side: "PAYABLE",
+        },
+        select: {
+          sourceId: true,
+          documentNumber: true,
+          originalAmount: true,
+          remainingAmount: true,
+          partyTaxIdType: true,
+          partyTaxIdNumber: true,
+        },
+      })
+      : [];
+    const billsByRequestId = new Map(productionBills.map((bill) => [bill.sourceId, bill]));
+    const enrichedRequests = requests.map((request) => ({
+      ...request,
+      accountingBill: billsByRequestId.has(request.id)
+        ? {
+          documentNumber: billsByRequestId.get(request.id).documentNumber,
+          originalAmount: billsByRequestId.get(request.id).originalAmount.toFixed(2),
+          remainingAmount: billsByRequestId.get(request.id).remainingAmount.toFixed(2),
+          partyTaxIdType: billsByRequestId.get(request.id).partyTaxIdType,
+          partyTaxIdNumber: billsByRequestId.get(request.id).partyTaxIdNumber,
+        }
+        : null,
+    }));
+    return res.json(paginatedResponse("requests", enrichedRequests, pagination, total));
   } catch (error) {
     console.error("listProductionRequests error:", error);
     return res.status(500).json({ success: false, message: "Unable to load production requests." });
@@ -319,6 +352,8 @@ export const updateAdminProductionRequest = async (req, res) => {
           approvedVatRate: 13,
           approvedVatInvoiceReference: null,
           approvedVatInvoiceVerified: false,
+          approvedSupplierTaxIdType: null,
+          approvedSupplierTaxIdNumber: null,
           fabricType: plan.fabricType,
           gsm: plan.gsm,
           targetCompletionDate: plan.targetCompletionDate,
@@ -367,7 +402,7 @@ export const updateAdminProductionRequest = async (req, res) => {
       return tx.manufacturerProductionRequest.findUnique({
         where: { id: requestId },
         include: {
-          manufacturer: { select: { id: true, name: true, city: true } },
+          manufacturer: { select: { id: true, name: true, city: true, taxIdType: true, taxIdNumber: true } },
           product: { select: { id: true, name: true, image: true } },
           lines: { orderBy: [{ size: "asc" }, { color: "asc" }] },
         },
@@ -387,7 +422,7 @@ export const submitPreProductionChecklist = async (req, res) => {
     const { id } = req.params;
     const request = await prisma.manufacturerProductionRequest.findFirst({
       where: { id, manufacturerId: req.manufacturerId },
-      include: { lines: true },
+      include: { lines: true, manufacturer: { select: { taxIdType: true, taxIdNumber: true } } },
     });
     if (!request) return res.status(404).json({ success: false, message: "Production request not found." });
     if (!["PENDING_PRE_CHECK", "PRE_CHECK_FAILED", "APPROVED"].includes(request.status)) {
@@ -430,11 +465,14 @@ export const submitManufacturerProductionQuote = async (req, res) => {
     const quote = validateManufacturerProductionQuote(req.body);
     const request = await prisma.manufacturerProductionRequest.findFirst({
       where: { id, manufacturerId: req.manufacturerId },
-      include: { lines: true },
+      include: { lines: true, manufacturer: { select: { taxIdType: true, taxIdNumber: true } } },
     });
     if (!request) return res.status(404).json({ success: false, message: "Production request not found." });
     if (request.status !== "PENDING_MANUFACTURER_QUOTE") {
       return res.status(409).json({ success: false, message: "A quote can only be submitted for a production order awaiting manufacturer pricing." });
+    }
+    if (quote.vatTreatment !== "EXEMPT" && !hasValidVatSupplierIdentity(request.manufacturer)) {
+      return res.status(400).json({ success: false, message: "The manufacturer profile must declare VAT and contain a 9-digit VAT ID before VAT can be quoted." });
     }
     const updated = await prisma.$transaction(async (tx) => {
       const claimed = await tx.manufacturerProductionRequest.updateMany({
@@ -483,7 +521,11 @@ export const reviewProductionRequest = async (req, res) => {
     const updated = await prisma.$transaction(async (tx) => {
       const request = await tx.manufacturerProductionRequest.findUnique({
         where: { id },
-        include: { lines: true, manufacturer: { select: { name: true } }, product: { select: { id: true, name: true } } },
+        include: {
+          lines: true,
+          manufacturer: { select: { name: true, taxIdType: true, taxIdNumber: true } },
+          product: { select: { id: true, name: true } },
+        },
       });
       if (!request) throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
       if (!["PENDING_ADMIN_APPROVAL", "PENDING_REVIEW"].includes(request.status)) {
@@ -508,8 +550,17 @@ export const reviewProductionRequest = async (req, res) => {
         vatRate: req.body.approvedVatRate ?? request.vatRate,
         vatInvoiceReference: req.body.approvedVatInvoiceReference ?? request.vatInvoiceReference,
       }) : null;
+      if (isApproval && vatTerms.vatTreatment !== "EXEMPT" && !hasValidVatSupplierIdentity(request.manufacturer)) {
+        throw Object.assign(new Error("The manufacturer profile must declare VAT and contain a 9-digit VAT ID before VAT can be charged."), { statusCode: 400 });
+      }
       const vatInvoiceVerified = isApproval && vatTerms.vatTreatment !== "EXEMPT" &&
         req.body.approvedVatInvoiceVerified === true;
+      const vatInvoiceDate = vatInvoiceVerified && req.body.approvedVatInvoiceDate
+        ? new Date(req.body.approvedVatInvoiceDate)
+        : null;
+      if (vatInvoiceVerified && (!vatInvoiceDate || Number.isNaN(vatInvoiceDate.getTime()) || vatInvoiceDate > new Date())) {
+        throw Object.assign(new Error("A valid, non-future supplier VAT invoice date is required when verifying the invoice."), { statusCode: 400 });
+      }
       const plannedQuantity = requestedQuantity;
       let inventoryUnitCogs = null;
       if (isApproval) {
@@ -546,7 +597,10 @@ export const reviewProductionRequest = async (req, res) => {
             approvedVatTreatment: vatTerms.vatTreatment,
             approvedVatRate: vatTerms.vatRate,
             approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
+            approvedVatInvoiceDate: vatInvoiceDate,
             approvedVatInvoiceVerified: vatInvoiceVerified,
+            approvedSupplierTaxIdType: request.manufacturer.taxIdType,
+            approvedSupplierTaxIdNumber: request.manufacturer.taxIdNumber,
           } : {}),
         },
       });
@@ -647,7 +701,10 @@ export const submitProductionForAdminAcceptance = async (req, res) => {
     const submitted = await prisma.$transaction(async (tx) => {
       const request = await tx.manufacturerProductionRequest.findUnique({
         where: { id },
-        include: { lines: true },
+        include: {
+          lines: true,
+          manufacturer: { select: { id: true, name: true, taxIdType: true, taxIdNumber: true } },
+        },
       });
       if (!request || request.manufacturerId !== req.manufacturerId) {
         throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
@@ -728,7 +785,10 @@ export const completeProduction = async (req, res) => {
     const completed = await prisma.$transaction(async (tx) => {
       const request = await tx.manufacturerProductionRequest.findUnique({
         where: { id },
-        include: { lines: true, manufacturer: { select: { id: true, name: true } } },
+        include: {
+          lines: true,
+          manufacturer: { select: { id: true, name: true, taxIdType: true, taxIdNumber: true } },
+        },
       });
       if (!request) {
         throw Object.assign(new Error("Production request not found."), { statusCode: 404 });
@@ -800,12 +860,21 @@ export const completeProduction = async (req, res) => {
       }
       const batchOtherCost = new Prisma.Decimal(String(request.approvedDeliveryCost || 0));
       const unitCogs = new Prisma.Decimal(String(request.approvedUnitCogs));
+      const acceptedAt = new Date();
+      const inputVatTaxPoint = request.approvedVatInvoiceDate || acceptedAt;
+      const sellerTaxTreatment = await resolveSellerTaxTreatment(inputVatTaxPoint, { client: tx });
+      const verifiedSupplierVatInvoice = request.approvedVatInvoiceVerified === true &&
+        request.approvedSupplierTaxIdType === "VAT" &&
+        /^\d{9}$/.test(String(request.approvedSupplierTaxIdNumber ?? ""));
+      const buyerVatRegistered = verifiedSupplierVatInvoice && Boolean(request.approvedVatInvoiceDate) &&
+        sellerTaxTreatment.taxStatus === "VAT_REGISTERED";
       const productionCost = calculateProductionUnitCost({
         unitAmount: unitCogs,
         vatTreatment: request.approvedVatTreatment,
         vatRate: request.approvedVatRate,
         vatInvoiceReference: request.approvedVatInvoiceReference,
-        vatInvoiceVerified: request.approvedVatInvoiceVerified,
+        vatInvoiceVerified: verifiedSupplierVatInvoice,
+        buyerVatRegistered,
       });
       const fullyLoadedUnitCogs = request.costTermsVersion >= 2
         ? calculateFullyLoadedUnitCogs({
@@ -840,7 +909,8 @@ export const completeProduction = async (req, res) => {
           manufacturerPayableRecognizedAtProduction: true,
           vatTreatment: productionCost.vatTreatment,
           vatRate: productionCost.vatRate,
-          vatInvoiceVerified: request.approvedVatInvoiceVerified,
+          vatInvoiceVerified: verifiedSupplierVatInvoice,
+          inputVatRecoverable: productionCost.recoverableVat.greaterThan(0),
           unitDeliveryCost: request.costTermsVersion >= 2 ? 0 : request.approvedDeliveryCost,
           actorId: req.auth?.accountId || req.auth?.profileId,
           actorRole: req.auth?.role || "MANUFACTURER",
@@ -892,13 +962,15 @@ export const completeProduction = async (req, res) => {
       const recoverableInputVat = productionCost.recoverableVat
         .mul(productionQuantity)
         .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      const acceptedAt = new Date();
       await postManufacturerProductionAccounting({
         productionRequest: request,
         manufacturer: request.manufacturer,
         goodQuantity: productionQuantity,
         inventoryValue: productionCogs,
         recoverableInputVat,
+        supplierTaxIdType: request.approvedSupplierTaxIdType,
+        supplierTaxIdNumber: request.approvedSupplierTaxIdNumber,
+        inputVatTaxPoint,
         transactionDate: acceptedAt,
         createdBy: req.auth?.accountId || "system",
         client: tx,

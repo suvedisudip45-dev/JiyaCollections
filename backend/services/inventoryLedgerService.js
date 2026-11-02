@@ -424,6 +424,7 @@ export const receiveCompletedProductionLine = async ({
   vatTreatment = "EXEMPT",
   vatRate = 13,
   vatInvoiceVerified = false,
+  inputVatRecoverable = false,
   unitDeliveryCost,
   actorId,
   actorRole = "MANUFACTURER",
@@ -455,6 +456,7 @@ export const receiveCompletedProductionLine = async ({
       vatTreatment,
       vatRate,
       vatInvoiceVerified,
+      inputVatRecoverable,
       unitDeliveryCost,
     },
     update: {},
@@ -470,6 +472,7 @@ export const receiveCompletedProductionLine = async ({
     costLayer.vatTreatment !== vatTreatment ||
     !new Prisma.Decimal(String(costLayer.vatRate)).equals(String(vatRate)) ||
     costLayer.vatInvoiceVerified !== vatInvoiceVerified ||
+    costLayer.inputVatRecoverable !== inputVatRecoverable ||
     !new Prisma.Decimal(String(costLayer.unitDeliveryCost)).equals(String(unitDeliveryCost))
   ) {
     throw fail("The production cost layer conflicts with the requested factory receipt.", "PRODUCTION_RECEIPT_CONFLICT", 409);

@@ -690,6 +690,7 @@ model Order {
   assignedDistributorGiftInventory DistributorGiftInventory? @relation("DistributorGiftInventoryOrders", fields: [assignedDistributorGiftInventoryId], references: [id], onDelete: SetNull)
   giftRewardEntitlement        GiftRewardEntitlement?
   distributor                 Distributor?         @relation("DistributorDirectOrders", fields: [distributorId], references: [id], onDelete: SetNull)
+  salesInvoice                SalesInvoice?
 
   @@index([fulfillmentStatus])
   @@index([userId])
@@ -1475,6 +1476,30 @@ model TaxConfiguration {
   updatedAt            DateTime @updatedAt
 }
 
+model SellerTaxProfile {
+  id        String   @id @default("default")
+  legalName String   @default("") @db.VarChar(255)
+  panNumber String   @default("") @db.VarChar(32)
+  address   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TaxRegistrationVersion {
+  id            String   @id @default(uuid())
+  taxStatus     String   @db.VarChar(24) // PAN_ONLY | VAT_REGISTERED
+  vatNumber     String?  @db.VarChar(32)
+  effectiveFrom DateTime
+  effectiveUntil DateTime?
+  status        String   @default("ACTIVE") @db.VarChar(16) // ACTIVE | CANCELLED
+  createdBy     String?  @db.VarChar(191)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([effectiveFrom])
+  @@index([status, effectiveFrom, effectiveUntil])
+}
+
 model VatRateVersion {
   id              String   @id @default(uuid())
   vatRate         Decimal  @db.Decimal(5, 2)
@@ -1491,24 +1516,85 @@ model VatRateVersion {
 
 model TaxFilingRecord {
   id                    String    @id @default(uuid())
-  periodType            String // MONTHLY_VAT, ANNUAL_INCOME_TAX
-  periodKey             String // e.g. "2026-09" or "FY2082-83"
-  taxableSales          Float     @default(0)
-  outputVat             Float     @default(0)
-  taxablePurchases      Float     @default(0)
-  inputVat              Float     @default(0)
-  netVatPayable         Float     @default(0)
+  periodType            String    @db.VarChar(32) // VAT_RETURN, ANNUAL_INCOME_TAX
+  periodKey             String    @db.VarChar(64)
+  periodStart           DateTime?
+  periodEnd             DateTime?
+  taxableSales          Decimal   @default(0) @db.Decimal(20, 2)
+  outputVat             Decimal   @default(0) @db.Decimal(20, 2)
+  taxablePurchases      Decimal   @default(0) @db.Decimal(20, 2)
+  inputVat              Decimal   @default(0) @db.Decimal(20, 2)
+  carriedForwardInputVat Decimal  @default(0) @db.Decimal(20, 2)
+  carriedForwardOutputVat Decimal @default(0) @db.Decimal(20, 2)
+  netVatPayable         Decimal   @default(0) @db.Decimal(20, 2)
   grossRevenue          Float     @default(0)
   totalDeductions       Float     @default(0)
   depreciationDeduction Float     @default(0)
   taxableIncome         Float     @default(0)
   calculatedTax         Float     @default(0)
-  taxPaid               Float     @default(0)
-  status                String    @default("DRAFT") // DRAFT, FILED, PAID
+  taxPaid               Decimal   @default(0) @db.Decimal(20, 2)
+  status                String    @default("DRAFT") @db.VarChar(24) // DRAFT, FILED, PAID
   filedDate             DateTime?
+  filedReference        String?   @db.VarChar(191)
+  filingEvidenceUrl     String?   @db.Text
+  assessedAmount        Decimal?  @db.Decimal(20, 2)
+  payments              TaxFilingPayment[]
   notes                 String?   @db.Text
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
+
+  @@index([periodType, periodKey])
+  @@index([status, filedDate])
+}
+
+model SalesInvoice {
+  id                 String   @id @default(uuid())
+  orderId            String   @unique
+  order              Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  documentNumber     String   @unique @db.VarChar(64)
+  invoiceNumber      String?  @unique @db.VarChar(191)
+  documentType       String   @db.VarChar(32) // PAN_BILL | VAT_TAX_INVOICE
+  issueChannel       String   @default("PAPER") @db.VarChar(16) // PAPER | ONLINE
+  status             String   @default("PENDING_PAPER_DETAILS") @db.VarChar(32)
+  taxStatus          String   @db.VarChar(24)
+  taxTreatment       String   @db.VarChar(32)
+  vatRate            Decimal  @default(0) @db.Decimal(5, 2)
+  taxableAmount      Decimal  @default(0) @db.Decimal(20, 2)
+  vatAmount          Decimal  @default(0) @db.Decimal(20, 2)
+  totalAmount        Decimal  @db.Decimal(20, 2)
+  taxPoint           DateTime
+  issueDate          DateTime?
+  sellerSnapshot     Json
+  buyerSnapshot      Json
+  lineSnapshots      Json
+  evidenceUrl        String?  @db.Text
+  externalProvider   String?  @db.VarChar(100)
+  externalReference  String?  @db.VarChar(191)
+  providerStatus     String   @default("NOT_SUBMITTED") @db.VarChar(32)
+  createdBy          String?  @db.VarChar(191)
+  issuedBy           String?  @db.VarChar(191)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status, taxPoint])
+  @@index([documentType, issueDate])
+}
+
+model TaxFilingPayment {
+  id                 String          @id @default(uuid())
+  filingRecordId     String
+  filingRecord       TaxFilingRecord @relation(fields: [filingRecordId], references: [id], onDelete: Restrict)
+  idempotencyKey     String          @unique @db.VarChar(191)
+  amount             Decimal         @db.Decimal(20, 2)
+  paymentDate        DateTime
+  paymentReference   String          @db.VarChar(191)
+  treasuryAccountId  String?
+  journalEntryId     String?         @unique @db.VarChar(191)
+  evidenceUrl        String?         @db.Text
+  recordedBy         String?         @db.VarChar(191)
+  createdAt          DateTime        @default(now())
+
+  @@index([filingRecordId, paymentDate])
 }
 
 model AccountPayable {
@@ -1736,6 +1822,8 @@ model AccountingDocument {
   documentNumber  String                 @unique @db.VarChar(64)
   partyId         String
   party           AccountingParty        @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  partyTaxIdType  String?                @db.VarChar(8)
+  partyTaxIdNumber String?               @db.VarChar(9)
   side            String                 @db.VarChar(16) // RECEIVABLE | PAYABLE
   sourceType      String                 @db.VarChar(64)
   sourceId        String                 @db.VarChar(191)
@@ -1806,6 +1894,8 @@ model Manufacturer {
   accountId                String?                   @unique
   account                  AuthAccount?              @relation(fields: [accountId], references: [id], onDelete: Cascade)
   name                     String
+  taxIdType                String?                   @db.VarChar(8) // PAN | VAT
+  taxIdNumber              String?                   @unique @db.VarChar(9)
   email                    String                    @unique
   password                 String?                   @default("") // bcrypt hashed
   phone                    String
@@ -3208,7 +3298,10 @@ model ManufacturerProductionRequest {
   approvedVatTreatment        String   @default("EXEMPT") @db.VarChar(24)
   approvedVatRate             Decimal  @default(13) @db.Decimal(5, 2)
   approvedVatInvoiceReference String?  @db.VarChar(120)
+  approvedVatInvoiceDate      DateTime?
   approvedVatInvoiceVerified  Boolean  @default(false)
+  approvedSupplierTaxIdType   String?  @db.VarChar(8)
+  approvedSupplierTaxIdNumber String?  @db.VarChar(9)
   costTermsVersion           Int      @default(1)
   fabricType                 String?  @db.VarChar(120)
   gsm                        Decimal? @db.Decimal(8, 2)
@@ -3296,6 +3389,7 @@ model ManufacturerInventoryCostLayer {
   vatTreatment      String   @default("EXEMPT") @db.VarChar(24)
   vatRate           Decimal  @default(13) @db.Decimal(5, 2)
   vatInvoiceVerified Boolean @default(false)
+  inputVatRecoverable Boolean @default(false)
   unitDeliveryCost  Decimal  @default(0) @db.Decimal(20, 2)
   createdAt         DateTime @default(now())
   productionRequest ManufacturerProductionRequest @relation(fields: [productionRequestId], references: [id], onDelete: Restrict)

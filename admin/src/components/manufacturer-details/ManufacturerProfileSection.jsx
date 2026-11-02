@@ -21,6 +21,8 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
     ));
     setProfile({
       name: manufacturer.name || "",
+      taxIdType: manufacturer.taxIdType || "",
+      taxIdNumber: manufacturer.taxIdNumber || "",
       email: manufacturer.email || "",
       phone: manufacturer.phone || "",
       city: branch?.name || manufacturer.city || "",
@@ -44,11 +46,23 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
   }));
   const save = async (event) => {
     event.preventDefault();
+    const taxIdType = String(profile.taxIdType || "").trim();
+    const taxIdNumber = String(profile.taxIdNumber || "").trim();
+    if ((taxIdType || taxIdNumber) && (!["PAN", "VAT"].includes(taxIdType) || !/^\d{9}$/.test(taxIdNumber))) {
+      toast.error("Choose PAN or VAT and enter a registration number containing exactly 9 digits.");
+      return;
+    }
+
     setSaving(true);
     try {
+      const payload = { ...profile };
+      if (!taxIdType && !taxIdNumber) {
+        delete payload.taxIdType;
+        delete payload.taxIdNumber;
+      }
       const response = await axios.put(
         `${backendUrl}/api/manufacturer/admin/update/${manufacturer.id}`,
-        profile,
+        payload,
         { headers: { token } },
       );
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to update manufacturer profile.");
@@ -88,7 +102,28 @@ const ManufacturerProfileSection = ({ manufacturer, token, onUpdated }) => {
           {fields.map(([field, label, type]) => (
             <label key={field} className="text-xs font-semibold text-slate-600">{label}<input type={type} value={profile[field] || ""} onChange={(event) => update(field, event.target.value)} readOnly={!canEdit} className={inputClass} /></label>
           ))}
-          <label className="text-xs font-semibold text-slate-600">Pickup status
+            <label className="text-xs font-semibold text-slate-600">Tax registration type
+              <select value={profile.taxIdType || ""} onChange={(event) => update("taxIdType", event.target.value)} disabled={!canEdit} className={`${inputClass} bg-white disabled:cursor-not-allowed disabled:opacity-70`}>
+                <option value="">Not set</option>
+                <option value="PAN">PAN registered</option>
+                <option value="VAT">VAT registered</option>
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">{profile.taxIdType || "PAN/VAT"} number (9 digits)
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={9}
+                pattern="[0-9]{9}"
+                value={profile.taxIdNumber || ""}
+                onChange={(event) => update("taxIdNumber", event.target.value.replace(/\D/g, "").slice(0, 9))}
+                readOnly={!canEdit}
+                className={inputClass}
+                placeholder="123456789"
+              />
+            </label>
+            <label className="text-xs font-semibold text-slate-600">Pickup status
             <select value={profile.pickupBranchStatus || "UNVERIFIED"} onChange={(event) => update("pickupBranchStatus", event.target.value)} disabled={!canEdit} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-70`}>
               <option value="UNVERIFIED">UNVERIFIED</option>
               <option value="VERIFIED">VERIFIED</option>

@@ -27,7 +27,7 @@ const emptyQuote = {
   manufacturerNote: "",
 };
 
-const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) => {
+const getUnitCostBreakdown = (amount, treatment, vatRate) => {
   const enteredAmount = Number(amount) || 0;
   const rate = Number(vatRate) || 0;
   let net = enteredAmount;
@@ -44,12 +44,13 @@ const getUnitCostBreakdown = (amount, treatment, vatRate, vatVerified = false) =
     net: net.toFixed(2),
     vat: vat.toFixed(2),
     gross: gross.toFixed(2),
-    inventoryCost: (vatVerified ? net : gross).toFixed(2),
+    inventoryCost: gross.toFixed(2),
   };
 };
 
 const Production = () => {
-  const { token, backendUrl, currency } = useManufacturer();
+  const { token, backendUrl, currency, manufacturer } = useManufacturer();
+  const canQuoteVat = manufacturer?.taxIdType === "VAT" && /^\d{9}$/.test(String(manufacturer?.taxIdNumber || ""));
   const [requests, setRequests] = useState(null);
   const [quotes, setQuotes] = useState({});
   const [savingId, setSavingId] = useState("");
@@ -81,6 +82,10 @@ const Production = () => {
   const submitQuote = async (event, request) => {
     event.preventDefault();
     const quote = { ...emptyQuote, ...quotes[request.id] };
+    if (!canQuoteVat && quote.vatTreatment !== "EXEMPT") {
+      toast.error("A VAT tax ID with exactly 9 digits is required to quote VAT.");
+      return;
+    }
     setSavingId(request.id);
     try {
       const response = await axios.patch(
@@ -170,7 +175,6 @@ const Production = () => {
                 unitAmount,
                 vatTreatment,
                 vatRate,
-                approved && request.approvedVatInvoiceVerified === true,
               );
 
               return (
@@ -192,6 +196,7 @@ const Production = () => {
                   <div className="grid gap-2 rounded-lg bg-[#f8f7f4] p-3 text-[11px] sm:grid-cols-2">
                     <p>Fabric: <strong>{request.fabricType || "Not specified"}</strong></p>
                     <p>GSM: <strong>{request.gsm ?? "Not specified"}</strong></p>
+                    <p>Tax identity: <strong>{manufacturer?.taxIdType || "Not recorded"}{manufacturer?.taxIdNumber ? ` · ${manufacturer.taxIdNumber}` : ""}</strong></p>
                     {Array.isArray(request.batchPlan) && <p className="sm:col-span-2">Batch plan: <strong>{request.batchPlan.map((batch) => `${batch.batchNumber}: ${batch.plannedQuantity}`).join(" · ")}</strong></p>}
                   </div>
 
@@ -219,13 +224,14 @@ const Production = () => {
                           <input required type="number" min="0" step="0.01" value={quote.otherCost} onChange={(event) => updateQuote(request.id, "otherCost", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
                         </label>
                         <label className="text-xs font-semibold text-[#171717]">VAT treatment
-                          <select value={quote.vatTreatment} onChange={(event) => updateQuote(request.id, "vatTreatment", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
+                          <select value={canQuoteVat ? quote.vatTreatment : "EXEMPT"} onChange={(event) => updateQuote(request.id, "vatTreatment", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm">
                             <option value="EXEMPT">No VAT / exempt</option>
-                            <option value="VAT_INCLUSIVE">VAT inclusive</option>
-                            <option value="VAT_EXCLUSIVE">VAT exclusive</option>
+                            <option value="VAT_INCLUSIVE" disabled={!canQuoteVat}>VAT inclusive</option>
+                            <option value="VAT_EXCLUSIVE" disabled={!canQuoteVat}>VAT exclusive</option>
                           </select>
                         </label>
-                        {quote.vatTreatment !== "EXEMPT" && <>
+                        {!canQuoteVat && <p className="text-[10px] text-amber-900">Your profile is PAN-registered or missing a VAT tax ID. VAT quoting requires a VAT profile with a 9-digit ID.</p>}
+                        {canQuoteVat && quote.vatTreatment !== "EXEMPT" && <>
                           <label className="text-xs font-semibold text-[#171717]">VAT rate (%)
                             <input required type="number" min="0.01" max="100" step="0.01" value={quote.vatRate} onChange={(event) => updateQuote(request.id, "vatRate", event.target.value)} className="mt-1 w-full rounded-xl border bg-white px-3 py-2 text-sm" />
                           </label>
@@ -250,8 +256,9 @@ const Production = () => {
                   {unitAmount != null && (
                     <div className="grid gap-2 rounded-lg border border-[#dedbd3] bg-white p-3 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
                       <p>{approved ? "Approved" : "Quoted"} price per piece <strong className="block">{currency}{costBreakdown.gross}</strong></p>
+                      <p>Supplier VAT amount <strong className="block">{currency}{costBreakdown.vat}</strong></p>
                       <p>{approved ? "Approved" : "Quoted"} other production expenses <strong className="block">{currency}{Number(approved ? request.approvedDeliveryCost || 0 : request.proposedDeliveryCost || 0).toFixed(2)} / order</strong></p>
-                      <p>Inventory unit cost <strong className="block">{currency}{costBreakdown.inventoryCost}</strong></p>
+                      <p>Gross inventory unit cost (before buyer VAT eligibility) <strong className="block">{currency}{costBreakdown.inventoryCost}</strong></p>
                       <p>VAT invoice {(approved && request.approvedVatInvoiceVerified) ? <strong>verified</strong> : <strong>not verified</strong>}</p>
                     </div>
                   )}

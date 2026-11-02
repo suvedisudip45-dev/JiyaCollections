@@ -100,6 +100,7 @@ export const consumeDistributorOrderInventory = async ({
             unitCogs: true,
             unitVatAmount: true,
             vatInvoiceVerified: true,
+            inputVatRecoverable: true,
             manufacturerPayableRecognizedAtProduction: true,
             unitDeliveryCost: true,
           },
@@ -122,6 +123,7 @@ export const consumeDistributorOrderInventory = async ({
               unitCogs: String(movement.productionCostLayer.unitCogs),
               unitVatAmount: String(movement.productionCostLayer.unitVatAmount || 0),
               vatInvoiceVerified: movement.productionCostLayer.vatInvoiceVerified === true,
+              inputVatRecoverable: movement.productionCostLayer.inputVatRecoverable === true,
               unitDeliveryCost: String(movement.productionCostLayer.unitDeliveryCost),
             }]
           : []
@@ -189,6 +191,7 @@ export const consumeDistributorOrderInventory = async ({
               unitCogs: true,
               unitVatAmount: true,
               vatInvoiceVerified: true,
+              inputVatRecoverable: true,
               manufacturerPayableRecognizedAtProduction: true,
               unitDeliveryCost: true,
               createdAt: true,
@@ -234,6 +237,7 @@ export const consumeDistributorOrderInventory = async ({
           unitCogs: String(entry.layer.unitCogs),
           unitVatAmount: String(entry.layer.unitVatAmount || 0),
           vatInvoiceVerified: entry.layer.vatInvoiceVerified === true,
+          inputVatRecoverable: entry.layer.inputVatRecoverable === true,
           unitDeliveryCost: String(entry.layer.unitDeliveryCost),
         });
         costedRemaining -= allocatedQuantity;

@@ -14,6 +14,7 @@ import {
   invalidateLocationLookupCache,
   validateNcmLocationSelection,
 } from "../services/locationLookupService.js";
+import { normalizeManufacturerTaxIdentity } from "../services/manufacturerTaxIdentity.js";
 
 let ncmBranchesCache = { expiresAt: 0, branches: [] };
 const NCM_BRANCH_CACHE_MS = 10 * 60 * 1000;
@@ -163,6 +164,8 @@ const registerManufacturer = async (req, res) => {
     const {
       name,
       businessName,
+      taxIdType,
+      taxIdNumber,
       email,
       password,
       phone,
@@ -187,6 +190,12 @@ const registerManufacturer = async (req, res) => {
     const mfgName = (name || businessName || "").trim();
     if (!mfgName || !email || !password || !phone || !city) {
       return res.json({ success: false, message: "Business name, email, password, phone, and city are required" });
+    }
+    let taxIdentity;
+    try {
+      taxIdentity = normalizeManufacturerTaxIdentity({ taxIdType, taxIdNumber });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, message: error.message, code: error.code });
     }
     let branchSelection;
     try {
@@ -254,6 +263,7 @@ const registerManufacturer = async (req, res) => {
         data: {
           accountId: newAccount.id,
           name: mfgName,
+          ...taxIdentity,
           email: cleanEmail,
           password: hashed,
           phone: normalizedPhone,
@@ -291,6 +301,8 @@ const registerManufacturerSelf = async (req, res) => {
     const {
       name,
       businessName,
+      taxIdType,
+      taxIdNumber,
       email,
       password,
       phone,
@@ -315,6 +327,12 @@ const registerManufacturerSelf = async (req, res) => {
     const mfgName = (name || businessName || "").trim();
     if (!mfgName || !email || !password || !phone || !city || !pickupAddress) {
       return res.json({ success: false, message: "Business name, email, password, phone, city, and pickup address are required" });
+    }
+    let taxIdentity;
+    try {
+      taxIdentity = normalizeManufacturerTaxIdentity({ taxIdType, taxIdNumber });
+    } catch (error) {
+      return res.status(error.statusCode || 400).json({ success: false, message: error.message, code: error.code });
     }
     let branchSelection;
     try {
@@ -376,6 +394,7 @@ const registerManufacturerSelf = async (req, res) => {
         data: {
           accountId: newAccount.id,
           name: mfgName,
+          ...taxIdentity,
           email: normalizedEmail,
           password: hashed,
           phone: normalizedPhone,
@@ -646,6 +665,8 @@ const updateManufacturer = async (req, res) => {
     const {
       name,
       businessName,
+      taxIdType,
+      taxIdNumber,
       email,
       phone,
       city,
@@ -675,6 +696,8 @@ const updateManufacturer = async (req, res) => {
         ncmPickupBranch: true,
         pickupBranchStatus: true,
         pickupBranchVerifiedAt: true,
+        taxIdType: true,
+        taxIdNumber: true,
       },
     });
     if (!existingManufacturer) {
@@ -682,6 +705,16 @@ const updateManufacturer = async (req, res) => {
     }
 
     const updateData = {};
+    if (taxIdType !== undefined || taxIdNumber !== undefined) {
+      try {
+        Object.assign(updateData, normalizeManufacturerTaxIdentity({
+          taxIdType: taxIdType === undefined ? existingManufacturer.taxIdType : taxIdType,
+          taxIdNumber: taxIdNumber === undefined ? existingManufacturer.taxIdNumber : taxIdNumber,
+        }));
+      } catch (error) {
+        return res.status(error.statusCode || 400).json({ success: false, message: error.message, code: error.code });
+      }
+    }
     const mfgName = name || businessName;
     if (mfgName !== undefined) updateData.name = mfgName;
     let normalizedEmail;

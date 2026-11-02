@@ -14,6 +14,8 @@ const signedBalance = (debitCents, creditCents, normalBalance) =>
 export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) => {
   const periodTotals = new Map();
   const closingTotals = new Map();
+  const vatPeriodCents = { outputVat: 0, inputVat: 0 };
+  const openingVatCents = { outputVatCredit: 0, inputVatCredit: 0 };
   const start = startDate ? new Date(startDate).getTime() : Number.NEGATIVE_INFINITY;
   const end = endDate ? new Date(endDate).getTime() : Number.POSITIVE_INFINITY;
 
@@ -37,11 +39,22 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
     totals.credit += credit;
     closingTotals.set(account.accountCode, totals);
 
+    if (transactionTime < start && account.accountCode === "1150") {
+      openingVatCents.inputVatCredit += debit - credit;
+    }
+    if (transactionTime < start && account.accountCode === "2120") {
+      openingVatCents.outputVatCredit += debit - credit;
+    }
+
     if (transactionTime >= start) {
       const period = periodTotals.get(account.accountCode) || { debit: 0, credit: 0, account };
       period.debit += debit;
       period.credit += credit;
       periodTotals.set(account.accountCode, period);
+      if (!["VAT_RETURN_NETTING", "VAT_RETURN_PAYMENT"].includes(journalEntry.sourceType)) {
+        if (account.accountCode === "2120") vatPeriodCents.outputVat += credit - debit;
+        if (account.accountCode === "1150") vatPeriodCents.inputVat += debit - credit;
+      }
     }
   }
 
@@ -66,8 +79,10 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
   const nonOperatingNet = balance("8100") - balance("7100") - balance("7200");
   const grossProfit = netRevenue - totalCogs;
   const netProfitBeforeTax = grossProfit - totalOperatingExpenses + nonOperatingNet;
-  const outputVat = balance("2120");
-  const inputVat = balance("1150");
+  const outputVat = toAmount(vatPeriodCents.outputVat);
+  const inputVat = toAmount(vatPeriodCents.inputVat);
+  const carriedForwardInputVat = Math.max(0, toAmount(openingVatCents.inputVatCredit));
+  const carriedForwardOutputVat = Math.max(0, toAmount(openingVatCents.outputVatCredit));
   const closingBalance = (code) => balance(code, closing);
 
   const currentAssets = ["1110", "1120", "1130", "1140", "1150", "1160", "1170", "1180", "1190"]
@@ -94,9 +109,11 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       netProfitBeforeTax: toAmount(toCents(netProfitBeforeTax)),
     },
     vat: {
-      outputVat: toAmount(toCents(outputVat)),
-      inputVat: toAmount(toCents(inputVat)),
-      netVatPayable: toAmount(toCents(outputVat - inputVat)),
+      outputVat,
+      inputVat,
+      carriedForwardInputVat,
+      carriedForwardOutputVat,
+      netVatPayable: toAmount(toCents(outputVat - inputVat - carriedForwardInputVat - carriedForwardOutputVat)),
     },
     balanceSheet: {
       cash: toAmount(toCents(closingBalance("1110"))),

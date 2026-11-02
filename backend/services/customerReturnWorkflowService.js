@@ -12,7 +12,7 @@ import {
   postReturnExchangeSettlementAccounting,
   resolveReturnExchangeSettlementRate,
 } from "./returnExchangeSettlementService.js";
-import { resolveVatRatePercent } from "./vatRateService.js";
+import { resolveOrderTaxPoint, resolveOutputVatRatePercent } from "./sellerTaxProfileService.js";
 
 const ACTIVE_RETURN_STATES = [
   "PENDING_ADMIN_REVIEW",
@@ -216,7 +216,8 @@ export const createCustomerReturnRequest = async ({ orderId, customerId, adminId
     });
     const processedItems = returnItemsFromOrder(order.items, items, previousReturns);
     const totalRefundAmount = processedItems.reduce((sum, item) => sum + item.refundAmount, 0);
-    const vatRate = await resolveVatRatePercent(order.date, { client: tx });
+    const taxPoint = await resolveOrderTaxPoint(order, { client: tx });
+    const vatRate = await resolveOutputVatRatePercent(taxPoint, { client: tx });
     const vatRefunded = calculateCustomerReturnRefundPolicy({
       productValue: totalRefundAmount,
       vatRatePercent: vatRate,
@@ -659,9 +660,12 @@ export const decideCustomerReturnRequest = async ({ returnId, adminId, actorCont
       const approvedStatus = route.route === "DISTRIBUTOR" ? "DISTRIBUTOR_RETURN_PENDING" : "APPROVED_BY_ADMIN";
       const shippingConfig = await tx.shippingConfig.findFirst();
       const orderPricing = current.orderId
-        ? await tx.order.findUnique({ where: { id: current.orderId }, select: { deliveryFee: true, date: true } })
+        ? await tx.order.findUnique({ where: { id: current.orderId }, select: { id: true, deliveryFee: true, date: true } })
         : null;
-      const vatRate = await resolveVatRatePercent(orderPricing?.date, { client: tx });
+      const taxPoint = orderPricing
+        ? await resolveOrderTaxPoint(orderPricing, { client: tx })
+        : new Date();
+      const vatRate = await resolveOutputVatRatePercent(taxPoint, { client: tx });
       const refundPolicy = calculateCustomerReturnRefundPolicy({
         productValue: current.totalRefundAmount,
         chargeRatePercent: shippingConfig?.customerReturnChargeRate ?? 0,

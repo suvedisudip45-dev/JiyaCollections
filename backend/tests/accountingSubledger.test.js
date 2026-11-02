@@ -119,6 +119,37 @@ test("createAccountingDocument creates open document with positive Decimal amoun
   assert.equal(doc.remainingAmount.toFixed(2), "15000.00");
 });
 
+test("manufacturer payable bill preserves the supplier's PAN/VAT identity snapshot", async () => {
+  const { client, parties } = createSubledgerHarness();
+  parties.set("party-1", { id: "party-1", displayName: "Aama Fashions", partyType: "MANUFACTURER" });
+
+  const doc = await createAccountingDocument({
+    documentType: "BILL",
+    documentNumber: "MFG-BILL-TAX-001",
+    partyId: "party-1",
+    partyTaxIdType: "VAT",
+    partyTaxIdNumber: "123456789",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: "production-001",
+    amount: "1130.00",
+  }, { client });
+
+  assert.equal(doc.partyTaxIdType, "VAT");
+  assert.equal(doc.partyTaxIdNumber, "123456789");
+  await assert.rejects(createAccountingDocument({
+    documentType: "BILL",
+    documentNumber: "MFG-BILL-TAX-002",
+    partyId: "party-1",
+    partyTaxIdType: "VAT",
+    partyTaxIdNumber: "1234",
+    side: "PAYABLE",
+    sourceType: "MANUFACTURER_PRODUCTION",
+    sourceId: "production-002",
+    amount: "1130.00",
+  }, { client }), /exactly nine digits/);
+});
+
 test("createAccountingDocument idempotency prevents duplicate distributor COD invoices", async () => {
   const { client, parties, documents } = createSubledgerHarness();
   parties.set("party-1", { id: "party-1", displayName: "Distributor", partyType: "DISTRIBUTOR" });

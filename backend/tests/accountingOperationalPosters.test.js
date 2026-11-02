@@ -53,7 +53,16 @@ const createComprehensiveHarness = () => {
     events: [],
     entries: [],
     documents: [],
+    salesInvoices: [],
     vatRateVersions: [],
+    taxRegistrationVersions: [{
+      id: "registration-vat",
+      taxStatus: "VAT_REGISTERED",
+      vatNumber: "123456789",
+      effectiveFrom: new Date("2000-01-01T00:00:00.000Z"),
+      effectiveUntil: null,
+      status: "ACTIVE",
+    }],
     costLayers: [],
   };
 
@@ -140,6 +149,15 @@ const createComprehensiveHarness = () => {
         )
         .sort((left, right) => right.effectiveFrom - left.effectiveFrom)[0] || null,
     },
+    taxRegistrationVersion: {
+      findFirst: async ({ where }) => state.taxRegistrationVersions
+        .filter((version) =>
+          version.status === where.status &&
+          version.effectiveFrom <= where.effectiveFrom.lte &&
+          (!version.effectiveUntil || version.effectiveUntil > where.effectiveFrom.lte)
+        )
+        .sort((left, right) => right.effectiveFrom - left.effectiveFrom)[0] || null,
+    },
     journalEntry: {
       findUnique: async ({ where }) => state.entries.find((e) => e.idempotencyKey === where.idempotencyKey) || null,
       create: async ({ data }) => {
@@ -176,7 +194,12 @@ const createComprehensiveHarness = () => {
       },
     },
     manufacturer: {
-      findUnique: async ({ where }) => ({ id: where.id, name: "Alpha Textiles" }),
+      findUnique: async ({ where }) => ({
+        id: where.id,
+        name: "Alpha Textiles",
+        taxIdType: "VAT",
+        taxIdNumber: "123456789",
+      }),
     },
     manufacturerInventoryCostLayer: {
       findMany: async ({ where }) => state.costLayers.filter((layer) => where.id.in.includes(layer.id)),
@@ -189,6 +212,18 @@ const createComprehensiveHarness = () => {
     },
     order: {
       findUnique: async ({ where }) => null, // Override in individual tests if needed
+    },
+    salesInvoice: {
+      upsert: async ({ where, create, update }) => {
+        let invoice = state.salesInvoices.find((entry) => entry.orderId === where.orderId);
+        if (!invoice) {
+          invoice = { id: `sales-invoice-${state.salesInvoices.length + 1}`, ...create };
+          state.salesInvoices.push(invoice);
+        } else {
+          Object.assign(invoice, update);
+        }
+        return invoice;
+      },
     },
     $transaction: async (callback) => callback(client),
   };
@@ -240,6 +275,44 @@ test("delivered online store order posts balanced sales, VAT, COGS and manufactu
   assert.equal(vatLine.credit.toFixed(2), "1300.00");
   assert.equal(cogsLine.debit.toFixed(2), "6000.00");
   assert.equal(mfgApLine.credit.toFixed(2), "6000.00");
+  assert.equal(state.salesInvoices[0].documentType, "VAT_TAX_INVOICE");
+  assert.equal(state.salesInvoices[0].status, "PENDING_PAPER_DETAILS");
+  assert.equal(state.salesInvoices[0].vatAmount.toFixed(2), "1300.00");
+});
+
+test("PAN-only delivered sale posts gross revenue without output VAT", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [];
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-pan-only-001",
+    userId: "user-cust-pan",
+    amount: 1000,
+    paymentMethod: "ONLINE_BANK",
+    orderType: "ONLINE_STORE",
+    items: [],
+  }, { client });
+
+  const revenue = journal.lines.find((line) => line.account.accountCode === "4100");
+  const vat = journal.lines.find((line) => line.account.accountCode === "2120");
+  assert.equal(revenue.credit.toFixed(2), "1000.00");
+  assert.equal(vat, undefined);
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+  assert.equal(state.salesInvoices[0].documentType, "PAN_BILL");
+  assert.equal(state.salesInvoices[0].vatAmount.toFixed(2), "0.00");
+});
+
+test("PAN-only sales return does not reverse output VAT", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [];
+  const journal = await postCustomerReturnAccounting({
+    id: "return-pan-001",
+    orderId: "order-pan-001",
+    totalRefundAmount: 1000,
+    inspectedAt: new Date("2026-11-02T00:00:00.000Z"),
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2120"), undefined);
+  assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
 });
 
 test("delivered sales use the VAT rate effective on the source order date", async () => {
@@ -452,6 +525,7 @@ test("delivery recognizes new production-layer COGS, verified input VAT, and pay
         unitCogs: "100.00",
         unitVatAmount: "13.00",
         vatInvoiceVerified: true,
+        inputVatRecoverable: true,
       }],
     }],
   };
@@ -468,6 +542,34 @@ test("delivery recognizes new production-layer COGS, verified input VAT, and pay
   assert.equal(first.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "226.00");
   assert.equal(first.lines.some((line) => line.account.accountCode === "1140"), false);
   assert.equal(first.totalDebit.toFixed(2), first.totalCredit.toFixed(2));
+});
+
+test("delivery capitalizes verified supplier VAT acquired while PAN-only", async () => {
+  const { client } = createComprehensiveHarness();
+  client.taxRegistrationVersion.findFirst = async () => null;
+  const journal = await postDeliveredOrderAccounting({
+    id: "ord-production-pan-only-006",
+    amount: 226,
+    paymentMethod: "ONLINE_BANK",
+    items: [{
+      quantity: 2,
+      legacyCostQuantity: 0,
+      productionCostAllocations: [{
+        costLayerId: "layer-pan-only",
+        quantity: 2,
+        manufacturerId: "mfg-001",
+        manufacturerPayableRecognizedAtProduction: false,
+        unitCogs: "100.00",
+        unitVatAmount: "13.00",
+        vatInvoiceVerified: true,
+        inputVatRecoverable: false,
+      }],
+    }],
+  }, { client });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "5100").debit.toFixed(2), "226.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1150"), false);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "226.00");
 });
 
 test("new manufacturer production layers flow through distributor delivery into P&L COGS", async () => {
@@ -820,6 +922,8 @@ test("accepted production posts inventory, verified VAT, and manufacturer payabl
     goodQuantity: 10,
     inventoryValue: "1000.00",
     recoverableInputVat: "130.00",
+    supplierTaxIdType: "VAT",
+    supplierTaxIdNumber: "123456789",
     transactionDate: new Date("2026-10-29T12:00:00.000Z"),
     client,
   };
@@ -836,7 +940,87 @@ test("accepted production posts inventory, verified VAT, and manufacturer payabl
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "1130.00");
   assert.equal(state.documents[0].sourceType, "MANUFACTURER_PRODUCTION");
   assert.equal(state.documents[0].originalAmount.toFixed(2), "1130.00");
+  assert.equal(state.documents[0].partyTaxIdType, "VAT");
+  assert.equal(state.documents[0].partyTaxIdNumber, "123456789");
   assert.equal(journal.totalDebit.toFixed(2), journal.totalCredit.toFixed(2));
+});
+
+test("PAN-only production capitalizes verified supplier VAT and rejects input VAT recovery", async () => {
+  const { client, state } = createComprehensiveHarness();
+  client.taxRegistrationVersion.findFirst = async () => null;
+
+  const journal = await postManufacturerProductionAccounting({
+    productionRequest: { id: "production-pan-only-001", manufacturerId: "mfg-001" },
+    manufacturer: { id: "mfg-001" },
+    goodQuantity: 10,
+    inventoryValue: "1130.00",
+    recoverableInputVat: 0,
+    transactionDate: new Date("2026-10-29T12:00:00.000Z"),
+    client,
+  });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1140").debit.toFixed(2), "1130.00");
+  assert.equal(journal.lines.some((line) => line.account.accountCode === "1150"), false);
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2160").credit.toFixed(2), "1130.00");
+  assert.equal(state.entries.length, 1);
+  await assert.rejects(postManufacturerProductionAccounting({
+    productionRequest: { id: "production-pan-only-002", manufacturerId: "mfg-001" },
+    manufacturer: { id: "mfg-001" },
+    goodQuantity: 1,
+    inventoryValue: "100.00",
+    recoverableInputVat: "13.00",
+    supplierTaxIdType: "VAT",
+    supplierTaxIdNumber: "123456789",
+    transactionDate: new Date("2026-10-29T12:00:00.000Z"),
+    client,
+  }), /PAN-only/);
+});
+
+test("production input VAT is rejected when the manufacturer has only a PAN identity", async () => {
+  const { client } = createComprehensiveHarness();
+  client.manufacturer.findUnique = async ({ where }) => ({
+    id: where.id,
+    name: "Alpha Textiles",
+    taxIdType: "PAN",
+    taxIdNumber: "123456789",
+  });
+
+  await assert.rejects(postManufacturerProductionAccounting({
+    productionRequest: { id: "production-pan-supplier-001", manufacturerId: "mfg-001" },
+    manufacturer: { id: "mfg-001" },
+    goodQuantity: 1,
+    inventoryValue: "100.00",
+    recoverableInputVat: "13.00",
+    supplierTaxIdType: "PAN",
+    supplierTaxIdNumber: "123456789",
+    transactionDate: new Date("2026-10-29T12:00:00.000Z"),
+    client,
+  }), /VAT supplier identity snapshot/);
+});
+
+test("production input VAT eligibility follows the supplier invoice date, not the later posting date", async () => {
+  const { client, state } = createComprehensiveHarness();
+  state.taxRegistrationVersions = [{
+    id: "registration-starts-november",
+    taxStatus: "VAT_REGISTERED",
+    vatNumber: "123456789",
+    effectiveFrom: new Date("2026-11-01T00:00:00.000Z"),
+    effectiveUntil: null,
+    status: "ACTIVE",
+  }];
+
+  await assert.rejects(postManufacturerProductionAccounting({
+    productionRequest: { id: "production-invoice-before-vat", manufacturerId: "mfg-001" },
+    manufacturer: { id: "mfg-001" },
+    goodQuantity: 1,
+    inventoryValue: "100.00",
+    recoverableInputVat: "13.00",
+    supplierTaxIdType: "VAT",
+    supplierTaxIdNumber: "123456789",
+    inputVatTaxPoint: new Date("2026-10-31T12:00:00.000Z"),
+    transactionDate: new Date("2026-11-02T12:00:00.000Z"),
+    client,
+  }), /PAN-only/);
 });
 
 test("production with no accepted good units does not post an accounting entry", async () => {
@@ -1163,6 +1347,7 @@ test("return reverses delivery-recognized production payable, COGS, and input VA
         unitCogs: "100.00",
         unitVatAmount: "13.00",
         vatInvoiceVerified: true,
+        inputVatRecoverable: true,
       }],
     }],
   });

@@ -21,6 +21,8 @@ export const createAccountingDocument = async ({
   documentType = "INVOICE",
   documentNumber,
   partyId,
+  partyTaxIdType = null,
+  partyTaxIdNumber = null,
   side = "RECEIVABLE", // RECEIVABLE | PAYABLE
   sourceType,
   sourceId,
@@ -42,12 +44,20 @@ export const createAccountingDocument = async ({
   if (!["RECEIVABLE", "PAYABLE"].includes(normalizedSide)) {
     throw new Error("Document side must be RECEIVABLE or PAYABLE.");
   }
+  const normalizedTaxIdType = partyTaxIdType ? String(partyTaxIdType).trim().toUpperCase() : null;
+  const normalizedTaxIdNumber = partyTaxIdNumber ? String(partyTaxIdNumber).trim() : null;
+  if ((normalizedTaxIdType || normalizedTaxIdNumber) &&
+      (!["PAN", "VAT"].includes(normalizedTaxIdType) || !/^\d{9}$/.test(normalizedTaxIdNumber || ""))) {
+    throw new Error("Accounting document party tax identity must be PAN or VAT with exactly nine digits.");
+  }
 
   const data = {
     idempotencyKey: idempotencyKey ? String(idempotencyKey).trim() : null,
     documentType: String(documentType).toUpperCase(),
     documentNumber: String(documentNumber).trim(),
     partyId,
+    partyTaxIdType: normalizedTaxIdType,
+    partyTaxIdNumber: normalizedTaxIdNumber,
     side: normalizedSide,
     sourceType: String(sourceType || "MANUAL"),
     sourceId: String(sourceId || documentNumber),

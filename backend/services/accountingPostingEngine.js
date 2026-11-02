@@ -5,8 +5,13 @@ import { normalizeBalancedJournalLines } from "./accountingMoney.js";
 import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
 import { classifySaleChannel, calculateLegacyManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
+import { hasValidVatSupplierIdentity } from "./manufacturerTaxIdentity.js";
 import { createAccountingDocument } from "./accountingSubledgerService.js";
-import { resolveVatRatePercent } from "./vatRateService.js";
+import {
+  resolveOrderTaxPoint,
+  resolveOutputVatRatePercent,
+  resolveSellerTaxTreatment,
+} from "./sellerTaxProfileService.js";
 
 // ==========================================
 // 1. STANDARD CHART OF ACCOUNTS DEFINITION
@@ -459,9 +464,15 @@ const hydrateProductionCostRecognitionMode = async (items, client) => {
   const missingRecognitionMode = allocations.filter((allocation) =>
     !Object.prototype.hasOwnProperty.call(allocation, "manufacturerPayableRecognizedAtProduction")
   );
-  if (!missingRecognitionMode.length) return;
+  const missingRecoverability = allocations.filter((allocation) =>
+    !Object.prototype.hasOwnProperty.call(allocation, "inputVatRecoverable") &&
+    allocation.vatInvoiceVerified === true &&
+    allocation.costLayerId
+  );
+  const layerMetadata = [...new Set([...missingRecognitionMode, ...missingRecoverability])];
+  if (!layerMetadata.length) return;
 
-  const costLayerIds = [...new Set(missingRecognitionMode
+  const costLayerIds = [...new Set(layerMetadata
     .map((allocation) => allocation.costLayerId)
     .filter(Boolean))];
   if (missingRecognitionMode.some((allocation) => !allocation.costLayerId)) {
@@ -474,18 +485,24 @@ const hydrateProductionCostRecognitionMode = async (items, client) => {
       manufacturerId: true,
       unitVatAmount: true,
       vatInvoiceVerified: true,
+      inputVatRecoverable: true,
       manufacturerPayableRecognizedAtProduction: true,
     },
   });
   const costLayersById = new Map(costLayers.map((layer) => [layer.id, layer]));
-  for (const allocation of missingRecognitionMode) {
+  for (const allocation of layerMetadata) {
     const layer = costLayersById.get(allocation.costLayerId);
     if (!layer) {
+      if (Object.prototype.hasOwnProperty.call(allocation, "manufacturerPayableRecognizedAtProduction")) {
+        allocation.inputVatRecoverable = false;
+        continue;
+      }
       throw new Error(`Production cost layer ${allocation.costLayerId} was not found; reconcile before delivery accounting.`);
     }
     allocation.manufacturerId ||= layer.manufacturerId;
     allocation.unitVatAmount ??= String(layer.unitVatAmount || 0);
     allocation.vatInvoiceVerified ??= layer.vatInvoiceVerified === true;
+    allocation.inputVatRecoverable ??= layer.inputVatRecoverable === true;
     allocation.manufacturerPayableRecognizedAtProduction =
       layer.manufacturerPayableRecognizedAtProduction === true;
   }
@@ -497,7 +514,10 @@ export const postManufacturerProductionAccounting = async ({
   goodQuantity,
   inventoryValue,
   recoverableInputVat = 0,
+  supplierTaxIdType = null,
+  supplierTaxIdNumber = null,
   transactionDate = new Date(),
+  inputVatTaxPoint = transactionDate,
   createdBy = "system",
   client = prisma,
 } = {}) => {
@@ -513,11 +533,15 @@ export const postManufacturerProductionAccounting = async ({
     .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const inputVatAmount = new Prisma.Decimal(String(recoverableInputVat || 0))
     .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const sellerTaxTreatment = await resolveSellerTaxTreatment(inputVatTaxPoint, { client });
   if (
     !inventoryAmount.isFinite() || !inventoryAmount.greaterThan(0) ||
     !inputVatAmount.isFinite() || inputVatAmount.isNegative()
   ) {
     throw new Error("Production inventory and recoverable VAT amounts must be valid non-negative values.");
+  }
+  if (inputVatAmount.greaterThan(0) && sellerTaxTreatment.taxStatus !== "VAT_REGISTERED") {
+    throw new Error("Input VAT cannot be recognized while the seller is PAN-only.");
   }
 
   const manufacturerRecord = await client.manufacturer.findUnique({
@@ -525,6 +549,10 @@ export const postManufacturerProductionAccounting = async ({
     select: { id: true, name: true },
   });
   if (!manufacturerRecord) throw new Error("Manufacturer was not found for production accounting.");
+  const supplierTaxIdentity = { taxIdType: supplierTaxIdType, taxIdNumber: supplierTaxIdNumber };
+  if (inputVatAmount.greaterThan(0) && !hasValidVatSupplierIdentity(supplierTaxIdentity)) {
+    throw new Error("Input VAT cannot be recognized without a VAT supplier identity snapshot containing a 9-digit ID.");
+  }
   const party = await ensureAccountingParty({
     partyType: "MANUFACTURER",
     sourceEntityId: manufacturer.id,
@@ -574,6 +602,8 @@ export const postManufacturerProductionAccounting = async ({
         documentType: "BILL",
         documentNumber: `MFG-PROD-${documentHash}`,
         partyId: party.id,
+        partyTaxIdType: supplierTaxIdentity.taxIdType,
+        partyTaxIdNumber: supplierTaxIdentity.taxIdNumber,
         side: "PAYABLE",
         sourceType: "MANUFACTURER_PRODUCTION",
         sourceId: productionRequest.id,
@@ -667,7 +697,12 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
   ));
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const vatRate = await resolveVatRatePercent(order.date, { client });
+  const taxPoint = await resolveOrderTaxPoint({
+    ...order,
+    deliveredAt: order.deliveredAt || deliveryOrder?.deliveredAt,
+  }, { client });
+  const sellerTaxTreatment = await resolveSellerTaxTreatment(taxPoint, { client });
+  const vatRate = sellerTaxTreatment.vatRate ?? new Prisma.Decimal(0);
   const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
   const productTaxable = productGross.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const productVat = productGross.minus(productTaxable);
@@ -727,13 +762,13 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
         } else {
           costs.productionCogs = costs.productionCogs.plus(unitCogs.mul(allocationQty));
         }
-        if (
-          allocation.manufacturerPayableRecognizedAtProduction !== true &&
-          allocation.vatInvoiceVerified === true
-        ) {
-          costs.productionInputVat = costs.productionInputVat.plus(
-            new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocationQty)
-          );
+        if (allocation.manufacturerPayableRecognizedAtProduction !== true && allocation.vatInvoiceVerified === true) {
+          const allocationVat = new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocationQty);
+          if (allocation.inputVatRecoverable === true) {
+            costs.productionInputVat = costs.productionInputVat.plus(allocationVat);
+          } else {
+            costs.productionCogs = costs.productionCogs.plus(allocationVat);
+          }
         }
       }
       const legacyQty = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
@@ -774,17 +809,12 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
     }
   }
 
-  const hasValidTaxInvoice = Boolean(orderOrParams.hasValidTaxInvoice || opts.hasValidTaxInvoice);
   for (const costs of manufacturerCosts.values()) {
     costs.productionCogs = costs.productionCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.productionInputVat = costs.productionInputVat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.inventoryRecognizedCogs = costs.inventoryRecognizedCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.legacyGrossCogs = costs.legacyGrossCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
     costs.legacyDeliveryOverhead = costs.legacyDeliveryOverhead.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-    if (hasValidTaxInvoice && costs.legacyGrossCogs.greaterThan(0)) {
-      const netLegacyCost = costs.legacyGrossCogs.div(1.13).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      costs.legacyInputVat = costs.legacyGrossCogs.minus(netLegacyCost);
-    }
   }
 
   directLegacyInventoryCogs = directLegacyInventoryCogs.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
@@ -1006,6 +1036,42 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
           notes: `Manufacturer payable for delivered order ${order.id}.`,
         }, { client: tx });
       }
+
+      const parseSnapshot = (value) => {
+        if (!value) return {};
+        if (typeof value !== "string") return value;
+        try {
+          return JSON.parse(value);
+        } catch {
+          return {};
+        }
+      };
+      await tx.salesInvoice.upsert({
+        where: { orderId: order.id },
+        create: {
+          orderId: order.id,
+          documentNumber: `SYS-${order.orderReference || order.id}`,
+          documentType: sellerTaxTreatment.taxStatus === "VAT_REGISTERED" ? "VAT_TAX_INVOICE" : "PAN_BILL",
+          issueChannel: "PAPER",
+          status: "PENDING_PAPER_DETAILS",
+          taxStatus: sellerTaxTreatment.taxStatus,
+          taxTreatment: sellerTaxTreatment.taxTreatment,
+          vatRate,
+          taxableAmount: productTaxable.plus(deliveryTaxable),
+          vatAmount: totalVat,
+          totalAmount: grossAmount,
+          taxPoint: transactionDate,
+          sellerSnapshot: {
+            legalName: sellerTaxTreatment.legalName,
+            panNumber: sellerTaxTreatment.panNumber,
+            vatNumber: sellerTaxTreatment.vatNumber,
+            address: sellerTaxTreatment.address,
+          },
+          buyerSnapshot: parseSnapshot(order.address),
+          lineSnapshots: parseItemsForAccounting(order.items),
+        },
+        update: {},
+      });
     },
     client,
   });
@@ -1027,7 +1093,11 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
   const deliveryCharge = new Prisma.Decimal(String(order.deliveryCharge || 0));
   const productGross = grossAmount.minus(deliveryCharge);
 
-  const vatRate = await resolveVatRatePercent(order.date, { client });
+  const taxPoint = await resolveOrderTaxPoint({
+    ...order,
+    deliveredAt: order.deliveredAt || deliveryOrder?.deliveredAt,
+  }, { client });
+  const vatRate = await resolveOutputVatRatePercent(taxPoint, { client });
   const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
   const productTaxable = productGross.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
   const productVat = productGross.minus(productTaxable);
@@ -1063,13 +1133,13 @@ export const postConfirmedDeliveryReturnAccounting = async ({ returnRecord, deli
         } else {
           productionLayerCogs = productionLayerCogs.plus(allocationCogs);
         }
-        if (
-          allocation.manufacturerPayableRecognizedAtProduction !== true &&
-          allocation.vatInvoiceVerified === true
-        ) {
-          productionLayerInputVat = productionLayerInputVat.plus(
-            new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocatedQuantity)
-          );
+        if (allocation.manufacturerPayableRecognizedAtProduction !== true && allocation.vatInvoiceVerified === true) {
+          const allocationVat = new Prisma.Decimal(String(allocation.unitVatAmount || 0)).mul(allocatedQuantity);
+          if (allocation.inputVatRecoverable === true) {
+            productionLayerInputVat = productionLayerInputVat.plus(allocationVat);
+          } else {
+            productionLayerCogs = productionLayerCogs.plus(allocationVat);
+          }
         }
       }
       const legacyQuantity = new Prisma.Decimal(String(item.legacyCostQuantity ?? qty));
@@ -1517,8 +1587,8 @@ export const postSalesOrderAccounting = async (order, opts = {}) => {
     if (grossAmount <= 0) return null;
 
     const client = opts.client || prisma;
-    const dateVal = order.date ? new Date(Number(order.date)) : new Date();
-    const vatRate = await resolveVatRatePercent(dateVal, { client });
+    const dateVal = await resolveOrderTaxPoint(order, { client });
+    const vatRate = await resolveOutputVatRatePercent(dateVal, { client });
     const grossDecimal = new Prisma.Decimal(String(grossAmount));
     const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
     const taxableRevenue = grossDecimal.div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
@@ -1967,10 +2037,15 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
     let vat = returnOrParams.vatRefunded;
     if (vat === undefined || vat === null) {
       const sourceOrder = returnOrParams.orderId
-        ? await client.order.findUnique({ where: { id: returnOrParams.orderId }, select: { date: true } })
+        ? await client.order.findUnique({
+          where: { id: returnOrParams.orderId },
+          select: { id: true, date: true, orderType: true, directOrderType: true },
+        })
         : null;
-      const transactionDate = sourceOrder?.date ?? returnOrParams.inspectedAt ?? returnOrParams.completedAt ?? new Date();
-      const vatRate = await resolveVatRatePercent(transactionDate, { client });
+      const transactionDate = sourceOrder
+        ? await resolveOrderTaxPoint(sourceOrder, { client })
+        : returnOrParams.inspectedAt ?? returnOrParams.completedAt ?? new Date();
+      const vatRate = await resolveOutputVatRatePercent(transactionDate, { client });
       const vatDivisor = new Prisma.Decimal(1).plus(vatRate.div(100));
       vat = new Prisma.Decimal(String(totalRefund)).minus(
         new Prisma.Decimal(String(totalRefund)).div(vatDivisor).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
@@ -2171,11 +2246,11 @@ export const postOrderExchangeAccounting = async ({ exchangeRequest, client = pr
   }
 
   const transactionDate = new Date();
-  const originalDate = new Date(Number(order.date));
+  const originalDate = await resolveOrderTaxPoint(order, { client });
   if (Number.isNaN(originalDate.getTime())) throw new Error("The original order date is invalid for VAT reversal.");
   const [originalVatRate, replacementVatRate] = await Promise.all([
-    resolveVatRatePercent(originalDate, { client }),
-    resolveVatRatePercent(transactionDate, { client }),
+    resolveOutputVatRatePercent(originalDate, { client }),
+    resolveOutputVatRatePercent(transactionDate, { client }),
   ]);
   const vatForGross = (gross, rate) => {
     const net = gross.div(new Prisma.Decimal(1).plus(rate.div(100)))

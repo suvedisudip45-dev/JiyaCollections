@@ -22,6 +22,11 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
       line("6440", "DEBIT", "80.00", 0, "2026-10-06T10:00:00.000Z", "DISTRIBUTOR_SERVICE_EARNING"),
       line("2120", "CREDIT", 0, "276.11", "2026-10-05T10:00:00.000Z"),
       line("1150", "DEBIT", "50.00", 0, "2026-10-05T10:00:00.000Z"),
+      line("2120", "DEBIT", "25.00", 0, "2026-10-20T10:00:00.000Z", "VAT_RETURN_NETTING"),
+      line("1150", "CREDIT", 0, "25.00", "2026-10-20T10:00:00.000Z", "VAT_RETURN_NETTING"),
+      line("2120", "DEBIT", "30.00", 0, "2026-10-22T10:00:00.000Z", "VAT_RETURN_PAYMENT"),
+      line("1150", "DEBIT", "20.00", 0, "2026-09-20T10:00:00.000Z"),
+      line("2120", "DEBIT", "10.00", 0, "2026-09-20T10:00:00.000Z"),
       line("1140", "DEBIT", "15200.00", 0, "2026-09-01T10:00:00.000Z"),
       line("2160", "CREDIT", 0, "17200.00", "2026-09-01T10:00:00.000Z"),
       line("1190", "DEBIT", "1500.00", 0, "2026-10-07T10:00:00.000Z"),
@@ -35,9 +40,11 @@ test("posted finance snapshot uses period journals and cumulative closing balanc
   assert.equal(snapshot.incomeStatement.totalOperatingExpenses, 1280);
   assert.equal(snapshot.vat.outputVat, 276.11);
   assert.equal(snapshot.vat.inputVat, 50);
-  assert.equal(snapshot.vat.netVatPayable, 226.11);
-  assert.equal(snapshot.balanceSheet.totalAssets, 16750);
-  assert.equal(snapshot.balanceSheet.totalLiabilities, 18076.11);
+  assert.equal(snapshot.vat.carriedForwardInputVat, 20);
+  assert.equal(snapshot.vat.carriedForwardOutputVat, 10);
+  assert.equal(snapshot.vat.netVatPayable, 196.11);
+  assert.equal(snapshot.balanceSheet.totalAssets, 16745);
+  assert.equal(snapshot.balanceSheet.totalLiabilities, 18011.11);
   assert.equal(snapshot.balanceSheet.inventory, 15200);
   assert.equal(snapshot.balanceSheet.distributorCodReceivable, 1500);
   assert.equal(snapshot.balanceSheet.manufacturerPayable, 17200);
