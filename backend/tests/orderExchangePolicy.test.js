@@ -210,6 +210,7 @@ test("admin exchange requests resolve accounting period and fiscal year by their
     return [request];
   });
   stubMethod(t, prisma.orderExchangeRequest, "count", async () => 1);
+  stubMethod(t, prisma.orderAssignment, "findMany", async () => []);
   stubMethod(t, prisma.customerReturn, "findMany", async () => []);
   stubMethod(t, prisma.journalEntry, "findMany", async ({ select }) => {
     assert.equal(select.accountingPeriodId, true);
@@ -242,6 +243,60 @@ test("admin exchange requests resolve accounting period and fiscal year by their
     id: "fiscal-year-1",
     name: "2083/2084",
   });
+});
+
+test("NCM exchange approval requires an allocated replacement bill for unequal-value physical bills", async (t) => {
+  const current = {
+    id: "exchange-ncm-1",
+    orderId: "order-1",
+    customerId: "customer-1",
+    manufacturerId: "manufacturer-1",
+    deliveryRoute: "NCM",
+    settlementDistributorId: "dist-1",
+    status: "REQUESTED",
+    priceDifference: 100,
+    replacementStockReservedAt: null,
+    replacementStockReleasedAt: null,
+    replacementItems: [],
+    cardId: null,
+    order: { status: "Delivered", deliveryOrder: { ncmOrderId: 123 } },
+  };
+  stubMethod(t, prisma, "$transaction", (callback) => callback({
+    orderExchangeRequest: {
+      findUnique: async () => current,
+    },
+    orderAssignment: {
+      findUnique: async () => ({
+        distributorId: "dist-1",
+        deliveryType: "NCM",
+        paperBillRequested: true,
+        paperBillNumber: "VAT-0010",
+        paperBillDocumentType: "VAT_TAX_INVOICE",
+      }),
+    },
+  }));
+
+  await assert.rejects(
+    decideCustomerExchangeRequest({
+      requestId: current.id,
+      adminId: "admin-1",
+      decision: "APPROVE",
+      reason: "Approved after review",
+      replacementPaperBillNumber: "VAT-0011",
+      replacementPaperBillAttached: false,
+    }),
+    { code: "EXCHANGE_REPLACEMENT_BILL_NOT_ATTACHED" },
+  );
+  await assert.rejects(
+    decideCustomerExchangeRequest({
+      requestId: current.id,
+      adminId: "admin-1",
+      decision: "APPROVE",
+      reason: "Approved after review",
+      replacementPaperBillAttached: true,
+    }),
+    { code: "PAPER_BILL_NUMBER_REQUIRED" },
+  );
 });
 
 test("return requests cannot exceed purchased and previously returned quantities", () => {

@@ -87,6 +87,25 @@ The backend mounts the following major route groups in `backend/server.js`:
 | `/api/storefront-content` | Public storefront announcement, shared header/footer logo, card, footer, About, and terms content with permission-protected admin updates/image uploads |
 | `/webhooks`, `/api/ncm-webhook` | Delivery/NCM webhook receivers |
 
+`/api/finance/paper-bill-books`, `/paper-bill-allocations`, and
+`/paper-bill-orders` provide Admin bill-book/range management and date-filtered
+distributor order reporting. Read operations use `finance:tax_report_read`;
+book creation, allocation, and return use `finance:tax_configure`. Distributor
+packing records an explicit requested/not-requested physical-copy choice and,
+when requested, the allocated bill number. The backend validates ownership and
+range before accepting it and blocks subsequent packing, NCM handoff, and
+self-delivery dispatch until the choice exists. Delivered-sale posting copies
+the recorded number to `SalesInvoice`; accepted returns/exchanges append linked
+`SalesInvoiceAdjustment` records without rewriting the original bill. An
+unequal-value distributor exchange with a requested physical copy captures a
+new allocated number before replacement dispatch; an equal-value exchange
+retains the original. NCM exchange approval submits immediately, so the Admin
+approval validates and records any requested unequal-value replacement bill
+number against the settlement distributor's active allocation. Distributor
+exchange inspection and dispatch endpoints remain restricted to distributor
+routes. These endpoints do not print or submit statutory
+invoices/credit notes or call an IRD/third-party e-billing provider.
+
 Newly initialized databases seed loyalty, marketing cards, and customer letters as disabled by default. Their admin-controlled feature flags do not affect core production, stock transfer, customer order, or delivery operations.
 
 Marketing collaborations have been decommissioned: the `/api/collaborations`

@@ -1,0 +1,120 @@
+import { recordSystemAudit } from "../services/auditService.js";
+import {
+  allocatePaperBillRange,
+  createPaperBillBook,
+  listPaperBillControlData,
+  listPaperBillOrderReport,
+  returnPaperBillAllocation,
+} from "../services/paperBillService.js";
+
+const responseError = (res, error, fallbackMessage) => {
+  console.error(fallbackMessage, error);
+  return res.status(error.statusCode || 500).json({
+    success: false,
+    message: error.message || fallbackMessage,
+    code: error.code || "PAPER_BILL_ERROR",
+  });
+};
+
+const actorId = (req) => req.auth?.accountId || req.auth?.userId || null;
+
+export const getPaperBillControlDataAdmin = async (_req, res) => {
+  try {
+    const data = await listPaperBillControlData();
+    return res.status(200).json({ success: true, ...data });
+  } catch (error) {
+    return responseError(res, error, "Paper bill books could not be loaded.");
+  }
+};
+
+export const createPaperBillBookAdmin = async (req, res) => {
+  try {
+    const record = await createPaperBillBook({
+      ...req.body,
+      createdBy: actorId(req),
+      afterCreate: (created, tx) => recordSystemAudit(
+        { actorId: actorId(req), actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "PAPER_BILL_BOOK_CREATED",
+          entityType: "PaperBillBook",
+          entityId: created.id,
+          afterState: {
+            documentType: created.documentType,
+            bookLabel: created.bookLabel,
+            seriesPrefix: created.seriesPrefix,
+            startNumber: created.startNumber,
+            endNumber: created.endNumber,
+          },
+        },
+        { client: tx },
+      ),
+    });
+    return res.status(201).json({ success: true, message: "Paper bill book recorded.", record });
+  } catch (error) {
+    return responseError(res, error, "Paper bill book could not be recorded.");
+  }
+};
+
+export const allocatePaperBillRangeAdmin = async (req, res) => {
+  try {
+    const record = await allocatePaperBillRange({
+      ...req.body,
+      allocatedBy: actorId(req),
+      afterAllocate: (allocated, tx) => recordSystemAudit(
+        { actorId: actorId(req), actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "PAPER_BILL_RANGE_ALLOCATED",
+          entityType: "PaperBillBookAllocation",
+          entityId: allocated.id,
+          afterState: {
+            bookId: allocated.bookId,
+            distributorId: allocated.distributorId,
+            startNumber: allocated.startNumber,
+            endNumber: allocated.endNumber,
+          },
+        },
+        { client: tx },
+      ),
+    });
+    return res.status(201).json({ success: true, message: "Bill range allocated to distributor.", record });
+  } catch (error) {
+    return responseError(res, error, "Bill range could not be allocated.");
+  }
+};
+
+export const returnPaperBillRangeAdmin = async (req, res) => {
+  try {
+    const record = await returnPaperBillAllocation({
+      id: req.params.id,
+      returnedBy: actorId(req),
+      afterReturn: (returned, tx) => recordSystemAudit(
+        { actorId: actorId(req), actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: "PAPER_BILL_RANGE_RETURNED",
+          entityType: "PaperBillBookAllocation",
+          entityId: returned.id,
+          afterState: { status: returned.status, returnedAt: returned.returnedAt },
+        },
+        { client: tx },
+      ),
+    });
+    return res.status(200).json({ success: true, message: "Unused bill range marked as returned; numbers remain reserved.", record });
+  } catch (error) {
+    return responseError(res, error, "Bill range could not be returned.");
+  }
+};
+
+export const getPaperBillOrderReportAdmin = async (req, res) => {
+  try {
+    const report = await listPaperBillOrderReport({
+      from: req.query.from,
+      to: req.query.to,
+      billFilter: req.query.billFilter,
+      page: req.query.page,
+      limit: req.query.limit,
+    });
+    return res.status(200).json({ success: true, ...report });
+  } catch (error) {
+    return responseError(res, error, "Paper bill order report could not be loaded.");
+  }
+};

@@ -57,6 +57,13 @@ import {
   getSalesInvoicesAdmin,
   recordPaperSalesInvoiceAdmin,
 } from "../controllers/salesInvoiceController.js";
+import {
+  allocatePaperBillRangeAdmin,
+  createPaperBillBookAdmin,
+  getPaperBillControlDataAdmin,
+  getPaperBillOrderReportAdmin,
+  returnPaperBillRangeAdmin,
+} from "../controllers/paperBillController.js";
 
 const financialRouter = express.Router();
 
@@ -131,6 +138,11 @@ financialRouter.post("/tax-filings/:id/file", authenticate, authorize("finance:t
 financialRouter.post("/tax-filings/:id/payments", authenticate, authorize("finance:tax_configure"), createVatFilingPaymentAdmin);
 financialRouter.get("/sales-invoices", authenticate, authorize("finance:tax_report_read"), getSalesInvoicesAdmin);
 financialRouter.post("/sales-invoices/:id/paper-issue", authenticate, authorize("finance:tax_configure"), recordPaperSalesInvoiceAdmin);
+financialRouter.get("/paper-bill-books", authenticate, authorize("finance:tax_report_read"), getPaperBillControlDataAdmin);
+financialRouter.post("/paper-bill-books", authenticate, authorize("finance:tax_configure"), createPaperBillBookAdmin);
+financialRouter.post("/paper-bill-allocations", authenticate, authorize("finance:tax_configure"), allocatePaperBillRangeAdmin);
+financialRouter.post("/paper-bill-allocations/:id/return", authenticate, authorize("finance:tax_configure"), returnPaperBillRangeAdmin);
+financialRouter.get("/paper-bill-orders", authenticate, authorize("finance:tax_report_read"), getPaperBillOrderReportAdmin);
 financialRouter.get("/vat-rates", authenticate, authorize("finance:tax_report_read"), getVatRateVersions);
 financialRouter.post("/vat-rates", authenticate, authorize("finance:tax_configure"), createVatRateVersionAdmin);
 financialRouter.post("/vat-rates/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelVatRateVersionAdmin);

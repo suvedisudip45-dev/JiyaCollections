@@ -68,6 +68,7 @@ export const distributorProcessExchangeRequest = async (req, res) => {
       action: req.body.action,
       inspectedItems: req.body.items,
       notes: req.body.notes,
+      replacementPaperBillNumber: req.body.replacementPaperBillNumber,
     });
     return res.json({ success: true, request });
   } catch (error) {
@@ -144,6 +145,8 @@ export const adminDecideExchangeRequest = async (req, res) => {
       decision: req.body.decision,
       reason: req.body.reason,
       chargePayer: req.body.chargePayer,
+      replacementPaperBillNumber: req.body.replacementPaperBillNumber,
+      replacementPaperBillAttached: req.body.replacementPaperBillAttached,
     });
     return res.json({ success: true, ...result });
   } catch (error) {

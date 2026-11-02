@@ -269,6 +269,9 @@ export const markDistributorSelfDeliveryReady = async ({
     },
   });
   if (!assignment) throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
+  if (assignment.paperBillStatus === "NOT_SELECTED") {
+    throw fail("Record the customer's physical bill choice before selecting distributor self-delivery.", 409, "PAPER_BILL_CHOICE_REQUIRED");
+  }
 
   const order = await client.order.findUnique({ where: { id: assignment.orderId } });
   if (!order) throw fail("Order not found.", 404);
@@ -395,6 +398,12 @@ export const updateSelfDeliveryStatus = async ({
 
   if (!assignment) {
     throw fail("Assigned order not found for this distributor hub.", 404, "ASSIGNMENT_NOT_FOUND");
+  }
+  if (
+    String(status).trim().toLowerCase() === "dispatched" &&
+    assignment.paperBillStatus === "NOT_SELECTED"
+  ) {
+    throw fail("Record the customer's physical bill choice before dispatching this order.", 409, "PAPER_BILL_CHOICE_REQUIRED");
   }
   await ensureSelfDeliveryAssignment(assignment, client);
 

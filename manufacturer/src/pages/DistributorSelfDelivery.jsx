@@ -76,6 +76,8 @@ const DistributorSelfDelivery = () => {
   });
   const [submittingRefund, setSubmittingRefund] = useState(false);
   const [exchangeToInspect, setExchangeToInspect] = useState(null);
+  const [exchangeBillToDispatch, setExchangeBillToDispatch] = useState(null);
+  const [exchangeBillNumber, setExchangeBillNumber] = useState("");
   const [exchangeInspectionItems, setExchangeInspectionItems] = useState([]);
   const [exchangeInspectionNotes, setExchangeInspectionNotes] = useState("");
   const [submittingExchange, setSubmittingExchange] = useState(false);
@@ -357,12 +359,12 @@ const DistributorSelfDelivery = () => {
     })));
   };
 
-  const handleExchangeAction = async (request, action, items, notes) => {
+  const handleExchangeAction = async (request, action, items, notes, replacementPaperBillNumber) => {
     setUpdatingId(request.id);
     try {
       const response = await axios.post(
         `${backendUrl}/api/returns/exchange/distributor/${request.id}/process`,
-        { action, items, notes },
+        { action, items, notes, replacementPaperBillNumber },
         { headers: { token } }
       );
       toast.success(response.data.message || (
@@ -370,6 +372,8 @@ const DistributorSelfDelivery = () => {
           action === "DISPATCH" ? "Replacement dispatched." : "Replacement marked delivered."
       ));
       setExchangeToInspect(null);
+      setExchangeBillToDispatch(null);
+      setExchangeBillNumber("");
       await loadOrders();
     } catch (error) {
       toast.error(error.response?.data?.message || "Failed to update the exchange.");
@@ -388,6 +392,28 @@ const DistributorSelfDelivery = () => {
       "RECEIVE_AND_INSPECT",
       exchangeInspectionItems,
       exchangeInspectionNotes
+    );
+  };
+
+  const beginExchangeDispatch = (request) => {
+    if (request.requiresReplacementPaperBill) {
+      setExchangeBillToDispatch(request);
+      setExchangeBillNumber("");
+      return;
+    }
+    handleExchangeAction(request, "DISPATCH");
+  };
+
+  const submitExchangeDispatch = async (event) => {
+    event.preventDefault();
+    if (!exchangeBillToDispatch || !exchangeBillNumber.trim()) return;
+    setSubmittingExchange(true);
+    await handleExchangeAction(
+      exchangeBillToDispatch,
+      "DISPATCH",
+      undefined,
+      undefined,
+      exchangeBillNumber.trim(),
     );
   };
 
@@ -587,6 +613,11 @@ const DistributorSelfDelivery = () => {
                 <p className="mt-2 text-[11px] text-[#575757]">
                   Replacement: {(Array.isArray(request.replacementItems) ? request.replacementItems : []).map((item) => `${item.name || "Product"} ${item.size || "One size"}/${item.color || "Default"} ×${item.quantity}`).join(", ")}
                 </p>
+                {isNcmSettlement && request.originalPaperBillRequested && (
+                  <p className="mt-2 text-[11px] text-[#575757]">
+                    Replacement {request.originalPaperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT invoice" : "PAN bill"}: {request.replacementPaperBillNumber || "number not recorded"}{request.replacementPaperBillIssuedAt ? " · Admin confirmed physical attachment" : ""}
+                  </p>
+                )}
                 {isNcmSettlement && (
                   <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
                     <p className="text-[11px] font-semibold text-amber-900">
@@ -608,7 +639,7 @@ const DistributorSelfDelivery = () => {
                     )}
                   </div>
                 )}
-                {!request.inspectedAt && (
+                {!isNcmSettlement && !request.inspectedAt && (
                   <button
                     type="button"
                     onClick={() => openExchangeInspection(request)}
@@ -618,17 +649,17 @@ const DistributorSelfDelivery = () => {
                     Receive & inspect return
                   </button>
                 )}
-                {request.inspectedAt && !request.replacementStockConsumedAt && (
+                {!isNcmSettlement && request.inspectedAt && !request.replacementStockConsumedAt && (
                   <button
                     type="button"
-                    onClick={() => handleExchangeAction(request, "DISPATCH")}
+                    onClick={() => beginExchangeDispatch(request)}
                     disabled={updatingId === request.id}
                     className="mt-3 rounded-lg bg-indigo-700 px-3 py-2 text-[10px] font-bold text-white hover:bg-indigo-800 disabled:opacity-50"
                   >
                     {updatingId === request.id ? "Updating..." : "Dispatch reserved replacement"}
                   </button>
                 )}
-                {request.replacementStatus === "DISPATCHED" && (
+                {!isNcmSettlement && request.replacementStatus === "DISPATCHED" && (
                   <button
                     type="button"
                     onClick={() => handleExchangeAction(request, "DELIVER")}
@@ -1021,6 +1052,36 @@ const DistributorSelfDelivery = () => {
               <button type="button" onClick={() => setExchangeToInspect(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
               <button type="submit" disabled={submittingExchange} className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
                 {submittingExchange ? "Processing..." : "Confirm receipt & inspection"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {exchangeBillToDispatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form onSubmit={submitExchangeDispatch} className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <div>
+              <h2 className="text-base font-bold text-[#171717]">Record replacement bill</h2>
+              <p className="mt-1 text-xs text-[#575757]">
+                The customer requested a physical {exchangeBillToDispatch.originalPaperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT invoice" : "PAN bill"} and this exchange changes the billed value. Record a new number from your active allocated range before dispatch.
+              </p>
+            </div>
+            <label className="block text-xs font-semibold text-[#575757]">
+              New physical bill number
+              <input
+                autoFocus
+                required
+                value={exchangeBillNumber}
+                onChange={(event) => setExchangeBillNumber(event.target.value)}
+                maxLength={191}
+                className="mt-1 w-full rounded-lg border border-[#dedbd3] p-2 text-sm font-mono focus:outline-none focus:border-[#171717]"
+              />
+            </label>
+            <div className="flex justify-end gap-2 border-t border-[#dedbd3] pt-3">
+              <button type="button" onClick={() => setExchangeBillToDispatch(null)} className="rounded-lg border border-[#dedbd3] px-3 py-2 text-xs text-[#575757]">Cancel</button>
+              <button type="submit" disabled={submittingExchange || !exchangeBillNumber.trim()} className="rounded-lg bg-indigo-700 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {submittingExchange ? "Recording..." : "Record bill & dispatch"}
               </button>
             </div>
           </form>

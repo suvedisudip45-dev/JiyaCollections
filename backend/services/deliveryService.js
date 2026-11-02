@@ -512,6 +512,15 @@ export const prepareReadyDelivery = async ({ orderId, distributorId, manufacture
     error.code = "DELIVERY_ASSIGNMENT_NOT_FOUND";
     throw error;
   }
+  if (
+    assignment.distributorId &&
+    assignment.paperBillStatus === "NOT_SELECTED"
+  ) {
+    const error = new Error("The distributor must record the customer's physical bill choice before requesting courier handoff.");
+    error.code = "PAPER_BILL_CHOICE_REQUIRED";
+    error.statusCode = 409;
+    throw error;
+  }
   if (!isDeliveryOrderOwner({ order, assignment, distributorId, manufacturerId })) {
     const error = new Error("Order not found or unauthorized");
     error.code = "DELIVERY_NOT_FOUND";

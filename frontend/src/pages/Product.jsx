@@ -59,6 +59,22 @@ const getDescriptionSummary = (section) => {
   }).filter(Boolean).join(" ");
 };
 
+const getProductBio = (description) => {
+  if (typeof description !== "string" || !description.trim().startsWith("{")) {
+    return description || "";
+  }
+
+  try {
+    const parsed = JSON.parse(description);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return getDescriptionSummary(parsed.about);
+    }
+    return typeof parsed === "string" ? parsed : "";
+  } catch {
+    return description;
+  }
+};
+
 const getProductSizeChart = (description) => {
   let parsed = description;
   if (typeof description === "string") {
@@ -505,6 +521,7 @@ const Product = () => {
 
   const imageList = [...new Set(parseJsonArray(productData.image).filter(Boolean))];
   const sizeChart = getProductSizeChart(productData.description);
+  const productBio = getProductBio(productData.description);
 
   const currentActiveImage = image || imageList[0];
   const currentVariantPrice = variantPriceQuote?.key === locationPriceKey ? variantPriceQuote : null;
@@ -947,22 +964,11 @@ const Product = () => {
           </div>
 
           {/* Short Bio */}
-          {(() => {
-            let bioText = productData.description;
-            if (typeof bioText === "string" && bioText.trim().startsWith("{")) {
-              try {
-                const parsed = JSON.parse(bioText);
-                bioText = getDescriptionSummary(parsed.about) || bioText;
-              } catch {
-                // Preserve the plain-text fallback if a legacy description is malformed JSON.
-              }
-            }
-            return bioText ? (
-              <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
-                {bioText}
-              </p>
-            ) : null;
-          })()}
+          {productBio && (
+            <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
+              {productBio}
+            </p>
+          )}
 
           <hr className="border-stone-200" />
 

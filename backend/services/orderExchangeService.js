@@ -5,6 +5,7 @@ import { createExchangeOrder, createOrderComment, extractNcmCharge, getNcmErrorM
 import { syncProductStock } from "./stockSyncService.js";
 import { resolveReturnExchangeRoute } from "./returnExchangeRouting.js";
 import { postOrderExchangeAccounting } from "./accountingPostingEngine.js";
+import { validatePaperBillChoice } from "./paperBillService.js";
 import {
   createReturnExchangeSettlementPayable,
   postReturnExchangeSettlementAccounting,
@@ -607,6 +608,16 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
   ]);
 
   const customerIds = [...new Set(requests.map((request) => request.customerId))];
+  const assignments = requests.length ? await prisma.orderAssignment.findMany({
+    where: { orderId: { in: requests.map(({ orderId }) => orderId) } },
+    select: {
+      orderId: true,
+      paperBillRequested: true,
+      paperBillNumber: true,
+      paperBillDocumentType: true,
+    },
+  }) : [];
+  const assignmentsByOrder = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
   const history = customerIds.length ? await prisma.orderExchangeRequest.findMany({
     where: { customerId: { in: customerIds }, status: { in: ["RETURN_RECEIVED", "INSPECTED", "COMPLETED"] } },
     select: { customerId: true, items: true },
@@ -666,6 +677,13 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
     requests: requests.map((request) => toAdminExchangeRequestDto(
       {
         ...request,
+        originalPaperBillRequested: Boolean(assignmentsByOrder.get(request.orderId)?.paperBillRequested),
+        originalPaperBillNumber: assignmentsByOrder.get(request.orderId)?.paperBillNumber || null,
+        originalPaperBillDocumentType: assignmentsByOrder.get(request.orderId)?.paperBillDocumentType || null,
+        requiresReplacementPaperBill: Boolean(
+          assignmentsByOrder.get(request.orderId)?.paperBillRequested &&
+          !new Prisma.Decimal(String(request.priceDifference || 0)).isZero(),
+        ),
         journalEntry: journalsById.get(request.exchangeJournalEntryId) || null,
       },
       returnedUnitsByCustomer.get(request.customerId) || 0,
@@ -673,9 +691,9 @@ export const listAdminExchangeRequests = async ({ status, skip = 0, take = 30 })
   };
 };
 
-export const listDistributorExchangeRequests = ({ distributorId }) => {
+export const listDistributorExchangeRequests = async ({ distributorId }) => {
   if (!distributorId) throw fail("An approved distributor profile is required.", "DISTRIBUTOR_REQUIRED", 403);
-  return prisma.orderExchangeRequest.findMany({
+  const requests = await prisma.orderExchangeRequest.findMany({
     where: {
       OR: [
         { distributorId, deliveryRoute: "DISTRIBUTOR", status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS"] } },
@@ -697,9 +715,43 @@ export const listDistributorExchangeRequests = ({ distributorId }) => {
     },
     orderBy: { decidedAt: "asc" },
   });
+  if (!requests.length) return [];
+  const assignments = await prisma.orderAssignment.findMany({
+    where: {
+      orderId: { in: requests.map(({ orderId }) => orderId) },
+      distributorId: { not: null },
+    },
+    select: {
+      orderId: true,
+      distributorId: true,
+      paperBillRequested: true,
+      paperBillNumber: true,
+      paperBillDocumentType: true,
+    },
+  });
+  const assignmentsByOrder = new Map(assignments.map((assignment) => [assignment.orderId, assignment]));
+  return requests.map((request) => {
+    const assignment = assignmentsByOrder.get(request.orderId);
+    const hasPriceDifference = !new Prisma.Decimal(String(request.priceDifference || 0)).isZero();
+    return {
+      ...request,
+      originalPaperBillRequested: Boolean(assignment?.paperBillRequested),
+      originalPaperBillNumber: assignment?.paperBillNumber || null,
+      originalPaperBillDocumentType: assignment?.paperBillDocumentType || null,
+      requiresReplacementPaperBill: Boolean(assignment?.paperBillRequested && hasPriceDifference),
+    };
+  });
 };
 
-export const decideCustomerExchangeRequest = async ({ requestId, adminId, decision, reason, chargePayer }) => {
+export const decideCustomerExchangeRequest = async ({
+  requestId,
+  adminId,
+  decision,
+  reason,
+  chargePayer,
+  replacementPaperBillNumber,
+  replacementPaperBillAttached,
+}) => {
   const normalizedDecision = String(decision || "").trim().toUpperCase();
   const decisionReason = String(reason || "").trim();
   if (!requestId || !["APPROVE", "REJECT"].includes(normalizedDecision) || decisionReason.length < 3) {
@@ -737,6 +789,31 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       (route.route === "NCM" && current.settlementDistributorId && current.settlementDistributorId !== settlementDistributorId)
     )) {
       throw fail("The original delivery route has changed or is unavailable. Review the order before approving this exchange.", "EXCHANGE_ROUTE_CHANGED", 409);
+    }
+    const needsNcmReplacementBill = normalizedDecision === "APPROVE" &&
+      route.route === "NCM" &&
+      Boolean(assignment?.paperBillRequested) &&
+      !new Prisma.Decimal(String(current.priceDifference || 0)).isZero();
+    let replacementPaperBill = null;
+    if (needsNcmReplacementBill) {
+      if (!assignment.paperBillDocumentType || !settlementDistributorId) {
+        throw fail("The original bill type or allocated distributor is missing; Admin must review this exchange.", "EXCHANGE_PAPER_BILL_TYPE_MISSING", 409);
+      }
+      if (replacementPaperBillAttached !== true) {
+        throw fail("Confirm that the replacement physical bill is attached before submitting this NCM exchange.", "EXCHANGE_REPLACEMENT_BILL_NOT_ATTACHED", 409);
+      }
+      if (String(replacementPaperBillNumber || "").trim() === assignment.paperBillNumber) {
+        throw fail("An exchange with a different value must use a new bill number from the distributor allocation.", "EXCHANGE_REPLACEMENT_BILL_REQUIRED", 409);
+      }
+      replacementPaperBill = await validatePaperBillChoice({
+        client: tx,
+        distributorId: settlementDistributorId,
+        documentType: assignment.paperBillDocumentType,
+        billNumber: replacementPaperBillNumber,
+        exchangeRequestId: current.id,
+      });
+    } else if (replacementPaperBillNumber) {
+      throw fail("A replacement bill number is only accepted for an NCM exchange with a requested physical bill and a price difference.", "UNEXPECTED_EXCHANGE_PAPER_BILL", 400);
     }
     const nextStatus = normalizedDecision === "APPROVE"
       ? route.route === "DISTRIBUTOR" ? "APPROVED_FOR_DISTRIBUTOR" : "APPROVED"
@@ -777,6 +854,12 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
         ...(normalizedDecision === "APPROVE" && ((route.route === "NCM" && current.manufacturerId) || route.route === "DISTRIBUTOR") && !current.replacementStockReservedAt ? { replacementStockReservedAt: now } : {}),
         ...(normalizedDecision === "REJECT" && current.replacementStockReservedAt && !current.replacementStockReleasedAt ? { replacementStockReleasedAt: now } : {}),
         ...(normalizedDecision === "APPROVE" && route.route === "NCM" ? { ncmChargePayer: chargePayer === "CUSTOMER" ? "CUSTOMER" : "MERCHANT" } : {}),
+        ...(replacementPaperBill ? {
+          replacementPaperBillNumber: replacementPaperBill.paperBillNumber,
+          replacementPaperBillAllocationId: replacementPaperBill.paperBillAllocationId,
+          replacementPaperBillIssuedAt: now,
+          replacementPaperBillIssuedBy: String(adminId).slice(0, 191),
+        } : {}),
         ...(normalizedDecision === "APPROVE" ? {
           logisticsSettlementAmount: resolveReturnExchangeSettlementRate(shippingConfig, route.route, "EXCHANGE"),
         } : {}),
@@ -806,6 +889,11 @@ export const decideCustomerExchangeRequest = async ({ requestId, adminId, decisi
       metadata: normalizedDecision === "APPROVE" ? {
         deliveryRoute: route.route,
         distributorId: route.distributorId,
+        ...(replacementPaperBill ? {
+          replacementPaperBillNumber: replacementPaperBill.paperBillNumber,
+          replacementPaperBillAllocationId: replacementPaperBill.paperBillAllocationId,
+          replacementPaperBillAttached: true,
+        } : {}),
         ...(distributorReplacementReservations.length ? { replacementReservations: distributorReplacementReservations } : {}),
       } : undefined,
       idempotencyKey: `EXCHANGE:${current.id}:${nextStatus}`,

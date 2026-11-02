@@ -38,6 +38,8 @@ const ExchangeRequestsPanel = ({ token }) => {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [decisionReasons, setDecisionReasons] = useState({});
+  const [replacementBillNumbers, setReplacementBillNumbers] = useState({});
+  const [replacementBillAttached, setReplacementBillAttached] = useState({});
   const [inspectionForms, setInspectionForms] = useState({});
   const [ncmResolutionForms, setNcmResolutionForms] = useState({});
   const [chargePayers, setChargePayers] = useState({});
@@ -146,6 +148,7 @@ const ExchangeRequestsPanel = ({ token }) => {
       {requests.map((request) => {
         const items = Array.isArray(request.items) ? request.items : [];
         const decisionReason = decisionReasons[request.id] || "";
+        const replacementBillNumber = replacementBillNumbers[request.id] || "";
         const inspection = inspectionForms[request.id] || { result: "RESTOCKABLE", notes: "" };
         const ncmResolution = ncmResolutionForms[request.id] || { outcome: "FOUND", ncmReturnOrderId: "", ncmReplacementOrderId: "", reason: "" };
         const isNcmRoute = request.deliveryRoute === "NCM";
@@ -268,6 +271,20 @@ const ExchangeRequestsPanel = ({ token }) => {
                 NCM return #{request.ncmReturnOrderId || "Pending"} · Pickup: {request.returnPickupStatus || "Pending"} · Replacement #{request.ncmReplacementOrderId || "Pending"} · {request.replacementStatus || "Pending"} · Charge payer: {request.ncmChargePayer || "MERCHANT"}
               </div>
             )}
+            {request.originalPaperBillRequested && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+                Original {request.originalPaperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT invoice" : "PAN bill"}: {request.originalPaperBillNumber || "requested; number not recorded"}
+                {request.requiresReplacementPaperBill && (
+                  <span className="block">
+                    Replacement bill: {request.replacementPaperBillNumber || "not recorded"}
+                    {request.replacementPaperBillNumber && request.replacementPaperBillIssuedAt
+                      ? ` · recorded ${formatDate(request.replacementPaperBillIssuedAt)}`
+                      : ""}
+                  </span>
+                )}
+                {!request.requiresReplacementPaperBill && <span className="block">Same-value exchange keeps the original bill.</span>}
+              </div>
+            )}
             {isNcmRoute && (request.ncmSubmissionError || request.ncmAttempts?.length > 0) && (
               <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-[11px] text-rose-900 space-y-1">
                 {request.ncmSubmissionError && <p><strong>Latest NCM response:</strong> {request.ncmSubmissionError}</p>}
@@ -302,7 +319,33 @@ const ExchangeRequestsPanel = ({ token }) => {
             )}
 
             {request.status === "REQUESTED" && (
-              <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 sm:flex-row">
+              <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
+                {isNcmRoute && request.requiresReplacementPaperBill && (
+                  <label className="block rounded-md border border-sky-200 bg-sky-50 p-3 text-xs text-sky-950">
+                    Replacement {request.originalPaperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT invoice" : "PAN bill"} number
+                    <span className="mt-1 block text-[11px] font-normal">
+                      This unequal-value exchange needs a new number from the allocated range for distributor {request.settlementDistributorId || request.distributorId || "(not assigned)"}. Confirm the physical serial with the distributor before approving; NCM submission starts immediately.
+                    </span>
+                    <input
+                      required
+                      value={replacementBillNumber}
+                      onChange={(event) => setReplacementBillNumbers({ ...replacementBillNumbers, [request.id]: event.target.value })}
+                      maxLength={191}
+                      className="mt-2 block w-full rounded-md border border-sky-300 bg-white px-3 py-2 text-xs"
+                      placeholder="Allocated replacement bill number"
+                    />
+                    <span className="mt-2 flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(replacementBillAttached[request.id])}
+                        onChange={(event) => setReplacementBillAttached({ ...replacementBillAttached, [request.id]: event.target.checked })}
+                        className="mt-0.5"
+                      />
+                      <span>I confirm this bill is physically attached to the replacement parcel before NCM submission.</span>
+                    </span>
+                  </label>
+                )}
+                <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   value={decisionReason}
                   onChange={(event) => setDecisionReasons({ ...decisionReasons, [request.id]: event.target.value })}
@@ -310,8 +353,9 @@ const ExchangeRequestsPanel = ({ token }) => {
                   placeholder="Decision note (required)"
                 />
                 {isNcmRoute && <select value={chargePayers[request.id] || "MERCHANT"} onChange={(event) => setChargePayers({ ...chargePayers, [request.id]: event.target.value })} className="border border-slate-300 rounded-md px-2 py-2 text-xs" title="Who pays NCM exchange charges"><option value="MERCHANT">Merchant pays NCM</option><option value="CUSTOMER">Customer pays NCM</option></select>}
-                <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason, ...(isNcmRoute ? { chargePayer: chargePayers[request.id] || "MERCHANT" } : {}) }, isDistributorRoute ? "Exchange approved and assigned to distributor" : "Exchange approved and submitted to NCM")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
+                <button disabled={busyId === request.id || decisionReason.trim().length < 3 || (isNcmRoute && request.requiresReplacementPaperBill && (!replacementBillNumber.trim() || !replacementBillAttached[request.id]))} onClick={() => postAction(request.id, "decision", { decision: "APPROVE", reason: decisionReason, ...(isNcmRoute ? { chargePayer: chargePayers[request.id] || "MERCHANT" } : {}), ...(isNcmRoute && request.requiresReplacementPaperBill ? { replacementPaperBillNumber: replacementBillNumber.trim(), replacementPaperBillAttached: Boolean(replacementBillAttached[request.id]) } : {}) }, isDistributorRoute ? "Exchange approved and assigned to distributor" : "Exchange approved and submitted to NCM")} className="px-3 py-2 rounded-md bg-emerald-700 text-white text-xs font-bold disabled:opacity-50">Approve</button>
                 <button disabled={busyId === request.id || decisionReason.trim().length < 3} onClick={() => postAction(request.id, "decision", { decision: "REJECT", reason: decisionReason }, "Exchange request rejected")} className="px-3 py-2 rounded-md bg-rose-700 text-white text-xs font-bold disabled:opacity-50">Reject</button>
+                </div>
               </div>
             )}
 

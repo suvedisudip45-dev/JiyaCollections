@@ -1046,14 +1046,50 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
           return {};
         }
       };
+      const paperBillAssignment = await tx.orderAssignment?.findUnique?.({
+        where: { orderId: order.id },
+        select: {
+          distributorId: true,
+          paperBillStatus: true,
+          paperBillRequested: true,
+          paperBillDocumentType: true,
+          paperBillNumber: true,
+          paperBillIssuedAt: true,
+          paperBillIssuedBy: true,
+        },
+      });
+      if (
+        paperBillAssignment?.distributorId &&
+        paperBillAssignment.paperBillStatus === "NOT_SELECTED"
+      ) {
+        const error = new Error("The distributor's customer bill choice must be recorded before delivery accounting can post.");
+        error.code = "PAPER_BILL_CHOICE_REQUIRED";
+        error.statusCode = 409;
+        throw error;
+      }
+      const expectedDocumentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+        ? "VAT_TAX_INVOICE"
+        : "PAN_BILL";
+      const paperBillIssued = paperBillAssignment?.paperBillStatus === "ISSUED" &&
+        Boolean(paperBillAssignment.paperBillNumber);
+      const paperBillTypeMismatch = paperBillIssued &&
+        paperBillAssignment.paperBillDocumentType !== expectedDocumentType;
       await tx.salesInvoice.upsert({
         where: { orderId: order.id },
         create: {
           orderId: order.id,
           documentNumber: `SYS-${order.orderReference || order.id}`,
-          documentType: sellerTaxTreatment.taxStatus === "VAT_REGISTERED" ? "VAT_TAX_INVOICE" : "PAN_BILL",
+          documentType: expectedDocumentType,
           issueChannel: "PAPER",
-          status: "PENDING_PAPER_DETAILS",
+          status: paperBillTypeMismatch
+            ? "PAPER_BILL_TYPE_MISMATCH"
+            : paperBillIssued
+              ? "PAPER_ISSUED"
+              : paperBillAssignment?.paperBillStatus === "NO_PHYSICAL_COPY"
+                ? "NO_PHYSICAL_COPY"
+                : "PENDING_PAPER_DETAILS",
+          invoiceNumber: paperBillIssued ? paperBillAssignment.paperBillNumber : null,
+          issueDate: paperBillIssued ? paperBillAssignment.paperBillIssuedAt : null,
           taxStatus: sellerTaxTreatment.taxStatus,
           taxTreatment: sellerTaxTreatment.taxTreatment,
           vatRate,
@@ -1069,6 +1105,7 @@ export const postDeliveredOrderAccounting = async (orderOrParams, opts = {}) => 
           },
           buyerSnapshot: parseSnapshot(order.address),
           lineSnapshots: parseItemsForAccounting(order.items),
+          issuedBy: paperBillIssued ? paperBillAssignment.paperBillIssuedBy : null,
         },
         update: {},
       });
@@ -2024,6 +2061,72 @@ export const resolveCustomerReturnTreasuryGlAccountId = async (client, financial
   return treasuryGlAccountId;
 };
 
+const recordSalesInvoiceReturnAdjustment = async ({
+  client,
+  orderId,
+  returnId,
+  totalRefund,
+  vat,
+  journalNumber,
+  occurredAt,
+}) => {
+  if (!orderId || !client.salesInvoice?.findUnique || !client.salesInvoiceAdjustment?.upsert) return;
+  const invoice = await client.salesInvoice.findUnique({
+    where: { orderId },
+    select: { id: true, status: true, totalAmount: true },
+  });
+  if (!invoice) return;
+  const adjustmentIdempotencyKey = `CUSTOMER_RETURN:${returnId}`;
+  const creditNoteNumber = `CN-${journalNumber}`;
+  await client.salesInvoiceAdjustment.upsert({
+    where: { idempotencyKey: adjustmentIdempotencyKey },
+    create: {
+      salesInvoiceId: invoice.id,
+      sourceType: "CUSTOMER_RETURN",
+      sourceId: String(returnId),
+      idempotencyKey: adjustmentIdempotencyKey,
+      adjustmentType: "CREDIT_NOTE",
+      status: ["PAPER_ISSUED", "PAPER_BILL_TYPE_MISMATCH"].includes(invoice.status)
+        ? "CREDIT_NOTE_REQUIRED"
+        : "REVERSED",
+      amount: new Prisma.Decimal(String(totalRefund)),
+      vatAmount: new Prisma.Decimal(String(vat)),
+      internalReference: journalNumber,
+      externalDocumentNumber: creditNoteNumber,
+      occurredAt,
+    },
+    update: {},
+  });
+  const assignment = await client.orderAssignment?.findUnique?.({
+    where: { orderId },
+    select: { id: true, paperBillNumber: true, paperBillStatus: true },
+  });
+  if (!assignment?.paperBillNumber || assignment.paperBillStatus === "VOIDED") return;
+  const prior = await client.salesInvoiceAdjustment.aggregate({
+    where: {
+      salesInvoiceId: invoice.id,
+      sourceType: "CUSTOMER_RETURN",
+      idempotencyKey: { not: adjustmentIdempotencyKey },
+    },
+    _sum: { amount: true },
+  });
+  const cumulativeRefund = new Prisma.Decimal(String(prior._sum.amount || 0))
+    .plus(totalRefund);
+  const fullyCredited = cumulativeRefund.greaterThanOrEqualTo(invoice.totalAmount);
+  await client.orderAssignment.update({
+    where: { id: assignment.id },
+    data: {
+      paperBillStatus: fullyCredited ? "CREDITED" : "PARTIALLY_CREDITED",
+      paperBillAdjustedAt: occurredAt,
+      paperBillAdjustmentReason: `Customer return adjustment ${creditNoteNumber}`.slice(0, 500),
+    },
+  });
+  await client.salesInvoice.update({
+    where: { id: invoice.id },
+    data: { status: fullyCredited ? "CREDITED" : "PARTIALLY_CREDITED" },
+  });
+};
+
 export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) => {
   try {
     const client = opts.client || prisma;
@@ -2086,6 +2189,18 @@ export const postCustomerReturnAccounting = async (returnOrParams, opts = {}) =>
       description: `Customer Return RMA refund and revenue reversal for ${customerName}`,
       lines,
       client,
+      afterPost: async (tx, postedEntry) => {
+        if (totalRefund <= 0) return;
+        await recordSalesInvoiceReturnAdjustment({
+          client: tx,
+          orderId: returnOrParams.orderId,
+          returnId,
+          totalRefund,
+          vat,
+          journalNumber: postedEntry.journalNumber,
+          occurredAt: new Date(returnOrParams.inspectedAt || returnOrParams.completedAt || new Date()),
+        });
+      },
     });
   } catch (error) {
     console.error("Error in postCustomerReturnAccounting:", error);
@@ -2200,18 +2315,29 @@ export const postDistributorCustomerRefundAccounting = async ({
     description: `Verified customer refund paid by distributor for RMA #${returnRecord.id.slice(-6)}`,
     lines,
     client,
-    afterPost: (tx) => createAccountingDocument({
-      documentType: "BILL",
-      documentNumber: `DREF-${returnRecord.id}`,
-      partyId: distributorParty.id,
-      side: "PAYABLE",
-      sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
-      sourceId: returnRecord.id,
-      amount: totalRefund,
-      issueDate: transactionDate,
-      idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
-      notes: `Admin-verified customer refund paid by distributor for RMA ${returnRecord.id}.`,
-    }, { client: tx }),
+    afterPost: async (tx, postedEntry) => {
+      await createAccountingDocument({
+        documentType: "BILL",
+        documentNumber: `DREF-${returnRecord.id}`,
+        partyId: distributorParty.id,
+        side: "PAYABLE",
+        sourceType: "DISTRIBUTOR_CUSTOMER_REFUND",
+        sourceId: returnRecord.id,
+        amount: totalRefund,
+        issueDate: transactionDate,
+        idempotencyKey: `DISTRIBUTOR_CUSTOMER_REFUND:${returnRecord.id}`,
+        notes: `Admin-verified customer refund paid by distributor for RMA ${returnRecord.id}.`,
+      }, { client: tx });
+      await recordSalesInvoiceReturnAdjustment({
+        client: tx,
+        orderId: returnRecord.orderId,
+        returnId: returnRecord.id,
+        totalRefund,
+        vat,
+        journalNumber: postedEntry.journalNumber,
+        occurredAt: new Date(transactionDate),
+      });
+    },
   });
 };
 
@@ -2557,6 +2683,69 @@ export const postOrderExchangeAccounting = async ({ exchangeRequest, client = pr
               notes: `NCM-route exchange downgrade refund for Order ${order.id}.`,
             },
           });
+        }
+      }
+      if (
+        exchangeRequest.orderId &&
+        tx.salesInvoice?.findUnique &&
+        tx.salesInvoiceAdjustment?.upsert
+      ) {
+        const invoice = await tx.salesInvoice.findUnique({
+          where: { orderId: exchangeRequest.orderId },
+          select: { id: true, status: true },
+        });
+        if (invoice) {
+          const sameBillRetained = grossChange.isZero() && vatChange.isZero();
+          const adjustmentType = sameBillRetained
+            ? "SAME_VALUE_EXCHANGE"
+            : grossChange.isNegative() || (grossChange.isZero() && vatChange.isNegative())
+              ? "CREDIT_NOTE"
+              : "DEBIT_NOTE";
+          const externalDocumentNumber = sameBillRetained
+            ? null
+            : exchangeRequest.taxCreditNoteNumber ||
+              `${adjustmentType === "CREDIT_NOTE" ? "CN" : "DN"}-${postedEntry.journalNumber}`;
+          await tx.salesInvoiceAdjustment.upsert({
+            where: { idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}` },
+            create: {
+              salesInvoiceId: invoice.id,
+              sourceType: "ORDER_EXCHANGE",
+              sourceId: String(exchangeRequest.id),
+              idempotencyKey: `ORDER_EXCHANGE:${exchangeRequest.id}`,
+              adjustmentType,
+              status: sameBillRetained
+                ? "SAME_BILL_RETAINED"
+                : !["PAPER_ISSUED", "PAPER_BILL_TYPE_MISMATCH"].includes(invoice.status)
+                  ? "REVERSED"
+                  : adjustmentType === "CREDIT_NOTE"
+                    ? "CREDIT_NOTE_REQUIRED"
+                    : "DEBIT_NOTE_REQUIRED",
+              amount: grossChange.abs().isZero() ? vatChange.abs() : grossChange.abs(),
+              vatAmount: vatChange.abs(),
+              internalReference: postedEntry.journalNumber,
+              externalDocumentNumber,
+              occurredAt: transactionDate,
+            },
+            update: {},
+          });
+          const assignment = await tx.orderAssignment.findUnique({
+            where: { orderId: exchangeRequest.orderId },
+            select: { id: true, paperBillNumber: true },
+          });
+          if (assignment?.paperBillNumber && !sameBillRetained) {
+            await tx.orderAssignment.update({
+              where: { id: assignment.id },
+              data: {
+                paperBillStatus: "PARTIALLY_CREDITED",
+                paperBillAdjustedAt: new Date(),
+                paperBillAdjustmentReason: `Exchange adjustment ${externalDocumentNumber || postedEntry.journalNumber}`.slice(0, 500),
+              },
+            });
+            await tx.salesInvoice.update({
+              where: { id: invoice.id },
+              data: { status: "PARTIALLY_CREDITED" },
+            });
+          }
         }
       }
       return postedEntry;

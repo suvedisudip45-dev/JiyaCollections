@@ -117,18 +117,20 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
   let updatedRequest;
   const tx = {
     orderExchangeRequest: {
-      findFirst: async () => ({
-        id: "exchange-1",
-        distributorId: "dist-1",
-        deliveryRoute: "DISTRIBUTOR",
-        status: "IN_PROGRESS",
-        inspectedAt: new Date(),
-        replacementItems: [{ productId: "product-1", size: "M", color: "Black", quantity: 1 }],
-        items: [{ productId: "product-1", size: "S", color: "Red", quantity: 1 }],
-        replacementStockReservedAt: new Date(),
-        replacementStockConsumedAt: null,
-        replacementStatus: "READY_FOR_DISPATCH",
-      }),
+      findFirst: async ({ where }) => where.replacementPaperBillNumber ? null : ({
+          id: "exchange-1",
+          orderId: "order-1",
+          distributorId: "dist-1",
+          deliveryRoute: "DISTRIBUTOR",
+          status: "IN_PROGRESS",
+          inspectedAt: new Date(),
+          replacementItems: [{ productId: "product-1", size: "M", color: "Black", quantity: 1 }],
+          items: [{ productId: "product-1", size: "S", color: "Red", quantity: 1 }],
+          priceDifference: 25,
+          replacementStockReservedAt: new Date(),
+          replacementStockConsumedAt: null,
+          replacementStatus: "READY_FOR_DISPATCH",
+        }),
       update: async ({ data }) => {
         updatedRequest = data;
         return { id: "exchange-1", ...data };
@@ -142,6 +144,23 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
       }),
       create: async () => ({}),
     },
+    orderAssignment: {
+      findFirst: async ({ where }) => where.orderId ? ({
+          id: "assignment-1",
+          paperBillRequested: true,
+          paperBillNumber: "VAT-0010",
+          paperBillDocumentType: "VAT_TAX_INVOICE",
+        }) : null,
+    },
+    paperBillBookAllocation: {
+      findMany: async () => [{
+        id: "allocation-1",
+        startNumber: 1,
+        endNumber: 100,
+        book: { seriesPrefix: "VAT-", serialWidth: 4, documentType: "VAT_TAX_INVOICE" },
+      }],
+    },
+    salesInvoice: { findFirst: async () => null },
     inventorySku: {
       findUnique: async () => ({
         id: "sku-1",
@@ -174,13 +193,55 @@ test("dispatch consumes the approved distributor stock reservation", async (t) =
     distributorId: "dist-1",
     actorId: "account-1",
     action: "DISPATCH",
+    replacementPaperBillNumber: "VAT-0011",
   });
 
   assert.equal(result.replacementStatus, "DISPATCHED");
+  assert.equal(updatedRequest.replacementPaperBillNumber, "VAT-0011");
+  assert.equal(updatedRequest.replacementPaperBillAllocationId, "allocation-1");
+  assert.ok(updatedRequest.replacementPaperBillIssuedAt instanceof Date);
   assert.ok(updatedRequest.replacementStockConsumedAt instanceof Date);
   assert.equal(ledgerEntries.length, 1);
   assert.equal(ledgerEntries[0].movementType, "FULFILLMENT");
   assert.equal(ledgerEntries[0].referenceType, "EXCHANGE");
+});
+
+test("unequal exchange with a requested physical bill cannot dispatch without a new number", async (t) => {
+  const tx = {
+    orderExchangeRequest: {
+      findFirst: async () => ({
+        id: "exchange-1",
+        orderId: "order-1",
+        distributorId: "dist-1",
+        deliveryRoute: "DISTRIBUTOR",
+        status: "IN_PROGRESS",
+        inspectedAt: new Date(),
+        priceDifference: 25,
+        replacementStockReservedAt: new Date(),
+        replacementStockConsumedAt: null,
+        replacementStatus: "READY_FOR_DISPATCH",
+      }),
+    },
+    orderAssignment: {
+      findFirst: async ({ where }) => where.orderId ? ({
+          id: "assignment-1",
+          paperBillRequested: true,
+          paperBillNumber: "VAT-0010",
+          paperBillDocumentType: "VAT_TAX_INVOICE",
+        }) : null,
+    },
+  };
+  stubMethod(t, prisma, "$transaction", (callback) => callback(tx));
+
+  await assert.rejects(
+    processDistributorExchange({
+      requestId: "exchange-1",
+      distributorId: "dist-1",
+      actorId: "account-1",
+      action: "DISPATCH",
+    }),
+    (error) => error.code === "PAPER_BILL_NUMBER_REQUIRED" && error.statusCode === 400,
+  );
 });
 
 test("completed distributor exchange accrues its configured settlement into distributor earnings", async (t) => {

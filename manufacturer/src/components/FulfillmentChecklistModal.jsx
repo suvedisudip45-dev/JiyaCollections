@@ -24,6 +24,8 @@ const DISTRIBUTOR_REQUIRED_CHECKS = [
 const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {}, giftOptions, giftOptionsLoading = false, giftOptionsError = "", onRetryGiftOptions, marketingCard, marketingCardLoading = false, onAttachMarketingCard, currency = "Rs ", onClose, onConfirm, busy = false, isDistributor = false, platformFeatures = { lettersEnabled: true, marketingCardsEnabled: true, loyaltyEnabled: true } }) => {
   const [draft, setDraft] = useState(checklist);
   const [error, setError] = useState("");
+  const [paperBillRequested, setPaperBillRequested] = useState(null);
+  const [paperBillNumber, setPaperBillNumber] = useState("");
   const requiredChecks = (isDistributor ? DISTRIBUTOR_REQUIRED_CHECKS : MANUFACTURER_REQUIRED_CHECKS)
     .filter(([key]) => platformFeatures.lettersEnabled || key !== "customerLetterIncluded");
   const marketingCardRequired = isDistributor &&
@@ -31,13 +33,27 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
     assignment?.order?.marketingCardRequired !== false;
   const attachedCardCode = marketingCard?.card?.cardCode || marketingCard?.cardCode || "";
   const isMarketingCardAttached = Boolean(marketingCard && attachedCardCode);
+  const paperBillSelectionFinalized = Boolean(
+    assignment?.paperBillStatus && assignment.paperBillStatus !== "NOT_SELECTED",
+  );
+  const paperBillTypeLabel = assignment?.paperBillDocumentType === "VAT_TAX_INVOICE"
+    ? "VAT invoice"
+    : assignment?.paperBillDocumentType === "PAN_BILL"
+      ? "PAN bill"
+      : "tax bill";
 
   useEffect(() => {
     if (isOpen) {
       setDraft(checklist);
       setError("");
+      setPaperBillRequested(
+        assignment?.paperBillStatus === "NOT_SELECTED" || !assignment?.paperBillStatus
+          ? null
+          : Boolean(assignment?.paperBillRequested),
+      );
+      setPaperBillNumber(assignment?.paperBillNumber || "");
     }
-  }, [isOpen, checklist]);
+  }, [isOpen, checklist, assignment]);
 
   const completedRequired = useMemo(
     () => requiredChecks.filter(([key]) => draft[key] === true).length,
@@ -80,11 +96,26 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
       setError(`Complete all required checks. ${requiredChecks.length - completedRequired} remaining.`);
       return;
     }
+    if (isDistributor && paperBillRequested === null) {
+      setError("Record whether the customer requested a physical bill before confirming this checklist.");
+      return;
+    }
+    if (isDistributor && paperBillRequested && !paperBillNumber.trim()) {
+      setError("Enter the physical bill number attached to the parcel.");
+      return;
+    }
     if (platformFeatures.marketingCardsEnabled && draft.marketingCard && !String(draft.marketingCardId || "").trim()) {
       setError("Enter the marketing partner card ID or uncheck the card item.");
       return;
     }
-    onConfirm({ ...draft, verifiedAt: new Date().toISOString() });
+    onConfirm({
+      ...draft,
+      ...(isDistributor ? {
+        paperBillRequested,
+        paperBillNumber: paperBillRequested ? paperBillNumber.trim() : "",
+      } : {}),
+      verifiedAt: new Date().toISOString(),
+    });
   };
 
   return (
@@ -120,6 +151,62 @@ const FulfillmentChecklistModal = ({ isOpen, assignment, checklist, benefits = {
                 <span>{label}</span>
               </label>
             ))}
+            {isDistributor && (
+              <section className="mt-5 rounded-2xl border border-sky-200 bg-sky-50/70 p-4">
+                <h3 className="text-xs font-black text-sky-950">Customer bill request</h3>
+                <p className="mt-1 text-[11px] text-sky-900">
+                  The company tax registration determines the bill type. A customer’s choice controls only whether a physical copy is attached.
+                </p>
+                {paperBillSelectionFinalized ? (
+                  <div className="mt-3 rounded-xl border border-sky-200 bg-white px-3 py-3 text-xs text-slate-800">
+                    <p className="font-bold">
+                      {paperBillRequested ? `${paperBillTypeLabel} attached` : "No physical copy requested"}
+                    </p>
+                    {paperBillRequested && <p className="mt-1">Bill number: <span className="font-mono font-bold">{paperBillNumber || "Not recorded"}</span></p>}
+                    <p className="mt-1 text-[10px] text-slate-500">This packing choice is already recorded and cannot be changed here.</p>
+                  </div>
+                ) : (
+                  <>
+                    {assignment?.paperBillDocumentType && (
+                      <p className="mt-2 text-[11px] font-semibold text-sky-950">Resolved document: {paperBillTypeLabel}</p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-4 text-xs font-semibold text-slate-800">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="paperBillRequested"
+                          checked={paperBillRequested === true}
+                          onChange={() => { setPaperBillRequested(true); setError(""); }}
+                        />
+                        Customer requested a physical bill
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="paperBillRequested"
+                          checked={paperBillRequested === false}
+                          onChange={() => { setPaperBillRequested(false); setPaperBillNumber(""); setError(""); }}
+                        />
+                        No physical copy requested
+                      </label>
+                    </div>
+                    {paperBillRequested && (
+                      <label className="mt-3 block text-[11px] font-bold text-sky-950">
+                        Number of the physical bill attached
+                        <input
+                          value={paperBillNumber}
+                          onChange={(event) => { setPaperBillNumber(event.target.value); setError(""); }}
+                          maxLength={191}
+                          required
+                          className="mt-1 block w-full rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs font-medium text-slate-900"
+                          placeholder="Enter bill number from the allocated book"
+                        />
+                      </label>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
             {marketingCardRequired && (
               <div className={`flex flex-wrap items-center gap-3 rounded-xl border px-3 py-3 text-xs font-semibold ${
                 isMarketingCardAttached

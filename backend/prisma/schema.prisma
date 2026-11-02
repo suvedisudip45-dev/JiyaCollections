@@ -1348,6 +1348,11 @@ model OrderExchangeRequest {
   exchangeJournalEntryId    String?                   @db.VarChar(191)
   scrapJournalEntryId       String?                   @db.VarChar(191)
   taxCreditNoteNumber       String?                   @db.VarChar(128)
+  replacementPaperBillNumber String?                  @unique @db.VarChar(191)
+  replacementPaperBillAllocationId String?
+  replacementPaperBillAllocation PaperBillBookAllocation? @relation(fields: [replacementPaperBillAllocationId], references: [id], onDelete: Restrict)
+  replacementPaperBillIssuedAt DateTime?
+  replacementPaperBillIssuedBy String?                @db.VarChar(191)
   status                    String                    @default("REQUESTED")
   decisionActorId           String?
   decisionReason            String?                   @db.Text
@@ -1568,6 +1573,7 @@ model SalesInvoice {
   buyerSnapshot      Json
   lineSnapshots      Json
   evidenceUrl        String?  @db.Text
+  adjustments        SalesInvoiceAdjustment[]
   externalProvider   String?  @db.VarChar(100)
   externalReference  String?  @db.VarChar(191)
   providerStatus     String   @default("NOT_SUBMITTED") @db.VarChar(32)
@@ -1578,6 +1584,66 @@ model SalesInvoice {
 
   @@index([status, taxPoint])
   @@index([documentType, issueDate])
+}
+
+model PaperBillBook {
+  id            String   @id @default(uuid())
+  documentType  String   @db.VarChar(32) // VAT_TAX_INVOICE | PAN_BILL
+  bookLabel     String   @db.VarChar(120)
+  seriesPrefix  String   @db.VarChar(60)
+  startNumber   Int
+  endNumber     Int
+  serialWidth   Int      @default(0)
+  status        String   @default("ACTIVE") @db.VarChar(16) // ACTIVE | RETIRED
+  createdBy     String?  @db.VarChar(191)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  allocations   PaperBillBookAllocation[]
+
+  @@index([documentType, status, seriesPrefix])
+}
+
+model PaperBillBookAllocation {
+  id              String   @id @default(uuid())
+  bookId          String
+  book            PaperBillBook @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  distributorId   String
+  distributor     Distributor @relation(fields: [distributorId], references: [id], onDelete: Restrict)
+  startNumber     Int
+  endNumber       Int
+  status          String   @default("ACTIVE") @db.VarChar(16) // ACTIVE | RETURNED
+  allocatedAt     DateTime @default(now())
+  allocatedBy     String?  @db.VarChar(191)
+  returnedAt      DateTime?
+  returnedBy      String?  @db.VarChar(191)
+  notes           String?  @db.VarChar(500)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  assignments     OrderAssignment[]
+  exchangeRequests OrderExchangeRequest[]
+
+  @@index([distributorId, status])
+  @@index([bookId, startNumber, endNumber])
+}
+
+model SalesInvoiceAdjustment {
+  id                    String      @id @default(uuid())
+  salesInvoiceId        String
+  salesInvoice          SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  sourceType            String      @db.VarChar(32) // CUSTOMER_RETURN | ORDER_EXCHANGE
+  sourceId              String      @db.VarChar(191)
+  idempotencyKey        String      @unique @db.VarChar(191)
+  adjustmentType        String      @db.VarChar(32) // CREDIT_NOTE | DEBIT_NOTE | SAME_VALUE_EXCHANGE
+  status                String      @db.VarChar(32) // REVERSED | CREDIT_NOTE_REQUIRED | DEBIT_NOTE_REQUIRED | SAME_BILL_RETAINED
+  amount                Decimal     @default(0) @db.Decimal(20, 2)
+  vatAmount             Decimal     @default(0) @db.Decimal(20, 2)
+  internalReference     String?     @db.VarChar(128)
+  externalDocumentNumber String?    @db.VarChar(191)
+  occurredAt            DateTime    @default(now())
+  createdAt             DateTime    @default(now())
+
+  @@index([salesInvoiceId, occurredAt])
+  @@index([sourceType, sourceId])
 }
 
 model TaxFilingPayment {
@@ -1984,6 +2050,7 @@ model Distributor {
   locations DistributorLocation[]
   locationProductDiscounts LocationProductDiscount[]
   assignments OrderAssignment[]
+  paperBillAllocations PaperBillBookAllocation[]
   deliveryChargeNegotiations DistributorDeliveryChargeNegotiation[]
   settlementRequests DistributorSettlementRequest[]
   cashEvents                   DistributorCashEvent[]
@@ -3465,6 +3532,18 @@ model OrderAssignment {
   returnedAt      DateTime?
   notes           String?   @db.Text
   rejectionReason String?
+  paperBillRequested Boolean @default(false)
+  paperBillStatus String @default("NOT_SELECTED") @db.VarChar(32) // NOT_SELECTED | NO_PHYSICAL_COPY | ISSUED | VOIDED | CREDITED | PARTIALLY_CREDITED
+  paperBillDocumentType String? @db.VarChar(32)
+  paperBillNumber String? @unique @db.VarChar(191)
+  paperBillAllocationId String?
+  paperBillAllocation PaperBillBookAllocation? @relation(fields: [paperBillAllocationId], references: [id], onDelete: Restrict)
+  paperBillIssuedAt DateTime?
+  paperBillIssuedBy String? @db.VarChar(191)
+  paperBillVoidedAt DateTime?
+  paperBillVoidReason String? @db.VarChar(500)
+  paperBillAdjustedAt DateTime?
+  paperBillAdjustmentReason String? @db.VarChar(500)
 
   manufacturer Manufacturer? @relation(fields: [manufacturerId], references: [id])
   distributor Distributor? @relation(fields: [distributorId], references: [id])
@@ -3473,6 +3552,7 @@ model OrderAssignment {
   @@index([manufacturerId])
   @@index([distributorId])
   @@index([status])
+  @@index([paperBillStatus, paperBillIssuedAt])
   @@index([deliveryType, distributorId, status, assignedAt], map: "OrdAssign_type_dist_status_time_idx")
 }
 

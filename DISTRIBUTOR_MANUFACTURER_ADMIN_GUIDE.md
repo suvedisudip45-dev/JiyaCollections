@@ -24,6 +24,38 @@ the canonical lookup names before branches are filtered or returned.
 Registration and profile APIs validate submitted branch/covered-area
 selections against the active lookup records.
 
+## Physical PAN/VAT bill books
+
+Admin registers each physical PAN bill or VAT tax-invoice book under `/tax`,
+then allocates non-overlapping serial ranges to active distributors. Returned
+allocations remain in history and their numbers cannot be reassigned. During
+the distributor packing checklist, record whether the customer requested a
+physical copy; when requested, enter the attached book number. The backend
+derives the document type from the company's effective tax registration,
+validates distributor/range ownership and number uniqueness, and blocks packing
+or delivery handoff until the choice is stored. A “no physical copy” choice
+does not remove the internal sale/tax record.
+
+The Admin Tax page reports distributor orders by order-placement date as “with
+VAT bill” or “without VAT bill”; the latter can include PAN bills and orders
+with no physical copy, which are distinguished in the table. Returns and
+exchanges append adjustments to the original invoice and mark note follow-up.
+Same-value exchanges retain the original bill; an unequal-value exchange for an
+order with a requested physical copy requires a new allocated number before
+replacement dispatch. For NCM exchanges, Admin must record that number from the
+settlement distributor's allocation before approval because approval submits
+the exchange to NCM immediately; the distributor portal is limited to recording
+the NCM cash settlement and must not run distributor-only inspection or dispatch
+actions. Admin approval records an explicit confirmation that the replacement
+bill is physically attached before NCM submission. The original bill remains in the audit trail and the
+accounting adjustment is recorded; replacement number capture does not itself
+generate a replacement invoice document or formally void the original paper
+invoice. The original bill number is never reused. This is physical-number
+recordkeeping, not statutory document generation, printing, IRD submission, or
+legal advice.
+Have a Nepal tax practitioner confirm when a bill/credit/debit note must be
+issued, who may issue it, and which numbering/retention rules apply.
+
 ## Admin distributor directory and details
 
 The Admin portal has a separate `/distributors` searchable directory and a
@@ -770,6 +802,11 @@ Relevant endpoints:
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
 | `POST /api/finance/vat-rates` | Admin | `finance:tax_configure` | Schedule a future VAT rate; only future effective dates are accepted. |
 | `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
+| `GET /api/finance/paper-bill-books` | Admin | `finance:tax_report_read` | List bill books, distributor allocations, and active distributor choices. |
+| `POST /api/finance/paper-bill-books` | Admin | `finance:tax_configure` | Register a PAN/VAT serial book; overlapping series ranges are rejected. |
+| `POST /api/finance/paper-bill-allocations` | Admin | `finance:tax_configure` | Allocate a non-overlapping book range to an active distributor. |
+| `POST /api/finance/paper-bill-allocations/:id/return` | Admin | `finance:tax_configure` | Close an allocation; returned numbers remain permanently unavailable. |
+| `GET /api/finance/paper-bill-orders` | Admin | `finance:tax_report_read` | Paginate distributor orders by placement date and physical VAT bill status. |
 | `GET /manufacturer-production/requests` | Manufacturer | `manufacturer:production_manage` | List own production requests. |
 | `POST /manufacturer-production/requests/:id/start` | Manufacturer | `manufacturer:production_manage` | Start approved request. |
 | `POST /manufacturer-production/requests/:id/complete` | Manufacturer | `manufacturer:production_manage` | Submit post-production counts for Admin acceptance; no stock receipt is recorded yet. |

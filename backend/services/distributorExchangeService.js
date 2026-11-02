@@ -1,8 +1,10 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { ensureInventoryLocation, applyInventoryMovement } from "./inventoryLedgerService.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { postOrderExchangeAccounting } from "./accountingPostingEngine.js";
 import { accrueDistributorServiceCharge } from "./distributorServiceEarningService.js";
+import { validatePaperBillChoice } from "./paperBillService.js";
 
 const parseArray = (value) => {
   if (Array.isArray(value)) return value;
@@ -142,6 +144,7 @@ export const processDistributorExchange = async ({
   action,
   inspectedItems,
   notes,
+  replacementPaperBillNumber,
   accrueServiceCharge = accrueDistributorServiceCharge,
   postExchangeAccounting = postOrderExchangeAccounting,
 }) => {
@@ -264,6 +267,38 @@ export const processDistributorExchange = async ({
       if (!request.replacementStockReservedAt) {
         throw fail("Replacement stock was not reserved during admin approval.", "EXCHANGE_RESERVATION_MISSING", 409);
       }
+      const assignment = await tx.orderAssignment.findFirst({
+        where: { orderId: request.orderId, distributorId },
+        select: {
+          id: true,
+          paperBillRequested: true,
+          paperBillNumber: true,
+          paperBillDocumentType: true,
+        },
+      });
+      if (!assignment) {
+        throw fail("The original distributor assignment is missing for this exchange.", "EXCHANGE_ASSIGNMENT_MISSING", 409);
+      }
+      const hasPriceDifference = !new Prisma.Decimal(String(request.priceDifference || 0)).isZero();
+      let replacementPaperBill = null;
+      if (assignment?.paperBillRequested && hasPriceDifference) {
+        const documentType = assignment.paperBillDocumentType;
+        if (!documentType) {
+          throw fail("The original physical bill type is missing; Admin must review this exchange.", "EXCHANGE_PAPER_BILL_TYPE_MISSING", 409);
+        }
+        if (String(replacementPaperBillNumber || "").trim() === assignment.paperBillNumber) {
+          throw fail("An exchange with a different value must use a new bill number from the distributor allocation.", "EXCHANGE_REPLACEMENT_BILL_REQUIRED", 409);
+        }
+        replacementPaperBill = await validatePaperBillChoice({
+          client: tx,
+          distributorId,
+          documentType,
+          billNumber: replacementPaperBillNumber,
+          exchangeRequestId: request.id,
+        });
+      } else if (replacementPaperBillNumber) {
+        throw fail("A replacement bill number is only accepted for a requested physical bill with a price difference.", "UNEXPECTED_EXCHANGE_PAPER_BILL", 400);
+      }
       const approval = await tx.orderExchangeEvent.findFirst({
         where: { exchangeRequestId: request.id, eventType: "APPROVE" },
         orderBy: { occurredAt: "desc" },
@@ -274,7 +309,16 @@ export const processDistributorExchange = async ({
       const now = new Date();
       const updated = await tx.orderExchangeRequest.update({
         where: { id: request.id },
-        data: { replacementStatus: "DISPATCHED", replacementStockConsumedAt: now },
+        data: {
+          replacementStatus: "DISPATCHED",
+          replacementStockConsumedAt: now,
+          ...(replacementPaperBill ? {
+            replacementPaperBillNumber: replacementPaperBill.paperBillNumber,
+            replacementPaperBillAllocationId: replacementPaperBill.paperBillAllocationId,
+            replacementPaperBillIssuedAt: now,
+            replacementPaperBillIssuedBy: String(actorId).slice(0, 191),
+          } : {}),
+        },
       });
       await addEvent(tx, {
         requestId: request.id,
@@ -283,7 +327,10 @@ export const processDistributorExchange = async ({
         toStatus: updated.status,
         actorId,
         reason: "Reserved replacement stock dispatched from distributor hub.",
-        metadata: { replacementItems: parseArray(request.replacementItems) },
+        metadata: {
+          replacementItems: parseArray(request.replacementItems),
+          ...(replacementPaperBill ? { replacementPaperBillNumber: replacementPaperBill.paperBillNumber } : {}),
+        },
       });
       return updated;
     }

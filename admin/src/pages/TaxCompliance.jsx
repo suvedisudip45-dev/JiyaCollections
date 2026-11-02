@@ -8,6 +8,8 @@ import { usePermissions } from "../auth/PermissionsContext";
 // The admin route provides this shared authentication prop.
 // eslint-disable-next-line react/prop-types
 const TaxCompliance = ({ token }) => {
+  const today = new Date();
+  const todayInputDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   const [taxData, setTaxData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [vatVersions, setVatVersions] = useState([]);
@@ -34,6 +36,30 @@ const TaxCompliance = ({ token }) => {
   const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", filedReference: "", adjustmentReason: "" });
   const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: new Date().toISOString().slice(0, 10) });
   const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
+  const [paperBillBooks, setPaperBillBooks] = useState([]);
+  const [paperBillDistributors, setPaperBillDistributors] = useState([]);
+  const [paperBillReport, setPaperBillReport] = useState([]);
+  const [paperBillReportFrom, setPaperBillReportFrom] = useState(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-01`);
+  const [paperBillReportTo, setPaperBillReportTo] = useState(todayInputDate);
+  const [paperBillReportFilter, setPaperBillReportFilter] = useState("ALL");
+  const [paperBillReportLoading, setPaperBillReportLoading] = useState(false);
+  const [paperBillReportPagination, setPaperBillReportPagination] = useState(null);
+  const [paperBillReportPage, setPaperBillReportPage] = useState(1);
+  const [paperBillBookDraft, setPaperBillBookDraft] = useState({
+    documentType: "PAN_BILL",
+    bookLabel: "",
+    seriesPrefix: "",
+    startNumber: "",
+    endNumber: "",
+    serialWidth: "0",
+  });
+  const [paperBillAllocationDraft, setPaperBillAllocationDraft] = useState({
+    bookId: "",
+    distributorId: "",
+    startNumber: "",
+    endNumber: "",
+    notes: "",
+  });
   const [savingTaxAction, setSavingTaxAction] = useState(false);
   const [vatRate, setVatRate] = useState("13");
   const [vatEffectiveDate, setVatEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
@@ -123,6 +149,40 @@ const TaxCompliance = ({ token }) => {
     }
   }, [token]);
 
+  const fetchPaperBillBooks = useCallback(async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/finance/paper-bill-books`, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Paper bill books could not be loaded.");
+      setPaperBillBooks(response.data.books || []);
+      setPaperBillDistributors(response.data.distributors || []);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Paper bill books could not be loaded.");
+    }
+  }, [token]);
+
+  const fetchPaperBillReport = useCallback(async (page = 1) => {
+    try {
+      setPaperBillReportLoading(true);
+      const params = new URLSearchParams({
+        from: paperBillReportFrom,
+        to: paperBillReportTo,
+        billFilter: paperBillReportFilter,
+        page: String(page),
+      });
+      const response = await axios.get(`${backendUrl}/api/finance/paper-bill-orders?${params}`, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Paper bill order report could not be loaded.");
+      setPaperBillReport(response.data.records || []);
+      setPaperBillReportPagination(response.data.pagination || null);
+      setPaperBillReportPage(response.data.pagination?.page || page);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Paper bill order report could not be loaded.");
+    } finally {
+      setPaperBillReportLoading(false);
+    }
+  }, [paperBillReportFilter, paperBillReportFrom, paperBillReportTo, token]);
+
   const createFilingDraft = async (event) => {
     event.preventDefault();
     try {
@@ -202,6 +262,56 @@ const TaxCompliance = ({ token }) => {
     } catch (error) {
       console.error(error);
       toast.error(error.response?.data?.message || error.message || "Paper bill details could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitPaperBillBook = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/paper-bill-books`, paperBillBookDraft, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Paper bill book could not be recorded.");
+      toast.success(response.data.message || "Paper bill book recorded.");
+      setPaperBillBookDraft((current) => ({ ...current, bookLabel: "", seriesPrefix: "", startNumber: "", endNumber: "" }));
+      await fetchPaperBillBooks();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Paper bill book could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitPaperBillAllocation = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/paper-bill-allocations`, paperBillAllocationDraft, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Bill range could not be allocated.");
+      toast.success(response.data.message || "Bill range allocated.");
+      setPaperBillAllocationDraft((current) => ({ ...current, startNumber: "", endNumber: "", notes: "" }));
+      await fetchPaperBillBooks();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Bill range could not be allocated.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const returnPaperBillAllocation = async (allocationId) => {
+    if (!window.confirm("Return the unused portion of this range? Issued bill numbers remain permanently reserved.")) return;
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/paper-bill-allocations/${allocationId}/return`, {}, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Bill range could not be returned.");
+      toast.success(response.data.message || "Bill range marked as returned.");
+      await fetchPaperBillBooks();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Bill range could not be returned.");
     } finally {
       setSavingTaxAction(false);
     }
@@ -306,6 +416,10 @@ const TaxCompliance = ({ token }) => {
     if (token) fetchTaxRecords();
   }, [fetchTaxRecords, token]);
 
+  useEffect(() => {
+    if (token) fetchPaperBillBooks();
+  }, [fetchPaperBillBooks, token]);
+
   if (loading && !taxData) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -362,6 +476,89 @@ const TaxCompliance = ({ token }) => {
           </button>
         </div>
       </div>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900">Physical bill books and distributor allocations</h2>
+          <p className="mt-1 text-xs text-slate-500">Register official PAN/VAT bill series, then allocate non-overlapping ranges to active distributors. Returned ranges remain reserved and cannot be reissued.</p>
+        </div>
+        {canConfigureVat && (
+          <>
+            <form onSubmit={submitPaperBillBook} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-6 lg:items-end">
+              <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Bill type
+                <select value={paperBillBookDraft.documentType} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, documentType: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="PAN_BILL">PAN bill</option>
+                  <option value="VAT_TAX_INVOICE">VAT tax invoice</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Book label<input required maxLength={120} value={paperBillBookDraft.bookLabel} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, bookLabel: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">Series prefix<input required maxLength={60} value={paperBillBookDraft.seriesPrefix} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, seriesPrefix: event.target.value }))} placeholder="e.g. 2083/" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">First serial<input type="number" min="1" required value={paperBillBookDraft.startNumber} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, startNumber: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">Last serial<input type="number" min="1" required value={paperBillBookDraft.endNumber} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, endNumber: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">Serial digits (0 = no padding)<input type="number" min="0" max="10" value={paperBillBookDraft.serialWidth} onChange={(event) => setPaperBillBookDraft((current) => ({ ...current, serialWidth: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 lg:col-span-6">{savingTaxAction ? "Saving..." : "Register bill book"}</button>
+            </form>
+
+            <form onSubmit={submitPaperBillAllocation} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-sky-100 bg-sky-50/60 p-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+              <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Book
+                <select required value={paperBillAllocationDraft.bookId} onChange={(event) => {
+                  const bookId = event.target.value;
+                  const book = paperBillBooks.find((item) => item.id === bookId);
+                  setPaperBillAllocationDraft((current) => ({
+                    ...current,
+                    bookId,
+                    startNumber: book ? String(book.startNumber) : current.startNumber,
+                    endNumber: book ? String(book.endNumber) : current.endNumber,
+                  }));
+                }} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="">Select a book</option>
+                  {paperBillBooks.filter((book) => book.status === "ACTIVE").map((book) => <option key={book.id} value={book.id}>{book.bookLabel} · {book.seriesPrefix}{book.startNumber}-{book.endNumber}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Distributor
+                <select required value={paperBillAllocationDraft.distributorId} onChange={(event) => setPaperBillAllocationDraft((current) => ({ ...current, distributorId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+                  <option value="">Select a distributor</option>
+                  {paperBillDistributors.map((distributor) => <option key={distributor.id} value={distributor.id}>{distributor.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Allocation first serial<input type="number" min="1" required value={paperBillAllocationDraft.startNumber} onChange={(event) => setPaperBillAllocationDraft((current) => ({ ...current, startNumber: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">Allocation last serial<input type="number" min="1" required value={paperBillAllocationDraft.endNumber} onChange={(event) => setPaperBillAllocationDraft((current) => ({ ...current, endNumber: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <label className="text-xs font-semibold text-slate-700">Note (optional)<input maxLength={500} value={paperBillAllocationDraft.notes} onChange={(event) => setPaperBillAllocationDraft((current) => ({ ...current, notes: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+              <button type="submit" disabled={savingTaxAction || paperBillBooks.length === 0 || paperBillDistributors.length === 0} className="rounded-lg bg-sky-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 lg:col-span-5">{savingTaxAction ? "Saving..." : "Allocate range"}</button>
+            </form>
+          </>
+        )}
+        <div className="mt-5 space-y-3">
+          {paperBillBooks.map((book) => (
+            <article key={book.id} className="rounded-xl border border-slate-200 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-bold text-slate-900">{book.bookLabel} · {book.documentType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : "PAN bill"}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">Series {book.seriesPrefix}{book.startNumber}–{book.endNumber} · {book.status}</p>
+                </div>
+              </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-left text-[11px]">
+                  <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-3">Distributor</th><th className="py-2 pr-3">Allocated range</th><th className="py-2 pr-3">Assigned orders</th><th className="py-2 pr-3">Status</th>{canConfigureVat && <th className="py-2 text-right">Action</th>}</tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(book.allocations || []).map((allocation) => (
+                      <tr key={allocation.id} className="text-slate-700">
+                        <td className="py-2 pr-3">{allocation.distributor?.name || "Distributor"}</td>
+                        <td className="py-2 pr-3">{book.seriesPrefix}{allocation.startNumber}–{allocation.endNumber}</td>
+                        <td className="py-2 pr-3">{allocation._count?.assignments || 0}</td>
+                        <td className="py-2 pr-3">{allocation.status}</td>
+                        {canConfigureVat && <td className="py-2 text-right">{allocation.status === "ACTIVE" && <button type="button" disabled={savingTaxAction} onClick={() => returnPaperBillAllocation(allocation.id)} className="font-semibold text-rose-700 disabled:opacity-50">Return unused range</button>}</td>}
+                      </tr>
+                    ))}
+                    {(book.allocations || []).length === 0 && <tr><td colSpan={canConfigureVat ? 5 : 4} className="py-4 text-center text-slate-400">No distributor ranges allocated.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          ))}
+          {paperBillBooks.length === 0 && <p className="py-4 text-center text-xs text-slate-400">No physical bill books are registered.</p>}
+        </div>
+      </section>
 
       <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
         <div className="flex flex-col gap-3 border-b border-slate-100 pb-4 sm:flex-row sm:items-start sm:justify-between">
@@ -608,6 +805,58 @@ const TaxCompliance = ({ token }) => {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900">Distributor order paper-bill report</h2>
+          <p className="mt-1 text-xs text-slate-500">The period is based on order placement date. “With VAT bill” means a physical VAT invoice number was recorded; other results include PAN bills and orders with no physical copy.</p>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
+          <label className="text-xs font-semibold text-slate-700">From<input type="date" value={paperBillReportFrom} onChange={(event) => setPaperBillReportFrom(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+          <label className="text-xs font-semibold text-slate-700">To<input type="date" value={paperBillReportTo} onChange={(event) => setPaperBillReportTo(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+          <label className="text-xs font-semibold text-slate-700">Orders
+            <select value={paperBillReportFilter} onChange={(event) => setPaperBillReportFilter(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
+              <option value="ALL">All distributor orders</option>
+              <option value="WITH_VAT_BILL">With VAT bill</option>
+              <option value="WITHOUT_VAT_BILL">Without VAT bill</option>
+            </select>
+          </label>
+          <button type="button" onClick={() => fetchPaperBillReport(1)} disabled={paperBillReportLoading} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{paperBillReportLoading ? "Loading..." : "Load report"}</button>
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="min-w-full text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-3">Order / placed</th><th className="py-2 pr-3">Customer</th><th className="py-2 pr-3">Distributor</th><th className="py-2 pr-3">Physical bill</th><th className="py-2 pr-3">Bill number</th><th className="py-2 pr-3">Adjustment</th><th className="py-2 pr-3">Order status</th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {paperBillReport.map((record) => (
+                <tr key={record.orderId} className="text-slate-700">
+                  <td className="py-3 pr-3 font-semibold">{record.orderReference}<span className="mt-1 block text-[10px] font-normal text-slate-500">{new Date(record.orderDate).toLocaleDateString()}</span></td>
+                  <td className="py-3 pr-3">{record.customerName || "—"}</td>
+                  <td className="py-3 pr-3">{record.distributor?.name || "—"}</td>
+                  <td className="py-3 pr-3">{record.billType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : record.billType === "PAN_BILL" ? "PAN bill" : "Not selected"}<span className="mt-1 block text-[10px] text-slate-500">{record.salesInvoice?.status === "PAPER_BILL_TYPE_MISMATCH" ? "Tax registration mismatch — review required" : record.billRequested ? record.billStatus : "No physical copy requested"}</span></td>
+                  <td className="py-3 pr-3 font-mono">{record.billNumber || "—"}</td>
+                  <td className="py-3 pr-3">{[
+                    ...(record.salesInvoice?.adjustments || []).map((item) => `${item.sourceType} ${item.status}${item.externalDocumentNumber ? ` · ${item.externalDocumentNumber}` : ""}`),
+                    ...(record.returns || []).map((item) => `Return ${item.taxCreditNoteNumber || item.lifecycleStatus}`),
+                    ...(record.exchanges || []).map((item) => `Exchange ${item.taxCreditNoteNumber || item.priceDifference || "same-value"}${item.replacementPaperBillNumber ? ` · replacement bill ${item.replacementPaperBillNumber}` : ""}`),
+                  ].join("; ") || "—"}</td>
+                  <td className="py-3 pr-3">{record.orderStatus}</td>
+                </tr>
+              ))}
+              {paperBillReport.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-slate-400">{paperBillReportLoading ? "Loading bill records..." : "No distributor orders found for this period and filter."}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {paperBillReportPagination?.total > 0 && (
+          <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+            <span>{paperBillReportPagination.total} matching order(s)</span>
+            <div className="flex items-center gap-2">
+              <button type="button" disabled={paperBillReportLoading || paperBillReportPage <= 1} onClick={() => fetchPaperBillReport(paperBillReportPage - 1)} className="rounded border border-slate-200 px-3 py-1.5 disabled:opacity-40">Previous</button>
+              <span>Page {paperBillReportPage} of {paperBillReportPagination.totalPages}</span>
+              <button type="button" disabled={paperBillReportLoading || paperBillReportPage >= paperBillReportPagination.totalPages} onClick={() => fetchPaperBillReport(paperBillReportPage + 1)} className="rounded border border-slate-200 px-3 py-1.5 disabled:opacity-40">Next</button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-xs">

@@ -633,10 +633,16 @@ const OrderDetail = () => {
   };
 
   const handleChecklistConfirm = async (confirmedChecklist) => {
-    setChecklist(confirmedChecklist);
+    const {
+      paperBillRequested,
+      paperBillNumber,
+      ...verifiedChecklist
+    } = confirmedChecklist;
+    setChecklist(verifiedChecklist);
     setChecklistModalOpen(false);
     await handleStatusChange("checklist_complete", {
-      packagingChecklist: confirmedChecklist,
+      packagingChecklist: verifiedChecklist,
+      ...(isDistributor ? { paperBillRequested, paperBillNumber } : {}),
     });
   };
 

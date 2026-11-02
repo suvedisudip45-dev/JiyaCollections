@@ -16,6 +16,8 @@ import { allocateProductionLayersForOrderItem } from "../services/manufacturerPr
 import { canonicalizeNepalLocation } from "../services/locationPricingService.js";
 import { isDistributorLocalDeliveryEligible } from "../services/deliveryLocationService.js";
 import { resolveLocationEntry } from "../utils/nepalLocationData.js";
+import { resolveSellerTaxTreatment } from "../services/sellerTaxProfileService.js";
+import { validatePaperBillChoice } from "../services/paperBillService.js";
 
 // Helper: Safely parse JSON
 const parseJSON = (val, fallback = []) => {
@@ -1366,6 +1368,7 @@ const rejectOrder = async (req, res) => {
       });
     }
 
+    let paperBillAuditState = null;
     await prisma.$transaction(async (tx) => {
       const orderBefore = await tx.order.findUnique({
         where: { id: assignment.orderId },
@@ -1425,6 +1428,8 @@ const updateAssignmentStatus = async (req, res) => {
       deliveryInstruction,
       instruction,
       packagingChecklist,
+      paperBillRequested,
+      paperBillNumber,
     } = req.body;
 
     const normalizedStatus = String(status || "").toLowerCase();
@@ -1531,9 +1536,9 @@ const updateAssignmentStatus = async (req, res) => {
     await prisma.$transaction(async (tx) => {
       const orderBefore = await tx.order.findUnique({
         where: { id: assignment.orderId },
-        select: { fulfillmentStatus: true },
+        select: { fulfillmentStatus: true, date: true },
       });
-      if (adminControlReason && !orderBefore) {
+      if ((adminControlReason || distributorOwnsAssignment) && !orderBefore) {
         throw Object.assign(new Error("Order not found for the fulfillment update."), {
           code: "ORDER_NOT_FOUND",
           statusCode: 404,
@@ -1553,6 +1558,100 @@ const updateAssignmentStatus = async (req, res) => {
           error.code = error.code || "MARKETING_CARD_VALIDATION_FAILED";
           error.cardValidationStatusCode = ["MARKETING_CARD_REQUIRED", "MARKETING_CARD_REATTACH_REQUIRED"].includes(error.code) ? 409 : 400;
           throw error;
+        }
+      }
+      if (distributorOwnsAssignment) {
+        const currentAssignment = await tx.orderAssignment.findUnique({
+          where: { id: assignmentId },
+          select: {
+            status: true,
+            paperBillStatus: true,
+            paperBillRequested: true,
+            paperBillNumber: true,
+            paperBillDocumentType: true,
+          },
+        });
+        if (!currentAssignment) {
+          throw Object.assign(new Error("Assignment not found while recording the customer bill choice."), {
+            code: "ASSIGNMENT_NOT_FOUND",
+            statusCode: 404,
+          });
+        }
+        if (["packed", "package_details_complete"].includes(normalizedStatus) &&
+            currentAssignment.paperBillStatus === "NOT_SELECTED") {
+          throw Object.assign(new Error("Record whether the customer requested a physical bill before packing or dispatch."), {
+            code: "PAPER_BILL_CHOICE_REQUIRED",
+            statusCode: 409,
+          });
+        }
+        if (normalizedStatus === "checklist_complete") {
+          if (typeof paperBillRequested !== "boolean") {
+            throw Object.assign(new Error("Choose whether the customer requested a physical bill before completing the packing checklist."), {
+              code: "PAPER_BILL_CHOICE_REQUIRED",
+              statusCode: 400,
+            });
+          }
+          const sellerTaxTreatment = await resolveSellerTaxTreatment(
+            new Date(Number(orderBefore.date)),
+            { client: tx },
+          );
+          const documentType = sellerTaxTreatment.taxStatus === "VAT_REGISTERED"
+            ? "VAT_TAX_INVOICE"
+            : "PAN_BILL";
+          const normalizedPaperNumber = String(paperBillNumber || "").trim();
+          if (currentAssignment.paperBillStatus !== "NOT_SELECTED") {
+            const sameChoice = currentAssignment.paperBillRequested === paperBillRequested &&
+              currentAssignment.paperBillDocumentType === documentType &&
+              (paperBillRequested
+                ? currentAssignment.paperBillNumber === normalizedPaperNumber
+                : !currentAssignment.paperBillNumber);
+            if (!sameChoice) {
+              throw Object.assign(new Error("The recorded paper bill choice is immutable. Use the return/void workflow to correct an issued number."), {
+                code: "PAPER_BILL_CHOICE_IMMUTABLE",
+                statusCode: 409,
+              });
+            }
+          } else {
+            const billDetails = paperBillRequested
+              ? await validatePaperBillChoice({
+                client: tx,
+                distributorId: assignment.distributorId,
+                documentType,
+                billNumber: normalizedPaperNumber,
+                assignmentId,
+              })
+              : { paperBillAllocationId: null, paperBillNumber: null, paperBillDocumentType: documentType };
+            const issuedAt = paperBillRequested ? new Date() : null;
+            const billStatus = paperBillRequested ? "ISSUED" : "NO_PHYSICAL_COPY";
+            const billIssuedBy = paperBillRequested
+              ? String(req.auth?.accountId || req.auth?.userId || distributorId).slice(0, 191)
+              : null;
+            const choiceClaim = await tx.orderAssignment.updateMany({
+              where: {
+                id: assignmentId,
+                status: assignment.status,
+                paperBillStatus: "NOT_SELECTED",
+              },
+              data: {
+                paperBillRequested,
+                paperBillStatus: billStatus,
+                ...billDetails,
+                paperBillIssuedAt: issuedAt,
+                paperBillIssuedBy: billIssuedBy,
+              },
+            });
+            if (choiceClaim.count !== 1) {
+              throw Object.assign(new Error("The physical bill choice changed concurrently. Refresh the order and try again."), {
+                code: "PAPER_BILL_CHOICE_CONFLICT",
+                statusCode: 409,
+              });
+            }
+            paperBillAuditState = {
+              paperBillRequested,
+              paperBillStatus: billStatus,
+              ...billDetails,
+            };
+          }
         }
       }
       if (distributorOwnsAssignment && normalizedStatus === "letter_ready") {
@@ -1597,6 +1696,9 @@ const updateAssignmentStatus = async (req, res) => {
         afterState: {
           assignmentStatus: normalizedStatus,
           fulfillmentStatus: normalizedStatus,
+          ...(paperBillAuditState
+            ? paperBillAuditState
+            : {}),
           ...(adminControlReason ? { adminReason: adminControlReason } : {}),
         },
       }, { client: tx });
@@ -1613,12 +1715,17 @@ const updateAssignmentStatus = async (req, res) => {
     res.json({ success: true, message: `Status updated to ${status}` });
   } catch (error) {
     console.error("updateAssignmentStatus error:", error);
+    const paperBillConflict = error.code === "P2002" && paperBillNumber;
     const statusCode = error.cardValidationStatusCode ||
-      (req.adminControlReason ? error.statusCode || 500 : 200);
+      (paperBillConflict ? 409 :
+        error.code?.startsWith("PAPER_BILL") ? error.statusCode || 400 :
+        (req.adminControlReason ? error.statusCode || 500 : 200));
     return res.status(statusCode).json({
       success: false,
-      ...(error.code ? { code: error.code } : {}),
-      message: error.message,
+      ...(paperBillConflict ? { code: "PAPER_BILL_NUMBER_ALREADY_USED" } : error.code ? { code: error.code } : {}),
+      message: paperBillConflict
+        ? "This physical bill number has already been recorded against another order."
+        : error.message,
     });
   }
 };
