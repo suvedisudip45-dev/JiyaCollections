@@ -48,9 +48,11 @@ import {
   updateSellerTaxProfileAdmin,
 } from "../controllers/vatRateController.js";
 import {
+  amendVatReturnAdmin,
   createVatFilingDraftAdmin,
   createVatFilingPaymentAdmin,
   fileVatReturnAdmin,
+  getVatAssessmentAdjustmentAccountsAdmin,
   getVatFilingRecordsAdmin,
 } from "../controllers/vatFilingController.js";
 import {
@@ -133,9 +135,11 @@ financialRouter.get("/tax-registration-versions", authenticate, authorize("finan
 financialRouter.post("/tax-registration-versions", authenticate, authorize("finance:tax_configure"), createTaxRegistrationVersionAdmin);
 financialRouter.post("/tax-registration-versions/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelTaxRegistrationVersionAdmin);
 financialRouter.get("/tax-filings", authenticate, authorize("finance:tax_report_read"), getVatFilingRecordsAdmin);
+financialRouter.get("/tax-filings/adjustment-accounts", authenticate, authorize("finance:tax_configure"), getVatAssessmentAdjustmentAccountsAdmin);
 financialRouter.post("/tax-filings", authenticate, authorize("finance:tax_configure"), createVatFilingDraftAdmin);
 financialRouter.post("/tax-filings/:id/file", authenticate, authorize("finance:tax_configure"), fileVatReturnAdmin);
 financialRouter.post("/tax-filings/:id/payments", authenticate, authorize("finance:tax_configure"), createVatFilingPaymentAdmin);
+financialRouter.post("/tax-filings/:id/amendments", authenticate, authorize("finance:tax_configure"), amendVatReturnAdmin);
 financialRouter.get("/sales-invoices", authenticate, authorize("finance:tax_report_read"), getSalesInvoicesAdmin);
 financialRouter.post("/sales-invoices/:id/paper-issue", authenticate, authorize("finance:tax_configure"), recordPaperSalesInvoiceAdmin);
 financialRouter.get("/paper-bill-books", authenticate, authorize("finance:tax_report_read"), getPaperBillControlDataAdmin);

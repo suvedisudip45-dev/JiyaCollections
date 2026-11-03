@@ -743,6 +743,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     let inventory = 0;
     let inputVat = 0;
     let supplierAdvances = 0;
+    let vatTaxPrepayments = 0;
     let fixedAssetsGross = 0;
     let accumulatedDepreciation = 0;
 
@@ -774,6 +775,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       else if (code === "1140") inventory += cumBal;
       else if (code === "1150") inputVat += cumBal;
       else if (code === "1160") supplierAdvances += cumBal;
+      else if (code === "1165") vatTaxPrepayments += cumBal;
       else if (["1510", "1520", "1530"].includes(code)) fixedAssetsGross += cumBal;
       else if (code === "1590") accumulatedDepreciation += cumBal;
       else if (code === "2110") ap += cumBal;
@@ -792,7 +794,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     });
 
     const netFixedAssets = Number((fixedAssetsGross - accumulatedDepreciation).toFixed(2));
-    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + distributorCodReceivable + gatewayClearing + inventory + inputVat + supplierAdvances).toFixed(2));
+    const totalCurrentAssets = Number((cash + bank + ar + codReceivable + distributorCodReceivable + gatewayClearing + inventory + inputVat + supplierAdvances + vatTaxPrepayments).toFixed(2));
     const totalAssets = Number((totalCurrentAssets + netFixedAssets).toFixed(2));
 
     const totalCurrentLiabilities = Number((ap + manufacturerPayable + distributorPayable + marketingPartnerPayable + carrierPayable + outputVat + taxPayable + customerRefundsPayable + dividendsPayable).toFixed(2));
@@ -859,6 +861,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
             inventory,
             inputVat,
             supplierAdvances,
+            vatTaxPrepayments,
             totalCurrentAssets,
           },
           fixedAssets: {

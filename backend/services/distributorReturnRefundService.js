@@ -59,6 +59,7 @@ export const submitDistributorCustomerRefund = async ({
   distributorId,
   returnId,
   amount,
+  adjustmentReason,
   paymentMethod,
   externalReference,
   evidenceUrl,
@@ -69,6 +70,7 @@ export const submitDistributorCustomerRefund = async ({
 } = {}) => {
   if (!distributorId || !returnId) throw fail("Distributor and return IDs are required.");
   const decAmount = parseAmount(amount);
+  const reason = text(adjustmentReason, "Refund amount change reason", 2000);
   const method = validatePaymentMethod(paymentMethod);
   const reference = text(externalReference, "Payment reference", 191);
   const evidence = text(evidenceUrl, "Payment evidence URL", 2000, true);
@@ -88,6 +90,7 @@ export const submitDistributorCustomerRefund = async ({
           replay.distributorId !== distributorId ||
           replay.customerReturnId !== returnId ||
           !new Prisma.Decimal(String(replay.amount)).equals(decAmount) ||
+          replay.notes !== reason ||
           replay.paymentMethod !== method ||
           replay.externalReference !== reference ||
           replay.evidenceUrl !== evidence
@@ -123,8 +126,12 @@ export const submitDistributorCustomerRefund = async ({
         throw fail("Admin approval, inspection, and a refund-policy snapshot are required.", 409, "RETURN_REFUND_NOT_READY");
       }
       const approvedAmount = new Prisma.Decimal(String(returnRecord.approvedRefundAmount)).toDecimalPlaces(2);
-      if (!decAmount.equals(approvedAmount)) {
-        throw fail(`Refund must equal the Admin-approved amount of NPR ${approvedAmount.toFixed(2)}.`, 409, "REFUND_AMOUNT_MISMATCH");
+      const returnValue = new Prisma.Decimal(String(returnRecord.totalRefundAmount || 0)).toDecimalPlaces(2);
+      if (decAmount.greaterThan(returnValue)) {
+        throw fail(`Refund cannot exceed the returned product value of NPR ${returnValue.toFixed(2)}.`, 400, "REFUND_AMOUNT_EXCEEDS_RETURN_VALUE");
+      }
+      if (!decAmount.equals(approvedAmount) && !reason) {
+        throw fail("A reason is required when the refund amount differs from the Admin-approved amount.", 400, "REFUND_ADJUSTMENT_REASON_REQUIRED");
       }
 
       const claimed = await tx.customerReturn.updateMany({
@@ -146,7 +153,7 @@ export const submitDistributorCustomerRefund = async ({
           idempotencyKey: key,
           occurredAt: now,
           recordedByAccountId,
-          notes: "Distributor-submitted proof of customer return refund.",
+          notes: reason,
         },
       });
       await addReturnEvent(tx, {
@@ -156,8 +163,15 @@ export const submitDistributorCustomerRefund = async ({
         toStatus: "DISTRIBUTOR_REFUND_REVIEW",
         actorId: recordedByAccountId,
         actorRole: "DISTRIBUTOR",
-        reason: reference,
-        metadata: { cashEventId: cashEvent.id, amount: decAmount.toFixed(2), paymentMethod: method },
+        reason: reason || reference,
+        metadata: {
+          cashEventId: cashEvent.id,
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: decAmount.toFixed(2),
+          amountChanged: !decAmount.equals(approvedAmount),
+          adjustmentReason: reason,
+          paymentMethod: method,
+        },
         idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND:${key}`,
       });
       await recordSystemAudit({
@@ -168,7 +182,13 @@ export const submitDistributorCustomerRefund = async ({
         action: "DISTRIBUTOR_CUSTOMER_REFUND_SUBMITTED",
         entityType: "CustomerReturn",
         entityId: returnId,
-        afterState: { cashEventId: cashEvent.id, amount: decAmount.toFixed(2), paymentMethod: method },
+        afterState: {
+          cashEventId: cashEvent.id,
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: decAmount.toFixed(2),
+          adjustmentReason: reason,
+          paymentMethod: method,
+        },
       }, { client: tx });
       return { success: true, cashEvent, isReplay: false };
     }, { isolationLevel: "Serializable" });
@@ -180,6 +200,7 @@ export const submitDistributorCustomerRefund = async ({
           replay.distributorId !== distributorId ||
           replay.customerReturnId !== returnId ||
           !new Prisma.Decimal(String(replay.amount)).equals(decAmount) ||
+          replay.notes !== reason ||
           replay.paymentMethod !== method ||
           replay.externalReference !== reference ||
           replay.evidenceUrl !== evidence
@@ -204,6 +225,8 @@ export const reviewDistributorCustomerRefund = async ({
   reviewerAccountId = null,
   actorContext = {},
   client = prisma,
+  postRefundAccounting = postDistributorCustomerRefundAccounting,
+  reverseCounterSaleEarning = reverseDistributorCounterSaleEarning,
   now = new Date(),
 } = {}) => {
   if (!distributorId || !returnId) throw fail("Distributor and return IDs are required.");
@@ -254,9 +277,15 @@ export const reviewDistributorCustomerRefund = async ({
         },
       });
       if (!event) throw fail("Refund payment evidence was not found.", 404, "REFUND_EVIDENCE_NOT_FOUND");
+      const eventNotes = [
+        event.notes ? `Distributor adjustment reason: ${event.notes}` : null,
+        notes ? `Admin review: ${notes}` : null,
+      ].filter(Boolean).join("\n") || null;
       const approvedAmount = new Prisma.Decimal(String(returnRecord.approvedRefundAmount || 0)).toDecimalPlaces(2);
-      if (!new Prisma.Decimal(String(event.amount)).equals(approvedAmount)) {
-        throw fail("Submitted refund amount does not match the Admin-approved refund.", 409, "REFUND_AMOUNT_MISMATCH");
+      const refundAmount = new Prisma.Decimal(String(event.amount)).toDecimalPlaces(2);
+      const returnValue = new Prisma.Decimal(String(returnRecord.totalRefundAmount || 0)).toDecimalPlaces(2);
+      if (!refundAmount.greaterThan(0) || refundAmount.greaterThan(returnValue)) {
+        throw fail("Submitted refund amount is invalid or exceeds the returned product value.", 409, "REFUND_AMOUNT_INVALID");
       }
 
       if (normalizedDecision === "REJECT") {
@@ -266,7 +295,7 @@ export const reviewDistributorCustomerRefund = async ({
             status: "REJECTED",
             verifiedByAccountId: reviewerAccountId,
             verifiedAt: now,
-            notes,
+            notes: eventNotes,
           },
         });
         const returnClaim = await tx.customerReturn.updateMany({
@@ -284,7 +313,7 @@ export const reviewDistributorCustomerRefund = async ({
           actorId: reviewerAccountId,
           actorRole: "ADMIN",
           reason: notes,
-          metadata: { cashEventId: event.id },
+          metadata: { cashEventId: event.id, amount: refundAmount.toFixed(2), adjustmentReason: event.notes },
           idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND_REJECTED:${event.id}`,
         });
         await recordSystemAudit({
@@ -297,13 +326,32 @@ export const reviewDistributorCustomerRefund = async ({
           entityType: "CustomerReturn",
           entityId: returnId,
           beforeState: { lifecycleStatus: returnRecord.lifecycleStatus, cashEventStatus: event.status },
-          afterState: { lifecycleStatus: "REFUND_PENDING", cashEventStatus: "REJECTED", reviewNotes: notes },
+          afterState: {
+            lifecycleStatus: "REFUND_PENDING",
+            cashEventStatus: "REJECTED",
+            reviewNotes: notes,
+            distributorAdjustmentReason: event.notes,
+          },
         }, { client: tx });
         return { success: true, decision: "REJECTED", isReplay: false };
       }
 
-      const journal = await postDistributorCustomerRefundAccounting({
-        returnRecord: { ...returnRecord, completedAt: now },
+      const vatRate = new Prisma.Decimal(String(returnRecord.refundPolicySnapshot?.vatRatePercent ?? 13));
+      if (!vatRate.isFinite() || vatRate.isNegative() || vatRate.greaterThan(100)) {
+        throw fail("The approved return has an invalid VAT rate.", 409, "RETURN_REFUND_POLICY_INVALID");
+      }
+      const refundVat = refundAmount.minus(
+        refundAmount.div(new Prisma.Decimal(1).plus(vatRate.div(100)))
+          .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+      const verifiedReturnRecord = {
+        ...returnRecord,
+        approvedRefundAmount: refundAmount,
+        vatRefunded: refundVat.toNumber(),
+        completedAt: now,
+      };
+      const journal = await postRefundAccounting({
+        returnRecord: verifiedReturnRecord,
         client: tx,
       });
       const distributor = await tx.distributor.findUnique({
@@ -311,8 +359,8 @@ export const reviewDistributorCustomerRefund = async ({
         select: { name: true },
       });
       if (!distributor) throw fail("Distributor profile not found while posting return accounting.", 404, "DISTRIBUTOR_NOT_FOUND");
-      await reverseDistributorCounterSaleEarning({
-        returnRecord,
+      await reverseCounterSaleEarning({
+        returnRecord: verifiedReturnRecord,
         distributorName: distributor.name,
         effectiveAt: now,
         client: tx,
@@ -331,7 +379,7 @@ export const reviewDistributorCustomerRefund = async ({
           verifiedAt: now,
           journalEntryId: journal.id,
           accountingDocumentId: document.id,
-          notes,
+          notes: eventNotes,
         },
       });
       const returnClaim = await tx.customerReturn.updateMany({
@@ -340,6 +388,8 @@ export const reviewDistributorCustomerRefund = async ({
           lifecycleStatus: "REFUNDED",
           refundStatus: "COMPLETED",
           completedAt: now,
+          approvedRefundAmount: refundAmount,
+          vatRefunded: refundVat.toNumber(),
           accountingJournalEntryId: journal.id,
           taxCreditNoteNumber: `CN-${journal.journalNumber}`,
         },
@@ -359,7 +409,9 @@ export const reviewDistributorCustomerRefund = async ({
           cashEventId: event.id,
           accountingDocumentId: document.id,
           journalEntryId: journal.id,
-          amount: approvedAmount.toFixed(2),
+          approvedAmount: approvedAmount.toFixed(2),
+          amount: refundAmount.toFixed(2),
+          adjustmentReason: event.notes,
         },
         idempotencyKey: `RETURN:${returnId}:DISTRIBUTOR_REFUND_VERIFIED`,
       });
@@ -376,6 +428,8 @@ export const reviewDistributorCustomerRefund = async ({
         afterState: {
           lifecycleStatus: "REFUNDED",
           refundStatus: "COMPLETED",
+          approvedRefundAmount: refundAmount.toFixed(2),
+          vatRefunded: refundVat.toFixed(2),
           accountingDocumentId: document.id,
           journalEntryId: journal.id,
         },

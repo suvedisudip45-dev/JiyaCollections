@@ -69,6 +69,7 @@ const DistributorSelfDelivery = () => {
   const [refundToSubmit, setRefundToSubmit] = useState(null);
   const [refundPaymentForm, setRefundPaymentForm] = useState({
     amount: "",
+    adjustmentReason: "",
     paymentMethod: "CASH",
     externalReference: "",
     evidenceFile: null,
@@ -309,6 +310,7 @@ const DistributorSelfDelivery = () => {
     setRefundToSubmit(returnRecord);
     setRefundPaymentForm({
       amount: Number(returnRecord.approvedRefundAmount || 0).toFixed(2),
+      adjustmentReason: "",
       paymentMethod: "CASH",
       externalReference: "",
       evidenceFile: null,
@@ -319,6 +321,12 @@ const DistributorSelfDelivery = () => {
   const handleRefundPaymentSubmit = async (event) => {
     event.preventDefault();
     if (!refundToSubmit || submittingRefund) return;
+    const approvedAmount = Number(refundToSubmit.approvedRefundAmount || 0);
+    const submittedAmount = Number(refundPaymentForm.amount);
+    if (submittedAmount !== approvedAmount && !refundPaymentForm.adjustmentReason.trim()) {
+      toast.error("Add a reason when changing the Admin-approved refund amount.");
+      return;
+    }
     if (!refundPaymentForm.evidenceFile) {
       toast.error("Upload a JPG or PNG image as refund payment evidence.");
       return;
@@ -327,6 +335,7 @@ const DistributorSelfDelivery = () => {
     try {
       const formData = new FormData();
       formData.append("amount", refundPaymentForm.amount);
+      formData.append("adjustmentReason", refundPaymentForm.adjustmentReason);
       formData.append("paymentMethod", refundPaymentForm.paymentMethod);
       formData.append("externalReference", refundPaymentForm.externalReference);
       formData.append("idempotencyKey", refundPaymentForm.idempotencyKey);
@@ -1280,7 +1289,30 @@ const DistributorSelfDelivery = () => {
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-bold text-[#171717]">Refund amount</label>
-              <input value={refundPaymentForm.amount} readOnly className="w-full rounded-lg border border-[#dedbd3] bg-[#f8f7f4] p-2 text-xs font-semibold text-[#575757]" />
+              <input
+                type="number"
+                min="0.01"
+                max={Number(refundToSubmit.totalRefundAmount || 0).toFixed(2)}
+                step="0.01"
+                value={refundPaymentForm.amount}
+                onChange={(event) => setRefundPaymentForm((current) => ({ ...current, amount: event.target.value }))}
+                required
+                className="w-full rounded-lg border border-[#dedbd3] bg-white p-2 text-xs font-semibold text-[#171717]"
+              />
+              {Number(refundPaymentForm.amount) !== Number(refundToSubmit.approvedRefundAmount || 0) && (
+                <div className="mt-2">
+                  <label className="mb-1 block text-[11px] font-bold text-[#171717]">Reason for changed refund amount</label>
+                  <textarea
+                    value={refundPaymentForm.adjustmentReason}
+                    onChange={(event) => setRefundPaymentForm((current) => ({ ...current, adjustmentReason: event.target.value }))}
+                    maxLength={2000}
+                    required
+                    rows={3}
+                    className="w-full rounded-lg border border-[#dedbd3] p-2 text-xs"
+                    placeholder="Explain why the refund differs from the Admin-approved amount."
+                  />
+                </div>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-[11px] font-bold text-[#171717]">Payment method</label>

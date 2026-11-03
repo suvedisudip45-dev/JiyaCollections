@@ -28,19 +28,22 @@ const TaxCompliance = ({ token }) => {
   const [savingSellerProfile, setSavingSellerProfile] = useState(false);
   const [savingRegistration, setSavingRegistration] = useState(false);
   const [vatFilings, setVatFilings] = useState([]);
+  const [vatAdjustmentAccounts, setVatAdjustmentAccounts] = useState([]);
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [treasuryAccounts, setTreasuryAccounts] = useState([]);
   const [filingDraft, setFilingDraft] = useState(() => {
     const now = new Date();
     const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     return {
+      filingCadence: "MONTHLY",
       periodKey: month,
       periodStart: `${month}-01`,
       periodEnd: new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10),
     };
   });
-  const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", filedReference: "", adjustmentReason: "" });
-  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: new Date().toISOString().slice(0, 10) });
+  const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" });
+  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: new Date().toISOString().slice(0, 10), adjustmentReason: "" });
+  const [vatAmendment, setVatAmendment] = useState({ filingId: "", amendedAssessedAmount: "", amendedReference: "", amendedDate: todayInputDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" });
   const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
   const [paperBillBooks, setPaperBillBooks] = useState([]);
   const [paperBillDistributors, setPaperBillDistributors] = useState([]);
@@ -138,6 +141,11 @@ const TaxCompliance = ({ token }) => {
       }
       setVatFilings(filingResponse.data.records || []);
       setSalesInvoices(invoiceResponse.data.records || []);
+      if (canConfigureVat) {
+        const adjustmentResponse = await axios.get(`${backendUrl}/api/finance/tax-filings/adjustment-accounts`, { headers: { token } });
+        if (!adjustmentResponse.data?.success) throw new Error(adjustmentResponse.data?.message || "VAT adjustment accounts could not be loaded.");
+        setVatAdjustmentAccounts(adjustmentResponse.data.accounts || []);
+      }
       const treasuryResponse = await axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } });
       if (!treasuryResponse.data?.success) throw new Error(treasuryResponse.data?.message || "Treasury accounts could not be loaded.");
       const accounts = (treasuryResponse.data.accounts || []).filter((account) =>
@@ -156,7 +164,7 @@ const TaxCompliance = ({ token }) => {
       console.error(error);
       toast.error(error.response?.data?.message || error.message || "Failed to load tax records.");
     }
-  }, [token]);
+  }, [canConfigureVat, token]);
 
   const fetchPaperBillBooks = useCallback(async () => {
     try {
@@ -249,13 +257,15 @@ const TaxCompliance = ({ token }) => {
       setSavingTaxAction(true);
       const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${filingSubmission.id}/file`, {
         assessedAmount: filingSubmission.assessedAmount,
+        paymentCreditApplied: filingSubmission.paymentCreditApplied,
+        assessmentAdjustmentAccountId: filingSubmission.assessmentAdjustmentAccountId,
         filedReference: filingSubmission.filedReference,
         adjustmentReason: filingSubmission.adjustmentReason,
         filedDate: new Date().toISOString(),
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT filing could not be recorded.");
       toast.success(response.data.message || "VAT filing recorded.");
-      setFilingSubmission({ id: "", assessedAmount: "", filedReference: "", adjustmentReason: "" });
+      setFilingSubmission({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" });
       await fetchTaxRecords();
     } catch (error) {
       console.error(error);
@@ -274,15 +284,41 @@ const TaxCompliance = ({ token }) => {
         paymentReference: vatPayment.paymentReference,
         treasuryAccountId: vatPayment.treasuryAccountId,
         paymentDate: `${vatPayment.paymentDate}T12:00:00.000Z`,
+        adjustmentReason: vatPayment.adjustmentReason,
         idempotencyKey: `VATPAY:${vatPayment.filingId}:${vatPayment.paymentReference.trim()}`,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT payment could not be recorded.");
       toast.success(response.data.message || "VAT payment recorded.");
-      setVatPayment((current) => ({ ...current, filingId: "", amount: "", paymentReference: "" }));
+      setVatPayment((current) => ({ ...current, filingId: "", amount: "", paymentReference: "", adjustmentReason: "" }));
       await fetchTaxRecords();
     } catch (error) {
       console.error(error);
       toast.error(error.response?.data?.message || error.message || "VAT payment could not be recorded.");
+    } finally {
+      setSavingTaxAction(false);
+    }
+  };
+
+  const submitVatAmendment = async (event) => {
+    event.preventDefault();
+    try {
+      setSavingTaxAction(true);
+      const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${vatAmendment.filingId}/amendments`, {
+        amendedAssessedAmount: vatAmendment.amendedAssessedAmount,
+        amendedReference: vatAmendment.amendedReference,
+        amendedDate: `${vatAmendment.amendedDate}T12:00:00.000Z`,
+        adjustmentAccountId: vatAmendment.adjustmentAccountId,
+        reason: vatAmendment.reason,
+        evidenceUrl: vatAmendment.evidenceUrl,
+        idempotencyKey: vatAmendment.idempotencyKey,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "VAT amendment could not be recorded.");
+      toast.success(response.data.message || "VAT amendment recorded.");
+      setVatAmendment((current) => ({ ...current, filingId: "", amendedAssessedAmount: "", amendedReference: "", adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" }));
+      await fetchTaxRecords();
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "VAT amendment could not be recorded.");
     } finally {
       setSavingTaxAction(false);
     }
@@ -972,6 +1008,7 @@ const TaxCompliance = ({ token }) => {
         </div>
         {canConfigureVat && (
           <form onSubmit={createFilingDraft} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <label className="text-xs font-semibold text-slate-700">IRD filing cadence<select required value={filingDraft.filingCadence} onChange={(event) => setFilingDraft((current) => ({ ...current, filingCadence: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="MONTHLY">Monthly</option><option value="QUARTERLY">Quarterly</option><option value="SEMIANNUAL">Semiannual</option><option value="ANNUAL">Annual</option><option value="CUSTOM">Custom</option></select></label>
             <label className="text-xs font-semibold text-slate-700">IRD period label<input required value={filingDraft.periodKey} onChange={(event) => setFilingDraft((current) => ({ ...current, periodKey: event.target.value }))} maxLength={64} placeholder="As assigned by IRD" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Period start<input type="date" required value={filingDraft.periodStart} onChange={(event) => setFilingDraft((current) => ({ ...current, periodStart: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Period end<input type="date" required value={filingDraft.periodEnd} onChange={(event) => setFilingDraft((current) => ({ ...current, periodEnd: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
@@ -981,8 +1018,10 @@ const TaxCompliance = ({ token }) => {
         {filingSubmission.id && canConfigureVat && (
           <form onSubmit={submitVatFiling} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <label className="text-xs font-semibold text-slate-700">IRD-assessed amount<input type="number" min="0" step="0.01" required value={filingSubmission.assessedAmount} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Apply carried-forward payment credit<input type="number" min="0" max={Math.min(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.carriedForwardPaymentCredit || 0), Number(filingSubmission.assessedAmount || 0))} step="0.01" required value={filingSubmission.paymentCreditApplied} onChange={(event) => setFilingSubmission((current) => ({ ...current, paymentCreditApplied: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            {Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005 && <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={filingSubmission.assessmentAdjustmentAccountId} onChange={(event) => setFilingSubmission((current) => ({ ...current, assessmentAdjustmentAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>}
             <label className="text-xs font-semibold text-slate-700">IRD filing reference<input required value={filingSubmission.filedReference} onChange={(event) => setFilingSubmission((current) => ({ ...current, filedReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Reason if assessment differs<input value={filingSubmission.adjustmentReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-1">Reason if assessment differs<input required={Math.abs(Number(filingSubmission.assessedAmount || 0) - Math.max(Number(vatFilings.find((filing) => filing.id === filingSubmission.id)?.netVatPayable || 0), 0)) > 0.005} value={filingSubmission.adjustmentReason} onChange={(event) => setFilingSubmission((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Saving..." : "Record filed return"}</button>
           </form>
         )}
@@ -992,34 +1031,59 @@ const TaxCompliance = ({ token }) => {
             <label className="text-xs font-semibold text-slate-700">Payment reference<input required value={vatPayment.paymentReference} onChange={(event) => setVatPayment((current) => ({ ...current, paymentReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Paid from<select required value={vatPayment.treasuryAccountId} onChange={(event) => setVatPayment((current) => ({ ...current, treasuryAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select cash/bank</option>{treasuryAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName} ({account.accountingAccount?.accountCode})</option>)}</select></label>
             <label className="text-xs font-semibold text-slate-700">Payment date<input type="date" required value={vatPayment.paymentDate} onChange={(event) => setVatPayment((current) => ({ ...current, paymentDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            {Number(vatPayment.amount || 0) > Number(vatFilings.find((filing) => filing.id === vatPayment.filingId)?.outstandingAmount || 0) + 0.005 && <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for VAT overpayment (required)<input required minLength={3} value={vatPayment.adjustmentReason} onChange={(event) => setVatPayment((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>}
             <button type="submit" disabled={savingTaxAction || !treasuryAccounts.length} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record payment"}</button>
+          </form>
+        )}
+        {vatAmendment.filingId && canConfigureVat && (
+          <form onSubmit={submitVatAmendment} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <p className="text-xs text-slate-600 lg:col-span-4">Record a filed-return change as a dated, auditable amendment. The reason, IRD reference, and balanced accounting journal are required.</p>
+            <label className="text-xs font-semibold text-slate-700">Amended assessed amount<input type="number" min="0" step="0.01" required value={vatAmendment.amendedAssessedAmount} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedAssessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Amendment date<input type="date" required value={vatAmendment.amendedDate} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">IRD amendment reference<input required maxLength={191} value={vatAmendment.amendedReference} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedReference: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={vatAmendment.adjustmentAccountId} onChange={(event) => setVatAmendment((current) => ({ ...current, adjustmentAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for amendment (required)<textarea required minLength={3} maxLength={2000} value={vatAmendment.reason} onChange={(event) => setVatAmendment((current) => ({ ...current, reason: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Evidence URL (optional)<input type="url" maxLength={5000} value={vatAmendment.evidenceUrl} onChange={(event) => setVatAmendment((current) => ({ ...current, evidenceUrl: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record amendment"}</button>
           </form>
         )}
         {canConfigureVat && treasuryAccounts.length === 0 && <p className="mt-3 text-xs text-amber-800">Map an active NPR cash or bank Treasury account to GL account 1110 or 1120 before recording a tax payment.</p>}
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full text-left text-xs">
-            <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-4">IRD period</th><th className="py-2 pr-4">Date range</th><th className="py-2 pr-4">Output VAT</th><th className="py-2 pr-4">Input VAT</th><th className="py-2 pr-4">Brought-forward credit</th><th className="py-2 pr-4">Ledger position</th><th className="py-2 pr-4">Assessed</th><th className="py-2 pr-4">Paid</th><th className="py-2 pr-4">Outstanding</th><th className="py-2 pr-4">Status</th>{canConfigureVat && <th className="py-2 text-right">Action</th>}</tr></thead>
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="py-2 pr-4">IRD period / cadence</th><th className="py-2 pr-4">Date range</th><th className="py-2 pr-4">Output VAT</th><th className="py-2 pr-4">Input VAT</th><th className="py-2 pr-4">VAT credit carried</th><th className="py-2 pr-4">Ledger estimate</th><th className="py-2 pr-4">IRD assessed</th><th className="py-2 pr-4">Paid</th><th className="py-2 pr-4">Payment credit</th><th className="py-2 pr-4">Outstanding</th><th className="py-2 pr-4">Source checks</th><th className="py-2 pr-4">Status</th>{canConfigureVat && <th className="py-2 text-right">Action</th>}</tr></thead>
             <tbody className="divide-y divide-slate-100">
               {vatFilings.map((filing) => (
                 <tr key={filing.id} className="text-slate-700">
-                  <td className="py-3 pr-4 font-semibold">{filing.periodKey}</td>
+                  <td className="py-3 pr-4 font-semibold">{filing.periodKey}<span className="mt-1 block text-[10px] font-normal text-slate-500">{filing.filingCadence || "CUSTOM"}</span></td>
                   <td className="py-3 pr-4">{filing.periodStart ? new Date(filing.periodStart).toLocaleDateString() : "—"} – {filing.periodEnd ? new Date(filing.periodEnd).toLocaleDateString() : "—"}</td>
                   <td className="py-3 pr-4">{currency}{Number(filing.outputVat).toLocaleString()}</td>
                   <td className="py-3 pr-4">{currency}{Number(filing.inputVat).toLocaleString()}</td>
-                  <td className="py-3 pr-4" title={`Input VAT credit: ${currency}${Number(filing.carriedForwardInputVat).toLocaleString()} · Output VAT credit: ${currency}${Number(filing.carriedForwardOutputVat).toLocaleString()}`}>{currency}{(Number(filing.carriedForwardInputVat) + Number(filing.carriedForwardOutputVat)).toLocaleString()}</td>
+                  <td className="py-3 pr-4" title={`Input VAT credit: ${currency}${Number(filing.carriedForwardInputVat).toLocaleString()} · Output VAT credit: ${currency}${Number(filing.carriedForwardOutputVat).toLocaleString()} · Payment credit: ${currency}${Number(filing.carriedForwardPaymentCredit).toLocaleString()}`}>{currency}{(Number(filing.carriedForwardInputVat) + Number(filing.carriedForwardOutputVat)).toLocaleString()}<span className="mt-1 block text-[10px] text-slate-500">Payment: {currency}{Number(filing.carriedForwardPaymentCredit).toLocaleString()}</span></td>
                   <td className="py-3 pr-4">{currency}{Number(filing.netVatPayable).toLocaleString()}</td>
-                  <td className="py-3 pr-4">{filing.assessedAmount === null ? "Not filed" : `${currency}${Number(filing.assessedAmount).toLocaleString()}`}</td>
-                  <td className="py-3 pr-4">{currency}{Number(filing.taxPaid).toLocaleString()}</td>
+                  <td className="py-3 pr-4">{filing.assessedAmount === null ? "Not filed" : <>{currency}{Number(filing.assessedAmount).toLocaleString()}{Math.abs(Number(filing.estimateVariance || 0)) > 0.005 && <span className="mt-1 block text-[10px] text-amber-700">Estimate variance: {currency}{Number(filing.estimateVariance).toLocaleString()}</span>}{(filing.amendments || []).map((amendment) => <span key={amendment.id} className="mt-1 block max-w-xs text-[10px] text-slate-500" title={amendment.reason}>Amended {amendment.amendedReference}: {currency}{Number(amendment.previousAssessedAmount).toLocaleString()} to {currency}{Number(amendment.amendedAssessedAmount).toLocaleString()}</span>)}</>}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.taxPaid).toLocaleString()}{(filing.payments || []).filter((payment) => payment.adjustmentReason).map((payment) => <span key={payment.id} className="mt-1 block max-w-xs text-[10px] text-slate-500" title={payment.paymentReference}>Reason: {payment.adjustmentReason}</span>)}</td>
+                  <td className="py-3 pr-4">{currency}{Number(filing.paymentCreditGenerated).toLocaleString()} generated<span className="mt-1 block text-[10px] text-slate-500">{currency}{Number(filing.paymentCreditApplied).toLocaleString()} applied</span></td>
                   <td className="py-3 pr-4">{filing.outstandingAmount === null ? "—" : `${currency}${Number(filing.outstandingAmount).toLocaleString()}`}</td>
+                  <td className="py-3 pr-4" title={`Source VAT: ${currency}${Number(filing.sourceReconciliation?.sourceOutputVatAfterAdjustments || 0).toLocaleString()} · GL VAT: ${currency}${Number(filing.sourceReconciliation?.postedOutputVat || 0).toLocaleString()}`}>
+                    {filing.sourceReconciliation ? `${filing.sourceReconciliation.salesInvoices.count} sales invoice(s)` : "No source summary"}
+                    <span className="mt-1 block text-[10px] text-slate-500">VAT variance: {currency}{Number(filing.sourceReconciliation?.outputVatVariance || 0).toLocaleString()}</span>
+                    <span className="mt-1 block text-[10px] text-amber-700">{filing.sourceReconciliation?.purchaseDocuments?.status || "PURCHASES UNVERIFIED"}</span>
+                    {filing.sourceReconciliation?.purchaseDocuments && <span className="mt-1 block text-[10px] text-slate-600">
+                      Purchases: {currency}{Number(filing.sourceReconciliation.purchaseDocuments.taxablePurchases || 0).toLocaleString()} · {filing.sourceReconciliation.purchaseDocuments.supplierOperatingExpenses?.count || 0} expenses / {filing.sourceReconciliation.purchaseDocuments.manufacturerProductionInvoices?.count || 0} production invoices
+                      <br />Input VAT source {currency}{Number(filing.sourceReconciliation.purchaseDocuments.sourceInputVat || 0).toLocaleString()} · GL {currency}{Number(filing.sourceReconciliation.purchaseDocuments.postedInputVat || 0).toLocaleString()} · variance {currency}{Number(filing.sourceReconciliation.purchaseDocuments.inputVatVariance || 0).toLocaleString()}
+                    </span>}
+                    {filing.sourceReconciliation?.openingVatCredit?.status !== "RECONCILED" && <span className="mt-1 block text-[10px] text-rose-700">Opening VAT credit requires review</span>}
+                    {filing.sourceReconciliation?.salesAdjustments?.unresolvedCount > 0 && <span className="mt-1 block text-[10px] text-rose-700">{filing.sourceReconciliation.salesAdjustments.unresolvedCount} unresolved adjustment(s)</span>}
+                  </td>
                   <td className="py-3 pr-4">{filing.status}</td>
-                  {canConfigureVat && <td className="py-3 text-right">{filing.status === "DRAFT" ? <button type="button" onClick={() => setFilingSubmission({ id: filing.id, assessedAmount: Math.max(Number(filing.netVatPayable), 0).toFixed(2), filedReference: "", adjustmentReason: "" })} className="font-semibold text-indigo-700 hover:text-indigo-900">Record filing</button> : Number(filing.outstandingAmount || 0) > 0 ? <button type="button" onClick={() => setVatPayment((current) => ({ ...current, filingId: filing.id, amount: filing.outstandingAmount }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Record payment</button> : "Settled"}</td>}
+                  {canConfigureVat && <td className="py-3 text-right"><div className="flex flex-col items-end gap-1">{filing.status === "DRAFT" ? <button type="button" onClick={() => setFilingSubmission({ id: filing.id, assessedAmount: Math.max(Number(filing.netVatPayable), 0).toFixed(2), paymentCreditApplied: Math.min(Number(filing.carriedForwardPaymentCredit || 0), Math.max(Number(filing.netVatPayable), 0)).toFixed(2), assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" })} className="font-semibold text-indigo-700 hover:text-indigo-900">Record filing</button> : <>{Number(filing.outstandingAmount || 0) > 0 && <button type="button" onClick={() => setVatPayment((current) => ({ ...current, filingId: filing.id, amount: filing.outstandingAmount, adjustmentReason: "" }))} className="font-semibold text-indigo-700 hover:text-indigo-900">Record payment</button>}<button type="button" onClick={() => setVatAmendment({ filingId: filing.id, amendedAssessedAmount: filing.assessedAmount, amendedReference: "", amendedDate: todayInputDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: `VATAMEND:${window.crypto.randomUUID()}` })} className="font-semibold text-rose-700 hover:text-rose-900">Amend filing</button></>}</div></td>}
                 </tr>
               ))}
-              {vatFilings.length === 0 && <tr><td colSpan={canConfigureVat ? 11 : 10} className="py-6 text-center text-slate-400">No VAT returns recorded.</td></tr>}
+              {vatFilings.length === 0 && <tr><td colSpan={canConfigureVat ? 13 : 12} className="py-6 text-center text-slate-400">No VAT returns recorded.</td></tr>}
             </tbody>
           </table>
         </div>
-        <p className="mt-3 text-[10px] text-slate-500">The draft is a posted-ledger reconciliation, not an IRD return. Taxable purchase totals and complete invoice/credit-note registers are not yet generated; verify these, the filing period, and all submitted figures against IRD instructions and supporting documents before filing. Payment records post to VAT payable and the selected mapped cash/bank account.</p>
+        <p className="mt-3 text-[10px] text-slate-500">The draft is a reconciliation workpaper, not an IRD return. Sales bill/adjustment totals are compared with the posted ledger; purchase-taxable totals are not yet available from a complete verified purchase register. An unreconciled opening VAT credit is flagged. Payment credits carry forward as a VAT tax-prepayment asset; ordinary partial payments need no exception reason, while an overpayment does. Assessment differences and subsequent amendments require an accountant-approved offset account and post linked, balanced journals. Verify all source documents and figures against IRD instructions before filing.</p>
       </section>
 
       {/* MONTHLY VAT RECONCILER */}

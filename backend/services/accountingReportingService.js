@@ -11,6 +11,11 @@ const toAmount = (cents) => Number((cents / 100).toFixed(2));
 const signedBalance = (debitCents, creditCents, normalBalance) =>
   normalBalance === "CREDIT" ? creditCents - debitCents : debitCents - creditCents;
 
+const isVatFilingJournal = (sourceType) =>
+  String(sourceType || "").startsWith("VAT_RETURN") ||
+  String(sourceType || "").startsWith("VAT_PAYMENT") ||
+  sourceType === "VAT_ASSESSMENT_ADJUSTMENT";
+
 export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) => {
   const periodTotals = new Map();
   const closingTotals = new Map();
@@ -51,7 +56,7 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       period.debit += debit;
       period.credit += credit;
       periodTotals.set(account.accountCode, period);
-      if (!["VAT_RETURN_NETTING", "VAT_RETURN_PAYMENT"].includes(journalEntry.sourceType)) {
+      if (!isVatFilingJournal(journalEntry.sourceType)) {
         if (account.accountCode === "2120") vatPeriodCents.outputVat += credit - debit;
         if (account.accountCode === "1150") vatPeriodCents.inputVat += debit - credit;
       }
@@ -82,10 +87,10 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
   const outputVat = toAmount(vatPeriodCents.outputVat);
   const inputVat = toAmount(vatPeriodCents.inputVat);
   const carriedForwardInputVat = Math.max(0, toAmount(openingVatCents.inputVatCredit));
-  const carriedForwardOutputVat = Math.max(0, toAmount(openingVatCents.outputVatCredit));
+  const carriedForwardOutputVat = 0;
   const closingBalance = (code) => balance(code, closing);
 
-  const currentAssets = ["1110", "1120", "1130", "1140", "1150", "1160", "1170", "1180", "1190"]
+  const currentAssets = ["1110", "1120", "1130", "1140", "1150", "1160", "1165", "1170", "1180", "1190"]
     .reduce((total, code) => total + balance(code, closing), 0);
   const fixedAssets = ["1510", "1520", "1530", "1590"]
     .reduce((total, code) => total + balance(code, closing), 0);
@@ -121,6 +126,7 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       accountsReceivable: toAmount(toCents(closingBalance("1130"))),
       inventory: toAmount(toCents(closingBalance("1140"))),
       inputVatReceivable: toAmount(toCents(closingBalance("1150"))),
+      vatTaxPrepayments: toAmount(toCents(closingBalance("1165"))),
       codReceivable: toAmount(toCents(closingBalance("1170"))),
       distributorCodReceivable: toAmount(toCents(closingBalance("1190"))),
       gatewayClearing: toAmount(toCents(closingBalance("1180"))),

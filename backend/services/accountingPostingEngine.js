@@ -26,6 +26,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "1140", accountName: "Merchandise Inventory", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1150", accountName: "Input VAT Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1160", accountName: "Supplier Advances & Prepaid Expenses", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
+  { accountCode: "1165", accountName: "VAT Tax Prepayments / Credits", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1170", accountName: "NCM COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1180", accountName: "Payment Gateway Clearing", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
   { accountCode: "1190", accountName: "Distributor COD Receivable", accountType: "ASSET", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "1100" },
@@ -2843,24 +2844,18 @@ export const postExpenseAccounting = async ({
   paidFromAccountType = "BANK",
   isPayable = false,
   payeeName,
+  transactionDate = new Date(),
 }) => {
   try {
     const amt = Number(amount || 0);
     if (amt <= 0) return;
 
-    let expenseCode = "6700"; // Miscellaneous
-    const cat = (category || "").toUpperCase();
-    if (cat.includes("SALAR")) expenseCode = "6100";
-    else if (cat.includes("RENT")) expenseCode = "6200";
-    else if (cat.includes("UTILIT")) expenseCode = "6300";
-    else if (cat.includes("MARKET") || cat.includes("ADS")) expenseCode = "6400";
-    else if (cat.includes("SOFTWARE") || cat.includes("TOOL")) expenseCode = "6500";
-    else if (cat.includes("DELIVERY") || cat.includes("COURIER")) expenseCode = "6430";
+    const expenseCode = getOperatingExpenseAccountCode(category);
 
     const creditCode = isPayable ? "2110" : paidFromAccountType === "CASH" ? "1110" : "1120";
 
     await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate,
       sourceType: "EXPENSE_PAYMENT",
       sourceId: expenseId,
       idempotencyKey: `EXPENSE:${expenseId}:${amt}`,
@@ -2885,6 +2880,17 @@ export const postExpenseAccounting = async ({
   } catch (error) {
     console.error("Error in postExpenseAccounting:", error);
   }
+};
+
+export const getOperatingExpenseAccountCode = (category) => {
+  const cat = String(category || "").toUpperCase();
+  if (cat.includes("SALAR")) return "6100";
+  if (cat.includes("RENT")) return "6200";
+  if (cat.includes("UTILIT")) return "6300";
+  if (cat.includes("MARKET") || cat.includes("ADS")) return "6400";
+  if (cat.includes("SOFTWARE") || cat.includes("TOOL")) return "6500";
+  if (cat.includes("DELIVERY") || cat.includes("COURIER")) return "6430";
+  return "6700";
 };
 
 /**

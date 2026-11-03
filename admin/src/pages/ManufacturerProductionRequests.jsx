@@ -140,6 +140,7 @@ const ManufacturerProductionRequests = ({ token }) => {
             vatRate: request.vatRate ?? 13,
             vatInvoiceReference: request.vatInvoiceReference || "",
             vatInvoiceDate: "",
+            vatInvoiceEvidenceUrl: "",
             vatInvoiceVerified: false,
           };
         });
@@ -261,6 +262,7 @@ const ManufacturerProductionRequests = ({ token }) => {
           approvedVatInvoiceDate: approved.vatInvoiceDate
             ? `${approved.vatInvoiceDate}T00:00:00+05:45`
             : null,
+          approvedVatInvoiceEvidenceUrl: approved.vatInvoiceEvidenceUrl,
           approvedVatInvoiceVerified: approved.vatTreatment !== "EXEMPT" && approved.vatInvoiceVerified === true,
         } : {}),
       }, { headers: { token } });
@@ -520,6 +522,9 @@ const ManufacturerProductionRequests = ({ token }) => {
                   </label>
                   <label className="text-xs font-semibold text-slate-600">Supplier VAT invoice date
                     <input type="date" required={approvedTerms.vatInvoiceVerified === true} value={approvedTerms.vatInvoiceDate ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceDate", event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
+                  </label>
+                  <label className="text-xs font-semibold text-slate-600 sm:col-span-3">Supplier VAT invoice evidence URL
+                    <input type="url" maxLength={5000} required={approvedTerms.vatInvoiceVerified === true} value={approvedTerms.vatInvoiceEvidenceUrl ?? ""} onChange={(event) => setTerm(request.id, "vatInvoiceEvidenceUrl", event.target.value)} placeholder="https://..." className="mt-1 w-full rounded-xl border px-3 py-2 text-sm" />
                   </label>
                   <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-900 sm:col-span-3">
                     <input type="checkbox" checked={approvedTerms.vatInvoiceVerified === true} onChange={(event) => setTerm(request.id, "vatInvoiceVerified", event.target.checked)} className="mt-0.5" />

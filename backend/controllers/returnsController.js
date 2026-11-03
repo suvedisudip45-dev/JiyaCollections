@@ -235,6 +235,7 @@ export const getCustomerReturns = async (req, res) => {
               id: true,
               amount: true,
               status: true,
+              notes: true,
               paymentMethod: true,
               externalReference: true,
               evidenceUrl: true,

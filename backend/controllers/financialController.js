@@ -941,7 +941,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
       else if (cat === "MAINTENANCE") maintenance += amt;
       else miscExpenses += amt;
 
-      if (exp.isVatBill) {
+      if (exp.purchaseVatStatus === "VERIFIED") {
         operatingExpenseVatClaimable += vat;
       }
     });

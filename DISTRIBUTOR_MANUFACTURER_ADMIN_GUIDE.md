@@ -165,8 +165,11 @@ and audit event atomically.
 Admin return approval snapshots the configured customer return charge
 percentage against returned product value; the original delivery fee is not
 refunded. A distributor must receive and inspect the return, then record the
-exact approved customer refund amount, payment method, reference (except cash),
-and a JPG/PNG image of the refund evidence in Self-Delivery Management. Return
+customer refund amount, payment method, reference (except cash), and a JPG/PNG
+image of the refund evidence in Self-Delivery Management. The distributor may
+adjust the approved amount up to the returned product value; a reason is
+required for any change, and Admin reviews the amount, reason, and evidence
+before recording the verified amount. Return
 inspection also requires a JPG/PNG photo of the returned goods. Admin verification completes
 the return and creates a distributor payable. Rejected evidence reopens the
 refund task. The Admin Returns page can settle that payable from an active NPR

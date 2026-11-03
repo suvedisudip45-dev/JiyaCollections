@@ -43,6 +43,15 @@ const actorContext = (req) => ({
   correlationId: req.correlationId || null,
 });
 
+const isHttpUrl = (value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
 export const getManufacturerProductionDashboard = async (req, res) => {
   try {
     const [factoryBalances, productionRequests] = await Promise.all([
@@ -555,6 +564,12 @@ export const reviewProductionRequest = async (req, res) => {
       }
       const vatInvoiceVerified = isApproval && vatTerms.vatTreatment !== "EXEMPT" &&
         req.body.approvedVatInvoiceVerified === true;
+      const vatInvoiceEvidenceUrl = vatInvoiceVerified
+        ? String(req.body.approvedVatInvoiceEvidenceUrl ?? "").trim()
+        : "";
+      if (vatInvoiceVerified && (vatInvoiceEvidenceUrl.length > 5000 || !isHttpUrl(vatInvoiceEvidenceUrl))) {
+        throw Object.assign(new Error("A valid supplier VAT invoice evidence URL is required when verifying the invoice."), { statusCode: 400 });
+      }
       const vatInvoiceDate = vatInvoiceVerified && req.body.approvedVatInvoiceDate
         ? new Date(req.body.approvedVatInvoiceDate)
         : null;
@@ -598,6 +613,7 @@ export const reviewProductionRequest = async (req, res) => {
             approvedVatRate: vatTerms.vatRate,
             approvedVatInvoiceReference: vatTerms.vatInvoiceReference,
             approvedVatInvoiceDate: vatInvoiceDate,
+            approvedVatInvoiceEvidenceUrl: vatInvoiceEvidenceUrl || null,
             approvedVatInvoiceVerified: vatInvoiceVerified,
             approvedSupplierTaxIdType: request.manufacturer.taxIdType,
             approvedSupplierTaxIdNumber: request.manufacturer.taxIdNumber,
@@ -865,7 +881,8 @@ export const completeProduction = async (req, res) => {
       const sellerTaxTreatment = await resolveSellerTaxTreatment(inputVatTaxPoint, { client: tx });
       const verifiedSupplierVatInvoice = request.approvedVatInvoiceVerified === true &&
         request.approvedSupplierTaxIdType === "VAT" &&
-        /^\d{9}$/.test(String(request.approvedSupplierTaxIdNumber ?? ""));
+        /^\d{9}$/.test(String(request.approvedSupplierTaxIdNumber ?? "")) &&
+        isHttpUrl(String(request.approvedVatInvoiceEvidenceUrl ?? ""));
       const buyerVatRegistered = verifiedSupplierVatInvoice && Boolean(request.approvedVatInvoiceDate) &&
         sellerTaxTreatment.taxStatus === "VAT_REGISTERED";
       const productionCost = calculateProductionUnitCost({

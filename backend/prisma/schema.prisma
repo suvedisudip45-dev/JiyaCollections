@@ -1525,6 +1525,7 @@ model VatRateVersion {
 model TaxFilingRecord {
   id                    String    @id @default(uuid())
   periodType            String    @db.VarChar(32) // VAT_RETURN, ANNUAL_INCOME_TAX
+  filingCadence         String    @default("CUSTOM") @db.VarChar(24) // MONTHLY, QUARTERLY, SEMIANNUAL, ANNUAL, CUSTOM
   periodKey             String    @db.VarChar(64)
   periodStart           DateTime?
   periodEnd             DateTime?
@@ -1534,6 +1535,9 @@ model TaxFilingRecord {
   inputVat              Decimal   @default(0) @db.Decimal(20, 2)
   carriedForwardInputVat Decimal  @default(0) @db.Decimal(20, 2)
   carriedForwardOutputVat Decimal @default(0) @db.Decimal(20, 2)
+  vatCreditCarryForward  Decimal  @default(0) @db.Decimal(20, 2)
+  carriedForwardPaymentCredit Decimal @default(0) @db.Decimal(20, 2)
+  paymentCreditApplied  Decimal   @default(0) @db.Decimal(20, 2)
   netVatPayable         Decimal   @default(0) @db.Decimal(20, 2)
   grossRevenue          Float     @default(0)
   totalDeductions       Float     @default(0)
@@ -1546,13 +1550,40 @@ model TaxFilingRecord {
   filedReference        String?   @db.VarChar(191)
   filingEvidenceUrl     String?   @db.Text
   assessedAmount        Decimal?  @db.Decimal(20, 2)
+  assessmentAdjustmentJournalId String? @db.VarChar(191)
+  assessmentAdjustmentAccountId String? @db.VarChar(191)
+  sourceReconciliation  Json?
   payments              TaxFilingPayment[]
+  amendments            TaxFilingAmendment[]
   notes                 String?   @db.Text
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
   @@index([periodType, periodKey])
   @@index([status, filedDate])
+}
+
+model TaxFilingAmendment {
+  id                    String          @id @default(uuid())
+  filingRecordId        String
+  filingRecord          TaxFilingRecord @relation(fields: [filingRecordId], references: [id], onDelete: Restrict)
+  revision              Int
+  idempotencyKey        String          @unique @db.VarChar(191)
+  previousAssessedAmount Decimal       @db.Decimal(20, 2)
+  amendedAssessedAmount Decimal        @db.Decimal(20, 2)
+  adjustmentAmount      Decimal         @db.Decimal(20, 2)
+  amendedDate           DateTime
+  amendedReference      String          @db.VarChar(191)
+  reason                String          @db.Text
+  evidenceUrl           String?         @db.Text
+  adjustmentAccountId   String          @db.VarChar(191)
+  journalEntryId        String          @unique @db.VarChar(191)
+  paymentCreditJournalEntryId String?    @unique @db.VarChar(191)
+  recordedBy            String?         @db.VarChar(191)
+  createdAt             DateTime        @default(now())
+
+  @@unique([filingRecordId, revision])
+  @@index([filingRecordId, amendedDate])
 }
 
 model SalesInvoice {
@@ -1662,6 +1693,7 @@ model TaxFilingPayment {
   treasuryAccountId  String?
   journalEntryId     String?         @unique @db.VarChar(191)
   evidenceUrl        String?         @db.Text
+  adjustmentReason   String?         @db.Text
   recordedBy         String?         @db.VarChar(191)
   createdAt          DateTime        @default(now())
 
@@ -3371,6 +3403,7 @@ model ManufacturerProductionRequest {
   approvedVatRate             Decimal  @default(13) @db.Decimal(5, 2)
   approvedVatInvoiceReference String?  @db.VarChar(120)
   approvedVatInvoiceDate      DateTime?
+  approvedVatInvoiceEvidenceUrl String? @db.Text
   approvedVatInvoiceVerified  Boolean  @default(false)
   approvedSupplierTaxIdType   String?  @db.VarChar(8)
   approvedSupplierTaxIdNumber String?  @db.VarChar(9)
@@ -3767,6 +3800,15 @@ model OperatingExpense {
   amount             Float // Total expense amount
   isVatBill          Boolean  @default(false)
   vatAmount          Float    @default(0) // Input VAT embedded if 13% VAT bill provided
+  supplierVatNumber  String?  @db.VarChar(9)
+  invoiceEvidenceUrl String?  @db.Text
+  purchaseTaxableAmount Decimal? @db.Decimal(20, 2)
+  purchaseVatRate    Decimal? @db.Decimal(5, 2)
+  purchaseVatStatus  String   @default("NOT_CLAIMED") @db.VarChar(24) // NOT_CLAIMED | PENDING_REVIEW | VERIFIED | REJECTED
+  purchaseVatVerifiedAt DateTime?
+  purchaseVatVerifiedBy String? @db.VarChar(191)
+  purchaseVatReviewReason String? @db.Text
+  purchaseVatJournalEntryId String? @unique @db.VarChar(191)
   date               DateTime @default(now())
   paymentMethod      String   @default("CASH") // CASH | BANK_TRANSFER | QR_PAYMENT | CREDIT
   paymentStatus      String   @default("PAID") // PAID | PAYABLE
@@ -3785,6 +3827,8 @@ model OperatingExpense {
   @@index([paymentStatus])
   @@index([financialAccountId])
   @@index([payableId])
+  @@index([purchaseVatStatus, date])
+  @@unique([supplierVatNumber, invoiceNumber])
 }
 
 // Direct & Miscellaneous Incomes Model

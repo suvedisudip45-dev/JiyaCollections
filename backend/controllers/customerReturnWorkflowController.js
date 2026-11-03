@@ -174,6 +174,7 @@ export const distributorSubmitCustomerRefund = async (req, res) => {
       distributorId,
       returnId: req.params.id,
       amount: req.body?.amount,
+      adjustmentReason: req.body?.adjustmentReason,
       paymentMethod: req.body?.paymentMethod,
       externalReference: req.body?.externalReference,
       evidenceUrl: uploadedEvidence.secure_url,

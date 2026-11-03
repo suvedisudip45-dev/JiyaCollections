@@ -137,6 +137,7 @@ const FinancialStatements = ({ token }) => {
     inventory: 0,
     inputVat: 0,
     supplierAdvances: 0,
+    vatTaxPrepayments: 0,
     totalCurrentAssets: 0,
   };
 
@@ -507,6 +508,12 @@ const FinancialStatements = ({ token }) => {
                     <span>Input VAT Receivable (Account 1150)</span>
                     <span className="font-mono">Rs {Number(bsCurrentAssets.inputVat || 0).toLocaleString()}</span>
                   </div>
+                  {Number(bsCurrentAssets.vatTaxPrepayments || 0) > 0 && (
+                    <div className="flex justify-between py-1 border-b border-slate-50">
+                      <span>VAT Tax Prepayments / Credits (Account 1165)</span>
+                      <span className="font-mono">Rs {Number(bsCurrentAssets.vatTaxPrepayments).toLocaleString()}</span>
+                    </div>
+                  )}
                   {Number(bsCurrentAssets.supplierAdvances || 0) > 0 && (
                     <div className="flex justify-between py-1 border-b border-slate-50">
                       <span>Supplier Advances (Account 1160)</span>

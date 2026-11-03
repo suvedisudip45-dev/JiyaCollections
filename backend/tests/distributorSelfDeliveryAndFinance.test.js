@@ -601,7 +601,27 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     userId: "cust-1",
     items: JSON.stringify([
       { productId: "prod-1", size: "M", color: "Black", quantity: 1, purchasedUnitPrice: 1000, agreedUnitCogsVatInclusiveAtAcceptance: 50 },
-      { productId: "prod-2", size: "L", color: "Blue", quantity: 1, purchasedUnitPrice: 1200, agreedUnitCogsVatInclusiveAtAcceptance: 80 },
+      {
+        productId: "prod-2",
+        size: "L",
+        color: "Blue",
+        quantity: 2,
+        purchasedUnitPrice: 1200,
+        productionCostAllocations: [{
+          quantity: 1,
+          unitCogs: "80.00",
+          unitVatAmount: "10.40",
+          vatInvoiceVerified: true,
+          inputVatRecoverable: true,
+        }, {
+          quantity: 1,
+          unitCogs: "100.00",
+          unitVatAmount: "13.00",
+          vatInvoiceVerified: true,
+          inputVatRecoverable: true,
+        }],
+        legacyCostQuantity: 0,
+      },
     ]),
     address: JSON.stringify({ firstName: "Ram", lastName: "Sharma", phone: "9841000000" }),
   };
@@ -620,13 +640,13 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
   stubMethod(t, prisma.customerReturn, "findFirst", async () => ({
     id: "return-1",
-    totalRefundAmount: 2200,
-    approvedRefundAmount: "2200.00",
+    totalRefundAmount: 3400,
+    approvedRefundAmount: "3400.00",
     refundPolicySnapshot: { version: 1, ratePercent: "0.00" },
     vatRefunded: 253.1,
     items: JSON.stringify([
       { productId: "prod-1", size: "M", color: "Black", quantity: 1 },
-      { productId: "prod-2", size: "L", color: "Blue", quantity: 1 },
+      { productId: "prod-2", size: "L", color: "Blue", quantity: 2 },
     ]),
     adminNotes: "Approved return",
   }));
@@ -687,7 +707,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     returnRequestId: "return-1",
     items: [
       { productId: "prod-1", size: "M", color: "Black", quantity: 1, condition: "GOOD" },
-      { productId: "prod-2", size: "L", color: "Blue", quantity: 1, condition: "DAMAGED" },
+      { productId: "prod-2", size: "L", color: "Blue", quantity: 2, condition: "DAMAGED" },
     ],
     reason: "Size mismatch & stitching flaw",
     damageType: "STITCH_DAMAGE",
@@ -702,14 +722,14 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
 
   assert.equal(res.success, true);
   assert.equal(res.hasDamagedItems, true);
-  assert.equal(res.totalRefundAmount, 2200);
+  assert.equal(res.totalRefundAmount, 3400);
   assert.equal(res.customerReturn.lifecycleStatus, "REFUND_PENDING");
   assert.equal(res.customerReturn.refundStatus, "PENDING");
   assert.equal(res.customerReturn.refundMethod, "CASH");
   assert.equal(res.customerReturn.inspectionEvidenceUrl, "https://res.cloudinary.com/demo/return-photo.png");
   assert.equal(res.customerReturn.inventoryAccountingJournalEntryId, "return-inventory-journal-1");
   assert.equal(inventoryAccountingRecord.items.length, 2);
-  assert.deepEqual(inventoryAccountingRecord.items.map(({ unitCostPrice }) => unitCostPrice), [50, 80]);
+  assert.deepEqual(inventoryAccountingRecord.items.map(({ unitCostPrice }) => unitCostPrice), [50, 90]);
   assert.equal(movements.length, 2);
   assert.equal(movements.find((m) => m.movementType === "RETURN").destinationLocationId, "loc-stock");
   assert.equal(movements.find((m) => m.movementType === "DAMAGE").destinationLocationId, "loc-damaged");

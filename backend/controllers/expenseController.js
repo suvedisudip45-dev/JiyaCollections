@@ -1,6 +1,8 @@
 import { prisma } from "../config/db.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { postExpenseAccounting, postCustomerPaymentAccounting } from "../services/accountingPostingEngine.js";
+import { reviewOperatingExpenseInputVat } from "../services/purchaseVatService.js";
+import { recordSystemAudit } from "../services/auditService.js";
 import { checkAccountSolvency } from "./financialController.js";
 
 // Helper: Calculate 13% embedded VAT amount
@@ -12,6 +14,15 @@ const calculateVat = (amount, isVatBill, customVat) => {
   const amt = Number(amount) || 0;
   // 13% Nepal VAT embedded: amount - (amount / 1.13)
   return Number((amt - amt / 1.13).toFixed(2));
+};
+
+const isHttpUrl = (value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 };
 
 // STANDARD BASE CATEGORIES
@@ -143,6 +154,9 @@ export const createExpense = async (req, res) => {
       amount,
       isVatBill,
       vatAmount,
+      purchaseVatRate,
+      supplierVatNumber,
+      invoiceEvidenceUrl,
       date,
       paymentMethod,
       paymentStatus = "PAID", // PAID or PAYABLE
@@ -165,8 +179,30 @@ export const createExpense = async (req, res) => {
 
     const vatBill = isVatBill === true || isVatBill === "true";
     const computedVat = calculateVat(numAmount, vatBill, vatAmount);
+    const vatRate = purchaseVatRate === undefined || purchaseVatRate === "" ? 13 : Number(purchaseVatRate);
+    if (vatBill && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
+    const supplierVatId = supplierVatNumber ? String(supplierVatNumber).trim() : "";
+    const evidence = invoiceEvidenceUrl ? String(invoiceEvidenceUrl).trim() : "";
+    if (supplierVatId && !/^\d{9}$/.test(supplierVatId)) {
+      return res.status(400).json({ success: false, code: "INVALID_SUPPLIER_VAT_NUMBER", message: "Supplier VAT number must contain exactly 9 digits." });
+    }
+    if (evidence.length > 5000 || (evidence && !isHttpUrl(evidence))) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_EVIDENCE", message: "Supplier invoice evidence must be a valid HTTP or HTTPS URL no longer than 5,000 characters." });
+    }
     const expenseDate = date ? new Date(date) : new Date();
+    if (Number.isNaN(expenseDate.getTime())) {
+      return res.status(400).json({ success: false, code: "INVALID_EXPENSE_DATE", message: "Enter a valid expense and invoice date." });
+    }
     const finalVendorName = (vendorName || title).trim();
+    const purchaseVatData = {
+      supplierVatNumber: supplierVatId || null,
+      invoiceEvidenceUrl: evidence || null,
+      purchaseTaxableAmount: vatBill ? Number((numAmount - computedVat).toFixed(2)) : null,
+      purchaseVatRate: vatBill ? vatRate : null,
+      purchaseVatStatus: vatBill ? "PENDING_REVIEW" : "NOT_CLAIMED",
+    };
 
     // CASE A: PAID NOW (requires sufficient funds in selected Treasury account)
     if (paymentStatus === "PAID") {
@@ -212,6 +248,7 @@ export const createExpense = async (req, res) => {
             amount: numAmount,
             isVatBill: vatBill,
             vatAmount: computedVat,
+            ...purchaseVatData,
             date: expenseDate,
             paymentMethod: paymentMethod || "CASH",
             paymentStatus: "PAID",
@@ -233,6 +270,7 @@ export const createExpense = async (req, res) => {
         paidFromAccountType: updatedAccount.accountType === "CASH" ? "CASH" : "BANK",
         isPayable: false,
         payeeName: expense.vendorName,
+        transactionDate: expense.date,
       }).catch((glErr) => {
         console.error("General Ledger expense posting error:", glErr);
       });
@@ -271,6 +309,7 @@ export const createExpense = async (req, res) => {
           amount: numAmount,
           isVatBill: vatBill,
           vatAmount: computedVat,
+          ...purchaseVatData,
           date: expenseDate,
           paymentMethod: "CREDIT",
           paymentStatus: "PAYABLE",
@@ -291,6 +330,7 @@ export const createExpense = async (req, res) => {
         paidFromAccountType: "BANK",
         isPayable: true,
         payeeName: expense.vendorName,
+        transactionDate: expense.date,
       }).catch((glErr) => {
         console.error("General Ledger accrued expense posting error:", glErr);
       });
@@ -344,7 +384,7 @@ export const getExpenses = async (req, res) => {
       ];
     }
 
-    const [expenses, total, aggregate] = await Promise.all([
+    const [expenses, total, aggregate, verifiedVatAggregate, pendingVatAggregate] = await Promise.all([
       prisma.operatingExpense.findMany({
         where,
         orderBy: { date: "desc" },
@@ -353,10 +393,19 @@ export const getExpenses = async (req, res) => {
       }),
       prisma.operatingExpense.count({ where }),
       prisma.operatingExpense.aggregate({ where, _sum: { amount: true, vatAmount: true } }),
+      prisma.operatingExpense.aggregate({
+        where: { ...where, purchaseVatStatus: "VERIFIED" },
+        _sum: { vatAmount: true },
+      }),
+      prisma.operatingExpense.aggregate({
+        where: { ...where, purchaseVatStatus: "PENDING_REVIEW" },
+        _sum: { vatAmount: true },
+      }),
     ]);
 
     const totalAmount = Number(aggregate._sum.amount || 0);
-    const totalVatClaimable = Number(aggregate._sum.vatAmount || 0);
+    const totalVatClaimable = Number(verifiedVatAggregate._sum.vatAmount || 0);
+    const totalVatPendingReview = Number(pendingVatAggregate._sum.vatAmount || 0);
 
     res.json({
       success: true,
@@ -364,6 +413,7 @@ export const getExpenses = async (req, res) => {
       metrics: {
         totalAmount,
         totalVatClaimable,
+        totalVatPendingReview,
       },
     });
   } catch (error) {
@@ -387,6 +437,9 @@ export const updateExpense = async (req, res) => {
       amount,
       isVatBill,
       vatAmount,
+      purchaseVatRate,
+      supplierVatNumber,
+      invoiceEvidenceUrl,
       date,
       paymentMethod,
       vendorName,
@@ -397,6 +450,38 @@ export const updateExpense = async (req, res) => {
     const numAmount = amount !== undefined ? Math.max(0, Number(amount)) : existing.amount;
     const vatBill = isVatBill !== undefined ? isVatBill === true || isVatBill === "true" : existing.isVatBill;
     const computedVat = calculateVat(numAmount, vatBill, vatAmount);
+    if (existing.purchaseVatStatus === "VERIFIED") {
+      const taxFieldsChanged =
+        numAmount !== existing.amount ||
+        vatBill !== existing.isVatBill ||
+        computedVat !== existing.vatAmount ||
+        (category !== undefined && String(category || "").trim().toUpperCase() !== existing.category) ||
+        (date && new Date(date).getTime() !== existing.date.getTime()) ||
+        (vendorName !== undefined && String(vendorName || "").trim() !== String(existing.vendorName || "")) ||
+        (invoiceNumber !== undefined && String(invoiceNumber || "").trim() !== String(existing.invoiceNumber || "")) ||
+        (supplierVatNumber !== undefined && String(supplierVatNumber || "").trim() !== String(existing.supplierVatNumber || "")) ||
+        (invoiceEvidenceUrl !== undefined && String(invoiceEvidenceUrl || "").trim() !== String(existing.invoiceEvidenceUrl || "")) ||
+        (purchaseVatRate !== undefined && Number(purchaseVatRate) !== Number(existing.purchaseVatRate));
+      if (taxFieldsChanged) {
+        return res.status(409).json({ success: false, code: "VERIFIED_PURCHASE_VAT_IMMUTABLE", message: "A verified supplier VAT record cannot be edited. Record a correction through an accountant-reviewed adjustment." });
+      }
+    }
+    const supplierVatId = supplierVatNumber !== undefined
+      ? String(supplierVatNumber || "").trim()
+      : String(existing.supplierVatNumber || "");
+    const evidence = invoiceEvidenceUrl !== undefined
+      ? String(invoiceEvidenceUrl || "").trim()
+      : String(existing.invoiceEvidenceUrl || "");
+    if (supplierVatId && !/^\d{9}$/.test(supplierVatId)) {
+      return res.status(400).json({ success: false, code: "INVALID_SUPPLIER_VAT_NUMBER", message: "Supplier VAT number must contain exactly 9 digits." });
+    }
+    if (evidence.length > 5000 || (evidence && !isHttpUrl(evidence))) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_EVIDENCE", message: "Supplier invoice evidence must be a valid HTTP or HTTPS URL no longer than 5,000 characters." });
+    }
+    const vatRate = purchaseVatRate === undefined || purchaseVatRate === "" ? existing.purchaseVatRate : Number(purchaseVatRate);
+    if (vatBill && vatRate !== null && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
 
     const updated = await prisma.operatingExpense.update({
       where: { id },
@@ -406,6 +491,19 @@ export const updateExpense = async (req, res) => {
         amount: numAmount,
         isVatBill: vatBill,
         vatAmount: computedVat,
+        supplierVatNumber: supplierVatId || null,
+        invoiceEvidenceUrl: evidence || null,
+        purchaseTaxableAmount: vatBill ? Number((numAmount - computedVat).toFixed(2)) : null,
+        purchaseVatRate: vatBill ? vatRate : null,
+        purchaseVatStatus: existing.purchaseVatStatus === "REJECTED" && vatBill
+          ? "PENDING_REVIEW"
+          : vatBill ? existing.purchaseVatStatus === "NOT_CLAIMED" ? "PENDING_REVIEW" : existing.purchaseVatStatus : "NOT_CLAIMED",
+        ...(existing.purchaseVatStatus === "REJECTED" ? {
+          purchaseVatVerifiedAt: null,
+          purchaseVatVerifiedBy: null,
+          purchaseVatReviewReason: null,
+          purchaseVatJournalEntryId: null,
+        } : {}),
         ...(date && { date: new Date(date) }),
         ...(paymentMethod && { paymentMethod }),
         ...(vendorName !== undefined && { vendorName: vendorName ? vendorName.trim() : null }),
@@ -427,11 +525,56 @@ export const deleteExpense = async (req, res) => {
     const { id } = req.body;
     if (!id) return res.json({ success: false, message: "Expense ID is required." });
 
+    const expense = await prisma.operatingExpense.findUnique({ where: { id } });
+    if (!expense) return res.status(404).json({ success: false, message: "Expense record not found." });
+    if (expense.purchaseVatStatus === "VERIFIED") {
+      return res.status(409).json({ success: false, code: "VERIFIED_PURCHASE_VAT_IMMUTABLE", message: "A verified supplier VAT record cannot be deleted; record an accountant-reviewed correction instead." });
+    }
     await prisma.operatingExpense.delete({ where: { id } });
     res.json({ success: true, message: "Expense record deleted successfully." });
   } catch (error) {
     console.error("deleteExpense error:", error);
     res.json({ success: false, message: error.message });
+  }
+};
+
+export const reviewExpenseInputVat = async (req, res) => {
+  try {
+    const actorId = req.auth?.accountId || req.auth?.userId || null;
+    const record = await reviewOperatingExpenseInputVat({
+      expenseId: req.params.id,
+      decision: req.body?.decision,
+      reason: req.body?.reason,
+      reviewedBy: actorId,
+      afterReview: (before, after, tx) => recordSystemAudit(
+        { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
+        {
+          action: after.purchaseVatStatus === "VERIFIED"
+            ? "PURCHASE_INPUT_VAT_VERIFIED"
+            : "PURCHASE_INPUT_VAT_REJECTED",
+          entityType: "OperatingExpense",
+          entityId: after.id,
+          beforeState: { purchaseVatStatus: before.purchaseVatStatus },
+          afterState: {
+            purchaseVatStatus: after.purchaseVatStatus,
+            supplierVatNumber: after.supplierVatNumber,
+            invoiceNumber: after.invoiceNumber,
+            vatAmount: after.vatAmount,
+            purchaseVatJournalEntryId: after.purchaseVatJournalEntryId,
+            reason: after.purchaseVatReviewReason,
+          },
+        },
+        { client: tx },
+      ),
+    });
+    return res.status(200).json({ success: true, message: `Supplier input VAT ${record.purchaseVatStatus.toLowerCase()}.`, expense: record });
+  } catch (error) {
+    console.error("reviewExpenseInputVat error:", error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "PURCHASE_VAT_REVIEW_ERROR",
+      message: error.message || "Failed to review supplier input VAT.",
+    });
   }
 };
 
@@ -448,6 +591,9 @@ export const getExpenseSummary = async (req, res) => {
     }
 
     const allExpenses = await prisma.operatingExpense.findMany({ where });
+    const pendingVatReview = allExpenses
+      .filter((expense) => expense.purchaseVatStatus === "PENDING_REVIEW")
+      .reduce((total, expense) => total + Number(expense.vatAmount || 0), 0);
 
     const byCategory = {};
     let grandTotal = 0;
@@ -459,7 +605,9 @@ export const getExpenseSummary = async (req, res) => {
       const cat = (exp.category || "MISCELLANEOUS").toUpperCase();
       byCategory[cat] = (byCategory[cat] || 0) + (exp.amount || 0);
       grandTotal += exp.amount || 0;
-      totalVatClaimable += exp.vatAmount || 0;
+      if (exp.purchaseVatStatus === "VERIFIED") {
+        totalVatClaimable += exp.vatAmount || 0;
+      }
       if (exp.paymentStatus === "PAYABLE") {
         totalPayable += exp.amount || 0;
       } else {
@@ -473,6 +621,7 @@ export const getExpenseSummary = async (req, res) => {
       totalPaid,
       totalPayable,
       totalVatClaimable,
+      pendingVatReview,
       byCategory,
       count: allExpenses.length,
     });

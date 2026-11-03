@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
+import { usePermissions } from "../auth/PermissionsContext";
 
 const ExpenseManagement = ({ token }) => {
   const [activeTab, setActiveTab] = useState("EXPENSES"); // EXPENSES | INCOMES | CATEGORIES
@@ -45,6 +46,7 @@ const ExpenseManagement = ({ token }) => {
     totalPaid: 0,
     totalPayable: 0,
     totalVatClaimable: 0,
+    pendingVatReview: 0,
     byCategory: {},
   });
 
@@ -59,6 +61,9 @@ const ExpenseManagement = ({ token }) => {
   const [amount, setAmount] = useState("");
   const [isVatBill, setIsVatBill] = useState(false);
   const [vatAmount, setVatAmount] = useState("");
+  const [purchaseVatRate, setPurchaseVatRate] = useState("13");
+  const [supplierVatNumber, setSupplierVatNumber] = useState("");
+  const [invoiceEvidenceUrl, setInvoiceEvidenceUrl] = useState("");
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [paymentStatus, setPaymentStatus] = useState("PAID"); // PAID or PAYABLE
   const [paymentAccountId, setPaymentAccountId] = useState("");
@@ -68,6 +73,8 @@ const ExpenseManagement = ({ token }) => {
   const [dueDate, setDueDate] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
   const [notes, setNotes] = useState("");
+  const { canAny } = usePermissions();
+  const canReviewPurchaseVat = canAny(["finance:tax_configure"]);
 
   // Income Modal State
   const [incomeModalOpen, setIncomeModalOpen] = useState(false);
@@ -77,7 +84,7 @@ const ExpenseManagement = ({ token }) => {
   const [incomeToAccountId, setIncomeToAccountId] = useState("");
   const [incomePayerName, setIncomePayerName] = useState("");
   const [incomeInvoiceNumber, setIncomeInvoiceNumber] = useState("");
-  const [incomeDate, setIncomeDate] = useState(new Date().toISOString().split("T")[0]);
+  const [incomeDate] = useState(new Date().toISOString().split("T")[0]);
   const [incomeNotes, setIncomeNotes] = useState("");
 
   // Category Modal State
@@ -155,6 +162,7 @@ const ExpenseManagement = ({ token }) => {
           totalPaid: summaryRes.data.totalPaid || 0,
           totalPayable: summaryRes.data.totalPayable || 0,
           totalVatClaimable: summaryRes.data.totalVatClaimable || 0,
+          pendingVatReview: summaryRes.data.pendingVatReview || 0,
           byCategory: summaryRes.data.byCategory || {},
         });
       }
@@ -220,6 +228,9 @@ const ExpenseManagement = ({ token }) => {
     setAmount("");
     setIsVatBill(false);
     setVatAmount("");
+    setPurchaseVatRate("13");
+    setSupplierVatNumber("");
+    setInvoiceEvidenceUrl("");
     setDate(new Date().toISOString().split("T")[0]);
     setPaymentStatus("PAID");
     if (treasuryAccounts.length > 0) setPaymentAccountId(treasuryAccounts[0].id);
@@ -239,6 +250,9 @@ const ExpenseManagement = ({ token }) => {
     setAmount(exp.amount?.toString() || "");
     setIsVatBill(exp.isVatBill ?? false);
     setVatAmount(exp.vatAmount?.toString() || "");
+    setPurchaseVatRate(exp.purchaseVatRate?.toString() || "13");
+    setSupplierVatNumber(exp.supplierVatNumber || "");
+    setInvoiceEvidenceUrl(exp.invoiceEvidenceUrl || "");
     setDate(exp.date ? new Date(exp.date).toISOString().split("T")[0] : "");
     setPaymentStatus(exp.paymentStatus || "PAID");
     setPaymentAccountId(exp.financialAccountId || (treasuryAccounts[0]?.id || ""));
@@ -285,6 +299,9 @@ const ExpenseManagement = ({ token }) => {
         amount: parsedAmount,
         isVatBill,
         vatAmount: parseFloat(vatAmount) || 0,
+        purchaseVatRate: parseFloat(purchaseVatRate) || 13,
+        supplierVatNumber: supplierVatNumber.trim() || undefined,
+        invoiceEvidenceUrl: invoiceEvidenceUrl.trim() || undefined,
         date,
         paymentStatus,
         paymentAccountId: paymentStatus === "PAID" ? paymentAccountId : null,
@@ -315,6 +332,31 @@ const ExpenseManagement = ({ token }) => {
       toast.error(err.response?.data?.message || "Error saving expense.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleReviewPurchaseVat = async (expense, decision) => {
+    const reason = window.prompt(
+      decision === "APPROVE"
+        ? `Confirm you reviewed supplier VAT invoice ${expense.invoiceNumber || ""}, its evidence, supplier VAT number, and the business registration date. Enter review reason:`
+        : "Enter why this supplier input VAT document is rejected:",
+    );
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      toast.error("Enter a review reason of at least 3 characters.");
+      return;
+    }
+    try {
+      const response = await axios.post(
+        `${backendUrl}/api/expense/${expense.id}/input-vat-review`,
+        { decision, reason: reason.trim() },
+        { headers: { token } },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Input VAT review failed.");
+      toast.success(response.data.message || "Supplier input VAT reviewed.");
+      await fetchExpenses();
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Input VAT review failed.");
     }
   };
 
@@ -544,7 +586,10 @@ const ExpenseManagement = ({ token }) => {
             <p className="text-2xl font-black text-purple-700 mt-1">
               Rs {Number(summaryMetrics.totalVatClaimable || 0).toLocaleString()}
             </p>
-            <span className="text-[10px] text-purple-600 mt-1 block">13% Tax Credit from VAT Bills</span>
+            <span className="text-[10px] text-purple-600 mt-1 block">
+              Verified supplier invoices only
+              {Number(summaryMetrics.pendingVatReview || 0) > 0 && ` · Rs ${Number(summaryMetrics.pendingVatReview).toLocaleString()} pending review`}
+            </span>
           </div>
         </div>
       )}
@@ -700,10 +745,20 @@ const ExpenseManagement = ({ token }) => {
 
                           <td className="py-3.5 px-4 text-center align-top">
                             {exp.isVatBill ? (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
-                                <ShieldCheck className="w-3 h-3" />
-                                13% VAT (Rs {exp.vatAmount})
-                              </span>
+                              <div className="flex flex-col items-center gap-1">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  exp.purchaseVatStatus === "VERIFIED"
+                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                    : exp.purchaseVatStatus === "REJECTED"
+                                      ? "bg-rose-50 text-rose-700 border-rose-200"
+                                      : "bg-amber-50 text-amber-700 border-amber-200"
+                                }`}>
+                                  {exp.purchaseVatStatus === "VERIFIED" ? <ShieldCheck className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                                  {exp.purchaseVatStatus === "VERIFIED" ? "Verified" : exp.purchaseVatStatus === "REJECTED" ? "Rejected" : "Pending review"}
+                                </span>
+                                <span className="text-[10px] text-slate-500">{Number(exp.purchaseVatRate || 13)}% · Rs {Number(exp.vatAmount || 0).toFixed(2)}</span>
+                                {exp.invoiceEvidenceUrl && <a href={exp.invoiceEvidenceUrl} target="_blank" rel="noreferrer" className="text-[10px] text-indigo-600 underline">Invoice evidence</a>}
+                              </div>
                             ) : (
                               <span className="text-[10px] text-slate-400">Non-VAT</span>
                             )}
@@ -717,14 +772,22 @@ const ExpenseManagement = ({ token }) => {
 
                           <td className="py-3.5 px-4 text-right align-top">
                             <div className="flex items-center justify-end gap-1.5">
+                              {canReviewPurchaseVat && exp.purchaseVatStatus === "PENDING_REVIEW" && (
+                                <>
+                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "APPROVE")} className="rounded-lg bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-700 hover:bg-emerald-100">Verify</button>
+                                  <button type="button" onClick={() => handleReviewPurchaseVat(exp, "REJECT")} className="rounded-lg bg-rose-50 px-2 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-100">Reject</button>
+                                </>
+                              )}
                               <button
                                 onClick={() => handleOpenEditModal(exp)}
+                                disabled={exp.purchaseVatStatus === "VERIFIED"}
                                 className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
                               >
                                 <Edit2 className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteExpense(exp.id)}
+                                disabled={exp.purchaseVatStatus === "VERIFIED"}
                                 className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -1021,13 +1084,16 @@ const ExpenseManagement = ({ token }) => {
                     onChange={(e) => setIsVatBill(e.target.checked)}
                     className="w-4 h-4 text-purple-600 rounded cursor-pointer"
                   />
-                  13% Tax Invoice (Input VAT Reclaimable)
+                  Supplier says this is a VAT tax invoice
                 </label>
                 {isVatBill && (
                   <div className="flex items-center justify-between text-purple-800 text-[11px] pt-1">
-                    <span>Embedded 13% Tax Credit:</span>
+                    <span>VAT amount (must match invoice; pending finance review):</span>
                     <strong className="font-bold">Rs {vatAmount || "0.00"}</strong>
                   </div>
+                )}
+                {isVatBill && (
+                  <p className="text-[10px] text-purple-700">A VAT claim is not recognized until Finance verifies the supplier ID, invoice evidence, bill amounts, and VAT-registration date.</p>
                 )}
               </div>
 
@@ -1050,10 +1116,48 @@ const ExpenseManagement = ({ token }) => {
                     placeholder="e.g. PRT-9921"
                     value={invoiceNumber}
                     onChange={(e) => setInvoiceNumber(e.target.value)}
+                    required={isVatBill}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
                   />
                 </div>
               </div>
+
+              {isVatBill && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Supplier VAT number (9 digits)</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]{9}"
+                      maxLength={9}
+                      required
+                      value={supplierVatNumber}
+                      onChange={(e) => setSupplierVatNumber(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Supplier invoice evidence URL</label>
+                    <input
+                      type="url"
+                      required
+                      value={invoiceEvidenceUrl}
+                      onChange={(e) => setInvoiceEvidenceUrl(e.target.value)}
+                      placeholder="https://..."
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">Invoice VAT rate (%)</label>
+                    <input type="number" min="0.01" max="100" step="0.01" required value={purchaseVatRate} onChange={(e) => setPurchaseVatRate(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                  </div>
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-1">VAT amount printed on invoice</label>
+                    <input type="number" min="0.01" step="0.01" required value={vatAmount} onChange={(e) => setVatAmount(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900" />
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Notes</label>

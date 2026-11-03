@@ -16,8 +16,9 @@ const createHarness = () => {
       refundStatus: "PENDING",
       approvedAt: new Date("2026-10-01T10:00:00.000Z"),
       inspectedAt: new Date("2026-10-02T10:00:00.000Z"),
+      totalRefundAmount: 1000,
       approvedRefundAmount: new Prisma.Decimal("875.50"),
-      refundPolicySnapshot: { chargeRatePercent: 5, originalDeliveryFeeRefunded: false },
+      refundPolicySnapshot: { chargeRatePercent: 5, vatRatePercent: "13.00", originalDeliveryFeeRefunded: false },
     },
     cashEvents: [],
     returnEvents: [],
@@ -77,6 +78,7 @@ const submission = (client, overrides = {}) => submitDistributorCustomerRefund({
   distributorId: "dist-1",
   returnId: "return-1",
   amount: "875.50",
+  adjustmentReason: "",
   paymentMethod: "CASH",
   externalReference: "cash receipt 42",
   evidenceUrl: "https://evidence.example/receipt-42",
@@ -87,7 +89,7 @@ const submission = (client, overrides = {}) => submitDistributorCustomerRefund({
   ...overrides,
 });
 
-test("distributor refund submission requires exact approved amount and is idempotent", async () => {
+test("distributor refund submission accepts the approved amount and is idempotent", async () => {
   const { state, client } = createHarness();
   const first = await submission(client);
   assert.equal(first.isReplay, false);
@@ -106,6 +108,27 @@ test("distributor refund submission requires exact approved amount and is idempo
     () => submission(client, { idempotencyKey: "refund-submit-2" }),
     (error) => error.code === "REFUND_ALREADY_SUBMITTED" && error.statusCode === 409,
   );
+});
+
+test("distributor refund amount changes require a reason and are bounded by returned product value", async () => {
+  const { state, client } = createHarness();
+  await assert.rejects(
+    () => submission(client, { amount: "800.00", idempotencyKey: "refund-adjustment-1" }),
+    (error) => error.code === "REFUND_ADJUSTMENT_REASON_REQUIRED" && error.statusCode === 400,
+  );
+  await assert.rejects(
+    () => submission(client, { amount: "1000.01", adjustmentReason: "Goodwill adjustment", idempotencyKey: "refund-adjustment-2" }),
+    (error) => error.code === "REFUND_AMOUNT_EXCEEDS_RETURN_VALUE" && error.statusCode === 400,
+  );
+
+  const result = await submission(client, {
+    amount: "800.00",
+    adjustmentReason: "Customer returned one sealed item only.",
+    idempotencyKey: "refund-adjustment-3",
+  });
+  assert.equal(result.cashEvent.amount.toFixed(2), "800.00");
+  assert.equal(result.cashEvent.notes, "Customer returned one sealed item only.");
+  assert.equal(state.returnRecord.approvedRefundAmount.toFixed(2), "875.50");
 });
 
 test("Admin rejection releases the return for a corrected distributor refund submission", async () => {
@@ -128,6 +151,42 @@ test("Admin rejection releases the return for a corrected distributor refund sub
   const resubmitted = await submission(client, { idempotencyKey: "refund-submit-2" });
   assert.equal(resubmitted.isReplay, false);
   assert.equal(state.cashEvents.length, 2);
+});
+
+test("Admin verification accounts for the submitted amount and preserves the adjustment reason", async () => {
+  const { state, client: baseClient } = createHarness();
+  await submission(baseClient, {
+    amount: "800.00",
+    adjustmentReason: "Customer returned one sealed item only.",
+    idempotencyKey: "refund-adjustment-verify",
+  });
+  let postedReturn;
+  const client = {
+    $transaction: async (callback) => baseClient.$transaction((innerTx) => callback({
+        ...innerTx,
+        distributor: { findUnique: async () => ({ name: "Test Distributor" }) },
+        accountingDocument: { findUnique: async () => ({ id: "document-1" }) },
+      })),
+  };
+  const result = await reviewDistributorCustomerRefund({
+    distributorId: "dist-1",
+    returnId: "return-1",
+    decision: "VERIFY",
+    reviewerAccountId: "admin-1",
+    client,
+    postRefundAccounting: async ({ returnRecord }) => {
+      postedReturn = returnRecord;
+      return { id: "journal-1", journalNumber: "JE-1" };
+    },
+    reverseCounterSaleEarning: async () => null,
+  });
+
+  assert.equal(result.decision, "VERIFIED");
+  assert.equal(postedReturn.approvedRefundAmount.toFixed(2), "800.00");
+  assert.equal(postedReturn.vatRefunded, 92.04);
+  assert.equal(state.returnRecord.approvedRefundAmount.toFixed(2), "800.00");
+  assert.equal(state.returnRecord.vatRefunded, 92.04);
+  assert.match(state.cashEvents[0].notes, /Distributor adjustment reason: Customer returned one sealed item only\./);
 });
 
 test("verification retry after a committed distributor refund returns its existing accounting references", async () => {

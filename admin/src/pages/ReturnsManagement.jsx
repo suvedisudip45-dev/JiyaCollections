@@ -526,8 +526,18 @@ const ReturnsManagement = ({ token }) => {
                               {ret.distributorCashEvents?.[0] && (
                                 <>
                                   <span className="text-[10px] text-slate-500">
-                                    Distributor evidence: {ret.distributorCashEvents[0].status}
+                                    Distributor evidence: {ret.distributorCashEvents[0].status} · Refund paid {currency}{Number(ret.distributorCashEvents[0].amount || 0).toFixed(2)}
                                   </span>
+                                  {Number(ret.distributorCashEvents[0].amount || 0) !== Number(
+                                    ret.refundPolicySnapshot?.approvedRefundAmount ?? ret.approvedRefundAmount ?? 0
+                                  ) && (
+                                    <span className="text-[10px] font-semibold text-amber-800">
+                                      Changed from approved {currency}{Number(
+                                        ret.refundPolicySnapshot?.approvedRefundAmount ?? ret.approvedRefundAmount ?? 0
+                                      ).toFixed(2)}
+                                      {ret.distributorCashEvents[0].notes && ` · Reason: ${ret.distributorCashEvents[0].notes}`}
+                                    </span>
+                                  )}
                                   {ret.distributorCashEvents[0].evidenceUrl && (
                                     <a
                                       href={ret.distributorCashEvents[0].evidenceUrl}

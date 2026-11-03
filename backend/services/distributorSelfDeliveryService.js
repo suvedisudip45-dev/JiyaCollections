@@ -36,6 +36,59 @@ const parseJSON = (val, fallback = []) => {
 
 const normalize = (val) => String(val || "").trim().toLowerCase();
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
+const resolveReturnUnitCost = (orderLine) => {
+  const savedUnitCost = orderLine.agreedUnitCogsVatInclusiveAtAcceptance ?? orderLine.costPrice;
+  if (savedUnitCost !== undefined && savedUnitCost !== null && String(savedUnitCost).trim() !== "") {
+    return Number(savedUnitCost);
+  }
+
+  const allocations = Array.isArray(orderLine.productionCostAllocations)
+    ? orderLine.productionCostAllocations
+    : [];
+  if (!allocations.length) return savedUnitCost;
+
+  const lineQuantity = Number(orderLine.quantity ?? 1);
+  if (!Number.isSafeInteger(lineQuantity) || lineQuantity <= 0) return undefined;
+
+  let allocatedQuantity = 0;
+  let totalCost = 0;
+  for (const allocation of allocations) {
+    const quantity = Number(allocation.quantity);
+    const unitCogs = Number(allocation.unitCogs);
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || !Number.isFinite(unitCogs) || unitCogs < 0) {
+      return undefined;
+    }
+    allocatedQuantity += quantity;
+    totalCost += quantity * unitCogs;
+  }
+
+  const legacyQuantity = Number(
+    orderLine.legacyCostQuantity ?? Math.max(0, lineQuantity - allocatedQuantity),
+  );
+  if (!Number.isSafeInteger(legacyQuantity) || legacyQuantity < 0) return undefined;
+  if (legacyQuantity > 0) {
+    const legacyUnitCost = orderLine.legacyUnitCogsVatInclusiveAtAcceptance
+      ?? orderLine.agreedUnitCogsVatInclusiveAtAcceptance
+      ?? orderLine.costPrice;
+    const numericLegacyUnitCost = Number(legacyUnitCost);
+    if (
+      legacyUnitCost === undefined ||
+      legacyUnitCost === null ||
+      String(legacyUnitCost).trim() === "" ||
+      !Number.isFinite(numericLegacyUnitCost) ||
+      numericLegacyUnitCost < 0
+    ) {
+      return undefined;
+    }
+    totalCost += legacyQuantity * numericLegacyUnitCost;
+  }
+
+  const totalQuantity = allocatedQuantity + legacyQuantity;
+  if (totalQuantity !== lineQuantity) return undefined;
+
+  // unitCogs is the inventory cost; recoverable VAT is recorded separately.
+  return totalCost / totalQuantity;
+};
 const serializeOrder = (order) => ({
   ...order,
   date: order.date == null ? order.date : Number(order.date),
@@ -811,8 +864,7 @@ export const processSelfDeliveryReturn = async ({
       ) || orderItems[0] || {};
 
       const unitPrice = Number(matchingOrderLine.purchasedUnitPrice ?? matchingOrderLine.price ?? 0);
-      const rawUnitCostPrice = matchingOrderLine.agreedUnitCogsVatInclusiveAtAcceptance
-        ?? matchingOrderLine.costPrice;
+      const rawUnitCostPrice = resolveReturnUnitCost(matchingOrderLine);
       const unitCostPrice = Number(rawUnitCostPrice);
       if (
         rawUnitCostPrice === undefined ||
