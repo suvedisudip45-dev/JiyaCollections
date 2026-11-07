@@ -362,17 +362,43 @@ export const ManufacturerTransactionsSection = ({ manufacturerId, token }) => {
 };
 
 export const ManufacturerSettlementsSection = ({ manufacturerId, token }) => {
+  const [status, setStatus] = useState("");
   const { records, pagination, page, setPage, loading, errorMessage } = usePagedRecords({
     endpoint: `${backendUrl}/api/admin/finance/settlements`,
     token,
-    params: { manufacturerId },
+    params: { manufacturerId, ...(status ? { status } : {}) },
   });
-  return <RecordFrame title="Payable requests" description="Existing manufacturer settlement requests, their requested type, amount and payment state." loading={loading} errorMessage={errorMessage} emptyMessage="No settlement requests found." pagination={pagination} page={page} setPage={setPage}>
-    {records.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-xs">
-      <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Requested</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Amount</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Paid</th><th className="px-4 py-3">Transfer reference</th><th className="px-4 py-3">Notes</th></tr></thead>
-      <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 font-semibold">{amount(settlement.amount)}</td><td className="px-4 py-3">{settlement.status}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.externalPaymentReference || "—"}</td><td className="px-4 py-3">{settlement.notes || "—"}</td></tr>)}</tbody>
-    </table></div>}
-  </RecordFrame>;
+  useEffect(() => setPage(1), [setPage, status]);
+  return <div className="space-y-3">
+    <div className="flex justify-end">
+      <label className="text-xs font-semibold text-slate-600">Status
+        <select value={status} onChange={(event) => setStatus(event.target.value)} className="ml-2 rounded-lg border border-slate-300 bg-white px-3 py-2">
+          <option value="">All statuses</option>
+          <option value="PENDING">Pending</option>
+          <option value="PARTIALLY_PAID">Partially paid</option>
+          <option value="PAID">Paid</option>
+          <option value="REJECTED">Rejected</option>
+        </select>
+      </label>
+    </div>
+    <RecordFrame title="Payable requests" description="Manufacturer requests show requested amount, paid amount, and remaining balance." loading={loading} errorMessage={errorMessage} emptyMessage="No settlement requests found." pagination={pagination} page={page} setPage={setPage}>
+      {records.length > 0 && <div className="overflow-x-auto"><table className="w-full min-w-[1180px] text-left text-xs">
+        <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Requested</th><th className="px-4 py-3">Type</th><th className="px-4 py-3 text-right">Amount</th><th className="px-4 py-3 text-right">Paid</th><th className="px-4 py-3 text-right">Remaining</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Paid date</th><th className="px-4 py-3">Transfer reference</th><th className="px-4 py-3">Payout trail</th><th className="px-4 py-3">Notes</th></tr></thead>
+        <tbody className="divide-y divide-slate-100">{records.map((settlement) => <tr key={settlement.id}><td className="px-4 py-3">{date(settlement.requestedAt)}</td><td className="px-4 py-3">{settlement.requestType}</td><td className="px-4 py-3 text-right font-semibold">{amount(settlement.amount)}</td><td className="px-4 py-3 text-right">{amount(settlement.paidAmount)}</td><td className="px-4 py-3 text-right font-semibold">{amount(Math.max(0, Number(settlement.amount || 0) - Number(settlement.paidAmount || 0)))}</td><td className="px-4 py-3">{settlement.status.replaceAll("_", " ")}</td><td className="px-4 py-3">{date(settlement.paidAt)}</td><td className="px-4 py-3">{settlement.externalPaymentReference || "—"}</td><td className="px-4 py-3">
+          {settlement.payoutHistory?.length ? <details className="min-w-52">
+            <summary className="cursor-pointer font-semibold text-indigo-700">{settlement.payoutHistory.length} payout attempt(s)</summary>
+            <div className="mt-2 space-y-2">
+              {settlement.payoutHistory.map((payout) => <div key={payout.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px]">
+                <p className="font-bold">{payout.status.replaceAll("_", " ")} · {amount(payout.amount)} · {date(payout.settledAt || payout.initiatedAt)}</p>
+                <p>Account: {payout.financialAccount?.accountName || "—"} · Transfer: {payout.externalPaymentReference || "—"}</p>
+                <p>Evidence: {payout.bankEvidenceReference || "—"} · Cash: {payout.cashTransaction?.id || "not posted"} · Journal: {payout.journalEntry?.journalNumber || "not posted"}</p>
+              </div>)}
+            </div>
+          </details> : "—"}
+        </td><td className="px-4 py-3">{settlement.notes || "—"}</td></tr>)}</tbody>
+      </table></div>}
+    </RecordFrame>
+  </div>;
 };
 
 const SummaryCard = ({ label, value }) => <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{label}</p><p className="mt-2 text-xl font-black text-slate-900">{value}</p></div>;

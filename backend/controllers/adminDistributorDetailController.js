@@ -787,3 +787,184 @@ export const getAdminDistributorSettlements = async (req, res) => {
     return sendError(res, error, "getAdminDistributorSettlements");
   }
 };
+
+export const getAdminDistributorSettlementActivity = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const distributorId = req.params.id;
+    if (!(await distributorExists(distributorId))) {
+      return res.status(404).json({ success: false, message: "Distributor profile not found." });
+    }
+
+    const status = req.query.status && req.query.status !== "all"
+      ? String(req.query.status).toUpperCase()
+      : null;
+    const legacyStatus = status ? Prisma.sql`AND status = ${status}` : Prisma.empty;
+    const requestStatus = status ? Prisma.sql`AND status = ${status}` : Prisma.empty;
+    const settlementStatus = status ? Prisma.sql`AND s.status = ${status}` : Prisma.empty;
+    const [countRows, activityRows] = await Promise.all([
+      prisma.$queryRaw(Prisma.sql`
+        SELECT
+          (SELECT COUNT(*) FROM DistributorSettlementRequest
+            WHERE distributorId = ${distributorId} ${legacyStatus}) +
+          (SELECT COUNT(*) FROM DistributorSettlementRequestToken
+            WHERE distributorId = ${distributorId} ${requestStatus}) +
+          (SELECT COUNT(*) FROM DistributorBalanceSettlement s
+            WHERE s.distributorId = ${distributorId}
+              ${settlementStatus}
+              AND NOT EXISTS (
+                SELECT 1 FROM DistributorSettlementRequestToken t WHERE t.settlementId = s.id
+              )
+          ) AS total
+      `),
+      prisma.$queryRaw(Prisma.sql`
+        SELECT activityType, sourceId, occurredAt
+        FROM (
+          SELECT 'EARNINGS_REQUEST' AS activityType, id AS sourceId, requestedAt AS occurredAt
+          FROM DistributorSettlementRequest
+          WHERE distributorId = ${distributorId} ${legacyStatus}
+          UNION ALL
+          SELECT 'NET_BALANCE_REQUEST' AS activityType, id AS sourceId, createdAt AS occurredAt
+          FROM DistributorSettlementRequestToken
+          WHERE distributorId = ${distributorId} ${requestStatus}
+          UNION ALL
+          SELECT 'NET_BALANCE_SETTLEMENT' AS activityType, s.id AS sourceId, s.postedAt AS occurredAt
+          FROM DistributorBalanceSettlement s
+          WHERE s.distributorId = ${distributorId} ${settlementStatus}
+            AND NOT EXISTS (
+              SELECT 1 FROM DistributorSettlementRequestToken t WHERE t.settlementId = s.id
+            )
+        ) AS settlementActivity
+        ORDER BY occurredAt DESC, sourceId DESC
+        LIMIT ${pagination.limit} OFFSET ${pagination.skip}
+      `),
+    ]);
+
+    const idsByType = Object.fromEntries(
+      ["EARNINGS_REQUEST", "NET_BALANCE_REQUEST", "NET_BALANCE_SETTLEMENT"]
+        .map((type) => [type, activityRows.filter((row) => row.activityType === type).map((row) => row.sourceId)]),
+    );
+    const [legacyRequests, netRequests, balanceSettlements] = await Promise.all([
+      idsByType.EARNINGS_REQUEST.length
+        ? prisma.distributorSettlementRequest.findMany({ where: { id: { in: idsByType.EARNINGS_REQUEST } } })
+        : [],
+      idsByType.NET_BALANCE_REQUEST.length
+        ? prisma.distributorSettlementRequestToken.findMany({
+            where: { id: { in: idsByType.NET_BALANCE_REQUEST } },
+            include: {
+              financialAccount: { select: { id: true, accountName: true, accountType: true } },
+              settlement: {
+                select: {
+                  id: true,
+                  direction: true,
+                  setoffAgreementReference: true,
+                  cashAmount: true,
+                  offsetAmount: true,
+                  receivableApplied: true,
+                  payableApplied: true,
+                  journalEntryId: true,
+                  cashTransactionId: true,
+                  postedAt: true,
+                },
+              },
+            },
+          })
+        : [],
+      idsByType.NET_BALANCE_SETTLEMENT.length
+        ? prisma.distributorBalanceSettlement.findMany({
+            where: { id: { in: idsByType.NET_BALANCE_SETTLEMENT } },
+            include: {
+              journalEntry: { select: { id: true, journalNumber: true, postedAt: true } },
+              cashTransaction: { select: { id: true, date: true, type: true, amount: true, externalPaymentReference: true } },
+            },
+          })
+        : [],
+    ]);
+
+    const legacyIds = legacyRequests.map((request) => request.id);
+    const legacyReferenceToRequestId = new Map();
+    for (const request of legacyRequests) {
+      legacyReferenceToRequestId.set(request.id, request.id);
+      if (request.metadata?.accountPayableId) {
+        legacyReferenceToRequestId.set(request.metadata.accountPayableId, request.id);
+      }
+    }
+    const legacyReferences = [...legacyReferenceToRequestId.keys()];
+    const [payouts, cashTransactions, journalEntries] = legacyIds.length
+      ? await Promise.all([
+          prisma.financialPayout.findMany({
+            where: { targetType: "DISTRIBUTOR_SETTLEMENT", targetId: { in: legacyIds } },
+            select: {
+              id: true,
+              targetId: true,
+              amount: true,
+              settlementAmount: true,
+              status: true,
+              externalPaymentReference: true,
+              bankEvidenceReference: true,
+              initiatedAt: true,
+              settledAt: true,
+              financialAccount: { select: { id: true, accountName: true, accountType: true } },
+            },
+          }),
+          prisma.cashTransaction.findMany({
+            where: { referenceId: { in: legacyReferences } },
+            select: { id: true, referenceId: true, date: true, type: true, amount: true, externalPaymentReference: true },
+          }),
+          prisma.journalEntry.findMany({
+            where: { sourceId: { in: legacyReferences }, sourceType: "SUPPLIER_PAYMENT" },
+            select: { id: true, sourceId: true, journalNumber: true, postedAt: true },
+          }),
+        ])
+      : [[], [], []];
+    const payoutsByRequest = new Map(legacyIds.map((id) => [id, []]));
+    const cashByRequest = new Map(legacyIds.map((id) => [id, []]));
+    const journalsByRequest = new Map(legacyIds.map((id) => [id, []]));
+    for (const payout of payouts) payoutsByRequest.get(payout.targetId)?.push(payout);
+    for (const transaction of cashTransactions) {
+      cashByRequest.get(legacyReferenceToRequestId.get(transaction.referenceId))?.push(transaction);
+    }
+    for (const journal of journalEntries) {
+      journalsByRequest.get(legacyReferenceToRequestId.get(journal.sourceId))?.push(journal);
+    }
+
+    const legacyById = new Map(legacyRequests.map((request) => [request.id, {
+      ...request,
+      activityType: "EARNINGS_REQUEST",
+      requestedAmount: Number(request.amount),
+      paidAmount: Number(request.paidAmount || 0),
+      remainingAmount: Math.max(0, Number(request.amount) - Number(request.paidAmount || 0)),
+      payouts: payoutsByRequest.get(request.id) || [],
+      cashTransactions: cashByRequest.get(request.id) || [],
+      journalEntries: journalsByRequest.get(request.id) || [],
+    }]));
+    const netRequestById = new Map(netRequests.map((request) => [request.id, {
+      ...request,
+      activityType: "NET_BALANCE_REQUEST",
+      requestedAmount: Number(request.requestedAmount),
+      paidAmount: Number(request.settlement?.cashAmount || 0),
+      remainingAmount: request.settlement ? 0 : Number(request.requestedAmount),
+    }]));
+    const balanceSettlementById = new Map(balanceSettlements.map((settlement) => [settlement.id, {
+      ...settlement,
+      activityType: "NET_BALANCE_SETTLEMENT",
+      requestedAmount: Number(settlement.cashAmount),
+      paidAmount: Number(settlement.cashAmount),
+      remainingAmount: 0,
+    }]));
+    const activities = activityRows.map((row) => ({
+      ...({ EARNINGS_REQUEST: legacyById, NET_BALANCE_REQUEST: netRequestById, NET_BALANCE_SETTLEMENT: balanceSettlementById }[row.activityType].get(row.sourceId)),
+      id: `${row.activityType}:${row.sourceId}`,
+      sourceId: row.sourceId,
+      occurredAt: row.occurredAt,
+    }));
+
+    return res.json({
+      success: true,
+      activities,
+      pagination: getPaginationMeta({ ...pagination, total: Number(countRows[0]?.total || 0) }),
+    });
+  } catch (error) {
+    return sendError(res, error, "getAdminDistributorSettlementActivity");
+  }
+};

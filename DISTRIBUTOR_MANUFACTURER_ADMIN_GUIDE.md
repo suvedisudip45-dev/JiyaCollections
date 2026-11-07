@@ -317,8 +317,11 @@ service-area districts remain managed separately.
 - Manufacturer registration and admin management support contracts,
   availability, pickup branch details, and quality/performance data. Admins
   can change pickup status at any time. Manufacturer settlements use approved
-  COGS and recorded production/logistics payables; no future manufacturer
-  commission rates are configured or accrued.
+  COGS and recorded production/logistics payables; open requests reserve their
+  unpaid remainder, including partially paid requests. Manufacturer finance
+  history is paginated and shows requested, paid, and remaining amounts; Admin
+  settlement history can be filtered by partial-payment status. No future
+  manufacturer commission rates are configured or accrued.
 - A manufacturer can apply for distributor access through
   `POST /api/manufacturer/apply-distributor`. The application remains attached
   to the manufacturer profile until an admin reviews it through
@@ -326,11 +329,14 @@ service-area districts remain managed separately.
   linked distributor profile and grants the account the `DISTRIBUTOR` role.
   Approval copies the manufacturer business name, phone, business address,
   city, NCM pickup branch, pickup address/contact/window, and return
-  instructions into the distributor profile; distributor pickup verification
-  starts as `UNVERIFIED`. The registered origin is resolved from a canonical
-  existing distributor origin when present; otherwise it is resolved from the
-  manufacturer's canonical city, NCM pickup branch, or first active
-  manufacturer location in province/district order. The origin is added as the
+  instructions into the distributor profile, keeping business and pickup
+  addresses separate. Every active manufacturer province/district location is
+  carried into distributor service areas, along with the registered origin;
+  distributor pickup verification starts as `UNVERIFIED`. The registered
+  origin is resolved from the manufacturer's NCM pickup branch first, then its
+  canonical city or first active manufacturer location; an existing
+  distributor origin is used only when no manufacturer origin can be resolved.
+  The origin is added as the
   initial distributor service area. Admins can edit the distributor
   registration profile in Distributor Management, and distributors can edit
   their business address/contact and operational pickup profile in the
@@ -750,7 +756,7 @@ transfer flow:
      - Exchanges follow the same delivery-route rule. NCM handles NCM-delivered return and replacement legs; the original distributor handles approved self-delivery exchanges by receiving/inspecting the return and dispatching/delivering the reserved replacement.
      - Admin-approved self-delivery exchanges are listed for the original distributor hub and reserve replacement stock from its platform-owned inventory ledger. The distributor must receive and inspect the returned items before dispatching the replacement; dispatched stock is consumed from its reservation and the exchange is closed only after the distributor confirms delivery.
      - `POST /api/distributor/orders/:id/return`: Conducts customer return QA. Restockable items increment good stock with `RETURN` ledger entries; damaged items move to the distributor's `DAMAGED` location with `DAMAGE` ledger entries and open `InventoryDiscrepancy` records. Inspection posts the cost journal immediately and idempotently: restockable cost debits inventory (1140), while defective cost debits damaged/scrap loss (5500); both credit sold COGS (5100). Inspection is blocked if the original unit cost is absent or invalid. The journal ID is recorded separately from the later refund/credit-note journal. Admin review of distributor refund evidence posts the sales/VAT reversal and distributor payable only, so it cannot post the item cost twice.
-     - Admin Shipping Rate Settings include separate company-paid settlement rates for NCM and distributor returns and exchanges. The selected rate is fixed on admin approval; when the return or exchange logistics complete, the system records the payable against NCM or the original distributor. These amounts do not affect customer shipping charges or overwrite reported NCM charges.
+     - Admin Shipping Rate Settings include separate company-paid settlement rates for NCM and distributor returns and exchanges. The selected rate is fixed on admin approval. On completion, distributor logistics charges are recorded as source-linked bills in the distributor accounting balance; NCM charges remain in Accounts Payable and use a reported carrier charge when available, otherwise the configured rate estimate. NCM return charges assigned to the customer do not accrue as company payables. These amounts do not affect customer shipping charges.
      - Return and exchange accounting uses the current period rather than backdating to the original sale. NCM/manufacturer return inspection posts the sales/VAT and cost adjustments together; distributor return inspection posts its inventory/COGS or damaged-loss/COGS journal immediately, while verified distributor refund accounting posts sales/VAT and distributor payable separately. Both journal references and the credit-note reference are retained on the return. Distributor-paid exchange downgrades remain distributor payables for settlement; distributor exchange upgrades remain COD receivables. For an NCM-delivered exchange, the original assigned distributor handles any nonzero price difference separately from NCM transport. The distributor submits exact-amount payment evidence and a JPG/PNG screenshot in Self-Delivery Management; Admin verifies or rejects it in the Exchange Requests panel. Rejected evidence can be corrected and resubmitted. Verification records the evidence status but does not itself clear the distributor receivable/payable. The NCM exchange-create request accepts `pk` only and does not transmit a COD amount.
    - Admins can enter the same package details used by the fulfillment workflow
      from Order Assignments and request NCM booking for a distributor-assigned
@@ -768,7 +774,7 @@ transfer flow:
    - For `COMPANY_COLLECTS` requests, the distributor submits the bank/wallet reference and proof against the issued request; Admin verifies it and the settlement is then posted. For `COMPANY_PAYS`, Admin records the completed payout and proof; the distributor acknowledges receipt. A request is not an accounting settlement until the corresponding transfer is verified/recorded.
    - Before creating a new request, missing delivery earnings are accrued from completed self-delivery assignments using the rate card effective at delivery; missing return charges are accrued from completed returns. Older requests without accounting documents remain reconciliation-required: Admin can explicitly backfill only earnings supported by completed delivery/return records, then link the resulting documents. No payable is created from a requested amount alone.
    - Open, subledger-backed distributor settlement requests are displayed in Payables & Receivables and can be paid through the standard distributor payout lifecycle. A non-VAT request excludes VAT from the requested amount; any VAT portion on its source earning documents is not paid by that request.
-   - Admin distributor Finance derives gross receivable/payable and net due from all open NPR accounting-party documents. It creates one active net-settlement request at a time; requests may be partial but cannot exceed the current net balance. Settlement applies FIFO allocations, requires an agreement reference plus explicit Admin confirmation for offsets, and records completed cash movement against an active NPR treasury account. Pending legacy remittance reviews and older settlement requests block a new request. Rate-card revisions create new versions; closing an approved card preserves history.
+   - Admin distributor Finance derives gross receivable/payable and net due from all open NPR accounting-party documents. It creates one active net-settlement request at a time; requests may be partial but cannot exceed the current net balance. Settlement applies FIFO allocations, requires an agreement reference plus explicit Admin confirmation for offsets, and records completed cash movement against an active NPR treasury account. Pending legacy remittance reviews and older settlement requests block a new request. The legacy earnings payout request and unified net-balance request remain distinct workflows, but cannot be active together; request creation and direct balance posting are serialized per distributor, and legacy payout initiation/recording rechecks for an active unified request to prevent overlapping settlement. The paginated Settlement activity history combines both request types and direct balance settlements with cash/journal references, payout evidence where recorded, and requested/paid/remaining amounts. Rate-card revisions create new versions; closing an approved card preserves history.
    - Distributor service VAT is not claimed as input VAT solely because a rate is configured; verified invoice evidence is required.
 
 Relevant endpoints:
@@ -803,6 +809,7 @@ Relevant endpoints:
 | `POST /api/distributor/finance/settlement-requests/:requestId/acknowledge` | Distributor | `distributor:profile_read` | Acknowledge receipt of a company payout after Admin records the transfer and evidence. |
 | `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/review` | Admin | `finance:receivable_collect` | Verify or reject distributor-submitted evidence for a company-collection request. |
 | `POST /api/admin/distributors/:id/finance/settlement-requests/:requestId/payout` | Admin | `finance:payable_settle` | Record a company payout using an active NPR treasury account, transfer reference, and evidence. |
+| `GET /api/admin/distributors/:id/finance/activity` | Admin | `distributor:admin_finance_read` | Read paginated settlement activity across earnings requests, unified net-balance requests, and direct balance settlements. |
 | `POST /api/finance/settle-payable` | Admin | `finance:payable_settle` | Pay a distributor settlement payable in `/payables` from a selected active treasury account; partial payments are supported and journaled. |
 | `GET /api/admin/distributor-finance/settlements` | Admin | `finance:payables_read` | List distributor settlement requests. |
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
@@ -832,8 +839,9 @@ Relevant endpoints:
 | `POST /manufacturer/production/:id/start` | Manufacturer | `manufacturer:production_manage` | Start after checklist and terms gates pass. |
 | `PATCH /manufacturer/production/:id/post-check` | Manufacturer | `manufacturer:production_manage` | QA actual counts and receive good units into inventory. |
 | `GET /manufacturer/finance/dashboard` | Manufacturer | `manufacturer:finance_dashboard` | Read production value, logistics reimbursements, outstanding and paid settlements. |
+| `GET /manufacturer/finance/settlement-requests` | Manufacturer | `manufacturer:finance_dashboard` | Read paginated settlement-request history with requested, paid, and remaining amounts and linked payout, transfer-evidence, treasury, cash-transaction, and journal details. |
 | `POST /manufacturer/finance/settlement-request` | Manufacturer | `manufacturer:settlement_request` | Request available production or logistics payable. |
-| `GET /admin/finance/settlements` | Admin | `finance:payables_read` | List manufacturer settlement requests; supports status, manufacturerId, page, and limit filters. |
+| `GET /admin/finance/settlements` | Admin | `finance:payables_read` | List manufacturer settlement requests with linked payout attempts and accounting/cash records; supports `PENDING`, `PARTIALLY_PAID`, `PAID`, and `REJECTED` status, manufacturerId, page, and limit filters. |
 | `PATCH /admin/finance/settlements/:id/pay` | Admin | `finance:payable_settle` | Pay a pending manufacturer settlement from a financial account. |
 | `POST /assignment/assign` | Admin/internal | `assignment:create` | Assign customer order. |
 | `GET /assignment/all` | Admin | `assignment:admin_list` | List assignments. |

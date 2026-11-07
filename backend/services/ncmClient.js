@@ -15,6 +15,36 @@ export const validateNcmPackageName = (value, fallback = "Box") => {
   return packageName;
 };
 
+export const validateCodTransferBankDetails = ({ bankName, bankAccountName, bankAccountNumber } = {}) => {
+  const bankTextPattern = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’&()-]*$/u;
+  const digitPattern = /^\d+$/;
+  const normalized = {
+    bankName: typeof bankName === "string" ? bankName.trim() : "",
+    bankAccountName: typeof bankAccountName === "string" ? bankAccountName.trim() : "",
+    bankAccountNumber: typeof bankAccountNumber === "string" ? bankAccountNumber.trim() : "",
+  };
+
+  if (!normalized.bankName || !bankTextPattern.test(normalized.bankName) || normalized.bankName.length > 191) {
+    throw Object.assign(new Error("Bank name must contain text only and be 191 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  if (!normalized.bankAccountName || !bankTextPattern.test(normalized.bankAccountName) || normalized.bankAccountName.length > 191) {
+    throw Object.assign(new Error("Account holder name must contain text only and be 191 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  if (!normalized.bankAccountNumber || !digitPattern.test(normalized.bankAccountNumber) || normalized.bankAccountNumber.length > 64) {
+    throw Object.assign(new Error("Bank account number must contain digits only and be 64 characters or fewer."), {
+      code: "INVALID_COD_BANK_DETAILS",
+      statusCode: 400,
+    });
+  }
+  return normalized;
+};
+
 const DEFAULT_BASE_URL = "https://demo.nepalcanmove.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
@@ -315,11 +345,13 @@ export const testWebhook = ({ webhook_url }) =>
   requestNcm("/api/v2/vendor/webhook/test", { method: "POST", body: { webhook_url } });
 export const createVendorTicket = (payload) =>
   requestNcm("/api/v2/vendor/ticket/create/new", { method: "POST", body: payload });
-export const createCodTransferTicket = ({ bankName, bankAccountName, bankAccountNumber }) =>
-  requestNcm("/api/v2/vendor/ticket/cod/create", {
+export const createCodTransferTicket = (bankDetails) => {
+  const payload = validateCodTransferBankDetails(bankDetails);
+  return requestNcm("/api/v2/vendor/ticket/cod/create", {
     method: "POST",
-    body: { bankName, bankAccountName, bankAccountNumber },
+    body: payload,
   });
+};
 export const closeVendorTicket = (ticketId) =>
   requestNcm(`/api/v2/vendor/ticket/close/${ticketId}`, { method: "POST", body: { pk: ticketId } });
 export const getTicketDetail = (ticketId) => requestNcm(`/api/v1/tickets/${ticketId}/detail`);

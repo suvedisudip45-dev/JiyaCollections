@@ -8,6 +8,7 @@ import {
   getAdminDistributorProfile,
   getAdminDistributorReturns,
   getAdminDistributorLoginHistory,
+  getAdminDistributorSettlementActivity,
   getAdminDistributorSettlements,
   listAdminDistributors,
 } from "../controllers/adminDistributorDetailController.js";
@@ -64,6 +65,7 @@ adminDistributorDetailRouter.get("/:id/exchanges", authorize("distributor:admin_
 adminDistributorDetailRouter.get("/:id/finance", authorize("distributor:admin_finance_read"), getAdminDistributorFinance);
 adminDistributorDetailRouter.get("/:id/finance/transactions", authorize("distributor:admin_finance_read"), getAdminDistributorFinanceTransactions);
 adminDistributorDetailRouter.get("/:id/finance/settlements", authorize("distributor:admin_finance_read"), getAdminDistributorSettlements);
+adminDistributorDetailRouter.get("/:id/finance/activity", authorize("distributor:admin_finance_read"), getAdminDistributorSettlementActivity);
 adminDistributorDetailRouter.post(
   "/:id/finance/settlements",
   authorize("finance:receivable_collect"),

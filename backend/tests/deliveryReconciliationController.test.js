@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prisma } from "../config/db.js";
-import { adminResolveNcmDeliveryReconciliation } from "../controllers/deliveryController.js";
+import {
+  adminResolveNcmDeliveryReconciliation,
+  getNcmSettlementFailureMessage,
+} from "../controllers/deliveryController.js";
 
 const makeResponse = () => ({
   statusCode: 200,
@@ -23,6 +26,47 @@ const replaceMethods = (replacements) => {
     for (const [target, key, original] of originals.reverse()) target[key] = original;
   };
 };
+
+test("NCM COD ticket errors expose provider field details without echoing bank data", () => {
+  const message = getNcmSettlementFailureMessage({
+    code: "NCM_HTTP_400",
+    message: "NCM request failed with HTTP 400",
+    response: {
+      message: JSON.stringify({
+        message: "You already have 1 open COD Transfer ticket. Please wait for it to be closed before creating a new one.",
+      }),
+    },
+  }, {
+    bankName: "Example Bank",
+    bankAccountName: "John Doe",
+    bankAccountNumber: "001234567",
+  });
+
+  assert.equal(
+    message,
+    "You already have 1 open COD Transfer ticket. Please wait for it to be closed before creating a new one.",
+  );
+  assert.doesNotMatch(message, /HTTP|400|John Doe|001234567|Example Bank/);
+});
+
+test("NCM provider field errors remain readable without exposing submitted bank values", () => {
+  const message = getNcmSettlementFailureMessage({
+    code: "NCM_HTTP_400",
+    response: {
+      bankAccountName: ["Account holder John Doe is not registered"],
+      bankAccountNumber: ["Invalid account number 001234567"],
+      internal_debug: "not returned",
+    },
+  }, {
+    bankName: "Example Bank",
+    bankAccountName: "John Doe",
+    bankAccountNumber: "001234567",
+  });
+
+  assert.match(message, /bank Account Name: Account holder \[REDACTED\] is not registered/);
+  assert.match(message, /bank Account Number: Invalid account number \[REDACTED\]/);
+  assert.doesNotMatch(message, /HTTP|400|Example Bank|internal_debug/);
+});
 
 test("Admin reconciliation decisions require a useful investigation note", async () => {
   const response = makeResponse();

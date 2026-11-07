@@ -41,6 +41,7 @@ The standard accounts and mapping keys are declared in `backend/services/account
 | Liabilities | Manufacturer payable | 2160 | Manufacturer production, logistics and certain order costs |
 | Liabilities | Marketing partner payable | 2170 | Partner settlements |
 | Liabilities | NCM carrier payable | 2180 | Accrued for actual carrier fees and cleared when netted against remittance |
+| Liabilities | NCM remittance variance suspense | 2185 | Overpayments held pending NCM reconciliation; not automatically recognized as income |
 | Liabilities | Distributor payable | 2190 | Admin-verified customer refunds paid by distributors; cleared by a separate treasury payout |
 | Liabilities | Term loans | 2510 | Investor/lender debt |
 | Equity | Share capital / premium | 3100 / 3200 | Share issuance and capital |
@@ -184,6 +185,8 @@ Other report and legacy paths calculate COGS differently. For example, `postSale
 
 Manufacturer production settlement summaries in `backend/services/manufacturerSettlementService.js` derive production payables from manufacturer production journals, logistics payables from `MANUFACTURER_LOGISTICS` journals, and subtract payments/settled settlement requests. The manufacturer settlement payment flow validates outstanding payable and treasury funds, updates cash, posts supplier-payment accounting, updates the request and audit record in one transaction. A LOGISTICS settlement clears the freight payable recognized at dispatch; it does not recognize freight expense again. The 6430 expense remains in the income statement after payment because the shipment cost was already incurred; the amount that clears is the 2160 liability, while the selected cash/bank asset decreases.
 
+Open manufacturer settlement requests reserve their unpaid remainder, including requests that have been partially paid. This prevents a second request from reusing the balance. Manufacturers can view paginated request history with requested, paid, and remaining amounts; Admin can filter requests by `PARTIALLY_PAID` as well as other lifecycle states.
+
 Manufacturer payable categories represented in the reviewed flows include:
 
 - Approved production value for accepted good units.
@@ -195,6 +198,8 @@ Manufacturer payable categories represented in the reviewed flows include:
 Paid manufacturer `LOGISTICS` settlements are allocated oldest-dispatch-first across local shipments. The shipment keeps the cumulative paid amount, so partial settlement is visible as both paid and outstanding freight in Admin finance details. If a paid logistics amount cannot be matched to dispatched local freight, the payment response explicitly flags reconciliation rather than reporting a clean match.
 
 NCM bookings are a separate carrier flow. Do not treat the existence of an NCM booking or a manufacturer logistics payable as proof that it is in the same payable subledger.
+
+Completed distributor return/exchange logistics are recorded as distributor-party accounting bills, so they participate in the distributor's open balance, FIFO settlement allocations, and unified settlement history. New NCM return/exchange logistics liabilities remain in Accounts Payable. A confirmed NCM charge is used when available; otherwise the configured rate is recorded as an estimate. NCM return charges assigned to the customer do not accrue as company payables. Existing legacy distributor logistics payables remain in Accounts Payable and continue to block unified settlement until resolved there.
 
 ## 6. Distributor balances and delivery methods
 
@@ -208,7 +213,7 @@ This distributor rate card concerns distributor compensation. It is distinct fro
 
 Admin rate-card revisions create new versions, while closing a card retains its history. Approved rate-card values are not rewritten to update past earnings. The Admin rate editor uses the actual delivery, return, commission-percent, and incentive-amount fields.
 
-Settlement requests backed by these source documents are paid from the recorded earning documents, with the journal clearing 2190, Treasury/cash movement, and document allocations in a serializable transaction. Legacy settlement requests retain their older `AccountPayable` path. Historical delivered assignments without a `DistributorServiceEarning` are still displayed using the legacy calculation and must be reconciled before those historical figures are treated as immutable or accounting-authoritative.
+Settlement requests backed by these source documents are paid from the recorded earning documents, with the journal clearing 2190, Treasury/cash movement, and document allocations in a serializable transaction. Return/exchange logistics bills and customer-refund payables are included in this distributor balance. Legacy settlement requests retain their older `AccountPayable` path. Historical delivered assignments without a `DistributorServiceEarning` are still displayed using the legacy calculation and must be reconciled before those historical figures are treated as immutable or accounting-authoritative.
 
 ### NCM versus distributor self-delivery
 
@@ -220,17 +225,23 @@ Settlement requests backed by these source documents are paid from the recorded 
 
 For new earning documents, a settlement request does not accrue service expense a second time. Admin payout is limited to open earning-document balances and clears distributor payable control account 2190. Old request-created payables remain supported only for existing settlement requests; do not create a new legacy payable for a delivery that already has an earning document.
 
+The legacy earnings payout request and Admin-issued unified net-balance request remain distinct workflows; an earnings payout is not interchangeable with settling the full distributor receivable/payable position. They are mutually exclusive while either request is active: both request-creation paths and direct unified postings lock the distributor record and reject conflicting active requests, and legacy payout initiation/recording rechecks for an active unified request. A request-token posting is allowed only when it carries that token's idempotency key. This prevents a single payable or receivable from being settled twice while preserving existing request history and status meanings.
+
 ## 7. NCM COD and carrier charges
 
-The GL has NCM COD receivable 1170 and NCM carrier payable 2180. Delivered COD sales debit NCM COD receivable. At NCM remittance, the current poster does:
+The GL has NCM COD receivable 1170, NCM carrier payable 2180, and NCM remittance variance suspense payable 2185. Delivered COD sales debit NCM COD receivable. At NCM remittance, the batch poster records actual cash received, carrier fees, and any variance:
 
 ```text
-DR cash/bank                   COD collected - actual carrier fee
-DR delivery expense 6430       actual carrier fee
-    CR NCM COD receivable 1170  total COD collected
+DR cash/bank                   actual net deposit
+DR NCM carrier payable 2180    actual carrier fee
+DR NCM COD receivable 1170     short remittance variance, if any
+    CR NCM COD receivable 1170 total COD collected
+    CR NCM variance suspense 2185 overpayment, if any
 ```
 
-The shared `backend/services/ncmSettlementService.js` processes Admin remittances from the delivery monitor and the legacy single-receipt endpoints. It bounds a batch to 100 unique settlements, verifies a mapped active NPR asset account, validates the net deposit, claims each open settlement, requires matching open NCM COD source documents, accrues a batch-level NCM carrier bill, posts the accrual and settlement journals, allocates gross COD and carrier fees, links the settlement journal to each included row, increments Treasury and writes the idempotent inflow `CashTransaction` in one serializable transaction. Replaying a processed batch does not post cash or fees twice. Unexplained adjustments and non-positive deposits are rejected for reconciliation instead of being silently booked.
+The shared `backend/services/ncmSettlementService.js` lets Admin filter delivered COD settlements by Kathmandu-local date range, manually select up to 100 records, and issue one NCM ticket for that selection. Confirmation records one actual net deposit for the batch, compares it with expected COD less actual carrier fees, and requires a variance category and explanation for a difference. It claims each open settlement, requires matching open NCM COD source documents, accrues a batch-level NCM carrier bill, posts the accrual and settlement journals, allocates the received amount plus carrier fees against COD invoices, links the journal to each included row, increments Treasury by actual cash, and writes the idempotent inflow `CashTransaction` in one serializable transaction. A shortfall remains as open NCM COD receivable; an overpayment is held in account 2185 and a payable suspense document. Both keep the batch in `VARIANCE_OPEN` for follow-up instead of writing off or silently netting the variance. Replaying a processed batch does not post cash or fees twice.
+
+Admins resolve variances explicitly and can post partial amounts. A shortfall collection debits the selected treasury asset and credits NCM COD receivable 1170, allocated only to that batch's remaining COD invoices. An overpayment refund debits suspense 2185 and credits treasury; an overpayment application debits suspense 2185 and credits 1170, allocating both sides to the suspense payable and eligible open NCM COD receivables. Each action requires a payment reference and explanation and writes an immutable `NcmSettlementVarianceResolution` with the journal, allocations, and cash record where applicable. The original signed variance is retained; remaining variance and resolved status are derived from resolution rows. There is intentionally no write-off action or automatic income recognition.
 
 The settlement list defaults to the same three remittable states accepted by the service, so return-pending and already settled rows are not accidentally selected by the Admin batch action. Admin 2FA issuance and resend use cryptographically random OTPs, with a fixed OTP permitted only through an explicit development-only configuration; never configure that override in production.
 

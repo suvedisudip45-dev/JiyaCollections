@@ -31,7 +31,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled |
 | Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord`, `NepaliCalendarYear` | double-entry accounting and operational finance; admin-defined BS year mappings link month lengths to a Gregorian Baisakh 1 date |
-| Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, and carrier-fee settlement |
+| Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `NcmSettlementBatch`, `NcmSettlementBatchItem`, `NcmSettlementVarianceResolution`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, carrier-fee settlement, bulk COD remittances, and evidenced variance resolution |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
 | Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content; optional HTTPS `logoImage` is shared by the storefront header/footer, alongside retained, versioned customer Terms & Conditions acceptance events |
 
@@ -95,7 +95,7 @@ collaboration activity is accepted by the application.
 | --- | --- | --- |
 | `Order` | `id` (internal UUID), unique `orderReference` (15-character uppercase customer/NCM reference), `userId`, `items`, `amount`, `address`, `status`, `date` (`BigInt`), `updatedAt`, `paymentMethod`, `fulfillmentStatus`, `checkoutGroupId`, `manufacturerId`, `distributorId`, `deliveryJobId`, gift inventory references, `giftStatus`, `specialOrder*` | primary order transaction; a multi-hub checkout creates one order per hub and shares `checkoutGroupId` across the independently delivered orders; `orderReference` is persisted, unique, and used as NCM's vendor reference; `updatedAt` is maintained by Prisma and indexed for recently-updated-first lists; admin exchange-list API returns `date` as a decimal string for JSON safety; product analytics reads item-level quantity and price snapshots and delivery province/district from this order |
 | `OrderAssignment` | `orderId`, nullable `manufacturerId`/`distributorId`, `status`, `acceptedAt`, `readyAt`, `pickedUpAt` | customer-order fulfillment assignment; each order in a multi-hub checkout has its own assignment and only the hub's allocated items; admin self-delivery monitoring explicitly filters `deliveryType=SELF_DELIVERY` and excludes orders with a `DeliveryOrder` |
-| `ShippingConfig` | `sameDistrictFee`, same/different-province door-to-door and door-to-hub fees, `routeOverrides`, separate door-to-door and door-to-hub split-shipment fees, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tariffs plus optional route exceptions and company-paid return/exchange logistics rates; same-zone deliveries use door-to-door only, while route and split-shipment choices use their configured tariff; approved return/exchange requests snapshot the settlement rate and create an accounts payable after logistics completion |
+| `ShippingConfig` | `sameDistrictFee`, same/different-province door-to-door and door-to-hub fees, `routeOverrides`, separate door-to-door and door-to-hub split-shipment fees, `freeShippingMin`, NCM/distributor return and exchange settlement rates | shared customer delivery tariffs plus optional route exceptions and return/exchange logistics rates; same-zone deliveries use door-to-door only, while route and split-shipment choices use their configured tariff; completed distributor logistics create distributor accounting bills, while NCM charges use Accounts Payable and prefer reported carrier charges over configured estimates |
 | `DeliveryOrder` | `orderId`, optional `manufacturerId`/`distributorId`, `state`, `deliveryType`, `ncmOrderId`, `ncmStatus`, `ncmReconciliationRequired`, `ncmReconciliationReason`, `vendorReference`, `codAmount` | customer-order carrier package record owned by the assigned fulfillment hub; split checkout children have separately tracked delivery records; indexes support the NCM admin monitor and pending reconciliation queue |
 | `DeliveryEvent` | `deliveryOrderId`, `eventType`, `fromState`, `toState`, `payloadJson` | state transition tracking |
 | `DeliveryComment` | `ncmOrderId`, `comments`, `payloadJson`, `eventKey` | NCM delivery comments |
@@ -121,6 +121,22 @@ not rewrite customer COD or checkout pricing.
 The additive migration `20261030170000_ncm_delivery_discounts` must be applied
 and Prisma Client regenerated before deploying the discount fields or Admin
 pricing action.
+
+Admin bulk remittances store a Kathmandu-local date period, expected and actual
+net deposit, signed variance and explanation, selected delivery links, and
+journal/cash references in `NcmSettlementBatch`. Each delivery settlement can
+belong to at most one batch through `NcmSettlementBatchItem`. Apply
+`20261107100000_ncm_bulk_settlement_batches` and regenerate Prisma Client before
+using this workflow.
+
+The original signed batch variance remains unchanged. Append-only
+`NcmSettlementVarianceResolution` rows record each partial/full shortfall
+collection or overpayment refund/application, including amount, action,
+reference, notes, journal, optional cash movement, and associated documents.
+The batch's resolved and remaining amounts are derived from those rows, not
+stored as replaceable snapshots. Apply
+`20261107170000_ncm_variance_resolutions` and regenerate Prisma Client before
+using variance resolution.
 
 Admin monitoring lists are paginated and return compact row fields; detail
 routes load bounded event, return, exchange, rating, and settlement sections

@@ -1076,6 +1076,7 @@ model FinancialAccount {
   distributorBalanceSettlements DistributorBalanceSettlement[]
   distributorSettlementRequests DistributorSettlementRequestToken[]
   financialPayouts     FinancialPayout[]
+  ncmVarianceResolutions NcmSettlementVarianceResolution[]
 
   @@index([accountingAccountId])
 }
@@ -1098,6 +1099,7 @@ model CashTransaction {
   fromAccount    FinancialAccount? @relation("FromAccount", fields: [fromAccountId], references: [id], onDelete: SetNull)
   toAccount      FinancialAccount? @relation("ToAccount", fields: [toAccountId], references: [id], onDelete: SetNull)
   distributorBalanceSettlement DistributorBalanceSettlement?
+  ncmVarianceResolutions NcmSettlementVarianceResolution[]
   createdAt      DateTime          @default(now())
 
   @@index([date])
@@ -1850,6 +1852,7 @@ model JournalEntry {
   settlementOffset  DistributorSettlementOffset?
   distributorBalanceSettlement DistributorBalanceSettlement?
   supplierCreditApplications SupplierCreditApplication[]
+  ncmVarianceResolutions NcmSettlementVarianceResolution[]
 
   @@index([transactionDate])
   @@index([sourceType, sourceId])
@@ -1970,6 +1973,8 @@ model AccountingDocument {
   supplierCreditApplicationsAsCredit SupplierCreditApplication[] @relation("SupplierCreditApplicationCredit")
   supplierCreditApplicationsAsBill   SupplierCreditApplication[] @relation("SupplierCreditApplicationBill")
   distributorCashEvents DistributorCashEvent[]
+  ncmVarianceResolutionsAsVariance NcmSettlementVarianceResolution[] @relation("NcmVarianceSourceDocument")
+  ncmVarianceResolutionsAsTarget NcmSettlementVarianceResolution[] @relation("NcmVarianceTargetDocument")
 
   @@index([partyId, side, status])
   @@index([sourceType, sourceId])
@@ -3782,11 +3787,80 @@ model DeliveryFinancialSettlement {
   settledAt           DateTime?
   journalEntryId      String?
   varianceReason      String?   @db.Text
+  ncmSettlementBatchItem NcmSettlementBatchItem?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   @@index([settlementState])
   @@index([ncmOrderId])
+}
+
+model NcmSettlementBatch {
+  id                    String   @id @default(uuid())
+  idempotencyKey        String   @unique @db.VarChar(191)
+  periodStart           DateTime?
+  periodEnd             DateTime?
+  status                String   @default("SETTLED") @db.VarChar(32) // SETTLED | VARIANCE_OPEN | VARIANCE_PARTIALLY_RESOLVED | VARIANCE_RESOLVED
+  ncmTicketId           Int?
+  totalCod              Decimal  @db.Decimal(20, 2)
+  totalCarrierFee       Decimal  @db.Decimal(20, 2)
+  expectedNetDeposit    Decimal  @db.Decimal(20, 2)
+  actualNetDeposit      Decimal  @db.Decimal(20, 2)
+  varianceAmount        Decimal  @default(0) @db.Decimal(20, 2) // Actual less expected; non-zero remains in suspense.
+  varianceType          String?  @db.VarChar(40)
+  varianceReason        String?  @db.Text
+  reference             String?  @db.VarChar(191)
+  notes                 String?  @db.Text
+  financialAccountId    String   @db.VarChar(191)
+  journalEntryId        String   @db.VarChar(191)
+  cashTransactionId     String   @db.VarChar(191)
+  createdBy             String?  @db.VarChar(191)
+  settledAt             DateTime @default(now())
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  items                 NcmSettlementBatchItem[]
+  varianceResolutions   NcmSettlementVarianceResolution[]
+
+  @@index([status, settledAt])
+  @@index([ncmTicketId])
+}
+
+model NcmSettlementBatchItem {
+  id           String                  @id @default(uuid())
+  batchId      String
+  settlementId String                  @unique
+  batch        NcmSettlementBatch      @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  settlement   DeliveryFinancialSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  createdAt    DateTime                @default(now())
+
+  @@index([batchId])
+}
+
+model NcmSettlementVarianceResolution {
+  id                 String             @id @default(uuid())
+  batchId            String
+  action             String             @db.VarChar(32) // COLLECT_SHORTFALL | REFUND_OVERPAYMENT | APPLY_OVERPAYMENT
+  amount             Decimal            @db.Decimal(20, 2)
+  sourceDocumentId   String?
+  targetDocumentId   String?
+  financialAccountId String?
+  journalEntryId     String
+  cashTransactionId  String?
+  idempotencyKey     String             @unique @db.VarChar(191)
+  reference          String?            @db.VarChar(191)
+  notes              String             @db.Text
+  createdBy          String?            @db.VarChar(191)
+  createdAt          DateTime           @default(now())
+  batch              NcmSettlementBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  sourceDocument     AccountingDocument? @relation("NcmVarianceSourceDocument", fields: [sourceDocumentId], references: [id], onDelete: Restrict)
+  targetDocument     AccountingDocument? @relation("NcmVarianceTargetDocument", fields: [targetDocumentId], references: [id], onDelete: Restrict)
+  financialAccount   FinancialAccount?  @relation(fields: [financialAccountId], references: [id], onDelete: Restrict)
+  journalEntry       JournalEntry       @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  cashTransaction    CashTransaction?   @relation(fields: [cashTransactionId], references: [id], onDelete: Restrict)
+
+  @@index([batchId, createdAt])
+  @@index([sourceDocumentId])
+  @@index([targetDocumentId])
 }
 
 model NcmSupportTicket {

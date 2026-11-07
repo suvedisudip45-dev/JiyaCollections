@@ -32,10 +32,12 @@ test("manufacturer settlement summary uses recognized payable journals and all s
     manufacturerSettlementRequest: {
       findMany: async () => [
         { status: "PENDING", requestType: "PRODUCTION", amount: new Prisma.Decimal("20") },
+        { status: "PARTIALLY_PAID", requestType: "PRODUCTION", amount: new Prisma.Decimal("40"), paidAmount: new Prisma.Decimal("15") },
         { status: "PAID", requestType: "LOGISTICS", amount: new Prisma.Decimal("2") },
       ],
       groupBy: async () => [
         { status: "PENDING", requestType: "PRODUCTION", _sum: { amount: new Prisma.Decimal("20") } },
+        { status: "PARTIALLY_PAID", requestType: "PRODUCTION", _sum: { amount: new Prisma.Decimal("40"), paidAmount: new Prisma.Decimal("15") } },
         { status: "PENDING", requestType: "LOGISTICS", _sum: { amount: new Prisma.Decimal("5") } },
         { status: "PAID", requestType: "PRODUCTION", _sum: { amount: new Prisma.Decimal("10") } },
         { status: "PAID", requestType: "LOGISTICS", _sum: { amount: new Prisma.Decimal("2") } },
@@ -85,11 +87,11 @@ test("manufacturer settlement summary uses recognized payable journals and all s
   const summary = await getManufacturerSettlementSummary("mfg-1", { client });
 
   assert.equal(summary.totalManufacturedGoodsValue, 100);
-  assert.equal(summary.pendingSettlementAmount, 25);
+  assert.equal(summary.pendingSettlementAmount, 50);
   assert.equal(summary.completedPayments, 12);
   assert.equal(summary.productionOutstanding, 90);
   assert.equal(summary.logisticsOutstanding, 3);
-  assert.equal(summary.productionPayableAvailable, 70);
+  assert.equal(summary.productionPayableAvailable, 45);
   assert.equal(summary.attributionReconciliationRequired, false);
   assert.equal(summary.logisticsPayableAvailable, 0);
 });

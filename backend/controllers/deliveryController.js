@@ -15,11 +15,86 @@ import {
   submitDeliveryToNcm,
   validateNcmWebhookPayload,
 } from "../services/deliveryService.js";
-import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
+import {
+  confirmNcmSettlementBatch,
+  listNcmSettlementBatches,
+  listNcmSettlementCandidates,
+  resolveNcmSettlementVariance,
+  validateNcmSettlementSelection,
+} from "../services/ncmSettlementService.js";
 import { applyNcmStockTransferWebhook } from "./stockTransferController.js";
+import { validateCodTransferBankDetails } from "../services/ncmClient.js";
 
 
 const webhookSecret = process.env.NCM_WEBHOOK_SECRET || "";
+
+export const getNcmSettlementFailureMessage = (error, submittedBankDetails) => {
+  const response = error?.response;
+  const providerHttpError = /^NCM_HTTP_\d{3}$/.test(String(error?.code || ""));
+  if (!providerHttpError) {
+    return error?.message || "Failed to request NCM COD settlement.";
+  }
+
+  const readProviderMessage = (value) => {
+    if (Array.isArray(value)) {
+      const messages = value.map(readProviderMessage).filter(Boolean);
+      return messages.length ? messages.join(" ") : null;
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") return readProviderMessage(parsed);
+      } catch {
+        return trimmed;
+      }
+      return trimmed;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    for (const key of ["message", "detail", "error", "errors", "non_field_errors"]) {
+      if (value[key] !== undefined) {
+        const message = readProviderMessage(value[key]);
+        if (message) return message;
+      }
+    }
+    const fieldErrors = Object.entries(value)
+      .filter(([key]) => /^(bank_?name|bank_?account_?name|bank_?account_?number)$/i.test(key))
+      .map(([key, fieldMessage]) => `${key.replace(/([A-Z])/g, " $1")}: ${readProviderMessage(fieldMessage) || "Invalid value"}`);
+    return fieldErrors.length ? fieldErrors.join(" ") : null;
+  };
+
+  if (!/^NCM_HTTP_4\d\d$/.test(String(error.code || ""))) {
+    return "NCM is temporarily unavailable. Please try again later.";
+  }
+
+  const allowedFields = /^(detail|message|error|errors|non_field_errors|bank_?name|bank_?account_?name|bank_?account_?number)$/i;
+  let details = response;
+  if (typeof details === "string") {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      details = { message: details };
+    }
+  }
+  if (response && typeof response === "object" && !Array.isArray(response)) {
+    details = Object.fromEntries(
+      Object.entries(response).filter(([key]) => allowedFields.test(key)),
+    );
+    if (!Object.keys(details).length) details = null;
+  }
+
+  let message = readProviderMessage(details)
+    || "NCM rejected the COD transfer request. Check the bank details or contact NCM support.";
+  const valuesToRedact = [
+    ...Object.values(submittedBankDetails || {}),
+    process.env.NCM_API_TOKEN,
+  ].filter((value) => typeof value === "string" && value.length > 0);
+  for (const value of valuesToRedact) {
+    message = message.split(value).join("[REDACTED]");
+  }
+  return message.slice(0, 1200);
+};
 
 const safeCompare = (left, right) => {
   if (!left || !right) return false;
@@ -515,13 +590,93 @@ export const adminSettlementSummary = async (_req, res) => {
     });
 };
 
+export const adminListSettlementCandidates = async (req, res) => {
+  try {
+    return res.json(await listNcmSettlementCandidates(req.query));
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to list NCM settlement candidates.",
+    });
+  }
+};
+
+export const adminListSettlementBatches = async (_req, res) => {
+  try {
+    return res.json(await listNcmSettlementBatches());
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to list NCM settlement batches.",
+    });
+  }
+};
+
+export const adminResolveSettlementVariance = async (req, res) => {
+  try {
+    const result = await resolveNcmSettlementVariance({
+      ...req.body,
+      batchId: req.params.batchId,
+      createdBy: req.auth?.email || "ADMIN",
+    });
+    return res.status(200).json({
+      ...result,
+      message: result.alreadyProcessed
+        ? "This NCM variance resolution was already recorded."
+        : "NCM variance resolution recorded and accounted for.",
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "NCM_SETTLEMENT_ERROR",
+      message: error.message || "Failed to resolve NCM settlement variance.",
+    });
+  }
+};
+
 export const adminRequestSettlement = async (req, res) => {
-    const { bankName, bankAccountName, bankAccountNumber } = req.body || {};
-    if (!bankName || !bankAccountName || !bankAccountNumber) {
-      return res.status(400).json({ success: false, message: "Bank name, account name, and account number are required" });
-    }
+    const {
+      bankName,
+      bankAccountName,
+      bankAccountNumber,
+      settlementIds,
+      startDate,
+      endDate,
+    } = req.body || {};
+    const submittedBankDetails = { bankName, bankAccountName, bankAccountNumber };
     try {
-      const ticket = await requestCodSettlement({ bankName, bankAccountName, bankAccountNumber });
+      const bankDetails = validateCodTransferBankDetails(submittedBankDetails);
+      const { ids } = await validateNcmSettlementSelection({ settlementIds, startDate, endDate });
+      const selectedSettlements = await prisma.deliveryFinancialSettlement.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, ncmTicketId: true, settlementState: true },
+      });
+      if (selectedSettlements.length !== ids.length) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENTS_CHANGED",
+          message: "One or more selected deliveries changed before the NCM request could be created. Refresh and retry.",
+        });
+      }
+      if (selectedSettlements.some(({ ncmTicketId, settlementState }) =>
+        ncmTicketId != null || settlementState === "REQUESTED"
+      )) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENT_ALREADY_REQUESTED",
+          message: "One or more selected deliveries already have an NCM settlement request. Reconcile the existing request instead of creating another.",
+        });
+      }
+      if (selectedSettlements.some(({ settlementState }) => !["PENDING", "COD_RECEIVED"].includes(settlementState))) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENTS_CHANGED",
+          message: "One or more selected deliveries are no longer requestable. Refresh and retry.",
+        });
+      }
+      const ticket = await requestCodSettlement(bankDetails);
       const savedTicket = await saveNcmSupportTicket(ticket, {
         ticketType: "COD Transfer",
         message: "COD transfer request",
@@ -529,13 +684,29 @@ export const adminRequestSettlement = async (req, res) => {
         recordedByAccountId: req.auth?.accountId || null,
       });
       const ticketId = savedTicket.ncmTicketId;
-      await prisma.deliveryFinancialSettlement.updateMany({
-        where: { settlementState: { in: ["PENDING", "COD_RECEIVED", "REQUESTED"] } },
+      const claimed = await prisma.deliveryFinancialSettlement.updateMany({
+        where: {
+          id: { in: ids },
+          ncmTicketId: null,
+          settlementState: { in: ["PENDING", "COD_RECEIVED"] },
+        },
         data: { ncmTicketId: ticketId, settlementState: "REQUESTED" },
       });
-      res.status(201).json({ success: true, ticket, ticketId });
+      if (claimed.count !== ids.length) {
+        return res.status(409).json({
+          success: false,
+          code: "SETTLEMENT_REQUEST_LINK_CONFLICT",
+          message: `NCM ticket ${ticketId} was created, but the selected deliveries changed before they could be linked. Reconcile this ticket in NCM support before retrying.`,
+          ticketId,
+        });
+      }
+      res.status(201).json({ success: true, ticket, ticketId, selectedCount: ids.length });
     } catch (error) {
-      res.status(502).json({ success: false, message: error.message });
+      res.status(error.statusCode || 502).json({
+        success: false,
+        code: error.code || "NCM_SETTLEMENT_REQUEST_FAILED",
+        message: getNcmSettlementFailureMessage(error, submittedBankDetails),
+      });
     }
 };
 
@@ -552,7 +723,19 @@ export const adminListSettlements = async (req, res) => {
 };
 
 export const adminConfirmSettlement = async (req, res) => {
-  const { settlementIds, settlementId, financialAccountId, reference, notes } = req.body || {};
+  const {
+    settlementIds,
+    settlementId,
+    financialAccountId,
+    reference,
+    notes,
+    actualNetDeposit,
+    varianceType,
+    varianceReason,
+    startDate,
+    endDate,
+    ncmTicketId,
+  } = req.body || {};
   const ids = settlementIds || (settlementId ? [settlementId] : []);
   if (!ids.length) {
     return res.status(400).json({ success: false, message: "Please select at least one settlement to confirm." });
@@ -563,6 +746,12 @@ export const adminConfirmSettlement = async (req, res) => {
       financialAccountId,
       reference,
       notes,
+      actualNetDeposit,
+      varianceType,
+      varianceReason,
+      periodStart: startDate,
+      periodEnd: endDate,
+      ncmTicketId: ncmTicketId == null ? null : Number(ncmTicketId),
       createdBy: req.auth?.email || "ADMIN",
     });
     return res.status(200).json({

@@ -29,6 +29,7 @@ import {
 import {
   createManufacturerSettlementRequest,
   getManufacturerFinanceDashboard,
+  getManufacturerSettlementRequests,
 } from "../controllers/manufacturerFinanceController.js";
 import { authenticate, authorize, setManufacturerContext } from "../middleware/unifiedAuth.js";
 import { loginRateLimitForPortal, publicRegistrationRateLimit, resetLoginRateLimitOnSuccess } from "../middleware/authRateLimit.js";
@@ -113,6 +114,13 @@ manufacturerRouter.get(
   authorize("manufacturer:finance_dashboard"),
   setManufacturerContext,
   getManufacturerFinanceDashboard,
+);
+manufacturerRouter.get(
+  "/finance/settlement-requests",
+  authenticate,
+  authorize("manufacturer:finance_dashboard"),
+  setManufacturerContext,
+  getManufacturerSettlementRequests,
 );
 manufacturerRouter.post(
   "/finance/settlement-request",

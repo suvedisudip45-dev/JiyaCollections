@@ -2,11 +2,12 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { Link } from "react-router-dom";
-import { RefreshCw, Search, Truck, X } from "lucide-react";
+import { RefreshCw, Search, Truck } from "lucide-react";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
 import DeliveryRecordDetails from "../components/DeliveryRecordDetails";
+import NcmSettlementBatchManager from "../components/NcmSettlementBatchManager";
 
 const PAGE_SIZE = 25;
 const inputClass = "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400";
@@ -48,13 +49,7 @@ const DeliveryRecords = ({ token, mode }) => {
     status: "all",
     distributorId: "",
   });
-  const [settlementOpen, setSettlementOpen] = useState(false);
-  const [settlementForm, setSettlementForm] = useState({
-    bankName: "",
-    bankAccountName: "",
-    bankAccountNumber: "",
-  });
-  const [settlementBusy, setSettlementBusy] = useState(false);
+  const [settlementManagerOpen, setSettlementManagerOpen] = useState(false);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -119,26 +114,6 @@ const DeliveryRecords = ({ token, mode }) => {
     setPage(1);
   };
 
-  const submitSettlementRequest = async (event) => {
-    event.preventDefault();
-    setSettlementBusy(true);
-    try {
-      const response = await axios.post(
-        `${backendUrl}/api/delivery/admin/settlements/request`,
-        settlementForm,
-        { headers: { token } },
-      );
-      if (!response.data?.success) throw new Error(response.data?.message || "Settlement request failed.");
-      toast.success(`NCM COD settlement request ${response.data.ticketId ? `#${response.data.ticketId} ` : ""}submitted.`);
-      setSettlementOpen(false);
-      setSettlementForm({ bankName: "", bankAccountName: "", bankAccountNumber: "" });
-    } catch (error) {
-      toast.error(error.response?.data?.message || error.message || "Settlement request failed.");
-    } finally {
-      setSettlementBusy(false);
-    }
-  };
-
   return (
     <section className="space-y-5 p-4 sm:p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -156,8 +131,8 @@ const DeliveryRecords = ({ token, mode }) => {
               <Link to="/ncm-tools" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                 NCM tools
               </Link>
-              <button type="button" onClick={() => setSettlementOpen(true)} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
-                Request COD settlement
+              <button type="button" onClick={() => setSettlementManagerOpen(true)} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700">
+                Bulk COD settlements
               </button>
             </>
           ) : (
@@ -325,34 +300,12 @@ const DeliveryRecords = ({ token, mode }) => {
         />
       )}
 
-      {settlementOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="settlement-title">
-          <form onSubmit={submitSettlementRequest} className="w-full max-w-md space-y-4 rounded-xl bg-white p-5 shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 id="settlement-title" className="font-semibold text-slate-900">Request NCM COD settlement</h2>
-                <p className="mt-1 text-xs text-slate-500">Submits the documented COD transfer ticket request to NCM.</p>
-              </div>
-              <button type="button" onClick={() => setSettlementOpen(false)} className="rounded-md p-1 text-slate-500 hover:bg-slate-100" aria-label="Close"><X className="h-4 w-4" /></button>
-            </div>
-            {[
-              ["bankName", "Bank name"],
-              ["bankAccountName", "Account holder"],
-              ["bankAccountNumber", "Account number"],
-            ].map(([key, label]) => (
-              <label key={key} className="block text-xs font-semibold text-slate-600">
-                {label}
-                <input required value={settlementForm[key]} onChange={(event) => setSettlementForm((current) => ({ ...current, [key]: event.target.value }))} className={`${inputClass} mt-1`} />
-              </label>
-            ))}
-            <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setSettlementOpen(false)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">Cancel</button>
-              <button type="submit" disabled={settlementBusy} className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-                {settlementBusy ? "Submitting…" : "Submit request"}
-              </button>
-            </div>
-          </form>
-        </div>
+      {settlementManagerOpen && (
+        <NcmSettlementBatchManager
+          token={token}
+          onClose={() => setSettlementManagerOpen(false)}
+          onSettled={() => setRefreshKey((current) => current + 1)}
+        />
       )}
     </section>
   );

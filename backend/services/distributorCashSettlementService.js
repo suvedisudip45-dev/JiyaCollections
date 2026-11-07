@@ -1187,6 +1187,22 @@ export const postDistributorBalanceSettlement = async ({
         return { success: true, settlement: replay, isReplay: true };
       }
 
+      if (tx.$queryRaw) {
+        await tx.$queryRaw`SELECT id FROM Distributor WHERE id = ${distributorId} FOR UPDATE`;
+      }
+      if (tx.distributorSettlementRequestToken?.findFirst) {
+        const activeRequest = await tx.distributorSettlementRequestToken.findFirst({
+          where: {
+            distributorId,
+            status: { in: ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"] },
+          },
+          select: { id: true, idempotencyKey: true },
+        });
+        if (activeRequest && activeRequest.idempotencyKey !== normalizedKey) {
+          throw fail("Resolve the distributor's active net-balance request before posting a separate settlement.", 409, "ACTIVE_SETTLEMENT_REQUEST");
+        }
+      }
+
       const { distributor, party } = await ensureDistributorParty(tx, distributorId);
       const [documents, pendingRemittance, pendingRequests, legacyLogisticsPayables] = await Promise.all([
         tx.accountingDocument.findMany({
@@ -1585,6 +1601,9 @@ export const postDistributorBalanceSettlement = async ({
             return { success: true, request: replay, isReplay: true };
           }
 
+          if (tx.$queryRaw) {
+            await tx.$queryRaw`SELECT id FROM Distributor WHERE id = ${distributorId} FOR UPDATE`;
+          }
           const position = await getDistributorUnifiedSettlementPosition({ distributorId, client: tx });
           if (position.unifiedSettlementBlocked) {
             throw fail(

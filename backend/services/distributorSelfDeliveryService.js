@@ -731,6 +731,8 @@ export const processSelfDeliveryReturn = async ({
   client = prisma,
   accrueServiceCharge = accrueDistributorServiceCharge,
   postReturnInventoryAccounting = postDistributorReturnInventoryAccounting,
+  createLogisticsPayable = createReturnExchangeSettlementPayable,
+  postLogisticsAccounting = postReturnExchangeSettlementAccounting,
 } = {}) => {
   if (!distributorId) throw fail("Distributor ID is required.", 400);
   if (!assignmentIdOrOrderId) throw fail("Order or Assignment ID is required.", 400);
@@ -1051,9 +1053,13 @@ export const processSelfDeliveryReturn = async ({
       effectiveAt: now,
       client: tx,
     });
-    const logisticsPayable = await createReturnExchangeSettlementPayable(tx, customerReturn, "RETURN");
+    const logisticsPayable = await createLogisticsPayable(tx, {
+      ...customerReturn,
+      deliveryRoute: "DISTRIBUTOR",
+      distributorId,
+    }, "RETURN");
     if (logisticsPayable) {
-      await postReturnExchangeSettlementAccounting({
+      await postLogisticsAccounting({
         operation: "RETURN",
         requestId: customerReturn.id,
         payable: logisticsPayable,

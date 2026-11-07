@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
+import { Link } from "react-router-dom";
 import {
   Truck,
   CircleDollarSign,
@@ -121,38 +122,25 @@ const DeliveryMonitor = ({ token }) => {
     pendingSettlements: 0,
     settledCount: 0,
   });
-  const [treasuryAccounts, setTreasuryAccounts] = useState([]);
-  const [settlementModalOpen, setSettlementModalOpen] = useState(false);
-  const [confirmRemitModalOpen, setConfirmRemitModalOpen] = useState(false);
-  const [selectedAccountId, setSelectedAccountId] = useState("");
-  const [settlementForm, setSettlementForm] = useState({ bankName: "", bankAccountName: "", bankAccountNumber: "" });
-  const [confirmForm, setConfirmForm] = useState({ financialAccountId: "", notes: "" });
-  const [settlementSubmitting, setSettlementSubmitting] = useState(false);
+  const [handoffSubmitting, setHandoffSubmitting] = useState(false);
   const [handoffResolutionForms, setHandoffResolutionForms] = useState({});
 
   const fetchData = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
-      const [res, summaryRes, accRes] = await Promise.all([
+      const [res, summaryRes] = await Promise.all([
         axios.get(`${backendUrl}/api/order-assignment/admin/all`, {
           headers: { token },
           params: { page, limit: DELIVERY_PAGE_SIZE },
         }),
         axios.get(`${backendUrl}/api/delivery/admin/settlements/summary`, { headers: { token } }),
-        axios.get(`${backendUrl}/api/finance/treasury-accounts`, { headers: { token } }).catch(() => ({ data: { success: false, accounts: [] } })),
       ]);
       if (res.data.success) {
         setRows(res.data.assignments || []);
         setPagination(res.data.pagination || null);
       }
       if (summaryRes.data.success) setSettlementSummary(summaryRes.data.summary || {});
-      if (accRes.data.success && accRes.data.accounts) {
-        setTreasuryAccounts(accRes.data.accounts);
-        if (accRes.data.accounts.length && !confirmForm.financialAccountId) {
-          setConfirmForm((prev) => ({ ...prev, financialAccountId: accRes.data.accounts[0].id }));
-        }
-      }
     } catch (err) {
       toast.error(err.response?.data?.message || "Failed to load delivery monitor");
     } finally {
@@ -160,76 +148,9 @@ const DeliveryMonitor = ({ token }) => {
     }
   }, [token, page]);
 
-  const handleAccountSelect = (accountId) => {
-    setSelectedAccountId(accountId);
-    const acc = treasuryAccounts.find((a) => a.id === accountId);
-    if (acc) {
-      setSettlementForm({
-        bankName: acc.bankName || acc.accountName,
-        bankAccountName: acc.accountName,
-        bankAccountNumber: acc.accountNumber || "N/A",
-      });
-    }
-  };
-
-  const requestSettlement = async (event) => {
-    event.preventDefault();
-    setSettlementSubmitting(true);
-    try {
-      const res = await axios.post(`${backendUrl}/api/delivery/admin/settlements/request`, settlementForm, { headers: { token } });
-      if (!res.data.success) throw new Error(res.data.message || "Settlement request failed");
-      toast.success(`COD settlement ticket ${res.data.ticketId || "created"}`);
-      setSettlementModalOpen(false);
-      setSettlementForm({ bankName: "", bankAccountName: "", bankAccountNumber: "" });
-      fetchData();
-    } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Settlement request failed");
-    } finally {
-      setSettlementSubmitting(false);
-    }
-  };
-
-  const confirmRemittance = async (event) => {
-    event.preventDefault();
-    if (!confirmForm.financialAccountId) {
-      return toast.warning("Please select a target Bank or Cash account.");
-    }
-    setSettlementSubmitting(true);
-    try {
-      // Fetch open settlements to confirm
-      const listRes = await axios.get(`${backendUrl}/api/delivery/admin/settlements?limit=100`, { headers: { token } });
-      const openSettlements = (listRes.data.settlements || []).filter((settlement) =>
-        ["PENDING", "COD_RECEIVED", "REQUESTED"].includes(settlement.settlementState)
-      );
-      if (!openSettlements.length) {
-        toast.info("No open settlements found to confirm.");
-        setConfirmRemitModalOpen(false);
-        return;
-      }
-      const settlementIds = openSettlements.map((s) => s.id);
-      const res = await axios.post(`${backendUrl}/api/delivery/admin/settlements/confirm`, {
-        settlementIds,
-        financialAccountId: confirmForm.financialAccountId,
-        notes: confirmForm.notes,
-      }, { headers: { token } });
-
-      if (res.data.success) {
-        toast.success(res.data.message || "COD Remittance deposited to Treasury!");
-        setConfirmRemitModalOpen(false);
-        fetchData();
-      } else {
-        toast.error(res.data.message || "Confirmation failed");
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.message || err.message || "Confirmation failed");
-    } finally {
-      setSettlementSubmitting(false);
-    }
-  };
-
   const resolveNcmHandoff = async (deliveryId, form) => {
-    if (settlementSubmitting) return;
-    setSettlementSubmitting(true);
+    if (handoffSubmitting) return;
+    setHandoffSubmitting(true);
     try {
       const response = await axios.post(`${backendUrl}/api/delivery/admin/${deliveryId}/resolve-ncm-handoff`, form, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "NCM handoff resolution failed");
@@ -238,7 +159,7 @@ const DeliveryMonitor = ({ token }) => {
     } catch (error) {
       toast.error(error.response?.data?.message || error.message || "NCM handoff resolution failed");
     } finally {
-      setSettlementSubmitting(false);
+      setHandoffSubmitting(false);
     }
   };
 
@@ -305,21 +226,12 @@ const DeliveryMonitor = ({ token }) => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setSettlementModalOpen(true)}
-            disabled={settlementSummary.codToReceive <= 0 || settlementSubmitting}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:bg-slate-300 text-white text-xs font-semibold shadow-xs cursor-pointer disabled:cursor-not-allowed"
+          <Link
+            to="/ncm-deliveries"
+            className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-xs"
           >
-            Ask NCM for COD settlement
-          </button>
-          <button
-            onClick={() => setConfirmRemitModalOpen(true)}
-            disabled={settlementSummary.codToReceive <= 0 || settlementSubmitting}
-            className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 text-white text-xs font-bold shadow-xs cursor-pointer disabled:cursor-not-allowed flex items-center gap-1.5"
-          >
-            <CircleDollarSign className="w-3.5 h-3.5" />
-            Confirm Remittance to Bank
-          </button>
+            Manage bulk NCM settlements
+          </Link>
           <button
             onClick={fetchData}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs cursor-pointer"
@@ -502,7 +414,7 @@ const DeliveryMonitor = ({ token }) => {
                                 <input value={handoffForm.reason} onChange={(event) => setHandoffResolutionForms({ ...handoffResolutionForms, [delivery.id]: { ...handoffForm, reason: event.target.value } })} className="w-full border border-amber-300 rounded px-2 py-1 text-[10px]" placeholder="NCM verification notes" />
                                 <button
                                   type="button"
-                                  disabled={settlementSubmitting || handoffForm.reason.trim().length < 5 || (handoffForm.outcome === "CREATED" && !handoffForm.ncmOrderId) || (latestCreateAttempt.result === "STARTED" && Date.now() - new Date(latestCreateAttempt.startedAt).getTime() < 120000)}
+                                  disabled={handoffSubmitting || handoffForm.reason.trim().length < 5 || (handoffForm.outcome === "CREATED" && !handoffForm.ncmOrderId) || (latestCreateAttempt.result === "STARTED" && Date.now() - new Date(latestCreateAttempt.startedAt).getTime() < 120000)}
                                   onClick={() => resolveNcmHandoff(delivery.id, handoffForm)}
                                   className="w-full rounded bg-amber-800 px-2 py-1 text-[10px] font-bold text-white disabled:opacity-50"
                                 >Resolve verified outcome</button>
@@ -604,117 +516,6 @@ const DeliveryMonitor = ({ token }) => {
         onPageChange={setPage}
       />
 
-      {/* Request NCM Settlement Modal */}
-      {settlementModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/45 flex items-center justify-center p-4">
-          <form onSubmit={requestSettlement} className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div>
-              <h2 className="text-base font-black text-slate-900">Request COD transfer from NCM</h2>
-              <p className="mt-1 text-xs text-slate-500">NCM requires destination bank details to create the transfer ticket.</p>
-            </div>
-
-            {treasuryAccounts.length > 0 && (
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Quick Select Saved Treasury Account</label>
-                <select
-                  value={selectedAccountId}
-                  onChange={(e) => handleAccountSelect(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium outline-none focus:border-slate-900"
-                >
-                  <option value="">-- Choose Saved Account --</option>
-                  {treasuryAccounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.accountName} ({acc.bankName || acc.accountType}) — Rs {toMoney(acc.balance)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {[['bankName', 'Bank name'], ['bankAccountName', 'Account holder name'], ['bankAccountNumber', 'Account number']].map(([field, label]) => (
-              <label key={field} className="block text-xs font-semibold text-slate-700">
-                {label}
-                <input
-                  required
-                  type="text"
-                  value={settlementForm[field]}
-                  onChange={(event) => setSettlementForm((current) => ({ ...current, [field]: event.target.value }))}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal outline-none focus:border-slate-900"
-                />
-              </label>
-            ))}
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setSettlementModalOpen(false)} className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer">Cancel</button>
-              <button type="submit" disabled={settlementSubmitting} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-xs font-bold disabled:opacity-50 cursor-pointer">{settlementSubmitting ? "Requesting..." : "Create settlement ticket"}</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Confirm COD Remittance into Treasury Modal */}
-      {confirmRemitModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/45 flex items-center justify-center p-4">
-          <form onSubmit={confirmRemittance} className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
-                <CircleDollarSign className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-base font-black text-slate-900">Confirm COD Remittance Received</h2>
-                <p className="text-xs text-slate-500">Deposit NCM COD collection directly into your Treasury Bank / Cash account.</p>
-              </div>
-            </div>
-
-            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-xs space-y-1">
-              <div className="flex justify-between">
-                <span className="text-emerald-700">Total COD Collected:</span>
-                <span className="font-bold text-emerald-950">Rs {toMoney(settlementSummary.codToReceive)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-emerald-700">Unsettled Carrier Fees:</span>
-                <span className="font-bold text-rose-600">- Rs {toMoney(settlementSummary.deliveryChargeToPay)}</span>
-              </div>
-              <div className="border-t border-emerald-200 pt-1 flex justify-between font-black text-emerald-950 text-sm">
-                <span>Net Deposit to Account:</span>
-                <span>Rs {toMoney(Math.max(0, settlementSummary.codToReceive - settlementSummary.deliveryChargeToPay))}</span>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Select Destination Liquid Account *</label>
-              <select
-                required
-                value={confirmForm.financialAccountId}
-                onChange={(e) => setConfirmForm((prev) => ({ ...prev, financialAccountId: e.target.value }))}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium outline-none focus:border-slate-900"
-              >
-                <option value="">-- Choose Account --</option>
-                {treasuryAccounts.map((acc) => (
-                  <option key={acc.id} value={acc.id}>
-                    {acc.accountName} ({acc.accountType}) — Current Balance: Rs {toMoney(acc.balance)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Notes / Remittance Reference (Optional)</label>
-              <input
-                type="text"
-                placeholder="e.g. NCM weekly remittance bank deposit"
-                value={confirmForm.notes}
-                onChange={(e) => setConfirmForm((prev) => ({ ...prev, notes: e.target.value }))}
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-slate-900"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setConfirmRemitModalOpen(false)} className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer">Cancel</button>
-              <button type="submit" disabled={settlementSubmitting || !confirmForm.financialAccountId} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold disabled:opacity-50 cursor-pointer">{settlementSubmitting ? "Depositing..." : "Confirm & Deposit to Account"}</button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 };

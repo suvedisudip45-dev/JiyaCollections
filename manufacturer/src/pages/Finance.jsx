@@ -18,6 +18,11 @@ const Finance = () => {
   const [range, setRange] = useState("month");
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
+  const [settlementPage, setSettlementPage] = useState(1);
+  const [settlementHistory, setSettlementHistory] = useState([]);
+  const [settlementPagination, setSettlementPagination] = useState(null);
+  const [settlementLoading, setSettlementLoading] = useState(true);
+  const [settlementError, setSettlementError] = useState("");
 
   useEffect(() => {
     const loadSummary = async () => {
@@ -41,6 +46,28 @@ const Finance = () => {
 
     loadSummary();
   }, [backendUrl, range, token]);
+
+  useEffect(() => {
+    const loadSettlementHistory = async () => {
+      if (!token) return;
+      setSettlementLoading(true);
+      setSettlementError("");
+      try {
+        const response = await axios.get(`${backendUrl}/api/manufacturer/finance/settlement-requests`, {
+          headers: { token },
+          params: { page: settlementPage, limit: 10 },
+        });
+        setSettlementHistory(response.data?.settlements || []);
+        setSettlementPagination(response.data?.pagination || null);
+      } catch (error) {
+        setSettlementError(error.response?.data?.message || "Unable to load settlement history.");
+      } finally {
+        setSettlementLoading(false);
+      }
+    };
+
+    loadSettlementHistory();
+  }, [backendUrl, settlementPage, token]);
 
   const summary = data?.summary || {};
   const orders = data?.orders || [];
@@ -280,6 +307,87 @@ const Finance = () => {
               </table>
             </div>
           </div>
+
+          <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200">
+              <h2 className="text-sm font-bold text-slate-800">Settlement request history</h2>
+              <p className="mt-1 text-[11px] text-slate-500">Each request shows the amount requested, paid so far, and the remaining amount.</p>
+            </div>
+            {settlementLoading ? (
+              <p className="p-6 text-center text-sm text-slate-500">Loading settlement history…</p>
+            ) : settlementError ? (
+              <p role="alert" className="p-6 text-center text-sm text-rose-700">{settlementError}</p>
+            ) : settlementHistory.length === 0 ? (
+              <p className="p-6 text-center text-sm text-slate-500">No settlement requests have been submitted.</p>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-slate-600">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Requested</th>
+                        <th className="px-4 py-3 font-semibold">Type</th>
+                        <th className="px-4 py-3 font-semibold text-right">Requested amount</th>
+                        <th className="px-4 py-3 font-semibold text-right">Paid</th>
+                        <th className="px-4 py-3 font-semibold text-right">Remaining</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold">Reference / notes</th>
+                        <th className="px-4 py-3 font-semibold">Payout trail</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {settlementHistory.map((settlement) => {
+                        const remaining = Math.max(0, Number(settlement.amount || 0) - Number(settlement.paidAmount || 0));
+                        const statusClass = settlement.status === "PAID"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : settlement.status === "PARTIALLY_PAID"
+                            ? "bg-blue-50 text-blue-700"
+                            : settlement.status === "REJECTED"
+                              ? "bg-rose-50 text-rose-700"
+                              : "bg-amber-50 text-amber-700";
+                        return (
+                          <tr key={settlement.id}>
+                            <td className="px-4 py-3 whitespace-nowrap">{new Date(settlement.requestedAt).toLocaleDateString("en-NP")}</td>
+                            <td className="px-4 py-3">{settlement.requestType}</td>
+                            <td className="px-4 py-3 text-right">{money(settlement.amount)}</td>
+                            <td className="px-4 py-3 text-right">{money(settlement.paidAmount)}</td>
+                            <td className="px-4 py-3 text-right font-semibold">{money(remaining)}</td>
+                            <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-bold ${statusClass}`}>{settlement.status.replaceAll("_", " ")}</span></td>
+                            <td className="px-4 py-3 text-slate-600">{settlement.externalPaymentReference || settlement.notes || "—"}</td>
+                            <td className="px-4 py-3">
+                              {settlement.payoutHistory?.length ? (
+                                <details className="min-w-52">
+                                  <summary className="cursor-pointer font-semibold text-indigo-700">{settlement.payoutHistory.length} payout attempt(s)</summary>
+                                  <div className="mt-2 space-y-2">
+                                    {settlement.payoutHistory.map((payout) => (
+                                      <div key={payout.id} className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px]">
+                                        <p className="font-bold">{payout.status.replaceAll("_", " ")} · {money(payout.amount)} · {new Date(payout.settledAt || payout.initiatedAt).toLocaleString("en-NP")}</p>
+                                        <p>Account: {payout.financialAccount?.accountName || "—"}</p>
+                                        <p>Transfer reference: {payout.externalPaymentReference || "—"} · Evidence reference: {payout.bankEvidenceReference || "—"}</p>
+                                        <p>Cash transaction: {payout.cashTransaction?.id || "Not posted"} · Journal: {payout.journalEntry?.journalNumber || "Not posted"}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              ) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 text-xs text-slate-600">
+                  <span>{settlementPagination?.total || 0} request(s)</span>
+                  <div className="flex items-center gap-2">
+                    <button type="button" disabled={settlementPage <= 1 || settlementLoading} onClick={() => setSettlementPage((page) => page - 1)} className="rounded-md border border-slate-300 px-3 py-1.5 disabled:opacity-40">Previous</button>
+                    <span>Page {settlementPagination?.page || settlementPage} of {Math.max(1, settlementPagination?.totalPages || 0)}</span>
+                    <button type="button" disabled={!settlementPagination?.hasNextPage || settlementLoading} onClick={() => setSettlementPage((page) => page + 1)} className="rounded-md border border-slate-300 px-3 py-1.5 disabled:opacity-40">Next</button>
+                  </div>
+                </div>
+              </>
+            )}
+          </section>
         </>
       )}
     </div>

@@ -52,6 +52,7 @@ const createSettlementHarness = ({
     transactionOptions: null,
   };
   const tx = {
+    $queryRaw: async () => [],
     distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
     distributorSettlementRequestToken: {
       findUnique: async ({ where }) => state.requestTokens.find((request) =>
@@ -59,6 +60,7 @@ const createSettlementHarness = ({
       ) || null,
       findFirst: async ({ where }) => state.requestTokens.find((request) =>
         (!where.id || request.id === where.id) &&
+        (!where.idempotencyKey || request.idempotencyKey === where.idempotencyKey) &&
         (!where.distributorId || request.distributorId === where.distributorId) &&
         (!where.direction || request.direction === where.direction) &&
         (!where.status || (typeof where.status === "string"
@@ -395,6 +397,11 @@ test("Admin-issued collection request requires evidence and is posted only after
   assert.equal(created.request.status, "REQUESTED");
   assert.equal(harness.state.journals.length, 0);
 
+  await assert.rejects(
+    () => post(harness, { idempotencyKey: "manual-settlement-during-request" }),
+    (error) => error.code === "ACTIVE_SETTLEMENT_REQUEST",
+  );
+
   await assert.rejects(() => createDistributorSettlementRequestToken({
     distributorId: "dist-1",
     requestedAmount: "100.00",
@@ -428,6 +435,20 @@ test("Admin-issued collection request requires evidence and is posted only after
   });
   assert.equal(reviewed.request.status, "POSTED");
   assert.equal(harness.state.journals.length, 1);
+});
+
+test("unified net-balance requests are blocked while a legacy earnings request is active", async () => {
+  const harness = createSettlementHarness({ pendingRequests: 1 });
+  await assert.rejects(() => createDistributorSettlementRequestToken({
+    distributorId: "dist-1",
+    requestedAmount: "300.00",
+    setoffAgreementReference: "AGREEMENT-SET-OFF-01",
+    setoffConfirmed: true,
+    notes: "Prevent overlapping settlement requests.",
+    idempotencyKey: "request-blocked-by-legacy",
+    client: harness.client,
+  }), (error) => error.code === "PENDING_SETTLEMENT_REQUEST");
+  assert.equal(harness.state.requestTokens.length, 0);
 });
 
 test("Admin-issued payout is posted with evidence and waits for distributor acknowledgment", async () => {

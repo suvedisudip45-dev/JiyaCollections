@@ -64,19 +64,39 @@ test("customer return fee is percentage of returned product value and excludes o
 });
 
 test("completed logistics creates one payable to the selected provider", async () => {
-  const creates = [];
+  const payableCreates = [];
+  const documentCreates = [];
+  const documentsByKey = new Map();
   const tx = {
     accountPayable: {
-      findFirst: async ({ where }) => creates.find((item) =>
+      findFirst: async ({ where }) => payableCreates.find((item) =>
         item.referenceType === where.referenceType && item.referenceId === where.referenceId
       ) || null,
       create: async ({ data }) => {
-        creates.push(data);
+        payableCreates.push(data);
         return data;
       },
     },
     distributor: {
-      findUnique: async () => ({ name: "Pokhara Hub" }),
+      findUnique: async () => ({ id: "dist-1", name: "Pokhara Hub" }),
+    },
+    accountingParty: {
+      upsert: async () => ({ id: "party-dist-1" }),
+    },
+    accountingDocument: {
+      upsert: async ({ where, create }) => {
+        const existing = documentsByKey.get(where.idempotencyKey);
+        if (existing) return existing;
+        const document = {
+          id: `document-dist-logistics-${documentCreates.length + 1}`,
+          idempotencyKey: where.idempotencyKey,
+          ...create,
+          originalAmount: create.originalAmount,
+        };
+        documentCreates.push(document);
+        documentsByKey.set(where.idempotencyKey, document);
+        return document;
+      },
     },
   };
 
@@ -84,6 +104,19 @@ test("completed logistics creates one payable to the selected provider", async (
     id: "return-12345678",
     deliveryRoute: "NCM",
     logisticsSettlementAmount: 42,
+    ncmDeliveryCharge: 55,
+  }, "RETURN");
+  const distributorReturnBill = await createReturnExchangeSettlementPayable(tx, {
+    id: "return-dist-1234",
+    deliveryRoute: "DISTRIBUTOR",
+    distributorId: "dist-1",
+    logisticsSettlementAmount: 17,
+  }, "RETURN");
+  await createReturnExchangeSettlementPayable(tx, {
+    id: "return-dist-1234",
+    deliveryRoute: "DISTRIBUTOR",
+    distributorId: "dist-1",
+    logisticsSettlementAmount: 17,
   }, "RETURN");
   const distributorPayable = await createReturnExchangeSettlementPayable(tx, {
     id: "exchange-87654321",
@@ -100,11 +133,33 @@ test("completed logistics creates one payable to the selected provider", async (
 
   assert.equal(ncmPayable.payeeName, "Nepal Can Move");
   assert.equal(distributorPayable.payeeName, "Pokhara Hub");
-  assert.equal(creates[0].totalAmount, 42);
-  assert.equal(creates[0].referenceType, "RETURN_LOGISTICS_SETTLEMENT");
-  assert.equal(creates[1].totalAmount, 29);
-  assert.equal(creates[1].referenceType, "EXCHANGE_LOGISTICS_SETTLEMENT");
-  assert.equal(creates.length, 2);
+  assert.equal(ncmPayable.totalAmount, 55);
+  assert.match(ncmPayable.notes, /Provider-reported/);
+  assert.equal(Number(distributorReturnBill.totalAmount), 17);
+  assert.equal(Number(distributorPayable.totalAmount), 29);
+  assert.equal(documentCreates[0].sourceType, "DISTRIBUTOR_RETURN_LOGISTICS");
+  assert.equal(documentCreates[1].sourceType, "DISTRIBUTOR_EXCHANGE_LOGISTICS");
+  assert.match(documentCreates[0].notes, /configured rate estimate/);
+  assert.equal(documentCreates.length, 2);
+  assert.equal(payableCreates.length, 1);
+  assert.equal(payableCreates[0].totalAmount, 55);
+  assert.equal(payableCreates[0].referenceType, "RETURN_LOGISTICS_SETTLEMENT");
+
+  const customerPaidNcmReturn = await createReturnExchangeSettlementPayable({
+    ...tx,
+    accountPayable: {
+      ...tx.accountPayable,
+      findFirst: async () => null,
+    },
+  }, {
+    id: "return-customer-paid",
+    deliveryRoute: "NCM",
+    ncmDeliveryCharge: 20,
+    ncmChargePayer: "CUSTOMER",
+    logisticsSettlementAmount: 18,
+  }, "RETURN");
+  assert.equal(customerPaidNcmReturn, null);
+  assert.equal(payableCreates.length, 1);
 });
 
 test("customer cancellation is allowed only before any NCM handoff attempt", () => {

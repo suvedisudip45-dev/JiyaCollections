@@ -92,6 +92,37 @@ test("Admin payout initiation resolves the accounting party for subledger-backed
   assert.equal(partyUpsertArgs.where.partyType_sourceEntityId.sourceEntityId, "distributor-1");
 });
 
+test("legacy earnings payout initiation is blocked by an active unified settlement request", async () => {
+  const client = {
+    $transaction: async (callback) => callback(client),
+    distributorSettlementRequest: {
+      findUnique: async () => ({
+        id: "settlement-1",
+        distributorId: "distributor-1",
+        distributor: { id: "distributor-1", name: "Test Distributor" },
+        status: "PENDING",
+        amount: "150.00",
+        paidAmount: "0.00",
+        metadata: { settlementBasis: "ACCOUNTING_SUBLEDGER", earningDocumentIds: [] },
+      }),
+    },
+    distributorSettlementRequestToken: {
+      findFirst: async () => ({ id: "unified-request-1" }),
+    },
+    financialPayout: {
+      findUnique: async () => null,
+    },
+  };
+
+  await assert.rejects(() => initiateAdminDistributorSettlement({
+    settlementId: "settlement-1",
+    amount: "150.00",
+    financialAccountId: "treasury-1",
+    idempotencyKey: "legacy-payout-blocked-by-unified",
+    client,
+  }), { code: "ACTIVE_UNIFIED_SETTLEMENT_REQUEST" });
+});
+
 test("Admin service-settlement cash warnings aggregate distributor COD and pending remittances", async () => {
   const positions = await getDistributorCashPositions({
     distributorIds: ["dist-1", "dist-2"],
@@ -635,6 +666,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const createdLocations = [];
   const serviceCharges = [];
   let inventoryAccountingRecord;
+  let logisticsSettlementRequest;
   const updatedCustomerReturn = { id: "return-1" };
 
   stubMethod(t, prisma.orderAssignment, "findFirst", async () => mockAssignment);
@@ -718,11 +750,18 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
     inventoryAccountingRecord = returnRecord;
     return { id: "return-inventory-journal-1" };
     },
+    createLogisticsPayable: async (_tx, request, operation) => {
+    logisticsSettlementRequest = { request, operation };
+    return null;
+    },
   });
 
   assert.equal(res.success, true);
   assert.equal(res.hasDamagedItems, true);
   assert.equal(res.totalRefundAmount, 3400);
+  assert.equal(logisticsSettlementRequest.operation, "RETURN");
+  assert.equal(logisticsSettlementRequest.request.deliveryRoute, "DISTRIBUTOR");
+  assert.equal(logisticsSettlementRequest.request.distributorId, "dist-1");
   assert.equal(res.customerReturn.lifecycleStatus, "REFUND_PENDING");
   assert.equal(res.customerReturn.refundStatus, "PENDING");
   assert.equal(res.customerReturn.refundMethod, "CASH");
@@ -1032,6 +1071,7 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
   stubMethod(t, prisma.distributorBonusPlan, "findMany", async () => []);
   stubMethod(t, prisma.distributorDeliveryChargeNegotiation, "findFirst", async () => mockRateCard);
   let createdRequest = null;
+  let activeUnifiedRequest = null;
   stubMethod(t, prisma.distributorSettlementRequest, "findFirst", async ({ where }) =>
     createdRequest?.idempotencyKey === where.idempotencyKey ? createdRequest : null);
   let payableCreated = false;
@@ -1046,6 +1086,9 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
     order: { findMany: async () => [{ id: "o-1", amount: 1000 }] },
     distributorDeliveryChargeNegotiation: { findFirst: async () => mockRateCard },
     distributorBonusPlan: { findMany: async () => [] },
+    distributorSettlementRequestToken: {
+      findFirst: async () => activeUnifiedRequest,
+    },
     distributorSettlementRequest: {
       findFirst: async ({ where }) =>
         createdRequest?.idempotencyKey === where.idempotencyKey ? createdRequest : null,
@@ -1133,6 +1176,16 @@ test("7. submitDistributorSettlementRequest creates pending request and guards a
       amount: 500, // exceeds available 113.00
     }),
     { code: "INSUFFICIENT_SETTLEMENT_BALANCE" }
+  );
+
+  activeUnifiedRequest = { id: "unified-request-1", status: "REQUESTED" };
+  await assert.rejects(
+    submitDistributorSettlementRequest({
+      distributorId: "dist-1",
+      amount: 50,
+      idempotencyKey: "settlement-request-blocked-by-unified",
+    }),
+    { code: "ACTIVE_UNIFIED_SETTLEMENT_REQUEST" }
   );
 });
 

@@ -112,22 +112,40 @@ test("approving manufacturer distributor access copies the business and pickup p
     address: "Factory business address",
     city: "Unknown Factory Hub",
     ncmPickupBranch: "POKHARA",
-    pickupAddress: "Factory pickup address",
+    pickupAddress: "Separate factory pickup address",
     pickupContactName: "Dispatch Contact",
     pickupContactPhone: "9801234567",
     pickupWindow: "10 AM - 5 PM",
     returnInstructions: "Call before return",
     distributorApplicationStatus: "REQUESTED",
-    locations: [{ province: "Gandaki Province", district: "Kaski", isActive: true }],
+    locations: [
+      { province: "Gandaki Province", district: "Kaski", isActive: true },
+      { province: "Bagmati Province", district: "Kathmandu", isActive: true },
+      { province: "Lumbini Province", district: "Nawalparasi West", isActive: false },
+    ],
+  };
+  const existingDistributor = {
+    id: "distributor-1",
+    province: "Bagmati Province",
+    district: "Kathmandu",
   };
   const tx = {
     manufacturer: {
       findUnique: async () => manufacturer,
       updateMany: async () => ({ count: 1 }),
     },
-    ncmBranch: { findFirst: async () => null },
+    ncmBranch: {
+      findFirst: async ({ where }) => {
+        assert.deepEqual(where, { name: "POKHARA" });
+        return { provinceName: "Gandaki Province", districtName: "Kaski" };
+      },
+    },
     distributor: {
-      findUnique: async () => null,
+      findUnique: async () => existingDistributor,
+      update: async ({ data }) => {
+        calls.distributor = data;
+        return { ...existingDistributor, ...data };
+      },
       create: async ({ data }) => {
         calls.distributor = data;
         return { id: "distributor-1", ...data };
@@ -135,7 +153,8 @@ test("approving manufacturer distributor access copies the business and pickup p
     },
     distributorLocation: {
       upsert: async (data) => {
-        calls.location = data;
+        calls.locations ||= [];
+        calls.locations.push(data);
         return data.create;
       },
     },
@@ -163,17 +182,18 @@ test("approving manufacturer distributor access copies the business and pickup p
   assert.equal(calls.distributor.district, "Kaski");
   assert.equal(calls.distributor.ncmPickupBranch, "POKHARA");
   assert.equal(calls.distributor.pickupBranchStatus, "UNVERIFIED");
-  assert.equal(calls.distributor.pickupAddress, "Factory pickup address");
+  assert.equal(calls.distributor.pickupAddress, "Separate factory pickup address");
   assert.equal(calls.distributor.pickupContactName, "Dispatch Contact");
   assert.equal(calls.distributor.pickupContactPhone, "9801234567");
   assert.equal(calls.distributor.pickupWindow, "10 AM - 5 PM");
   assert.equal(calls.distributor.returnInstructions, "Call before return");
-  assert.deepEqual(calls.location.create, {
-    distributorId: "distributor-1",
-    province: "Gandaki Province",
-    district: "Kaski",
-    isActive: true,
-  });
+  assert.deepEqual(
+    calls.locations.map(({ create }) => ({ province: create.province, district: create.district })),
+    [
+      { province: "Gandaki Province", district: "Kaski" },
+      { province: "Bagmati Province", district: "Kathmandu" },
+    ],
+  );
 });
 
 test("distributor registration persists manufacturer-equivalent location and pickup details", async (t) => {

@@ -50,6 +50,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "2160", accountName: "Manufacturer Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2170", accountName: "Marketing Partner Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2180", accountName: "NCM Carrier Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
+  { accountCode: "2185", accountName: "NCM Remittance Variance Suspense", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2190", accountName: "Distributor Payable (Control)", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2100" },
   { accountCode: "2500", accountName: "Non-Current Liabilities & Debt", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2000" },
   { accountCode: "2510", accountName: "Bank Term Loans & Credit Facilities", accountType: "LIABILITY", normalBalance: "CREDIT", isSystemAccount: true, parentCode: "2500" },
@@ -114,6 +115,7 @@ export const STANDARD_ACCOUNT_MAPPINGS = [
   { mappingKey: "MANUFACTURER_PAYABLE", accountCode: "2160" },
   { mappingKey: "MARKETING_PARTNER_PAYABLE", accountCode: "2170" },
   { mappingKey: "NCM_CARRIER_PAYABLE", accountCode: "2180" },
+  { mappingKey: "NCM_REMITTANCE_VARIANCE_PAYABLE", accountCode: "2185" },
   { mappingKey: "DISTRIBUTOR_PAYABLE", accountCode: "2190" },
   { mappingKey: "PRODUCT_SALES_REVENUE", accountCode: "4100" },
   { mappingKey: "DELIVERY_REVENUE", accountCode: "4200" },
@@ -3332,6 +3334,7 @@ export const postNcmRemittanceAccounting = async ({
   settlementId,
   codCollected,
   deliveryFeeActual = 0,
+  actualNetDeposit = null,
   isCash = false,
   cashAccountCode,
   destinationAccountName = "Bank Account",
@@ -3340,22 +3343,28 @@ export const postNcmRemittanceAccounting = async ({
 }, { client = prisma } = {}) => {
   const codDecimal = new Prisma.Decimal(codCollected || 0);
   const feeDecimal = new Prisma.Decimal(deliveryFeeActual || 0);
-  const netDecimal = codDecimal.minus(feeDecimal);
+  const expectedNetDecimal = codDecimal.minus(feeDecimal);
+  const actualNetDecimal = actualNetDeposit === null || actualNetDeposit === undefined
+    ? expectedNetDecimal
+    : new Prisma.Decimal(String(actualNetDeposit));
 
-  if (!codDecimal.isFinite() || !feeDecimal.isFinite() || codDecimal.lte(0) || feeDecimal.isNegative()) {
+  if (!codDecimal.isFinite() || codDecimal.lte(0) || !feeDecimal.isFinite() || feeDecimal.isNegative()) {
     throw new Error("COD collected amount must be greater than zero for remittance posting.");
   }
-  if (netDecimal.isNegative()) {
+  if (expectedNetDecimal.isNegative()) {
     throw new Error("Carrier fee cannot exceed NCM COD collected in a remittance posting.");
+  }
+  if (!actualNetDecimal.isFinite() || actualNetDecimal.isNegative()) {
+    throw new Error("Actual NCM remittance deposit cannot be negative.");
   }
 
   const lines = [];
-  if (netDecimal.greaterThan(0)) {
+  if (actualNetDecimal.greaterThan(0)) {
     lines.push({
       accountCode: cashAccountCode || (isCash ? "1110" : "1120"),
-      debit: netDecimal,
+      debit: actualNetDecimal,
       credit: 0,
-      description: `Net COD remittance received into ${destinationAccountName}`,
+      description: `NCM COD remittance received into ${destinationAccountName}`,
     });
   }
 
@@ -3365,6 +3374,25 @@ export const postNcmRemittanceAccounting = async ({
       debit: feeDecimal,
       credit: 0,
       description: `Clear NCM carrier fee payable from COD remittance`,
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
+    });
+  }
+
+  const variance = actualNetDecimal.minus(expectedNetDecimal);
+  if (variance.isNegative()) {
+    lines.push({
+      mappingKey: "NCM_COD_RECEIVABLE",
+      debit: variance.abs(),
+      credit: 0,
+      description: "Unpaid NCM settlement variance retained as COD receivable suspense.",
+      ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
+    });
+  } else if (variance.greaterThan(0)) {
+    lines.push({
+      mappingKey: "NCM_REMITTANCE_VARIANCE_PAYABLE",
+      debit: 0,
+      credit: variance,
+      description: "NCM remittance overpayment held in suspense pending reconciliation.",
       ...(ncmPartyId ? { accountingPartyId: ncmPartyId } : {}),
     });
   }
@@ -3383,7 +3411,7 @@ export const postNcmRemittanceAccounting = async ({
     sourceId: `NCM-REMIT-${settlementId}`,
     idempotencyKey: `NCM_REMITTANCE:${settlementId}`,
     referenceNumber: `NCM-REMIT-${String(settlementId).slice(-6)}`,
-    description: `NCM COD Remittance settlement of Rs ${codDecimal.toString()}`,
+    description: `NCM COD remittance settlement of Rs ${actualNetDecimal.toString()}`,
     lines,
     createdBy,
     client,

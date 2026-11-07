@@ -1,6 +1,9 @@
 import express from "express";
 import {
   adminConfirmSettlement,
+  adminListSettlementBatches,
+  adminListSettlementCandidates,
+  adminResolveSettlementVariance,
   adminListDeliveries,
   adminRequestNcmDeliveryByAssignment,
   adminListSettlements,
@@ -111,6 +114,9 @@ deliveryRouter.get("/admin/ncm/customers/:customerId", authenticate, authorize("
 deliveryRouter.get("/admin/ncm/ratings", authenticate, authorize("delivery:admin_detail"), getNcmAdminCustomerRatings);
 deliveryRouter.post("/admin/assignment/:id/ncm", authenticate, authorize("assignment:admin_list"), adminRequestNcmDeliveryByAssignment);
 deliveryRouter.get("/admin/settlements", authenticate, authorize("delivery:settlements_read"), adminListSettlements);
+deliveryRouter.get("/admin/settlements/candidates", authenticate, authorize("delivery:settlements_read"), adminListSettlementCandidates);
+deliveryRouter.get("/admin/settlements/batches", authenticate, authorize("delivery:settlements_read"), adminListSettlementBatches);
+deliveryRouter.post("/admin/settlements/batches/:batchId/resolve", authenticate, authorize("delivery:settlement_request"), adminResolveSettlementVariance);
 deliveryRouter.get("/admin/settlements/summary", authenticate, authorize("delivery:settlement_summary"), adminSettlementSummary);
 deliveryRouter.post("/admin/settlements/request", authenticate, authorize("delivery:settlement_request"), adminRequestSettlement);
 deliveryRouter.post("/admin/settlements/confirm", authenticate, authorize("delivery:settlement_request"), adminConfirmSettlement);

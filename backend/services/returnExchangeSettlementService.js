@@ -1,6 +1,7 @@
 import { prisma } from "../config/db.js";
 import { postJournalEntry } from "./accountingPostingEngine.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
+import { createAccountingDocument } from "./accountingSubledgerService.js";
 
 const RATE_FIELDS = {
   NCM: {
@@ -22,15 +23,6 @@ export const createReturnExchangeSettlementPayable = async (tx, request, operati
   if (!["RETURN", "EXCHANGE"].includes(operation)) {
     throw new Error("Unsupported return or exchange settlement operation.");
   }
-  const reportedNcmCharge = request.deliveryRoute === "NCM" && operation === "EXCHANGE"
-    ? request.ncmTotalCharge ?? (
-        request.ncmReturnCharge != null && request.ncmReplacementCharge != null
-          ? Number(request.ncmReturnCharge) + Number(request.ncmReplacementCharge)
-          : null
-      )
-    : null;
-  const amount = Number(reportedNcmCharge ?? request.logisticsSettlementAmount ?? 0);
-  if (amount <= 0) return null;
   if (!["NCM", "DISTRIBUTOR"].includes(request.deliveryRoute)) {
     throw new Error("A completed return or exchange has no valid logistics route for settlement.");
   }
@@ -41,15 +33,64 @@ export const createReturnExchangeSettlementPayable = async (tx, request, operati
   });
   if (existing) return existing;
 
+  const reportedNcmCharge = request.deliveryRoute === "NCM"
+    ? operation === "RETURN"
+      ? request.ncmDeliveryCharge
+      : request.ncmTotalCharge ?? (
+          request.ncmReturnCharge != null && request.ncmReplacementCharge != null
+            ? Number(request.ncmReturnCharge) + Number(request.ncmReplacementCharge)
+            : null
+        )
+    : null;
+  const hasReportedCharge = reportedNcmCharge !== null && reportedNcmCharge !== undefined;
+  const amount = Number(reportedNcmCharge ?? request.logisticsSettlementAmount ?? 0);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Return or exchange logistics charge must be a valid non-negative amount.");
+  }
+  if (amount === 0) return null;
+
+  if (request.deliveryRoute === "NCM" && request.ncmChargePayer === "CUSTOMER") {
+    return null;
+  }
+
   let payeeName = "Nepal Can Move";
   if (request.deliveryRoute === "DISTRIBUTOR") {
     if (!request.distributorId) throw new Error("The distributor for this logistics settlement is missing.");
     const distributor = await tx.distributor.findUnique({
       where: { id: request.distributorId },
-      select: { name: true },
+      select: { id: true, name: true },
     });
     if (!distributor) throw new Error("The distributor for this logistics settlement could not be found.");
     payeeName = distributor.name;
+    const party = await ensureAccountingParty({
+      partyType: "DISTRIBUTOR",
+      sourceEntityId: distributor.id,
+      displayName: distributor.name || `Distributor (${distributor.id.slice(-6)})`,
+    }, { client: tx });
+
+    const documentSourceType = operation === "RETURN"
+      ? "DISTRIBUTOR_RETURN_LOGISTICS"
+      : "DISTRIBUTOR_EXCHANGE_LOGISTICS";
+    const document = await createAccountingDocument({
+      documentType: "BILL",
+      documentNumber: `DIST-${operation === "RETURN" ? "RET" : "EXC"}-${request.id}`,
+      partyId: party.id,
+      side: "PAYABLE",
+      sourceType: documentSourceType,
+      sourceId: request.id,
+      amount,
+      issueDate: new Date(),
+      notes: `Distributor ${operation.toLowerCase()} logistics ${hasReportedCharge ? "reported charge" : "configured rate estimate"}.`,
+      idempotencyKey: `${documentSourceType}:${request.id}`,
+    }, { client: tx });
+    return {
+      id: document.id,
+      title: `${operation === "RETURN" ? "Return" : "Exchange"} logistics settlement #${request.id.slice(0, 8)}`,
+      payeeName,
+      totalAmount: document.originalAmount,
+      accountingDocumentId: document.id,
+      amountSource: hasReportedCharge ? "PROVIDER_REPORTED" : "CONFIGURED_ESTIMATE",
+    };
   }
 
   return tx.accountPayable.create({
@@ -64,7 +105,7 @@ export const createReturnExchangeSettlementPayable = async (tx, request, operati
       remainingBalance: amount,
       status: "UNPAID",
       priority: "MEDIUM",
-      notes: `Configured ${request.deliveryRoute.toLowerCase()} ${operation.toLowerCase()} logistics settlement.`,
+      notes: `${hasReportedCharge ? "Provider-reported" : "Configured rate estimate"} for ${request.deliveryRoute.toLowerCase()} ${operation.toLowerCase()} logistics settlement.`,
     },
   });
 };

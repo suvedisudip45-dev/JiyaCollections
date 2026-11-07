@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createExchangeOrder, createOrder, extractNcmCharge, extractNcmDeliveryPricing, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm } from "../services/ncmClient.js";
+import { createCodTransferTicket, createExchangeOrder, createOrder, extractNcmCharge, extractNcmDeliveryPricing, getNcmErrorMessage, getNcmResponseRejection, normalizeNcmPackageName, requestNcm, requestOrderReturnOnce, shippingRateTypeForNcm, validateCodTransferBankDetails } from "../services/ncmClient.js";
 import {
   STATUS_MAP,
   assignmentStatusFromNcmStatus,
@@ -25,6 +25,68 @@ const restoreEnv = (name, value) => {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 };
+
+test("NCM COD bank details validate text names and digit-only account numbers", () => {
+  assert.deepEqual(validateCodTransferBankDetails({
+    bankName: "  Nepal Bank Ltd. ",
+    bankAccountName: "राम प्रसाद शर्मा",
+    bankAccountNumber: "001234567",
+  }), {
+    bankName: "Nepal Bank Ltd.",
+    bankAccountName: "राम प्रसाद शर्मा",
+    bankAccountNumber: "001234567",
+  });
+
+  for (const bankDetails of [
+    { bankName: "Bank 1", bankAccountName: "Account Holder", bankAccountNumber: "12345" },
+    { bankName: "Bank Name", bankAccountName: "Holder 2", bankAccountNumber: "12345" },
+    { bankName: "Bank Name", bankAccountName: "Account Holder", bankAccountNumber: "12-345" },
+    { bankName: "Bank Name", bankAccountName: "Account Holder", bankAccountNumber: "1e10" },
+  ]) {
+    assert.throws(
+      () => validateCodTransferBankDetails(bankDetails),
+      (error) => error.code === "INVALID_COD_BANK_DETAILS" && error.statusCode === 400,
+    );
+  }
+});
+
+test("NCM COD transfer ticket follows the documented endpoint and JSON field names", async () => {
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  let request;
+
+  process.env.NCM_API_TOKEN = "test-server-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url, options) => {
+    request = { url: String(url), options };
+    return new Response(JSON.stringify({ message: "COD ticket created", ticket: 124 }), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const result = await createCodTransferTicket({
+      bankName: "Nepal Bank Limited",
+      bankAccountName: "John Doe",
+      bankAccountNumber: "001234567",
+    });
+    assert.equal(request.url, "https://ncm.test/api/v2/vendor/ticket/cod/create");
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers.Authorization, "Token test-server-token");
+    assert.deepEqual(JSON.parse(request.options.body), {
+      bankName: "Nepal Bank Limited",
+      bankAccountName: "John Doe",
+      bankAccountNumber: "001234567",
+    });
+    assert.equal(result.data.ticket, 124);
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv("NCM_API_TOKEN", originalToken);
+    restoreEnv("NCM_API_BASE_URL", originalBaseUrl);
+  }
+});
 
 test("NCM client sends server-side token and JSON payload", async () => {
   const originalFetch = global.fetch;

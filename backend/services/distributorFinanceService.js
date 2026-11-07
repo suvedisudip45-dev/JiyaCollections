@@ -43,6 +43,25 @@ const fail = (message, statusCode = 400, code = "DISTRIBUTOR_FINANCE_ERROR") => 
   return error;
 };
 
+const ensureNoActiveUnifiedSettlementRequest = async (client, distributorId) => {
+  const requestModel = client.distributorSettlementRequestToken;
+  if (!requestModel?.findFirst) return;
+  const activeRequest = await requestModel.findFirst({
+    where: {
+      distributorId,
+      status: { in: ["REQUESTED", "EVIDENCE_SUBMITTED", "PAYMENT_SENT"] },
+    },
+    select: { id: true },
+  });
+  if (activeRequest) {
+    throw fail(
+      "Resolve the distributor's active unified net-balance settlement request before creating or paying an earnings settlement.",
+      409,
+      "ACTIVE_UNIFIED_SETTLEMENT_REQUEST",
+    );
+  }
+};
+
 const parseMoney = (value, label) => {
   if ((typeof value !== "number" && typeof value !== "string") || !/^\d{1,18}(?:\.\d{1,2})?$/.test(String(value).trim())) {
     throw fail(`${label} must be a positive amount with no more than two decimal places.`, 400, "INVALID_AMOUNT");
@@ -206,6 +225,7 @@ export const initiateAdminDistributorSettlement = async ({
     if (settlement.status === "SETTLED" || settlement.status === "REJECTED") {
       throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
     }
+    await ensureNoActiveUnifiedSettlementRequest(tx, settlement.distributorId);
     if (settlement.metadata?.settlementBasis === "LEGACY_EARNINGS_RECONCILIATION_REQUIRED") {
       throw fail("Reconcile verified earning documents before initiating this payout.", 409, "LEGACY_EARNINGS_RECONCILIATION_REQUIRED");
     }
@@ -880,6 +900,7 @@ export const submitDistributorSettlementRequest = async ({
         }
         return { ...existing, isReplay: true };
       }
+      await ensureNoActiveUnifiedSettlementRequest(tx, distributorId);
 
       const distributor = await tx.distributor.findUnique({
         where: { id: distributorId },
@@ -1374,6 +1395,7 @@ export const executeAdminDistributorSettlement = async ({
       if (targetSettlement.status === "SETTLED" || targetSettlement.status === "REJECTED") {
         throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
       }
+      await ensureNoActiveUnifiedSettlementRequest(tx, targetSettlement.distributorId);
       const requestOutstanding = Number(targetSettlement.amount) - Number(targetSettlement.paidAmount || 0);
       if (settleAmount > requestOutstanding + 0.001) {
         throw fail("Payment amount exceeds the approved distributor settlement request balance.", 409, "SETTLEMENT_AMOUNT_EXCEEDS_PAYABLE");
@@ -1575,6 +1597,7 @@ export const executeAdminDistributorSettlement = async ({
     if (targetSettlement.status === "SETTLED" || targetSettlement.status === "REJECTED") {
       throw fail("This distributor settlement request is already closed.", 409, "SETTLEMENT_NOT_PAYABLE");
     }
+    await ensureNoActiveUnifiedSettlementRequest(tx, targetSettlement.distributorId);
     if (settleAmount > Number(payable.remainingBalance) + 0.001) {
       throw fail("Payment amount exceeds the distributor settlement payable balance.", 409, "SETTLEMENT_AMOUNT_EXCEEDS_PAYABLE");
     }

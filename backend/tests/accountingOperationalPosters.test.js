@@ -1222,6 +1222,39 @@ test("NCM cash remittance posts through the caller transaction client", async ()
   assert.equal(journal.lines.find((line) => line.account.accountCode === "1170").credit.toFixed(2), "1331.00");
 });
 
+test("NCM remittance underpayment remains in COD receivable suspense", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+  const journal = await postNcmRemittanceAccounting({
+    settlementId: "ncm-short-remittance",
+    codCollected: 1000,
+    deliveryFeeActual: 100,
+    actualNetDeposit: 850,
+    cashAccountCode: "1120",
+  }, { client });
+
+  assert.equal(journal.totalDebit.toFixed(2), "1000.00");
+  assert.equal(journal.totalCredit.toFixed(2), "1000.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1120").debit.toFixed(2), "850.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1170" && line.debit.greaterThan(0)).debit.toFixed(2), "50.00");
+});
+
+test("NCM remittance overpayment remains in payable suspense", async () => {
+  const { client } = createComprehensiveHarness();
+  delete client.$transaction;
+  const journal = await postNcmRemittanceAccounting({
+    settlementId: "ncm-over-remittance",
+    codCollected: 1000,
+    deliveryFeeActual: 100,
+    actualNetDeposit: 950,
+    cashAccountCode: "1120",
+  }, { client });
+
+  assert.equal(journal.totalDebit.toFixed(2), "1050.00");
+  assert.equal(journal.totalCredit.toFixed(2), "1050.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "2185").credit.toFixed(2), "50.00");
+});
+
 test("NCM remittance rejects carrier fees greater than collected COD", async () => {
   const { client, state } = createComprehensiveHarness();
   delete client.$transaction;

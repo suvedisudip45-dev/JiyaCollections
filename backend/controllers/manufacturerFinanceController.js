@@ -26,6 +26,56 @@ const actorContext = (req) => ({
   correlationId: req.correlationId || null,
 });
 
+const attachManufacturerSettlementPayoutHistory = async (requests, client = prisma) => {
+  if (!requests.length) return requests;
+  const payouts = await client.financialPayout.findMany({
+    where: {
+      targetType: "MANUFACTURER_SETTLEMENT",
+      targetId: { in: requests.map((request) => request.id) },
+    },
+    include: {
+      financialAccount: { select: { id: true, accountName: true, accountType: true } },
+    },
+    orderBy: [{ initiatedAt: "desc" }, { id: "desc" }],
+  });
+  if (!payouts.length) {
+    return requests.map((request) => ({ ...request, payoutHistory: [] }));
+  }
+
+  const idempotencyKeys = payouts.map((payout) => payout.idempotencyKey);
+  const [cashTransactions, journalEntries] = await Promise.all([
+    client.cashTransaction.findMany({
+      where: { idempotencyKey: { in: idempotencyKeys } },
+      select: {
+        id: true,
+        idempotencyKey: true,
+        date: true,
+        type: true,
+        amount: true,
+        externalPaymentReference: true,
+      },
+    }),
+    client.journalEntry.findMany({
+      where: { idempotencyKey: { in: idempotencyKeys.map((key) => `SUPPLIER_PAYMENT:${key}`) } },
+      select: { id: true, idempotencyKey: true, journalNumber: true, postedAt: true },
+    }),
+  ]);
+  const cashByKey = new Map(cashTransactions.map((transaction) => [transaction.idempotencyKey, transaction]));
+  const journalsByKey = new Map(journalEntries.map((journal) => [journal.idempotencyKey, journal]));
+  const payoutsByRequest = new Map(requests.map((request) => [request.id, []]));
+  for (const payout of payouts) {
+    payoutsByRequest.get(payout.targetId)?.push({
+      ...payout,
+      cashTransaction: cashByKey.get(payout.idempotencyKey) || null,
+      journalEntry: journalsByKey.get(`SUPPLIER_PAYMENT:${payout.idempotencyKey}`) || null,
+    });
+  }
+  return requests.map((request) => ({
+    ...request,
+    payoutHistory: payoutsByRequest.get(request.id) || [],
+  }));
+};
+
 export const getManufacturerFinanceDashboard = async (req, res) => {
   try {
     const summary = await getManufacturerSettlementSummary(req.manufacturerId);
@@ -46,6 +96,26 @@ export const getManufacturerFinanceDashboard = async (req, res) => {
   } catch (error) {
     console.error("getManufacturerFinanceDashboard error:", error);
     return res.status(500).json({ success: false, message: "Unable to load manufacturer financial dashboard." });
+  }
+};
+
+export const getManufacturerSettlementRequests = async (req, res) => {
+  try {
+    const pagination = getPagination(req.query);
+    const [settlementRows, total] = await prisma.$transaction([
+      prisma.manufacturerSettlementRequest.findMany({
+        where: { manufacturerId: req.manufacturerId },
+        orderBy: [{ requestedAt: "desc" }, { id: "desc" }],
+        skip: pagination.skip,
+        take: pagination.limit,
+      }),
+      prisma.manufacturerSettlementRequest.count({ where: { manufacturerId: req.manufacturerId } }),
+    ]);
+    const settlements = await attachManufacturerSettlementPayoutHistory(settlementRows);
+    return res.json(paginatedResponse("settlements", settlements, pagination, total));
+  } catch (error) {
+    console.error("getManufacturerSettlementRequests error:", error);
+    return res.status(500).json({ success: false, message: "Unable to load manufacturer settlement history." });
   }
 };
 
@@ -106,14 +176,14 @@ export const listAdminManufacturerSettlements = async (req, res) => {
   try {
     const pagination = getPagination(req.query);
     const status = String(req.query.status || "").trim().toUpperCase();
-    if (status && !["PENDING", "PAID", "REJECTED"].includes(status)) {
+    if (status && !["PENDING", "PARTIALLY_PAID", "PAID", "REJECTED"].includes(status)) {
       return res.status(400).json({ success: false, message: "Settlement status filter is invalid." });
     }
     const where = {
       ...(status ? { status } : {}),
       ...(req.query.manufacturerId ? { manufacturerId: String(req.query.manufacturerId).trim() } : {}),
     };
-    const [settlements, total] = await prisma.$transaction([
+    const [settlementRows, total] = await prisma.$transaction([
       prisma.manufacturerSettlementRequest.findMany({
         where,
         include: {
@@ -125,6 +195,7 @@ export const listAdminManufacturerSettlements = async (req, res) => {
       }),
       prisma.manufacturerSettlementRequest.count({ where }),
     ]);
+    const settlements = await attachManufacturerSettlementPayoutHistory(settlementRows);
     return res.json(paginatedResponse("settlements", settlements, pagination, total));
   } catch (error) {
     console.error("listAdminManufacturerSettlements error:", error);

@@ -1685,7 +1685,10 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
 
   const historyUrl = historyType === "transactions"
     ? `${backendUrl}/api/admin/distributors/${distributorId}/finance/transactions`
-    : `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlements`;
+    : historyType === "activity"
+      ? `${backendUrl}/api/admin/distributors/${distributorId}/finance/activity`
+      : `${backendUrl}/api/admin/distributors/${distributorId}/finance/settlements`;
+  const historyResponseKey = historyType === "activity" ? "activities" : historyType;
 
   return (
     <div className="space-y-4">
@@ -1719,19 +1722,73 @@ export const DistributorFinanceSection = ({ distributorId, token }) => {
       <DistributorCodRemittances distributorId={distributorId} token={token} />
 
       <div className="flex gap-2">
-        {[["transactions", "Financial transactions"], ["settlements", "Settlement requests"]].map(([value, label]) => (
+        {[["transactions", "Financial transactions"], ["settlements", "Earnings requests"], ["activity", "Settlement activity"]].map(([value, label]) => (
           <button key={value} type="button" onClick={() => { setHistoryType(value); setRefreshKey((current) => current + 1); }} className={`rounded-lg px-4 py-2 text-xs font-bold ${historyType === value ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-600"}`}>{label}</button>
         ))}
       </div>
       <RecordList
         key={`${historyType}-${refreshKey}`}
         endpoint={historyUrl}
-        responseKey={historyType}
+        responseKey={historyResponseKey}
         token={token}
         renderRecord={historyType === "transactions"
           ? (record) => <div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-slate-900">{record.description || record.type}</p><p className="mt-1 text-xs text-slate-500">{record.type} · Ref {record.referenceId || "—"} · {dateText(record.date)}</p><p className="mt-1 text-xs text-slate-500">{record.paymentMethod || record.status || ""}</p></div><p className={`font-bold ${Number(record.netAmount) < 0 ? "text-rose-700" : "text-slate-900"}`}>{amountText(record.netAmount)}</p></div>
-          : (record) => <div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-slate-900">Settlement request {record.id}</p><p className="mt-1 text-xs text-slate-500">Requested {dateText(record.requestedAt)}{record.settledAt ? ` · Settled ${dateText(record.settledAt)}` : ""}</p><p className="mt-1 text-xs text-slate-500">{record.notes || record.adminNotes || "No notes"}</p>{record.externalPaymentReference && <p className="mt-1 text-xs text-slate-500">Transfer ref: {record.externalPaymentReference}</p>}</div><div className="text-right"><p className="font-bold text-slate-900">{amountText(record.amount)}</p><p className="text-xs font-bold uppercase text-slate-500">{record.status}</p></div></div>}
-        emptyMessage={historyType === "transactions" ? "No financial transactions are recorded." : "No settlement requests are recorded."}
+          : historyType === "activity"
+            ? (record) => {
+              const isEarningsRequest = record.activityType === "EARNINGS_REQUEST";
+              const isNetRequest = record.activityType === "NET_BALANCE_REQUEST";
+              const label = isEarningsRequest
+                ? "Earnings settlement request"
+                : isNetRequest
+                  ? "Admin-issued net-balance request"
+                  : "Net-balance settlement";
+              const evidence = record.evidenceUrl || record.payouts?.find((payout) => payout.bankEvidenceReference)?.bankEvidenceReference;
+              return (
+                <div className="flex flex-wrap justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-slate-900">{label} · {record.direction?.replaceAll("_", " ") || record.status}</p>
+                    <p className="mt-1 text-xs text-slate-500">Source {record.sourceId} · {dateText(record.occurredAt)} · {record.status?.replaceAll("_", " ")}</p>
+                    {record.settlement?.id && <p className="mt-1 break-all text-[10px] text-slate-500">Posted settlement: {record.settlement.id}</p>}
+                    {record.metadata?.earningDocumentIds?.length > 0 && (
+                      <p className="mt-1 break-all text-[10px] text-slate-500">Source earning documents: {record.metadata.earningDocumentIds.join(", ")}</p>
+                    )}
+                    {(record.notes || record.requestNotes || record.adminNotes) && (
+                      <p className="mt-1 text-xs text-slate-600">{record.notes || record.requestNotes || record.adminNotes}</p>
+                    )}
+                    {record.settlement?.setoffAgreementReference && (
+                      <p className="mt-1 text-xs text-slate-500">Set-off authority: {record.settlement.setoffAgreementReference}</p>
+                    )}
+                    {record.externalPaymentReference && (
+                      <p className="mt-1 text-xs text-slate-500">Transfer reference: {record.externalPaymentReference}</p>
+                    )}
+                    {record.transferReference && (
+                      <p className="mt-1 text-xs text-slate-500">Transfer reference: {record.transferReference}</p>
+                    )}
+                    {evidence && (
+                      <a href={evidence} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs font-semibold text-blue-700 underline">View evidence</a>
+                    )}
+                    {(record.settlement?.cashTransactionId || record.cashTransactionId || record.cashTransactions?.length > 0) && (
+                      <p className="mt-1 break-all text-[10px] text-slate-500">
+                        Cash transaction: {record.settlement?.cashTransactionId || record.cashTransactionId || record.cashTransactions.map((transaction) => transaction.id).join(", ")}
+                      </p>
+                    )}
+                    {(record.settlement?.journalEntryId || record.journalEntryId || record.journalEntries?.length > 0) && (
+                      <p className="mt-1 break-all text-[10px] text-slate-500">
+                        Journal: {record.settlement?.journalEntryId || record.journalEntryId || record.journalEntries.map((journal) => `${journal.journalNumber || journal.id}`).join(", ")}
+                      </p>
+                    )}
+                  </div>
+                  <div className="text-right">
+                    <p className="font-bold text-slate-900">{isEarningsRequest || isNetRequest ? "Requested" : "Cash settled"} {amountText(record.requestedAmount)}</p>
+                    <p className="text-xs text-slate-600">Paid / received {amountText(record.paidAmount)}</p>
+                    <p className="text-xs text-slate-600">Request remaining {amountText(record.remainingAmount)}</p>
+                    {record.offsetAmount != null && <p className="text-xs text-slate-600">Offset {amountText(record.offsetAmount)}</p>}
+                  </div>
+                </div>
+              );
+            }
+            : (record) => <div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-slate-900">Settlement request {record.id}</p><p className="mt-1 text-xs text-slate-500">Requested {dateText(record.requestedAt)}{record.settledAt ? ` · Settled ${dateText(record.settledAt)}` : ""}</p><p className="mt-1 text-xs text-slate-500">{record.notes || record.adminNotes || "No notes"}</p>{record.externalPaymentReference && <p className="mt-1 text-xs text-slate-500">Transfer ref: {record.externalPaymentReference}</p>}</div><div className="text-right"><p className="font-bold text-slate-900">{amountText(record.amount)}</p><p className="text-xs font-bold uppercase text-slate-500">{record.status}</p></div></div>}
+        emptyMessage={historyType === "transactions" ? "No financial transactions are recorded." : historyType === "activity" ? "No distributor settlement activity is recorded." : "No earnings settlement requests are recorded."}
       />
     </div>
   );

@@ -270,12 +270,6 @@ export const requestManufacturerDistributorAccess = async (req, res) => {
 };
 
 export const resolveManufacturerDistributorOrigin = async (client, manufacturer) => {
-  const cityEntry = resolveLocationEntry(manufacturer.city);
-  if (cityEntry?.type === "DISTRICT") {
-    const cityLocation = canonicalizeNepalLocation(cityEntry.province, cityEntry.name);
-    if (cityLocation) return cityLocation;
-  }
-
   const pickupBranch = clean(manufacturer.ncmPickupBranch);
   if (pickupBranch) {
     const branch = await client.ncmBranch.findFirst({
@@ -284,6 +278,12 @@ export const resolveManufacturerDistributorOrigin = async (client, manufacturer)
     });
     const branchLocation = canonicalizeNepalLocation(branch?.provinceName, branch?.districtName);
     if (branchLocation) return branchLocation;
+  }
+
+  const cityEntry = resolveLocationEntry(manufacturer.city);
+  if (cityEntry?.type === "DISTRICT") {
+    const cityLocation = canonicalizeNepalLocation(cityEntry.province, cityEntry.name);
+    if (cityLocation) return cityLocation;
   }
 
   const manufacturerLocation = [...(manufacturer.locations || [])]
@@ -372,7 +372,8 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
       });
       if (targetStatus === "APPROVED") {
         const registeredOrigin = canonicalizeNepalLocation(distributor?.province, distributor?.district);
-        const origin = registeredOrigin || await resolveManufacturerDistributorOrigin(tx, manufacturer);
+        const manufacturerOrigin = await resolveManufacturerDistributorOrigin(tx, manufacturer);
+        const origin = manufacturerOrigin || registeredOrigin;
         if (!origin) {
           const error = new Error(
             "Set a valid manufacturer city, NCM pickup branch, or province/district location before approving distributor access."
@@ -384,7 +385,7 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
         const profileData = {
           name: manufacturer.name,
           phone: manufacturer.phone,
-          address: manufacturer.address || manufacturer.pickupAddress || null,
+          address: manufacturer.address ?? null,
           city: manufacturer.city,
           province: origin.province,
           district: origin.district,
@@ -393,7 +394,7 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
           ncmPickupBranch: clean(manufacturer.ncmPickupBranch).toUpperCase(),
           pickupBranchStatus: "UNVERIFIED",
           pickupBranchVerifiedAt: null,
-          pickupAddress: manufacturer.pickupAddress || manufacturer.address || null,
+          pickupAddress: manufacturer.pickupAddress ?? null,
           pickupContactName: manufacturer.pickupContactName || "",
           pickupContactPhone: manufacturer.pickupContactPhone || "",
           pickupWindow: manufacturer.pickupWindow || "",
@@ -408,22 +409,34 @@ export const reviewManufacturerDistributorApplication = async (req, res) => {
           : await tx.distributor.create({
               data: { ...profileData, accountId: manufacturer.accountId, appliedAt: manufacturer.updatedAt },
             });
-        await tx.distributorLocation.upsert({
-          where: {
-            distributorId_province_district: {
-              distributorId: distributor.id,
-              province: origin.province,
-              district: origin.district,
+        const distributorLocations = new Map([
+          [`${origin.province}\0${origin.district}`, origin],
+        ]);
+        for (const location of manufacturer.locations || []) {
+          if (location.isActive === false) continue;
+          const canonical = canonicalizeNepalLocation(location.province, location.district);
+          if (canonical) {
+            distributorLocations.set(`${canonical.province}\0${canonical.district}`, canonical);
+          }
+        }
+        for (const location of distributorLocations.values()) {
+          await tx.distributorLocation.upsert({
+            where: {
+              distributorId_province_district: {
+                distributorId: distributor.id,
+                province: location.province,
+                district: location.district,
+              },
             },
-          },
-          create: {
-            distributorId: distributor.id,
-            province: origin.province,
-            district: origin.district,
-            isActive: true,
-          },
-          update: { isActive: true },
-        });
+            create: {
+              distributorId: distributor.id,
+              province: location.province,
+              district: location.district,
+              isActive: true,
+            },
+            update: { isActive: true },
+          });
+        }
         await assignAccountRole(manufacturer.accountId, "DISTRIBUTOR", { client: tx });
       } else {
         if (distributor && distributor.status === "PENDING_APPROVAL") {

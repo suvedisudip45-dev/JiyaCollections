@@ -112,15 +112,15 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
   const productionBillOutstanding = productionBills.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
   const productionAllocatedPayments = productionBills.reduce((sum, document) => sum + Number(document.allocatedAmount || 0), 0);
   const supplierCreditOutstanding = supplierCredits.reduce((sum, document) => sum + Number(document.remainingAmount || 0), 0);
-  const settlementTotal = (status, requestType) => Number(
-    settlementTotals.find((entry) => entry.status === status && entry.requestType === requestType)?._sum.amount || 0
-  );
-  const pendingProduction = settlementTotal("PENDING", "PRODUCTION");
-  const pendingLogistics = settlementTotal("PENDING", "LOGISTICS");
-  const partiallyPaid = (requestType) => {
-    const entry = settlementTotals.find((item) => item.status === "PARTIALLY_PAID" && item.requestType === requestType);
-    return Math.max(0, Number(entry?._sum.amount || 0) - Number(entry?._sum.paidAmount || 0));
-  };
+  const activeRequestBalance = (requestType) => settlementTotals
+    .filter((entry) => ["PENDING", "PARTIALLY_PAID"].includes(entry.status) && entry.requestType === requestType)
+    .reduce((total, entry) => total.plus(
+      new Prisma.Decimal(String(entry._sum.amount || 0))
+        .minus(new Prisma.Decimal(String(entry._sum.paidAmount || 0))),
+    ), new Prisma.Decimal(0))
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+  const pendingProduction = activeRequestBalance("PRODUCTION").toNumber();
+  const pendingLogistics = activeRequestBalance("LOGISTICS").toNumber();
   const paidFromSettlements = (requestType) => {
     const paidEntry = settlementTotals.find((item) => item.status === "PAID" && item.requestType === requestType);
     const partialEntry = settlementTotals.find((item) => item.status === "PARTIALLY_PAID" && item.requestType === requestType);
@@ -128,8 +128,7 @@ export const getManufacturerSettlementSummary = async (manufacturerId, { client 
       + Number(partialEntry?._sum.paidAmount || 0);
   };
   const settlementPaidLogistics = paidFromSettlements("LOGISTICS");
-  const pendingRequestTotal = pendingProduction + pendingLogistics
-    + partiallyPaid("PRODUCTION") + partiallyPaid("LOGISTICS");
+  const pendingRequestTotal = pendingProduction + pendingLogistics;
   const nonDocumentedProductionPayments = Math.max(0, totalPaid - productionAllocatedPayments - settlementPaidLogistics);
   const productionRecognized = productionBillOriginal + legacyProductionRecognized;
   const productionOutstanding = Math.max(

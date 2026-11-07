@@ -157,7 +157,7 @@ continues to reconcile already-recorded collaboration sales.
 - `POST /api/order/:orderId/cancel`
 - `GET /api/admin/distributor-applications/coverage` and `PUT /api/admin/distributor-applications/:id/coverage`
 - `PUT /api/admin/distributor-applications/:id/profile` updates the registration profile and linked login email/phone transactionally.
-- The admin distributor directory and dedicated profile are served from `/api/admin/distributors`: `GET /` requires a search query of at least two characters and supports `page` and `limit`; `GET /:id/profile`, `/login-history`, `/inventory`, `/stock-returns`, `/returns`, `/exchanges`, and `/finance` load focused profile/history sections. `/finance/transactions` and `/finance/settlements` are separately paginated.
+- The admin distributor directory and dedicated profile are served from `/api/admin/distributors`: `GET /` requires a search query of at least two characters and supports `page` and `limit`; `GET /:id/profile`, `/login-history`, `/inventory`, `/stock-returns`, `/returns`, `/exchanges`, and `/finance` load focused profile/history sections. `/finance/transactions`, `/finance/settlements`, and `/finance/activity` are separately paginated; activity merges legacy earnings requests, Admin-issued net-balance requests, and unlinked balance settlements while retaining source, cash, journal, payout-evidence, and remaining-amount references.
 - These detail endpoints require the `ADMIN` role plus section permissions (`distributor:admin_detail`, `distributor:admin_sessions_read`, `distributor:admin_inventory_read`, `distributor:admin_stock_return`, `distributor:admin_returns_read`, `distributor:admin_exchanges_read`, or `distributor:admin_finance_read`). The seed does not grant `distributor:admin_*` permissions to distributor workspaces. Profile and rate changes reuse the audited admin profile and approved rate-card endpoints.
 - Distributor stock-return APIs are `GET /:id/stock-returns` (inventory-read permission), `POST /:id/stock-returns` (idempotent request; dedicated stock-return permission), and `PATCH /:id/stock-returns/:returnId/review` (approve quantities or reject; dedicated permission). `POST /:id/stock-returns/:returnId/collections` records partial/full physical handovers, carrier references, evidence, and idempotent collection batches, moving stock to collection-specific transit locations. `POST /:id/stock-returns/:returnId/collections/:collectionId/receipt` records complete receipt counts, evidence, and discrepancies. `POST /:id/stock-returns/:returnId/collections/:collectionId/inspection` records an idempotent, quantity-reconciled warehouse condition assessment and proposed disposition routes. `POST /:id/stock-returns/:returnId/discrepancies/:discrepancyId/reviews` appends an idempotent investigation note/evidence record and marks an open discrepancy `UNDER_REVIEW`; it cannot assign responsibility, resolve the case, adjust stock, or post a journal. All these operations are non-posting; received units remain quarantined.
 - Existing `GET /api/stock-transfers/admin?distributorId=...` and `GET /api/order-assignment/admin/all?distributorId=...` provide paginated inbound transfer and order/delivery history for the selected distributor. They are admin-role protected and accept the focused detail permissions in addition to their general listing permissions.
@@ -176,6 +176,7 @@ continues to reconcile already-recorded collaboration sales.
 - `POST /api/returns/exchange/admin` for an admin-created exchange case
 - `GET /api/delivery/admin`
 - `GET /api/delivery/admin/ncm/deliveries` and `/api/delivery/admin/self-deliveries` provide separate paginated, database-backed admin monitors with Kathmandu-local date filters; `GET` detail routes load order, status-event, return/exchange, distributor-rating, and settlement data on demand.
+- `GET /api/delivery/admin/settlements/candidates` returns date-filtered delivered NCM COD candidates; `GET /api/delivery/admin/settlements/batches` lists recent bulk remittances. Admin selects deliveries for `/api/delivery/admin/settlements/request` and confirms one actual net deposit plus any explained variance through `/api/delivery/admin/settlements/confirm`. COD transfer requests validate bank and account-holder names as text and account numbers as digits on both the Admin UI and backend before calling NCM; upstream 4xx responses return sanitized provider field errors without echoing submitted bank values.
 - `/api/delivery/admin/ncm/*` exposes bounded, permission-protected documented NCM reads and explicit tools (status comparison is limited to selected known local IDs; ticket, comment, webhook, redirect, branch, rate, label, staff, and customer operations). `GET /api/delivery/admin/ncm/tickets` serves active/closed ticket summaries from `NcmSupportTicket` without contacting NCM. NCM ticket-creation responses return the ticket ID as a scalar `ticket` field; successful support-ticket and COD-settlement ticket create/detail/reply/close operations upsert that local index. Mutating calls are audited, and ambiguous provider outcomes are not retried automatically.
 - `POST /api/delivery/admin/:id/resolve-ncm-handoff`
 - `GET /api/marketing-cards/admin/cards`
@@ -217,6 +218,13 @@ and carrier-fee accounting use the net fee, while customer COD remains unchanged
 When NCM does not provide discount data to the integration, Admin can record
 the gross fee and discount from the NCM order details before confirming
 remittance. The update is audited and locked after settlement.
+Admin can resolve recorded bulk-remittance variances through a dedicated
+permission-protected route. Shortfalls are collected against the remaining
+batch COD receivables; overpayments can be refunded or offset against open NCM
+COD receivables. Each partial resolution is idempotent and transactionally
+links its journal, cash movement where applicable, document allocations, and
+immutable evidence record. The original signed variance is retained, and no
+automatic write-off or income recognition is performed.
 Customer-delivery statuses are matched against exact normalized NCM status/event
 aliases; negative, conflicting, generic, and unmapped responses set
 `DeliveryOrder.ncmReconciliationRequired` without changing the last trusted
@@ -270,11 +278,28 @@ serializable transaction. A posted cash movement requires a transfer
 reference and active NPR Treasury account. An offset requires a set-off
 agreement reference and explicit Admin confirmation; gross AR/AP documents
 remain visible. Pending legacy COD remittances and legacy pending distributor
-payout requests block new unified requests until reviewed. The accounting presentation rule for
-offsetting requires both an enforceable right of set-off and net or
-simultaneous settlement intent ([IAS 32](https://www.ifrs.org/issued-standards/list-of-standards/ias-32-financial-instruments-presentation/));
-the application captures Admin confirmation and the agreement reference but
-does not determine legal enforceability.
+payout requests block new unified requests until reviewed. The workflow
+requires explicit Admin confirmation and a recorded set-off reference as an
+internal business control; the application does not make legal
+determinations.
+
+The legacy earnings payout request and Admin-issued net-balance request remain
+separate business records and are not interchangeable. Request creation is
+serialized on the distributor row and rejects an active request in the other
+workflow; direct balance postings reject an active net-balance request unless
+they are posting that request with its own idempotency key, and legacy payout
+initiation/recording also rechecks active unified requests to prevent
+overlapping payments. Admin finance activity presents both request types and
+unlinked posted balance settlements in one paginated history.
+
+Completed distributor return/exchange logistics create source-linked payable
+bills under the distributor accounting party, and those bills are included in
+the same statement and unified settlement allocation flow as other open
+distributor liabilities. Existing logistics entries held only in legacy
+`AccountPayable` remain separately visible and block unified settlement until
+resolved there. NCM return/exchange liabilities remain in Accounts Payable;
+confirmed carrier charges are preferred over configured estimates, and
+customer-paid NCM charges do not accrue as company payables.
 
 Manufacturer post-production QA now enters `PENDING_ADMIN_ACCEPTANCE`; inventory
 and production cost layers are recorded only after Admin accepts the reported
@@ -297,6 +322,15 @@ active NPR Treasury account mapped to the correct cash/bank/wallet GL account.
 Older distributor settlement requests retain their legacy payout lifecycle;
 new Admin-issued requests reconcile COD and posted distributor payable
 sources together through the party subledger.
+
+Manufacturer request availability reserves the remaining unpaid amount of
+both `PENDING` and `PARTIALLY_PAID` requests. Manufacturer finance history is
+available through a paginated, manufacturer-scoped endpoint, while Admin can
+filter settlement requests by partial-payment status. Both histories enrich
+each request with its payout attempts, treasury account, transfer and bank
+evidence references, and the linked cash transaction and payment journal when
+posted; this uses payout idempotency keys rather than ambiguous manufacturer-
+wide cash references.
 
 Manual local stock-transfer dispatch posts delivery expense 6430 and manufacturer
 payable 2160 together with an idempotent shipment-linked payable bill.
@@ -429,7 +463,7 @@ Admins configure a per-distributor stock-transfer compensation per product unit 
 
 The distributor rate editor exposes separate approved amounts for self-delivery/phone delivery and hub counter sales. The additive migration `20261101110000_distributor_compensation_channels` adds the counter-sale rate and tracks how much of each negative reversal has been applied to payable documents; apply it and regenerate Prisma Client before deploying the updated flow.
 
-Delivered NCM COD creates party receivables against control 1170. An Admin remittance requires the selected delivery orders' open COD source documents, accrues the actual carrier fee against payable control 2180, allocates both sides, and books net cash, settlement journal, settlement state, and Treasury transaction in one serializable transaction. Accounting Health compares open NCM COD, distributor COD, NCM carrier-fee, and distributor-earning documents with controls 1170, 1190, 2180, and 2190 respectively. It also compares each stored GL account balance with journal-derived balances across posted and reversed journals; opening balances without posted journal support remain visible as variances. Its balance-sheet coverage registry enumerates the 23 configured control accounts and distinguishes source-scoped checks from legacy-partial, treasury-register-only, and not-reconciled controls; it does not infer a complete source balance. Legacy/opening balances are not auto-converted; Finance must review and approve a documented cutover. These checks do not reconcile all legacy and other-party documents, so overall accounting coverage remains partial until those sources are migrated and reconciled.
+Delivered NCM COD creates party receivables against control 1170. Admin can select delivered COD orders within a Kathmandu-local date range and create one NCM transfer request for the batch. Confirmation records one actual net deposit; carrier fees clear payable control 2180, shortfalls remain open against NCM COD receivables, and overpayments remain in suspense payable 2185 until reconciled. The selected delivery links, batch journal, Treasury movement, and cash transaction are committed serializably. Accounting Health compares open NCM COD, distributor COD, NCM carrier-fee, and distributor-earning documents with controls 1170, 1190, 2180, and 2190 respectively. It also compares each stored GL account balance with journal-derived balances across posted and reversed journals; opening balances without posted journal support remain visible as variances. Its balance-sheet coverage registry enumerates the 23 configured control accounts and distinguishes source-scoped checks from legacy-partial, treasury-register-only, and not-reconciled controls; it does not infer a complete source balance. Legacy/opening balances are not auto-converted; Finance must review and approve a documented cutover. These checks do not reconcile all legacy and other-party documents, so overall accounting coverage remains partial until those sources are migrated and reconciled.
 For NCM carrier fees, Accounting Health additionally matches each 2180 accrual journal to its payable bill, allocation, and 2180 debit in the linked NCM remittance journal. This is limited to the current NCM fee settlement flow; it does not establish historical carrier or broader 2180 completeness.
 
 Admins configure service districts through the Service-area coverage tab in Distributor Management. Saving coverage replaces that distributor's district list and records the change in the system audit outbox. Customers may submit or edit one distributor rating per delivered order through `POST /api/review/distributor/:orderId`; the endpoint verifies order ownership, delivery, and the assigned hub, then recalculates the distributor's aggregate rating inside the transaction.
