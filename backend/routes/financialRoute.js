@@ -60,6 +60,11 @@ import {
   recordPaperSalesInvoiceAdmin,
 } from "../controllers/salesInvoiceController.js";
 import {
+  cancelCorporateTaxPolicyVersionAdmin,
+  createCorporateTaxPolicyVersionAdmin,
+  getCorporateTaxPolicyVersionsAdmin,
+} from "../controllers/corporateTaxPolicyController.js";
+import {
   allocatePaperBillRangeAdmin,
   createPaperBillBookAdmin,
   getPaperBillControlDataAdmin,
@@ -129,6 +134,9 @@ financialRouter.post("/revert-settlement", authenticate, authorize("finance:paya
 
 // Tax & VAT
 financialRouter.get("/tax-report", authenticate, authorize("finance:tax_report_read"), getVATAndTaxReport);
+financialRouter.get("/corporate-tax-policies", authenticate, authorize("finance:tax_report_read"), getCorporateTaxPolicyVersionsAdmin);
+financialRouter.post("/corporate-tax-policies", authenticate, authorize("finance:tax_configure"), createCorporateTaxPolicyVersionAdmin);
+financialRouter.post("/corporate-tax-policies/:id/cancel", authenticate, authorize("finance:tax_configure"), cancelCorporateTaxPolicyVersionAdmin);
 financialRouter.get("/tax-profile", authenticate, authorize("finance:tax_report_read"), getSellerTaxProfileAdmin);
 financialRouter.patch("/tax-profile", authenticate, authorize("finance:tax_configure"), updateSellerTaxProfileAdmin);
 financialRouter.get("/tax-registration-versions", authenticate, authorize("finance:tax_report_read"), getTaxRegistrationVersionsAdmin);

@@ -74,6 +74,24 @@ const TaxCompliance = ({ token }) => {
   const [vatRate, setVatRate] = useState("13");
   const [vatEffectiveDate, setVatEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
   const [savingVatRate, setSavingVatRate] = useState(false);
+  const [corporateTaxPolicies, setCorporateTaxPolicies] = useState([]);
+  const [savingCorporateTaxPolicy, setSavingCorporateTaxPolicy] = useState(false);
+  const [corporateTaxPolicyDraft, setCorporateTaxPolicyDraft] = useState({
+    fiscalYear: "",
+    baseRate: "",
+    effectiveFrom: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+    brackets: "[]",
+    rules: "[]",
+  });
+  const [taxContextDraft, setTaxContextDraft] = useState({
+    userId: "",
+    taxpayerId: "",
+    taxpayerType: "",
+    province: "",
+    district: "",
+    locationId: "",
+  });
+  const [taxContext, setTaxContext] = useState({});
   const { canAny } = usePermissions();
   const canConfigureVat = canAny(["finance:tax_configure"]);
   const canViewStorefrontOrders = canAny(["order:control", "order:list_all"]);
@@ -83,11 +101,12 @@ const TaxCompliance = ({ token }) => {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 
-  const fetchTaxReport = useCallback(async (month) => {
+  const fetchTaxReport = useCallback(async (month, context = {}) => {
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/finance/tax-report?month=${month}`, {
+      const res = await axios.get(`${backendUrl}/api/finance/tax-report`, {
         headers: { token },
+        params: { month, ...context },
       });
       if (res.data.success) {
         setTaxData(res.data.data);
@@ -231,6 +250,46 @@ const TaxCompliance = ({ token }) => {
     setPaperBillReportFrom(toInput(start));
     setPaperBillReportTo(toInput(end));
     setPaperBillReportPreset(preset);
+  };
+
+  const scheduleCorporateTaxPolicy = async (event) => {
+    event.preventDefault();
+    try {
+      const brackets = JSON.parse(corporateTaxPolicyDraft.brackets);
+      const rules = JSON.parse(corporateTaxPolicyDraft.rules);
+      if (!Array.isArray(brackets) || !Array.isArray(rules)) {
+        throw new Error("Tax brackets and rules must each be JSON arrays.");
+      }
+      setSavingCorporateTaxPolicy(true);
+      const response = await axios.post(`${backendUrl}/api/finance/corporate-tax-policies`, {
+        ...corporateTaxPolicyDraft,
+        effectiveFrom: `${corporateTaxPolicyDraft.effectiveFrom}T00:00:00.000Z`,
+        brackets,
+        rules,
+      }, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Corporate tax policy could not be scheduled.");
+      toast.success(response.data.message || "Corporate tax policy scheduled.");
+      await fetchCorporateTaxPolicies();
+      await fetchTaxReport(selectedMonth, taxContext);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Corporate tax policy could not be scheduled.");
+    } finally {
+      setSavingCorporateTaxPolicy(false);
+    }
+  };
+
+  const cancelCorporateTaxPolicy = async (versionId) => {
+    try {
+      const response = await axios.post(`${backendUrl}/api/finance/corporate-tax-policies/${versionId}/cancel`, {}, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Corporate tax policy could not be cancelled.");
+      toast.success(response.data.message || "Corporate tax policy cancelled.");
+      await fetchCorporateTaxPolicies();
+      await fetchTaxReport(selectedMonth, taxContext);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Corporate tax policy could not be cancelled.");
+    }
   };
 
   const createFilingDraft = async (event) => {
@@ -479,12 +538,27 @@ const TaxCompliance = ({ token }) => {
   };
 
   useEffect(() => {
-    if (token) fetchTaxReport(selectedMonth);
-  }, [fetchTaxReport, selectedMonth, token]);
+    if (token) fetchTaxReport(selectedMonth, taxContext);
+  }, [fetchTaxReport, selectedMonth, taxContext, token]);
 
   useEffect(() => {
     if (token) fetchVatVersions();
   }, [fetchVatVersions, token]);
+
+  const fetchCorporateTaxPolicies = useCallback(async () => {
+    try {
+      const response = await axios.get(`${backendUrl}/api/finance/corporate-tax-policies`, { headers: { token } });
+      if (!response.data?.success) throw new Error(response.data?.message || "Corporate tax policies could not be loaded.");
+      setCorporateTaxPolicies(response.data.versions || []);
+    } catch (error) {
+      console.error(error);
+      toast.error(error.response?.data?.message || error.message || "Corporate tax policies could not be loaded.");
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (token) fetchCorporateTaxPolicies();
+  }, [fetchCorporateTaxPolicies, token]);
 
   useEffect(() => {
     if (token) fetchSellerTaxProfile();
@@ -1141,17 +1215,108 @@ const TaxCompliance = ({ token }) => {
         <p className="mt-4 text-[10px] text-slate-400">Basis: {vat.basis === "POSTED_JOURNALS" ? "posted double-entry ledger" : "unavailable"}. Pending or unposted VAT is excluded.</p>
       </div>
 
+      {/* CORPORATE INCOME TAX POLICY */}
+      <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
+        <div className="border-b border-slate-100 pb-4">
+          <h2 className="text-base font-bold text-slate-900">Corporate Income Tax Policy</h2>
+          <p className="mt-1 max-w-3xl text-xs text-slate-500">
+            Schedule policy versions instead of relying on a built-in rate. Brackets are progressive; matching context rules can override the rate or add discounts and penalties. Confirm the policy with a qualified tax adviser before relying on an estimate.
+          </p>
+        </div>
+        {canConfigureVat && (
+          <form onSubmit={scheduleCorporateTaxPolicy} className="mt-4 space-y-3 rounded-xl bg-slate-50 p-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="text-xs font-semibold text-slate-700">Fiscal year
+                <input required maxLength={32} value={corporateTaxPolicyDraft.fiscalYear} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, fiscalYear: event.target.value }))} placeholder="e.g. 2083/2084" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Base rate (%)
+                <input required type="number" min="0" max="100" step="0.01" value={corporateTaxPolicyDraft.baseRate} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, baseRate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Effective from (UTC)
+                <input required type="date" value={corporateTaxPolicyDraft.effectiveFrom} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, effectiveFrom: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
+              </label>
+            </div>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <label className="text-xs font-semibold text-slate-700">Progressive brackets (JSON)
+                <textarea rows={4} value={corporateTaxPolicyDraft.brackets} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, brackets: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs" />
+                <span className="mt-1 block font-normal text-slate-500">Limits are NPR and ascending; final bracket is open-ended. Example: <code>{'[{"upToIncome":500000,"rate":10},{"upToIncome":null,"rate":20}]'}</code></span>
+              </label>
+              <label className="text-xs font-semibold text-slate-700">Context rules (JSON)
+                <textarea rows={4} value={corporateTaxPolicyDraft.rules} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, rules: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs" />
+                <span className="mt-1 block font-normal text-slate-500">Selectors: userId, taxpayerId, taxpayerType, province, district, locationId. Example: <code>{'[{"when":{"province":"Bagmati"},"discountPercent":5}]'}</code></span>
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-[11px] text-slate-500">Leave brackets empty to use the base rate. The most-specific matching rate override wins; matching adjustments are combined and discounts are capped at tax due.</p>
+              <button type="submit" disabled={savingCorporateTaxPolicy} className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">
+                {savingCorporateTaxPolicy ? "Scheduling..." : "Schedule policy"}
+              </button>
+            </div>
+          </form>
+        )}
+        {!canConfigureVat && <p className="mt-4 text-xs text-slate-500">Read-only: finance tax-configuration permission is required to schedule policy changes.</p>}
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="py-2 pr-4">Fiscal year</th>
+                <th className="py-2 pr-4">Base rate</th>
+                <th className="py-2 pr-4">Effective from (UTC)</th>
+                <th className="py-2 pr-4">Effective until</th>
+                <th className="py-2 pr-4">Status</th>
+                {canConfigureVat && <th className="py-2 text-right">Action</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {corporateTaxPolicies.map((version) => {
+                const isFutureActive = version.status === "ACTIVE" && new Date(version.effectiveFrom) > new Date();
+                return (
+                  <tr key={version.id} className="text-slate-700">
+                    <td className="py-3 pr-4 font-semibold">{version.fiscalYear}</td>
+                    <td className="py-3 pr-4">{Number(version.baseRate).toFixed(2)}%</td>
+                    <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
+                    <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                    <td className="py-3 pr-4">{version.status}</td>
+                    {canConfigureVat && <td className="py-3 text-right">{isFutureActive && <button type="button" onClick={() => cancelCorporateTaxPolicy(version.id)} className="font-semibold text-rose-700 hover:text-rose-900">Cancel change</button>}</td>}
+                  </tr>
+                );
+              })}
+              {!corporateTaxPolicies.length && <tr><td colSpan={canConfigureVat ? 6 : 5} className="py-4 text-center text-slate-500">No corporate tax policy is configured.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {/* CORPORATE INCOME TAX PROJECTION */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div className="flex items-center justify-between pb-4 border-b border-slate-100">
           <div>
             <h2 className="text-base font-bold text-slate-900">Corporate Income Tax (CIT) Projection</h2>
-            <p className="text-xs text-slate-400">Standard 25% tax rate after allowable expense &amp; depreciation deductions</p>
+            <p className="text-xs text-slate-400">
+              {incomeTax.policyConfigured
+                ? `Monthly run-rate estimate using the ${incomeTax.policyFiscalYear} policy and annualized bracket income`
+                : "No applicable policy; configure an effective-dated policy to calculate estimated tax"}
+            </p>
           </div>
           <span className="px-3 py-1 bg-slate-100 text-slate-700 font-bold text-xs rounded-xl">
-            Rate: {incomeTax.taxRate || 25}%
+            {incomeTax.taxRate === null || incomeTax.taxRate === undefined ? "Not configured" : `Effective rate: ${incomeTax.taxRate}%`}
           </span>
         </div>
+
+        <form onSubmit={(event) => { event.preventDefault(); setTaxContext({ ...taxContextDraft }); }} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <p className="mb-3 text-xs font-bold text-slate-700">Preview matching context (optional)</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {Object.entries(taxContextDraft).map(([field, value]) => (
+              <label key={field} className="text-[11px] font-semibold capitalize text-slate-600">{field.replace(/([A-Z])/g, " $1")}
+                <input value={value} onChange={(event) => setTaxContextDraft((current) => ({ ...current, [field]: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs" />
+              </label>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <p className="text-[10px] text-slate-500">Context is used only to match the configured policy rules for this projection.</p>
+            <button type="submit" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700">Apply context</button>
+          </div>
+        </form>
 
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-6">
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
@@ -1180,14 +1345,24 @@ const TaxCompliance = ({ token }) => {
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
             <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Estimated Income Tax</p>
             <p className="text-xl font-black text-rose-600 mt-1">
-              {currency}{(incomeTax.estimatedCorporateTax || 0).toLocaleString()}
+              {incomeTax.policyConfigured
+                ? `${currency}${Number(incomeTax.estimatedCorporateTax || 0).toLocaleString()}`
+                : "—"}
             </p>
-            <p className="text-[10px] text-slate-400 mt-0.5">Estimated tax liability</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">Estimate only; not a tax assessment</p>
           </div>
         </div>
+        {incomeTax.policyConfigured && (
+          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 rounded-xl bg-slate-50 p-4 text-xs text-slate-600">
+            <span>Annualized taxable income: <strong>{currency}{Number(incomeTax.annualizedTaxableIncome || 0).toLocaleString()}</strong></span>
+            <span>Tax before adjustments: <strong>{currency}{Number(incomeTax.taxBeforeAdjustments || 0).toLocaleString()}</strong></span>
+            <span>Discounts: <strong className="text-emerald-700">{currency}{Number(incomeTax.discountAmount || 0).toLocaleString()}</strong></span>
+            <span>Penalties: <strong className="text-rose-700">{currency}{Number(incomeTax.penaltyAmount || 0).toLocaleString()}</strong></span>
+          </div>
+        )}
       </div>
 
-      {/* LEGAL TAX-MINIMIZATION ADVISORY ENGINE */}
+      {/* TAX PLANNING ADVISORY */}
       <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs">
         <div className="flex items-center gap-2 pb-4 border-b border-slate-100">
           <span className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
@@ -1196,8 +1371,8 @@ const TaxCompliance = ({ token }) => {
             </svg>
           </span>
           <div>
-            <h2 className="text-base font-bold text-slate-900">Legal Tax Minimization &amp; Shield Advisory</h2>
-            <p className="text-xs text-slate-400">Actionable recommendations to minimize tax liability legally under Nepal tax laws</p>
+            <h2 className="text-base font-bold text-slate-900">Tax Planning Advisory</h2>
+            <p className="text-xs text-slate-400">Potential actions only; confirm eligibility with a qualified tax adviser</p>
           </div>
         </div>
 
@@ -1218,8 +1393,8 @@ const TaxCompliance = ({ token }) => {
               </div>
 
               <div className="mt-4 pt-3 border-t border-slate-200/60 flex items-center justify-between text-[11px] text-slate-400 font-medium">
-                <span>Compliance: Nepal IRD Standard</span>
-                <span className="text-emerald-600 font-bold">100% Legal Deduction</span>
+                <span>Compliance: Adviser review required</span>
+                <span className="text-emerald-600 font-bold">Potential deduction</span>
               </div>
             </div>
           ))}

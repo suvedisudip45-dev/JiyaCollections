@@ -29,7 +29,7 @@
 | Marketing CPA | Accrue per verified benefit redemption; settlement approval controls payout, not recognition |
 | NCM settlement | Keep COD receivable and carrier-fee payable gross until bank settlement is confirmed |
 | Tax rates | Effective-dated/configurable; current VAT rate is 13%, not a permanent constant |
-| Corporate tax | 25% may be shown as an estimate only pending accountant/tax-adviser approval |
+| Corporate tax | Use effective-dated configurable policy estimates; no statutory rate is assumed by the application |
 | Currency/calendar | NPR; Nepali FY Shrawan 1 through Ashadh end, Asia/Kathmandu timezone |
 | Readiness | Gate accounting/finance operations only; do not gate catalog or customer order operations |
 

@@ -288,7 +288,7 @@ const Sidebar = ({ isOpen = false, onClose }) => {
           <NavItem to="/assets"      icon={Icon.asset}      label="Assets & Depreciation" />
           <NavItem to="/partners"    icon={Icon.partners}   label="Partners & Investors" />
           <NavItem to="/expenses"    icon={Icon.expense}    label="Expenses & Overhead" />
-          <NavItem to="/tax"         icon={Icon.tax}        label="13% VAT & Tax" />
+          <NavItem to="/tax"         icon={Icon.tax}        label="Tax Compliance" />
           <NavItem to="/returns"     icon={Icon.returns}    label="Returns & Debit Notes" />
           <NavItem to="/payables"    icon={Icon.payables}   label="Payables & Receivables" />
           <NavItem to="/statements"  icon={Icon.statements} label="Financial Statements" />

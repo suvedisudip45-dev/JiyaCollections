@@ -1,4 +1,8 @@
 import { PrismaClient } from "@prisma/client";
+import {
+  calculateCorporateIncomeTaxProjection,
+  getCorporateTaxPolicyForDate,
+} from "../services/corporateIncomeTaxService.js";
 const prisma = new PrismaClient();
 
 async function testCashFlow() {
@@ -96,8 +100,14 @@ async function testCashFlow() {
     depreciation = Number(depreciation.toFixed(2));
 
     const netOperatingIncome = Number((grossProfit - totalOpex - depreciation).toFixed(2));
-    const incomeTaxEstimate = Math.max(0, Number((netOperatingIncome * 0.25).toFixed(2)));
-    const netIncomeAfterTax = Number((netOperatingIncome - incomeTaxEstimate).toFixed(2));
+    const corporateTaxPolicy = await getCorporateTaxPolicyForDate(endDate, { client: prisma });
+    const incomeTaxEstimate = calculateCorporateIncomeTaxProjection({
+      periodTaxableIncome: netOperatingIncome,
+      policy: corporateTaxPolicy,
+    }).estimatedTax;
+    const netIncomeAfterTax = incomeTaxEstimate === null
+      ? null
+      : Number((netOperatingIncome - incomeTaxEstimate).toFixed(2));
 
     const cashFromCustomers = Number(netRevenue.toFixed(2));
     const cashPaidToSuppliers = Number(cogsIncVat.toFixed(2));
@@ -120,7 +130,8 @@ async function testCashFlow() {
     console.log("Net Investing Cash Flow:", netInvestingCashFlow);
     console.log("Net Financing Cash Flow:", netFinancingCashFlow);
     console.log("Net Cash Flow:", netCashFlow);
-    console.log("Net Income After Tax:", netIncomeAfterTax);
+    console.log("Corporate Income Tax Estimate:", incomeTaxEstimate ?? "Not configured");
+    console.log("Net Income After Tax:", netIncomeAfterTax ?? "Not configured");
 
   } catch (err) {
     console.error("Test Error:", err);

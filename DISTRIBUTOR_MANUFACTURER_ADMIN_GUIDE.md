@@ -808,6 +808,9 @@ Relevant endpoints:
 | `GET /api/finance/vat-rates` | Admin | `finance:tax_report_read` | Read immutable effective-dated VAT rate versions. |
 | `POST /api/finance/vat-rates` | Admin | `finance:tax_configure` | Schedule a future VAT rate; only future effective dates are accepted. |
 | `POST /api/finance/vat-rates/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future VAT version; effective history cannot be changed. |
+| `GET /api/finance/corporate-tax-policies` | Admin | `finance:tax_report_read` | Read effective-dated corporate income tax policies. |
+| `POST /api/finance/corporate-tax-policies` | Admin | `finance:tax_configure` | Schedule a validated base rate, progressive brackets, and context-based rate/discount/penalty rules. |
+| `POST /api/finance/corporate-tax-policies/:id/cancel` | Admin | `finance:tax_configure` | Cancel only the latest scheduled future corporate tax policy. |
 | `GET /api/finance/paper-bill-books` | Admin | `finance:tax_report_read` | List bill books, distributor allocations, and active distributor choices. |
 | `POST /api/finance/paper-bill-books` | Admin | `finance:tax_configure` | Register a PAN/VAT serial book; overlapping series ranges are rejected. |
 | `POST /api/finance/paper-bill-allocations` | Admin | `finance:tax_configure` | Allocate a non-overlapping book range to an active distributor. |

@@ -20,6 +20,10 @@ import {
 import { getPostedFinanceSnapshot } from "../services/accountingReportingService.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import {
+  calculateCorporateIncomeTaxProjection,
+  getCorporateTaxPolicyForDate,
+} from "../services/corporateIncomeTaxService.js";
+import {
   confirmAdminDistributorSettlement,
   failAdminDistributorSettlement,
   initiateAdminDistributorSettlement,
@@ -150,6 +154,15 @@ const getPlatformInventoryValuation = async (products) => {
     : [];
 
   return calculateInventoryValuationAtCost({ balances, ledgerEntries, products });
+};
+
+const getCorporateTaxContext = (query = {}) => {
+  const fields = ["userId", "taxpayerId", "taxpayerType", "province", "district", "locationId"];
+  return fields.reduce((context, field) => {
+    const value = typeof query[field] === "string" ? query[field].trim() : "";
+    if (value) context[field] = value;
+    return context;
+  }, {});
 };
 
 // Helper to get current Year-Month
@@ -4782,7 +4795,7 @@ export const revertSettlement = async (req, res) => {
 };
 
 // ==========================================
-// 7. VAT & LEGAL TAX MINIMIZATION ADVISORY
+// 7. VAT, CORPORATE TAX POLICY, AND ESTIMATES
 // ==========================================
 export const getVATAndTaxReport = async (req, res) => {
   try {
@@ -4790,13 +4803,15 @@ export const getVATAndTaxReport = async (req, res) => {
     const [year, month] = requestedMonth.split("-").map(Number);
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59, 999);
-    const [postedAccounting, operatingExpenses, fixedAssets, taxPayables] = await Promise.all([
+    const policyDate = requestedMonth === getCurrentYearMonth() ? new Date() : endDate;
+    const [postedAccounting, operatingExpenses, fixedAssets, taxPayables, corporateTaxPolicy] = await Promise.all([
       getPostedFinanceSnapshot({ startDate, endDate }),
       prisma.operatingExpense.findMany({ where: { date: { gte: startDate, lte: endDate } } }),
       prisma.fixedAsset.findMany({ where: { status: "ACTIVE" } }),
       prisma.accountPayable.findMany({
         where: { category: "TAX_DUE", status: { in: ["UNPAID", "PARTIALLY_PAID"] } },
       }),
+      getCorporateTaxPolicyForDate(policyDate),
     ]);
 
     const taxableSales = postedAccounting.incomeStatement.netRevenue;
@@ -4814,7 +4829,7 @@ export const getVATAndTaxReport = async (req, res) => {
       }
     });
 
-    // Corporate Income Tax & Legal Deductions Analysis
+    // Corporate income tax projection inputs
     let monthlyTaxDepreciation = 0;
     fixedAssets.forEach((asset) => {
       const annualRate = Number(asset.depreciationRate || 25) / 100;
@@ -4825,22 +4840,30 @@ export const getVATAndTaxReport = async (req, res) => {
 
     const totalAllowableDeductions = Number((totalOperatingExpenses + monthlyTaxDepreciation).toFixed(2));
     const estimatedTaxableIncome = Math.max(0, Number((taxableSales - cogsTaxable - totalAllowableDeductions).toFixed(2)));
-    const corporateTaxRate = 25; // 25% Nepal Corporate Income Tax Rate
-    const estimatedCorporateTax = Number(((estimatedTaxableIncome * corporateTaxRate) / 100).toFixed(2));
+    const incomeTaxCalculation = calculateCorporateIncomeTaxProjection({
+      periodTaxableIncome: estimatedTaxableIncome,
+      policy: corporateTaxPolicy,
+      context: getCorporateTaxContext(req.query),
+    });
+    const estimatedCorporateTax = incomeTaxCalculation.estimatedTax;
+    const corporateTaxRate = incomeTaxCalculation.taxRate;
+    const taxSavingsEstimate = (amount) => incomeTaxCalculation.configured
+      ? `Rs ${(amount * corporateTaxRate / 100).toFixed(0)} / mo`
+      : "Configure a corporate tax policy";
 
-    // Tax-Minimization Recommendations Engine
+    // Tax planning recommendations
     const taxOptimizationStrategies = [
       {
-        title: "Maximize Block B & C Asset Depreciation",
+        title: "Review Asset Depreciation Treatment",
         impact: "HIGH",
-        savingsEstimate: `Rs ${(monthlyTaxDepreciation * 0.25).toFixed(0)} / mo`,
-        description: "Apply IRD-permitted 25% diminishing balance rate on computers, furniture, and POS hardware to accelerate tax shield deductions legally.",
+        savingsEstimate: taxSavingsEstimate(monthlyTaxDepreciation),
+        description: "Confirm the current depreciation treatment and eligibility for each asset class with a qualified tax adviser.",
       },
       {
-        title: "Claim 100% Marketing & Ad Spend Deductions",
+        title: "Review Marketing & Advertising Expenses",
         impact: "HIGH",
-        savingsEstimate: `Rs ${(deductibleMarketing * 0.25).toFixed(0)} / mo`,
-        description: "Keep VAT-compliant invoices for all Meta Ads, Google Ads, and local influencer endorsements to offset corporate taxable income directly.",
+        savingsEstimate: taxSavingsEstimate(deductibleMarketing),
+        description: "Keep supporting invoices and confirm which expenses are deductible under the applicable policy before filing.",
       },
       {
         title: "Write Off Damaged & Unsaleable Returned Stock",
@@ -4873,8 +4896,16 @@ export const getVATAndTaxReport = async (req, res) => {
           totalAllowableDeductions,
           depreciationDeduction: monthlyTaxDepreciation,
           estimatedTaxableIncome,
+          annualizedTaxableIncome: incomeTaxCalculation.annualizedTaxableIncome,
+          policyConfigured: incomeTaxCalculation.configured,
           taxRate: corporateTaxRate,
           estimatedCorporateTax,
+          taxBeforeAdjustments: incomeTaxCalculation.taxBeforeAdjustments,
+          discountAmount: incomeTaxCalculation.discountAmount,
+          penaltyAmount: incomeTaxCalculation.penaltyAmount,
+          appliedRules: incomeTaxCalculation.appliedRules,
+          policyFiscalYear: corporateTaxPolicy?.fiscalYear || null,
+          policyEffectiveFrom: corporateTaxPolicy?.effectiveFrom || null,
         },
         taxPayables,
         taxOptimizationStrategies,
@@ -4909,6 +4940,7 @@ export const getFinancialStatements = async (req, res) => {
       customerReturns,
       payables,
       receivables,
+      corporateTaxPolicy,
     ] = await Promise.all([
       prisma.order.findMany({
         where: {
@@ -4938,6 +4970,7 @@ export const getFinancialStatements = async (req, res) => {
       prisma.accountReceivable.findMany({
         where: { status: { in: ["UNPAID", "PARTIALLY_RECEIVED"] } },
       }),
+      getCorporateTaxPolicyForDate(requestedMonth === getCurrentYearMonth() ? new Date() : endDate),
     ]);
 
     // P&L Calculations
@@ -4995,8 +5028,15 @@ export const getFinancialStatements = async (req, res) => {
     depreciation = Number(depreciation.toFixed(2));
 
     const netOperatingIncome = Number((grossProfit - totalOpex - depreciation).toFixed(2));
-    const incomeTaxEstimate = Math.max(0, Number((netOperatingIncome * 0.25).toFixed(2)));
-    const netIncomeAfterTax = Number((netOperatingIncome - incomeTaxEstimate).toFixed(2));
+    const incomeTaxCalculation = calculateCorporateIncomeTaxProjection({
+      periodTaxableIncome: netOperatingIncome,
+      policy: corporateTaxPolicy,
+      context: getCorporateTaxContext(req.query),
+    });
+    const incomeTaxEstimate = incomeTaxCalculation.estimatedTax;
+    const netIncomeAfterTax = incomeTaxEstimate === null
+      ? null
+      : Number((netOperatingIncome - incomeTaxEstimate).toFixed(2));
 
     // Balance Sheet Calculations
     const cashAndEquivalents = accounts.reduce((acc, a) => acc + Number(a.currentBalance || 0), 0);
@@ -5082,6 +5122,12 @@ export const getFinancialStatements = async (req, res) => {
           netOperatingIncome,
           incomeTaxEstimate,
           netIncomeAfterTax,
+          corporateTaxPolicyConfigured: incomeTaxCalculation.configured,
+          annualizedTaxableIncome: incomeTaxCalculation.annualizedTaxableIncome,
+          corporateTaxRate: incomeTaxCalculation.taxRate,
+          corporateTaxDiscount: incomeTaxCalculation.discountAmount,
+          corporateTaxPenalty: incomeTaxCalculation.penaltyAmount,
+          corporateTaxPolicyFiscalYear: corporateTaxPolicy?.fiscalYear || null,
         },
         balanceSheet: {
           assets: {

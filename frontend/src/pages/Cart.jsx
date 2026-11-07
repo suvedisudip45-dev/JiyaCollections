@@ -143,7 +143,6 @@ const Cart = () => {
                     <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                       {Array.isArray(productData.categories) ? productData.categories.join(", ") : productData.category || "Uncategorized"}
                     </p>
-                    {productData.description && <p className="mt-1 max-w-xl text-[11px] leading-relaxed text-gray-500 line-clamp-2">{productData.description}</p>}
                     <div className="flex items-center gap-3 sm:gap-5 mt-2 flex-wrap">
                       {quotedItem?.discountSource === "LOCATION" ? (
                         <p className="flex items-center gap-2">

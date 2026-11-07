@@ -1478,7 +1478,6 @@ model TaxConfiguration {
   id                   String   @id @default("default")
   fiscalYear           String   @default("2082/2083")
   vatRate              Float    @default(13.0)
-  corporateTaxRate     Float    @default(25.0)
   taxSlabs             Json     @default("[]")
   autoDeductAdvanceTax Boolean  @default(false)
   updatedAt            DateTime @updatedAt
@@ -1517,6 +1516,23 @@ model VatRateVersion {
   createdBy       String?  @db.VarChar(191)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@unique([effectiveFrom])
+  @@index([status, effectiveFrom, effectiveUntil])
+}
+
+model CorporateTaxPolicyVersion {
+  id            String   @id @default(uuid())
+  fiscalYear    String   @db.VarChar(32)
+  baseRate      Decimal  @db.Decimal(5, 2)
+  brackets      Json     @default("[]")
+  rules         Json     @default("[]")
+  effectiveFrom DateTime
+  effectiveUntil DateTime?
+  status        String   @default("ACTIVE") @db.VarChar(16)
+  createdBy     String?  @db.VarChar(191)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([effectiveFrom])
   @@index([status, effectiveFrom, effectiveUntil])

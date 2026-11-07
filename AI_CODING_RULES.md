@@ -29,6 +29,7 @@ The backend is the real source of truth for:
 - accounting postings and ledger integrity
 - distributor earning snapshots and party-level AR/AP documents/allocations, including NCM COD and carrier-fee netting
 - effective-dated VAT configuration and approved return tax snapshots
+- effective-dated corporate income tax policies and their shared estimate calculation service
 - location-based discount resolution and distributor hub assignment for checkout
 - distributor registration profile data and service-district coverage, including the distinction between hub address and fulfillment coverage
 - distributor dead-stock return authorization, custody movements, receipt discrepancies, append-only investigation notes/evidence, condition assessments, and the prohibition on assigning responsibility, resolving discrepancies, releasing stock, or posting impairment/disposal journals before approved policy
@@ -40,6 +41,8 @@ The backend is the real source of truth for:
 Do not assume the frontend is trusted to enforce business rules. The code explicitly validates permissions and ownership server-side.
 
 Financial source records and posted journals are append-only evidence. Correct them through audited reversals or adjustments, not edit/delete operations. Allocate receipts and payouts to the source-party documents they settle, and do not claim a party balance is reconciled when only a legacy table or a subset of source types was checked. VAT changes must be future effective-dated versions; a later rate must never rewrite a posted transaction or approved refund snapshot.
+
+Corporate income tax estimates must use the shared effective-dated policy service, not a hard-coded rate. Keep rate brackets, context selectors, discounts, and penalties in validated policy data; do not describe estimates as statutory assessments or silently assume a default when no effective policy exists.
 
 ### 1.2 Never infer successful courier creation from optimistic UI state
 

@@ -57,7 +57,7 @@ Customer return processing updates the return, inventory and cash/AP, then posts
 
 ### P1: Reports are not ledger-derived and use mixed recognition rules
 
-`/api/finance/statements` derives P&L, balance sheet and cash flow from orders, current product costs, current assets, treasury balances and generic AP/AR. It is not a GL report. `/api/finance/tax-report` derives VAT from non-cancelled orders, current `Product.costPrice`, JSON shipment/returns and expenses. Some rates are hardcoded (13% VAT, 25% corporate tax) despite `TaxConfiguration`/`TaxFilingRecord` models. Accounting-side real-time statements separately query journals.
+`/api/finance/statements` derives P&L, balance sheet and cash flow from orders, current product costs, current assets, treasury balances and generic AP/AR. It is not a GL report. `/api/finance/tax-report` derives tax bases from posted accounting snapshots, expenses, and depreciation; corporate income tax now uses effective-dated `CorporateTaxPolicyVersion` records, while the policy is still an estimate and the operational P&L basis is not a full posted-ledger tax filing calculation. Some VAT assumptions in legacy statement/report code remain separate from versioned VAT transaction treatment. Accounting-side real-time statements separately query journals.
 
 **Risk:** reports can change after master-data edits, include orders at the wrong status/period, and disagree with posted journals. Tax outputs must not be represented as legal filing figures until policies and source controls are verified.
 
@@ -142,6 +142,6 @@ The owner confirmed that manufacturer acceptance must be blocked unless every as
 - Define minor-unit/decimal precision and deterministic rounding for NPR; use exact decimal arithmetic and confirm line-vs-document rounding with the accountant.
 - Confirm whether zero opening balances are appropriate for a truly empty DB and use an auditable opening voucher for any balance entered later.
 - Preserve/rebuild current assets, loans, equity/cap-table, operating expense, tax, delivery and Marketing CPA capabilities behind the single ledger unless the owner explicitly retires them.
-- Keep the current 25% corporate-tax value as an estimate only; do not claim statutory filing correctness without accountant/tax-adviser sign-off.
+- Keep corporate tax as a configurable effective-dated estimate; do not claim statutory filing correctness without accountant/tax-adviser sign-off.
 
 Tax and commercial treatment should be approved by a qualified accountant/tax adviser; this report is technical discovery, not professional tax advice.
