@@ -5,17 +5,29 @@ import { toast } from "react-toastify";
 import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../App";
 import { usePermissions } from "../auth/PermissionsContext";
+import NepaliDatePicker from "../components/NepaliDatePicker";
+import {
+  formatNepaliDate,
+  getAdDateForNepaliDate,
+  getNepaliMonthLength,
+  getNepaliDateForAdDate,
+} from "../utils/nepaliDate";
+
+const requireBsDate = (value, calendars, label = "BS date") => {
+  const date = getAdDateForNepaliDate(value, calendars);
+  if (!date) throw new Error(`Enter a valid ${label} in the configured Nepali calendar.`);
+  return value;
+};
 
 // The admin route provides this shared authentication prop.
 // eslint-disable-next-line react/prop-types
 const TaxCompliance = ({ token }) => {
-  const today = new Date();
-  const todayInputDate = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kathmandu",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(today);
+  const initialBsDate = formatNepaliDate(new Date());
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
+  const [todayInputDate, setTodayInputDate] = useState(initialBsDate);
   const [taxData, setTaxData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [vatVersions, setVatVersions] = useState([]);
@@ -24,7 +36,7 @@ const TaxCompliance = ({ token }) => {
   const [currentTaxStatus, setCurrentTaxStatus] = useState("PAN_ONLY");
   const [registrationStatus, setRegistrationStatus] = useState("VAT_REGISTERED");
   const [registrationVatNumber, setRegistrationVatNumber] = useState("");
-  const [registrationEffectiveDate, setRegistrationEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  const [registrationEffectiveDate, setRegistrationEffectiveDate] = useState(initialBsDate);
   const [savingSellerProfile, setSavingSellerProfile] = useState(false);
   const [savingRegistration, setSavingRegistration] = useState(false);
   const [vatFilings, setVatFilings] = useState([]);
@@ -32,23 +44,23 @@ const TaxCompliance = ({ token }) => {
   const [salesInvoices, setSalesInvoices] = useState([]);
   const [treasuryAccounts, setTreasuryAccounts] = useState([]);
   const [filingDraft, setFilingDraft] = useState(() => {
-    const now = new Date();
-    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const [year, monthNumber] = initialBsDate.split("-");
+    const month = `${year}-${monthNumber}`;
     return {
       filingCadence: "MONTHLY",
       periodKey: month,
       periodStart: `${month}-01`,
-      periodEnd: new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10),
+      periodEnd: `${month}-${String(getNepaliMonthLength(year, monthNumber)).padStart(2, "0")}`,
     };
   });
   const [filingSubmission, setFilingSubmission] = useState({ id: "", assessedAmount: "", paymentCreditApplied: "0.00", assessmentAdjustmentAccountId: "", filedReference: "", adjustmentReason: "" });
-  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: new Date().toISOString().slice(0, 10), adjustmentReason: "" });
-  const [vatAmendment, setVatAmendment] = useState({ filingId: "", amendedAssessedAmount: "", amendedReference: "", amendedDate: todayInputDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" });
-  const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
+  const [vatPayment, setVatPayment] = useState({ filingId: "", amount: "", paymentReference: "", treasuryAccountId: "", paymentDate: initialBsDate, adjustmentReason: "" });
+  const [vatAmendment, setVatAmendment] = useState({ filingId: "", amendedAssessedAmount: "", amendedReference: "", amendedDate: initialBsDate, adjustmentAccountId: "", reason: "", evidenceUrl: "", idempotencyKey: "" });
+  const [paperBill, setPaperBill] = useState({ invoiceId: "", invoiceNumber: "", issueDate: initialBsDate, evidenceUrl: "" });
   const [paperBillBooks, setPaperBillBooks] = useState([]);
   const [paperBillDistributors, setPaperBillDistributors] = useState([]);
   const [paperBillReport, setPaperBillReport] = useState([]);
-  const [paperBillReportFrom, setPaperBillReportFrom] = useState(`${todayInputDate.slice(0, 7)}-01`);
+  const [paperBillReportFrom, setPaperBillReportFrom] = useState(`${initialBsDate.slice(0, 7)}-01`);
   const [paperBillReportTo, setPaperBillReportTo] = useState(todayInputDate);
   const [paperBillReportPreset, setPaperBillReportPreset] = useState("MONTH");
   const [paperBillReportFilter, setPaperBillReportFilter] = useState("ALL");
@@ -72,14 +84,14 @@ const TaxCompliance = ({ token }) => {
   });
   const [savingTaxAction, setSavingTaxAction] = useState(false);
   const [vatRate, setVatRate] = useState("13");
-  const [vatEffectiveDate, setVatEffectiveDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
+  const [vatEffectiveDate, setVatEffectiveDate] = useState(initialBsDate);
   const [savingVatRate, setSavingVatRate] = useState(false);
   const [corporateTaxPolicies, setCorporateTaxPolicies] = useState([]);
   const [savingCorporateTaxPolicy, setSavingCorporateTaxPolicy] = useState(false);
   const [corporateTaxPolicyDraft, setCorporateTaxPolicyDraft] = useState({
     fiscalYear: "",
     baseRate: "",
-    effectiveFrom: new Date(Date.now() + 86400000).toISOString().slice(0, 10),
+    effectiveFrom: initialBsDate,
     brackets: "[]",
     rules: "[]",
   });
@@ -97,16 +109,62 @@ const TaxCompliance = ({ token }) => {
   const canViewStorefrontOrders = canAny(["order:control", "order:list_all"]);
   const canViewAdminOrders = canAny(["order:control", "order:list_admin"]);
   const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return initialBsDate.slice(0, 7);
   });
+
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success) throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        if (!active) return;
+        const years = response.data.years || [];
+        if (!Array.isArray(years) || !response.data.currentDate) {
+          throw new Error("The configured Nepali calendar response is incomplete.");
+        }
+        const currentDate = response.data.currentDate || initialBsDate;
+        const currentMonth = currentDate.slice(0, 7);
+        const [year, month] = currentMonth.split("-");
+        const monthEnd = `${currentMonth}-${String(getNepaliMonthLength(year, month, years)).padStart(2, "0")}`;
+        setCalendarYears(years);
+        setTodayInputDate(currentDate);
+        setSelectedMonth(currentMonth);
+        setFilingDraft((current) => ({
+          ...current,
+          periodKey: currentMonth,
+          periodStart: `${currentMonth}-01`,
+          periodEnd: monthEnd,
+        }));
+        setRegistrationEffectiveDate(currentDate);
+        setVatEffectiveDate(currentDate);
+        setCorporateTaxPolicyDraft((current) => ({ ...current, effectiveFrom: currentDate }));
+        setVatPayment((current) => ({ ...current, paymentDate: currentDate }));
+        setVatAmendment((current) => ({ ...current, amendedDate: currentDate }));
+        setPaperBill((current) => ({ ...current, issueDate: currentDate }));
+        setPaperBillReportFrom(`${currentMonth}-01`);
+        setPaperBillReportTo(currentDate);
+        setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load configured tax calendar error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          toast.error(message);
+        }
+      });
+    return () => { active = false; };
+  }, [calendarRetry, initialBsDate, token]);
 
   const fetchTaxReport = useCallback(async (month, context = {}) => {
     try {
       setLoading(true);
       const res = await axios.get(`${backendUrl}/api/finance/tax-report`, {
         headers: { token },
-        params: { month, ...context },
+        params: { month, calendar: "BS", ...context },
       });
       if (res.data.success) {
         setTaxData(res.data.data);
@@ -200,9 +258,12 @@ const TaxCompliance = ({ token }) => {
   const fetchPaperBillReport = useCallback(async (page = 1) => {
     try {
       setPaperBillReportLoading(true);
+      requireBsDate(paperBillReportFrom, calendarYears, "BS start date");
+      requireBsDate(paperBillReportTo, calendarYears, "BS end date");
       const params = new URLSearchParams({
         from: paperBillReportFrom,
         to: paperBillReportTo,
+        calendar: "BS",
         billFilter: paperBillReportFilter,
         page: String(page),
       });
@@ -217,38 +278,28 @@ const TaxCompliance = ({ token }) => {
     } finally {
       setPaperBillReportLoading(false);
     }
-  }, [paperBillReportFilter, paperBillReportFrom, paperBillReportTo, token]);
+  }, [calendarYears, paperBillReportFilter, paperBillReportFrom, paperBillReportTo, token]);
 
   const applyPaperBillReportPreset = (preset) => {
-    const now = new Date();
-    const kathmanduDate = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Kathmandu",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now);
-    const [year, month, day] = kathmanduDate.split("-").map(Number);
-    const end = new Date(Date.UTC(year, month - 1, day));
-    const start = new Date(end);
-    if (preset === "WEEK") start.setUTCDate(start.getUTCDate() - 6);
-    else if (preset === "MONTH") start.setUTCDate(1);
-    else if (["THREE_MONTHS", "SIX_MONTHS", "YEAR"].includes(preset)) {
+    const [yearValue, monthValue, dayValue] = todayInputDate.split("-").map(Number);
+    let startDate = todayInputDate;
+    if (preset === "WEEK") {
+      const adDate = getAdDateForNepaliDate(todayInputDate, calendarYears);
+      const start = new Date(`${adDate}T00:00:00.000Z`);
+      start.setUTCDate(start.getUTCDate() - 6);
+      startDate = getNepaliDateForAdDate(start.toISOString().slice(0, 10), calendarYears);
+    } else if (preset === "MONTH") {
+      startDate = `${yearValue}-${String(monthValue).padStart(2, "0")}-01`;
+    } else if (["THREE_MONTHS", "SIX_MONTHS", "YEAR"].includes(preset)) {
       const monthsBack = preset === "THREE_MONTHS" ? 3 : preset === "SIX_MONTHS" ? 6 : 12;
-      const targetMonth = new Date(Date.UTC(year, month - 1 - monthsBack, 1));
-      const targetLastDay = new Date(Date.UTC(
-        targetMonth.getUTCFullYear(),
-        targetMonth.getUTCMonth() + 1,
-        0,
-      )).getUTCDate();
-      start.setUTCFullYear(
-        targetMonth.getUTCFullYear(),
-        targetMonth.getUTCMonth(),
-        Math.min(day, targetLastDay),
-      );
+      const monthIndex = yearValue * 12 + monthValue - 1 - monthsBack;
+      const startYear = Math.floor(monthIndex / 12);
+      const startMonth = (monthIndex % 12) + 1;
+      const startDay = Math.min(dayValue, getNepaliMonthLength(startYear, startMonth, calendarYears));
+      startDate = `${startYear}-${String(startMonth).padStart(2, "0")}-${String(startDay).padStart(2, "0")}`;
     }
-    const toInput = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
-    setPaperBillReportFrom(toInput(start));
-    setPaperBillReportTo(toInput(end));
+    setPaperBillReportFrom(startDate);
+    setPaperBillReportTo(todayInputDate);
     setPaperBillReportPreset(preset);
   };
 
@@ -261,9 +312,11 @@ const TaxCompliance = ({ token }) => {
         throw new Error("Tax brackets and rules must each be JSON arrays.");
       }
       setSavingCorporateTaxPolicy(true);
+      const effectiveFrom = requireBsDate(corporateTaxPolicyDraft.effectiveFrom, calendarYears, "BS effective date");
       const response = await axios.post(`${backendUrl}/api/finance/corporate-tax-policies`, {
         ...corporateTaxPolicyDraft,
-        effectiveFrom: `${corporateTaxPolicyDraft.effectiveFrom}T00:00:00.000Z`,
+        effectiveFrom,
+        calendar: "BS",
         brackets,
         rules,
       }, { headers: { token } });
@@ -296,8 +349,13 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingTaxAction(true);
+      const periodStart = requireBsDate(filingDraft.periodStart, calendarYears);
+      const periodEnd = requireBsDate(filingDraft.periodEnd, calendarYears);
       const response = await axios.post(`${backendUrl}/api/finance/tax-filings`, {
         ...filingDraft,
+        periodStart,
+        periodEnd,
+        calendar: "BS",
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT return draft could not be prepared.");
       toast.success(response.data.message || "VAT return draft prepared.");
@@ -314,13 +372,15 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingTaxAction(true);
+      const filedDate = requireBsDate(todayInputDate, calendarYears, "BS filing date");
       const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${filingSubmission.id}/file`, {
         assessedAmount: filingSubmission.assessedAmount,
         paymentCreditApplied: filingSubmission.paymentCreditApplied,
         assessmentAdjustmentAccountId: filingSubmission.assessmentAdjustmentAccountId,
         filedReference: filingSubmission.filedReference,
         adjustmentReason: filingSubmission.adjustmentReason,
-        filedDate: new Date().toISOString(),
+        filedDate,
+        calendar: "BS",
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT filing could not be recorded.");
       toast.success(response.data.message || "VAT filing recorded.");
@@ -338,11 +398,13 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingTaxAction(true);
+      const paymentDate = requireBsDate(vatPayment.paymentDate, calendarYears, "BS payment date");
       const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${vatPayment.filingId}/payments`, {
         amount: vatPayment.amount,
         paymentReference: vatPayment.paymentReference,
         treasuryAccountId: vatPayment.treasuryAccountId,
-        paymentDate: `${vatPayment.paymentDate}T12:00:00.000Z`,
+        paymentDate,
+        calendar: "BS",
         adjustmentReason: vatPayment.adjustmentReason,
         idempotencyKey: `VATPAY:${vatPayment.filingId}:${vatPayment.paymentReference.trim()}`,
       }, { headers: { token } });
@@ -362,10 +424,12 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingTaxAction(true);
+      const amendedDate = requireBsDate(vatAmendment.amendedDate, calendarYears, "BS amendment date");
       const response = await axios.post(`${backendUrl}/api/finance/tax-filings/${vatAmendment.filingId}/amendments`, {
         amendedAssessedAmount: vatAmendment.amendedAssessedAmount,
         amendedReference: vatAmendment.amendedReference,
-        amendedDate: `${vatAmendment.amendedDate}T12:00:00.000Z`,
+        amendedDate,
+        calendar: "BS",
         adjustmentAccountId: vatAmendment.adjustmentAccountId,
         reason: vatAmendment.reason,
         evidenceUrl: vatAmendment.evidenceUrl,
@@ -387,14 +451,16 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingTaxAction(true);
+      const issueDate = requireBsDate(paperBill.issueDate, calendarYears, "BS issue date");
       const response = await axios.post(`${backendUrl}/api/finance/sales-invoices/${paperBill.invoiceId}/paper-issue`, {
         invoiceNumber: paperBill.invoiceNumber,
-        issueDate: `${paperBill.issueDate}T12:00:00.000Z`,
+        issueDate,
+        calendar: "BS",
         evidenceUrl: paperBill.evidenceUrl,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "Paper bill details could not be recorded.");
       toast.success(response.data.message || "Paper bill details recorded.");
-      setPaperBill({ invoiceId: "", invoiceNumber: "", issueDate: new Date().toISOString().slice(0, 10), evidenceUrl: "" });
+      setPaperBill({ invoiceId: "", invoiceNumber: "", issueDate: todayInputDate, evidenceUrl: "" });
       await fetchTaxRecords();
     } catch (error) {
       console.error(error);
@@ -474,10 +540,12 @@ const TaxCompliance = ({ token }) => {
     event.preventDefault();
     try {
       setSavingRegistration(true);
+      const effectiveFrom = requireBsDate(registrationEffectiveDate, calendarYears, "BS effective date");
       const response = await axios.post(`${backendUrl}/api/finance/tax-registration-versions`, {
         taxStatus: registrationStatus,
         vatNumber: registrationVatNumber,
-        effectiveFrom: `${registrationEffectiveDate}T00:00:00+05:45`,
+        effectiveFrom,
+        calendar: "BS",
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "Tax registration change could not be scheduled.");
       toast.success(response.data.message || "Tax registration change scheduled.");
@@ -510,9 +578,11 @@ const TaxCompliance = ({ token }) => {
     }
     try {
       setSavingVatRate(true);
+      const effectiveFrom = requireBsDate(vatEffectiveDate, calendarYears, "BS effective date");
       const response = await axios.post(`${backendUrl}/api/finance/vat-rates`, {
         vatRate,
-        effectiveFrom: `${vatEffectiveDate}T00:00:00+05:45`,
+        effectiveFrom,
+        calendar: "BS",
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "VAT rate could not be scheduled.");
       toast.success(response.data.message || "VAT rate scheduled.");
@@ -538,8 +608,8 @@ const TaxCompliance = ({ token }) => {
   };
 
   useEffect(() => {
-    if (token) fetchTaxReport(selectedMonth, taxContext);
-  }, [fetchTaxReport, selectedMonth, taxContext, token]);
+    if (token && calendarReady) fetchTaxReport(selectedMonth, taxContext);
+  }, [calendarReady, fetchTaxReport, selectedMonth, taxContext, token]);
 
   useEffect(() => {
     if (token) fetchVatVersions();
@@ -571,6 +641,21 @@ const TaxCompliance = ({ token }) => {
   useEffect(() => {
     if (token) fetchPaperBillBooks();
   }, [fetchPaperBillBooks, token]);
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
 
   if (loading && !taxData) {
     return (
@@ -613,13 +698,12 @@ const TaxCompliance = ({ token }) => {
           >
             Allocate physical bills
           </a>
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-            <label className="text-xs font-semibold text-slate-600">Period:</label>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-2">
+            <NepaliDatePicker
+              label="Period"
+              value={`${selectedMonth}-01`}
+              onChange={(value) => setSelectedMonth(value.slice(0, 7))}
+              calendars={calendarYears}
             />
           </div>
 
@@ -819,10 +903,7 @@ const TaxCompliance = ({ token }) => {
                 <input value={registrationVatNumber} onChange={(event) => setRegistrationVatNumber(event.target.value)} maxLength={32} required className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
               </label>
             )}
-            <label className="text-xs font-semibold text-slate-700">
-              Effective from (UTC)
-              <input type="date" value={registrationEffectiveDate} onChange={(event) => setRegistrationEffectiveDate(event.target.value)} required className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
-            </label>
+            <NepaliDatePicker label="Registration effective date" value={registrationEffectiveDate} onChange={setRegistrationEffectiveDate} calendars={calendarYears} />
             <button type="submit" disabled={savingRegistration} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
               {savingRegistration ? "Scheduling..." : "Schedule status"}
             </button>
@@ -836,8 +917,8 @@ const TaxCompliance = ({ token }) => {
                 <tr>
                   <th className="py-2 pr-4">Tax status</th>
                   <th className="py-2 pr-4">VAT number</th>
-                  <th className="py-2 pr-4">Effective from UTC</th>
-                  <th className="py-2 pr-4">Effective until UTC</th>
+                  <th className="py-2 pr-4">Effective from (BS)</th>
+                  <th className="py-2 pr-4">Effective until (BS)</th>
                   <th className="py-2 pr-4">Version status</th>
                   {canConfigureVat && <th className="py-2 text-right">Action</th>}
                 </tr>
@@ -849,8 +930,8 @@ const TaxCompliance = ({ token }) => {
                     <tr key={version.id} className="text-slate-700">
                       <td className="py-3 pr-4 font-semibold">{version.taxStatus === "VAT_REGISTERED" ? "VAT registered" : "PAN-only"}</td>
                       <td className="py-3 pr-4">{version.vatNumber || "—"}</td>
-                      <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
-                      <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                      <td className="py-3 pr-4">{formatNepaliDate(version.effectiveFrom, calendarYears)}</td>
+                      <td className="py-3 pr-4">{version.effectiveUntil ? formatNepaliDate(version.effectiveUntil, calendarYears) : "Open"}</td>
                       <td className="py-3 pr-4">{version.status}</td>
                       {canConfigureVat && <td className="py-3 text-right">{isFuture && <button type="button" onClick={() => cancelTaxRegistration(version.id)} className="font-semibold text-rose-700 hover:text-rose-900">Cancel change</button>}</td>}
                     </tr>
@@ -867,7 +948,7 @@ const TaxCompliance = ({ token }) => {
           <div>
             <h2 className="text-base font-bold text-slate-900">Effective-Dated VAT Rate History</h2>
             <p className="mt-1 max-w-3xl text-xs text-slate-500">
-              New rates apply only to transactions on or after their UTC effective date. Historical and effective rates are immutable; cancel only a future scheduled version.
+              New rates apply from the selected BS effective date. Historical and effective rates are immutable; cancel only a future scheduled version.
             </p>
           </div>
           <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-semibold text-amber-800">
@@ -890,16 +971,7 @@ const TaxCompliance = ({ token }) => {
                 className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
               />
             </label>
-            <label className="text-xs font-semibold text-slate-700">
-              Effective from (UTC)
-              <input
-                type="date"
-                required
-                value={vatEffectiveDate}
-                onChange={(event) => setVatEffectiveDate(event.target.value)}
-                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-              />
-            </label>
+            <NepaliDatePicker label="VAT effective date" value={vatEffectiveDate} onChange={setVatEffectiveDate} calendars={calendarYears} />
             <button
               type="submit"
               disabled={savingVatRate}
@@ -915,7 +987,7 @@ const TaxCompliance = ({ token }) => {
             <thead className="text-[10px] uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="py-2 pr-4 font-semibold">Rate</th>
-                <th className="py-2 pr-4 font-semibold">Effective from (UTC)</th>
+                <th className="py-2 pr-4 font-semibold">Effective from (BS)</th>
                 <th className="py-2 pr-4 font-semibold">Effective until (exclusive)</th>
                 <th className="py-2 pr-4 font-semibold">Status</th>
                 {canConfigureVat && <th className="py-2 text-right font-semibold">Action</th>}
@@ -927,8 +999,8 @@ const TaxCompliance = ({ token }) => {
                 return (
                   <tr key={version.id} className="text-slate-700">
                     <td className="py-3 pr-4 font-semibold">{Number(version.vatRate).toFixed(2)}%</td>
-                    <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
-                    <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                    <td className="py-3 pr-4">{formatNepaliDate(version.effectiveFrom, calendarYears)}</td>
+                    <td className="py-3 pr-4">{version.effectiveUntil ? formatNepaliDate(version.effectiveUntil, calendarYears) : "Open"}</td>
                     <td className="py-3 pr-4">{version.status}</td>
                     {canConfigureVat && (
                       <td className="py-3 text-right">
@@ -966,7 +1038,7 @@ const TaxCompliance = ({ token }) => {
         {paperBill.invoiceId && canConfigureVat && (
           <form onSubmit={submitPaperBill} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <label className="text-xs font-semibold text-slate-700">Official paper bill number<input required value={paperBill.invoiceNumber} onChange={(event) => setPaperBill((current) => ({ ...current, invoiceNumber: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Issue date<input type="date" required value={paperBill.issueDate} onChange={(event) => setPaperBill((current) => ({ ...current, issueDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <NepaliDatePicker label="Issue date" value={paperBill.issueDate} onChange={(issueDate) => setPaperBill((current) => ({ ...current, issueDate }))} calendars={calendarYears} />
             <label className="text-xs font-semibold text-slate-700">Evidence URL (optional)<input value={paperBill.evidenceUrl} onChange={(event) => setPaperBill((current) => ({ ...current, evidenceUrl: event.target.value }))} maxLength={5000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Saving..." : "Record issued bill"}</button>
           </form>
@@ -979,7 +1051,7 @@ const TaxCompliance = ({ token }) => {
                 <tr key={invoice.id} className="text-slate-700">
                   <td className="py-3 pr-4">{invoice.order?.orderReference || invoice.documentNumber}</td>
                   <td className="py-3 pr-4 font-semibold">{invoice.documentType === "VAT_TAX_INVOICE" ? "VAT tax invoice" : "PAN bill"}</td>
-                  <td className="py-3 pr-4">{new Date(invoice.taxPoint).toLocaleDateString()}</td>
+                  <td className="py-3 pr-4">{formatNepaliDate(invoice.taxPoint, calendarYears)}</td>
                   <td className="py-3 pr-4">{currency}{Number(invoice.totalAmount).toLocaleString()}</td>
                   <td className="py-3 pr-4">{currency}{Number(invoice.vatAmount).toLocaleString()}</td>
                   <td className="py-3 pr-4">{invoice.invoiceNumber || "Not recorded"}</td>
@@ -1022,8 +1094,8 @@ const TaxCompliance = ({ token }) => {
           ))}
         </div>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
-          <label className="text-xs font-semibold text-slate-700">From<input type="date" value={paperBillReportFrom} onChange={(event) => { setPaperBillReportPreset("CUSTOM"); setPaperBillReportFrom(event.target.value); }} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-          <label className="text-xs font-semibold text-slate-700">To<input type="date" value={paperBillReportTo} onChange={(event) => { setPaperBillReportPreset("CUSTOM"); setPaperBillReportTo(event.target.value); }} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+          <NepaliDatePicker label="From" value={paperBillReportFrom} onChange={(value) => { setPaperBillReportPreset("CUSTOM"); setPaperBillReportFrom(value); }} calendars={calendarYears} />
+          <NepaliDatePicker label="To" value={paperBillReportTo} onChange={(value) => { setPaperBillReportPreset("CUSTOM"); setPaperBillReportTo(value); }} calendars={calendarYears} />
           <label className="text-xs font-semibold text-slate-700">Orders
             <select value={paperBillReportFilter} onChange={(event) => setPaperBillReportFilter(event.target.value)} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
               <option value="ALL">All orders</option>
@@ -1036,7 +1108,7 @@ const TaxCompliance = ({ token }) => {
           <button type="button" onClick={() => fetchPaperBillReport(1)} disabled={paperBillReportLoading} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{paperBillReportLoading ? "Loading..." : "Load report"}</button>
         </div>
         <p className="mt-2 text-[11px] text-slate-500">
-          Showing order dates {paperBillReportFrom} through {paperBillReportTo} (Nepal time). A bill counts as issued only when its type and physical number are recorded.
+          Showing order dates BS {paperBillReportFrom} through {paperBillReportTo}. A bill counts as issued only when its type and physical number are recorded.
         </p>
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full text-left text-xs">
@@ -1044,7 +1116,7 @@ const TaxCompliance = ({ token }) => {
             <tbody className="divide-y divide-slate-100">
               {paperBillReport.map((record) => (
                 <tr key={record.orderId} className="text-slate-700">
-                  <td className="py-3 pr-3 font-semibold">{(record.orderType === "ADMIN_DIRECT" ? canViewAdminOrders : canViewStorefrontOrders) ? <Link to={`/orders/${encodeURIComponent(record.orderId)}?source=${record.orderType === "ADMIN_DIRECT" ? "admin" : "monitor"}`} className="text-indigo-700 hover:underline">{record.orderReference}</Link> : record.orderReference}<span className="mt-1 block text-[10px] font-normal text-slate-500">{new Date(record.orderDate).toLocaleDateString("en-GB", { timeZone: "Asia/Kathmandu" })}</span></td>
+                  <td className="py-3 pr-3 font-semibold">{(record.orderType === "ADMIN_DIRECT" ? canViewAdminOrders : canViewStorefrontOrders) ? <Link to={`/orders/${encodeURIComponent(record.orderId)}?source=${record.orderType === "ADMIN_DIRECT" ? "admin" : "monitor"}`} className="text-indigo-700 hover:underline">{record.orderReference}</Link> : record.orderReference}<span className="mt-1 block text-[10px] font-normal text-slate-500">{formatNepaliDate(record.orderDate, calendarYears)}</span></td>
                   <td className="py-3 pr-3">{record.customerName || "—"}</td>
                   <td className="py-3 pr-3">{record.distributor?.name || "—"}</td>
                   <td className="py-3 pr-3">{record.billStatus === "VOIDED" ? "Bill voided / reverted" : record.billClassification === "VAT_BILL" ? "VAT bill issued" : record.billClassification === "PAN_BILL" ? "PAN bill issued" : record.billStatus === "NOT_SELECTED" ? "Choice not recorded" : "No bill issued"}<span className="mt-1 block text-[10px] text-slate-500">{record.salesInvoice?.status === "PAPER_BILL_TYPE_MISMATCH" ? "Tax registration mismatch — review required" : record.billStatus}</span></td>
@@ -1084,8 +1156,8 @@ const TaxCompliance = ({ token }) => {
           <form onSubmit={createFilingDraft} className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <label className="text-xs font-semibold text-slate-700">IRD filing cadence<select required value={filingDraft.filingCadence} onChange={(event) => setFilingDraft((current) => ({ ...current, filingCadence: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="MONTHLY">Monthly</option><option value="QUARTERLY">Quarterly</option><option value="SEMIANNUAL">Semiannual</option><option value="ANNUAL">Annual</option><option value="CUSTOM">Custom</option></select></label>
             <label className="text-xs font-semibold text-slate-700">IRD period label<input required value={filingDraft.periodKey} onChange={(event) => setFilingDraft((current) => ({ ...current, periodKey: event.target.value }))} maxLength={64} placeholder="As assigned by IRD" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Period start<input type="date" required value={filingDraft.periodStart} onChange={(event) => setFilingDraft((current) => ({ ...current, periodStart: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Period end<input type="date" required value={filingDraft.periodEnd} onChange={(event) => setFilingDraft((current) => ({ ...current, periodEnd: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <NepaliDatePicker label="Period start" value={filingDraft.periodStart} onChange={(periodStart) => setFilingDraft((current) => ({ ...current, periodStart }))} calendars={calendarYears} />
+            <NepaliDatePicker label="Period end" value={filingDraft.periodEnd} onChange={(periodEnd) => setFilingDraft((current) => ({ ...current, periodEnd }))} calendars={calendarYears} />
             <button type="submit" disabled={savingTaxAction} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Preparing..." : "Prepare VAT return draft"}</button>
           </form>
         )}
@@ -1104,7 +1176,7 @@ const TaxCompliance = ({ token }) => {
             <label className="text-xs font-semibold text-slate-700">Payment amount<input type="number" min="0.01" step="0.01" required value={vatPayment.amount} onChange={(event) => setVatPayment((current) => ({ ...current, amount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Payment reference<input required value={vatPayment.paymentReference} onChange={(event) => setVatPayment((current) => ({ ...current, paymentReference: event.target.value }))} maxLength={191} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Paid from<select required value={vatPayment.treasuryAccountId} onChange={(event) => setVatPayment((current) => ({ ...current, treasuryAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select cash/bank</option>{treasuryAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountName} ({account.accountingAccount?.accountCode})</option>)}</select></label>
-            <label className="text-xs font-semibold text-slate-700">Payment date<input type="date" required value={vatPayment.paymentDate} onChange={(event) => setVatPayment((current) => ({ ...current, paymentDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <NepaliDatePicker label="Payment date" value={vatPayment.paymentDate} onChange={(paymentDate) => setVatPayment((current) => ({ ...current, paymentDate }))} calendars={calendarYears} />
             {Number(vatPayment.amount || 0) > Number(vatFilings.find((filing) => filing.id === vatPayment.filingId)?.outstandingAmount || 0) + 0.005 && <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for VAT overpayment (required)<input required minLength={3} value={vatPayment.adjustmentReason} onChange={(event) => setVatPayment((current) => ({ ...current, adjustmentReason: event.target.value }))} maxLength={2000} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>}
             <button type="submit" disabled={savingTaxAction || !treasuryAccounts.length} className="rounded-lg bg-indigo-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{savingTaxAction ? "Posting..." : "Record payment"}</button>
           </form>
@@ -1113,7 +1185,7 @@ const TaxCompliance = ({ token }) => {
           <form onSubmit={submitVatAmendment} className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <p className="text-xs text-slate-600 lg:col-span-4">Record a filed-return change as a dated, auditable amendment. The reason, IRD reference, and balanced accounting journal are required.</p>
             <label className="text-xs font-semibold text-slate-700">Amended assessed amount<input type="number" min="0" step="0.01" required value={vatAmendment.amendedAssessedAmount} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedAssessedAmount: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
-            <label className="text-xs font-semibold text-slate-700">Amendment date<input type="date" required value={vatAmendment.amendedDate} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedDate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
+            <NepaliDatePicker label="Amendment date" value={vatAmendment.amendedDate} onChange={(amendedDate) => setVatAmendment((current) => ({ ...current, amendedDate }))} calendars={calendarYears} />
             <label className="text-xs font-semibold text-slate-700">IRD amendment reference<input required maxLength={191} value={vatAmendment.amendedReference} onChange={(event) => setVatAmendment((current) => ({ ...current, amendedReference: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
             <label className="text-xs font-semibold text-slate-700">Accountant-approved offset account<select required value={vatAmendment.adjustmentAccountId} onChange={(event) => setVatAmendment((current) => ({ ...current, adjustmentAccountId: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"><option value="">Select GL account</option>{vatAdjustmentAccounts.map((account) => <option key={account.id} value={account.id}>{account.accountCode} — {account.accountName} ({account.accountType})</option>)}</select></label>
             <label className="text-xs font-semibold text-slate-700 lg:col-span-2">Reason for amendment (required)<textarea required minLength={3} maxLength={2000} value={vatAmendment.reason} onChange={(event) => setVatAmendment((current) => ({ ...current, reason: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" /></label>
@@ -1129,7 +1201,7 @@ const TaxCompliance = ({ token }) => {
               {vatFilings.map((filing) => (
                 <tr key={filing.id} className="text-slate-700">
                   <td className="py-3 pr-4 font-semibold">{filing.periodKey}<span className="mt-1 block text-[10px] font-normal text-slate-500">{filing.filingCadence || "CUSTOM"}</span></td>
-                  <td className="py-3 pr-4">{filing.periodStart ? new Date(filing.periodStart).toLocaleDateString() : "—"} – {filing.periodEnd ? new Date(filing.periodEnd).toLocaleDateString() : "—"}</td>
+                  <td className="py-3 pr-4">{filing.periodStart ? formatNepaliDate(filing.periodStart, calendarYears) : "—"} – {filing.periodEnd ? formatNepaliDate(filing.periodEnd, calendarYears) : "—"}</td>
                   <td className="py-3 pr-4">{currency}{Number(filing.outputVat).toLocaleString()}</td>
                   <td className="py-3 pr-4">{currency}{Number(filing.inputVat).toLocaleString()}</td>
                   <td className="py-3 pr-4" title={`Input VAT credit: ${currency}${Number(filing.carriedForwardInputVat).toLocaleString()} · Output VAT credit: ${currency}${Number(filing.carriedForwardOutputVat).toLocaleString()} · Payment credit: ${currency}${Number(filing.carriedForwardPaymentCredit).toLocaleString()}`}>{currency}{(Number(filing.carriedForwardInputVat) + Number(filing.carriedForwardOutputVat)).toLocaleString()}<span className="mt-1 block text-[10px] text-slate-500">Payment: {currency}{Number(filing.carriedForwardPaymentCredit).toLocaleString()}</span></td>
@@ -1232,9 +1304,7 @@ const TaxCompliance = ({ token }) => {
               <label className="text-xs font-semibold text-slate-700">Base rate (%)
                 <input required type="number" min="0" max="100" step="0.01" value={corporateTaxPolicyDraft.baseRate} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, baseRate: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
               </label>
-              <label className="text-xs font-semibold text-slate-700">Effective from (UTC)
-                <input required type="date" value={corporateTaxPolicyDraft.effectiveFrom} onChange={(event) => setCorporateTaxPolicyDraft((current) => ({ ...current, effectiveFrom: event.target.value }))} className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm" />
-              </label>
+              <NepaliDatePicker label="Policy effective date" value={corporateTaxPolicyDraft.effectiveFrom} onChange={(effectiveFrom) => setCorporateTaxPolicyDraft((current) => ({ ...current, effectiveFrom }))} calendars={calendarYears} />
             </div>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <label className="text-xs font-semibold text-slate-700">Progressive brackets (JSON)
@@ -1261,7 +1331,7 @@ const TaxCompliance = ({ token }) => {
               <tr>
                 <th className="py-2 pr-4">Fiscal year</th>
                 <th className="py-2 pr-4">Base rate</th>
-                <th className="py-2 pr-4">Effective from (UTC)</th>
+                <th className="py-2 pr-4">Effective from (BS)</th>
                 <th className="py-2 pr-4">Effective until</th>
                 <th className="py-2 pr-4">Status</th>
                 {canConfigureVat && <th className="py-2 text-right">Action</th>}
@@ -1274,8 +1344,8 @@ const TaxCompliance = ({ token }) => {
                   <tr key={version.id} className="text-slate-700">
                     <td className="py-3 pr-4 font-semibold">{version.fiscalYear}</td>
                     <td className="py-3 pr-4">{Number(version.baseRate).toFixed(2)}%</td>
-                    <td className="py-3 pr-4">{new Date(version.effectiveFrom).toLocaleString("en-GB", { timeZone: "UTC" })}</td>
-                    <td className="py-3 pr-4">{version.effectiveUntil ? new Date(version.effectiveUntil).toLocaleString("en-GB", { timeZone: "UTC" }) : "Open"}</td>
+                    <td className="py-3 pr-4">{formatNepaliDate(version.effectiveFrom, calendarYears)}</td>
+                    <td className="py-3 pr-4">{version.effectiveUntil ? formatNepaliDate(version.effectiveUntil, calendarYears) : "Open"}</td>
                     <td className="py-3 pr-4">{version.status}</td>
                     {canConfigureVat && <td className="py-3 text-right">{isFutureActive && <button type="button" onClick={() => cancelCorporateTaxPolicy(version.id)} className="font-semibold text-rose-700 hover:text-rose-900">Cancel change</button>}</td>}
                   </tr>

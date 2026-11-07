@@ -13,7 +13,7 @@ CREATE TABLE `CorporateTaxPolicyVersion` (
 
     PRIMARY KEY (`id`),
     UNIQUE INDEX `CorporateTaxPolicyVersion_effectiveFrom_key` (`effectiveFrom`),
-    INDEX `CorporateTaxPolicyVersion_status_effectiveFrom_effectiveUntil_idx` (`status`, `effectiveFrom`, `effectiveUntil`)
+    INDEX `CorpTaxPolicy_status_effective_idx` (`status`, `effectiveFrom`, `effectiveUntil`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 ALTER TABLE `TaxConfiguration`

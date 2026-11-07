@@ -31,6 +31,7 @@ import TreasuryCash from "./pages/TreasuryCash";
 import AssetManagement from "./pages/AssetManagement";
 import PartnershipEquity from "./pages/PartnershipEquity";
 import TaxCompliance from "./pages/TaxCompliance";
+import NepaliCalendar from "./pages/NepaliCalendar";
 import ReturnsManagement from "./pages/ReturnsManagement";
 import ExpenseManagement from "./pages/ExpenseManagement";
 import FinancialStatements from "./pages/FinancialStatements";
@@ -205,6 +206,7 @@ const App = () => {
                   <Route path="/partners" element={withPermission("/partners", <PartnershipEquity token={token} />)} />
                   <Route path="/expenses" element={withPermission("/expenses", <ExpenseManagement token={token} />)} />
                   <Route path="/tax" element={withPermission("/tax", <TaxCompliance token={token} />)} />
+                  <Route path="/nepali-calendar" element={withPermission("/nepali-calendar", <NepaliCalendar token={token} />)} />
                   <Route path="/returns" element={withPermission("/returns", <ReturnsManagement token={token} />)} />
                   <Route path="/payables" element={withPermission("/payables", <PayablesReceivables token={token} />)} />
                   <Route path="/statements" element={withPermission("/statements", <FinancialStatements token={token} />)} />

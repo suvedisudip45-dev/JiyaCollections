@@ -1,42 +1,101 @@
-/* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import React, { useCallback, useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import { Link } from "react-router-dom";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
+import { getCurrentNepaliDateRange, getNepaliDateRangeForDate } from "../utils/nepaliDate";
 
 const FinanceDashboard = ({ token }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
+  const [calendars, setCalendars] = useState([]);
   const [costDetailsView, setCostDetailsView] = useState(null);
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  const [dateRange, setDateRange] = useState(() => getCurrentNepaliDateRange());
+  const [reportError, setReportError] = useState("");
+  const dashboardRequestId = useRef(0);
 
-  const fetchDashboardData = async (month) => {
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    setLoading(true);
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (active) {
+          setCalendars(response.data.years);
+        }
+        if (active) {
+          setDateRange(getNepaliDateRangeForDate(response.data.currentDate));
+        }
+        if (active) setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load configured Nepali date error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          setLoading(false);
+          toast.error(message);
+        }
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
+
+  const fetchDashboardData = useCallback(async ({ startDate, endDate }) => {
+    const requestId = ++dashboardRequestId.current;
     try {
       setLoading(true);
-      const res = await axios.get(`${backendUrl}/api/finance/dashboard?month=${month}`, {
+      setData(null);
+      setReportError("");
+      const res = await axios.get(`${backendUrl}/api/finance/dashboard`, {
         headers: { token },
+        params: { startDate, endDate, calendar: "BS" },
       });
       if (res.data.success) {
-        setData(res.data.data);
+        if (requestId === dashboardRequestId.current) setData(res.data.data);
       } else {
-        toast.error(res.data.message || "Failed to load financial data");
+        throw new Error(res.data.message || "Failed to load financial data");
       }
     } catch (err) {
       console.error(err);
-      toast.error(err.response?.data?.message || err.message);
+      if (requestId === dashboardRequestId.current) {
+        const message = err.response?.data?.message || err.message || "Failed to load financial data";
+        setReportError(message);
+        toast.error(message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === dashboardRequestId.current) setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
-    if (token) fetchDashboardData(selectedMonth);
-  }, [token, selectedMonth]);
+    if (token && calendarReady) fetchDashboardData(dateRange);
+  }, [token, dateRange, calendarReady, fetchDashboardData]);
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
 
   if (loading && !data) {
     return (
@@ -47,6 +106,21 @@ const FinanceDashboard = ({ token }) => {
             Loading Financial Analytics Engine...
           </p>
         </div>
+      </div>
+    );
+  }
+
+  if (reportError && !data) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{reportError}</p>
+        <button
+          type="button"
+          onClick={() => fetchDashboardData(dateRange)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -100,23 +174,20 @@ const FinanceDashboard = ({ token }) => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-            <label className="text-xs font-semibold text-slate-600">Period:</label>
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-800 outline-hidden cursor-pointer"
-            />
-          </div>
-
+        <div className="flex items-end gap-3">
+          <NepaliDateRangePicker
+            startDate={dateRange.startDate}
+            endDate={dateRange.endDate}
+            onApply={setDateRange}
+            calendars={calendars}
+          />
           <button
-            onClick={() => fetchDashboardData(selectedMonth)}
-            className="p-2 bg-slate-900 text-white rounded-xl hover:bg-slate-800 transition-colors shadow-xs"
+            onClick={() => fetchDashboardData(dateRange)}
+            className="mb-1 rounded-xl bg-slate-900 p-2 text-white shadow-xs transition-colors hover:bg-slate-800"
             title="Refresh Analytics"
+            aria-label="Refresh Analytics"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
@@ -131,7 +202,7 @@ const FinanceDashboard = ({ token }) => {
             <div>
               <h2 className="text-base font-bold text-slate-900">Posted Ledger Summary</h2>
               <p className="mt-1 text-xs text-slate-600">
-                Authoritative financial totals from posted journal entries for {selectedMonth}. Operational estimates and pending settlements are shown separately below.
+                Authoritative financial totals from posted journal entries for BS {dateRange.startDate} to {dateRange.endDate}. Operational estimates and pending settlements are shown separately below.
               </p>
             </div>
             <span className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-800">
@@ -416,7 +487,7 @@ const FinanceDashboard = ({ token }) => {
               <div>
                 <h2 id="cost-details-title" className="text-lg font-black text-slate-900">{costDetailsView.title} details</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  Itemized cost entries for {selectedMonth}. Amounts follow the same cost rules as the dashboard totals.
+                  Itemized cost entries for BS {dateRange.startDate} to {dateRange.endDate}. Amounts follow the same cost rules as the dashboard totals.
                 </p>
               </div>
               <button

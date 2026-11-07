@@ -4,6 +4,7 @@ import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import { getCurrentNepaliDateRange } from "../utils/nepaliDate";
 
 const CATEGORY_COLORS = {
   ASSET: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -16,8 +17,8 @@ const CATEGORY_COLORS = {
 
 const TrialBalance = ({ token }) => {
   const [data, setData] = useState(null);
-  const [asOfDate, setAsOfDate] = useState(() => new Date().toISOString().split("T")[0]);
-  const [startDate, setStartDate] = useState(() => `${new Date().getFullYear()}-01-01`);
+  const [dateRange, setDateRange] = useState(() => getCurrentNepaliDateRange({ fiscalYear: true }));
+  const { startDate, endDate: asOfDate } = dateRange;
   const [loading, setLoading] = useState(true);
   const [filterCategory, setFilterCategory] = useState("ALL");
   const [hideZeroBalances, setHideZeroBalances] = useState(true);
@@ -27,7 +28,7 @@ const TrialBalance = ({ token }) => {
       setLoading(true);
       const res = await axios.get(`${backendUrl}/api/accounting/trial-balance`, {
         headers: { token },
-        params: { startDate, endDate: asOfDate },
+        params: { startDate, endDate: asOfDate, calendar: "BS" },
       });
 
       if (res.data.success) {
@@ -46,6 +47,26 @@ const TrialBalance = ({ token }) => {
   useEffect(() => {
     fetchTrialBalance();
   }, [startDate, asOfDate, token]);
+
+  useEffect(() => {
+    let active = true;
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success) throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        if (!active) return;
+        const [year, month] = (response.data.currentDate || "").split("-").map(Number);
+        if (year && month) {
+          const startYear = month >= 4 ? year : year - 1;
+          setDateRange({ startDate: `${startYear}-04-01`, endDate: response.data.currentDate });
+        }
+      })
+      .catch((error) => {
+        console.error("Load configured trial balance calendar error:", error);
+        toast.error(error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.");
+      });
+    return () => { active = false; };
+  }, [token]);
 
   const rows = data?.rows || data?.trialBalance || [];
   const totals = data?.totals || {};
@@ -95,20 +116,24 @@ const TrialBalance = ({ token }) => {
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">From:</label>
+            <label className="text-xs font-semibold text-slate-600">From (BS):</label>
             <input
-              type="date"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
+              onChange={(e) => setDateRange((range) => ({ ...range, startDate: e.target.value }))}
               className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold text-slate-600">As of:</label>
+            <label className="text-xs font-semibold text-slate-600">As of (BS):</label>
             <input
-              type="date"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
               value={asOfDate}
-              onChange={(e) => setAsOfDate(e.target.value)}
+              onChange={(e) => setDateRange((range) => ({ ...range, endDate: e.target.value }))}
               className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900"
             />
           </div>

@@ -13,6 +13,7 @@ const LABELS = {
   customers: "Customers",
   inventory: "Inventory",
   finance: "Finance",
+  "nepali-calendar": "Nepali Calendar",
   treasury: "Treasury",
   returns: "Returns",
   payables: "Payables",

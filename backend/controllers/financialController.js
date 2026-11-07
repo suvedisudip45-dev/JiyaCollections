@@ -39,6 +39,41 @@ import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { allocateManufacturerPaymentToDocuments } from "../services/manufacturerSettlementService.js";
 import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
+import {
+  getConfiguredNepaliDateRange,
+  getConfiguredNepaliFiscalPeriod,
+  getConfiguredNepaliMonthRange,
+  resolveCalendarDateInput,
+  resolveCalendarDateRangeInput,
+} from "../services/nepaliFiscalCalendar.js";
+
+const getFinancialDateRange = async (query = {}) => {
+  if (query.calendar && String(query.calendar).trim().toUpperCase() !== "BS") {
+    const error = new Error("Financial report dates must use the BS calendar.");
+    error.statusCode = 400;
+    error.code = "INVALID_CALENDAR";
+    throw error;
+  }
+  if (query.startDate || query.endDate) {
+    return getConfiguredNepaliDateRange(query.startDate, query.endDate);
+  }
+  if (query.month) {
+    const match = /^(\d{4})-(\d{2})$/.exec(query.month);
+    if (!match) {
+      const error = new Error("month must be in BS YYYY-MM format.");
+      error.statusCode = 400;
+      error.code = "INVALID_MONTH";
+      throw error;
+    }
+    return getConfiguredNepaliMonthRange(Number(match[1]), Number(match[2]));
+  }
+
+  const { periodStart, periodEnd } = await getConfiguredNepaliFiscalPeriod(new Date());
+  return {
+    startDate: periodStart,
+    endDate: new Date(Math.min(periodEnd.getTime(), Date.now())),
+  };
+};
 
 const getPostedManufacturerPayable = async (manufacturerId, manufacturerName) => {
   const payableAccount = await prisma.account.findUnique({
@@ -759,10 +794,8 @@ export const getManufacturerFinancialSummary = async (req, res) => {
 // ==========================================
 export const getFinancialAnalyticsDashboard = async (req, res) => {
   try {
-    const requestedMonth = req.query.month || getCurrentYearMonth();
-    const [year, month] = requestedMonth.split("-").map(Number);
-    const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+    const { startDate, endDate } = await getFinancialDateRange(req.query);
+    const requestedPeriod = req.query.month || `${req.query.startDate || startDate.toISOString()} – ${req.query.endDate || endDate.toISOString()}`;
     const startTimestamp = BigInt(startDate.getTime());
     const endTimestamp = BigInt(endDate.getTime());
     const [postedAccounting, accountingPostingStatus] = await Promise.all([
@@ -1042,7 +1075,8 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     res.json({
       success: true,
       data: {
-        activeMonth: requestedMonth,
+        activeMonth: requestedPeriod,
+        dateRange: { start: startDate.toISOString(), end: endDate.toISOString() },
         postedAccounting,
         accountingPostingStatus,
         revenue: {
@@ -1111,7 +1145,7 @@ export const getFinancialAnalyticsDashboard = async (req, res) => {
     });
   } catch (error) {
     console.error("Financial Analytics Dashboard Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 
@@ -1818,10 +1852,22 @@ const generateAmortizationSchedule = (principal, annualRatePct, termMonths, star
   let currentPrincipal = p;
   const schedule = [];
   const start = new Date(startDate);
+  const startParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kathmandu",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(start);
+  const startPart = (type) => Number(startParts.find((part) => part.type === type)?.value);
+  const scheduleStart = new Date(Date.UTC(
+    startPart("year"),
+    startPart("month") - 1,
+    startPart("day"),
+  ));
 
   for (let i = 1; i <= n; i++) {
-    const dueDate = new Date(start);
-    dueDate.setMonth(dueDate.getMonth() + i);
+    const dueDate = new Date(scheduleStart);
+    dueDate.setUTCMonth(dueDate.getUTCMonth() + i);
 
     const interestPortion = Number((currentPrincipal * r).toFixed(2));
     const principalPortion = Number(Math.min(currentPrincipal, emi - interestPortion).toFixed(2));
@@ -1829,7 +1875,7 @@ const generateAmortizationSchedule = (principal, annualRatePct, termMonths, star
 
     schedule.push({
       monthNumber: i,
-      dueDate: dueDate.toISOString().split("T")[0],
+      dueDate: dueDate.toISOString().slice(0, 10),
       emi: Number((principalPortion + interestPortion).toFixed(2)),
       principalPortion,
       interestPortion,
@@ -2478,10 +2524,16 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
       retainedEarningsPercentage = 20,
       executePayout = false,
       fromAccountId,
+      calendar,
     } = req.body;
 
-    const pStart = periodStart ? new Date(periodStart) : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-    const pEnd = periodEnd ? new Date(periodEnd) : new Date();
+    const resolvedRange = calendar
+      ? await resolveCalendarDateRangeInput(periodStart, periodEnd, calendar)
+      : { startDate: periodStart, endDate: periodEnd };
+    const pStart = resolvedRange.startDate
+      ? new Date(resolvedRange.startDate)
+      : new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const pEnd = resolvedRange.endDate ? new Date(resolvedRange.endDate) : new Date();
 
     const [orders, operatingExpensesList, partners] = await Promise.all([
       prisma.order.findMany({
@@ -2679,7 +2731,11 @@ export const calculateAndExecuteProfitDistribution = async (req, res) => {
     });
   } catch (error) {
     console.error("Profit Distribution Error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "PROFIT_DISTRIBUTION_ERROR",
+      message: error.message || "Profit distribution could not be calculated.",
+    });
   }
 };
 
@@ -2745,6 +2801,7 @@ export const recordInvestorFinancing = async (req, res) => {
       maturityDate,
       depositAccountId,
       notes,
+      calendar,
     } = req.body;
 
     if (!investorName || !principalAmount) {
@@ -2754,13 +2811,23 @@ export const recordInvestorFinancing = async (req, res) => {
     const principal = Number(principalAmount);
     const rate = Number(interestRate || 0);
     const term = Number(loanTermMonths || 12);
-    const start = startDate ? new Date(startDate) : new Date();
+    const resolvedStart = startDate ? await resolveCalendarDateInput(startDate, calendar) : new Date();
+    const resolvedMaturity = maturityDate
+      ? await resolveCalendarDateInput(maturityDate, calendar)
+      : null;
+    const start = new Date(resolvedStart);
+    if (Number.isNaN(start.getTime())) {
+      return res.status(400).json({ success: false, code: "INVALID_LOAN_START_DATE", message: "Enter a valid loan start date." });
+    }
 
     // Generate Amortization Schedule
     const amortization = generateAmortizationSchedule(principal, rate, term, start);
 
     // Calculate Maturity Date if not provided
-    let matDate = maturityDate ? new Date(maturityDate) : new Date(start);
+    let matDate = resolvedMaturity ? new Date(resolvedMaturity) : new Date(start);
+    if (Number.isNaN(matDate.getTime())) {
+      return res.status(400).json({ success: false, code: "INVALID_LOAN_MATURITY_DATE", message: "Enter a valid loan maturity date." });
+    }
     if (!maturityDate) {
       matDate.setMonth(matDate.getMonth() + term);
     }
@@ -2824,7 +2891,11 @@ export const recordInvestorFinancing = async (req, res) => {
     });
   } catch (error) {
     console.error("Record Financing Error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "FINANCING_ERROR",
+      message: error.message || "Financing could not be recorded.",
+    });
   }
 };
 
@@ -4922,10 +4993,8 @@ export const getVATAndTaxReport = async (req, res) => {
 // ==========================================
 export const getFinancialStatements = async (req, res) => {
   try {
-    const requestedMonth = req.query.month || getCurrentYearMonth();
-    const [year, month] = requestedMonth.split("-").map(Number);
-    const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+    const { startDate, endDate } = await getFinancialDateRange(req.query);
+    const requestedPeriod = req.query.month || `${req.query.startDate || startDate.toISOString()} – ${req.query.endDate || endDate.toISOString()}`;
     const startTimestamp = BigInt(startDate.getTime());
     const endTimestamp = BigInt(endDate.getTime());
 
@@ -4970,7 +5039,7 @@ export const getFinancialStatements = async (req, res) => {
       prisma.accountReceivable.findMany({
         where: { status: { in: ["UNPAID", "PARTIALLY_RECEIVED"] } },
       }),
-      getCorporateTaxPolicyForDate(requestedMonth === getCurrentYearMonth() ? new Date() : endDate),
+      getCorporateTaxPolicyForDate(endDate),
     ]);
 
     // P&L Calculations
@@ -5102,7 +5171,7 @@ export const getFinancialStatements = async (req, res) => {
       success: true,
       data: {
         incomeStatement: {
-          period: requestedMonth,
+          period: requestedPeriod,
           grossRevenue,
           returnsAndAllowances,
           taxableNetRevenue,
@@ -5182,6 +5251,6 @@ export const getFinancialStatements = async (req, res) => {
     });
   } catch (error) {
     console.error("Financial Statements Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };

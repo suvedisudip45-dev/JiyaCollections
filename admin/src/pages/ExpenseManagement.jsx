@@ -22,21 +22,37 @@ import {
 } from "lucide-react";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
+import NepaliDatePicker from "../components/NepaliDatePicker";
+import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
 import { usePermissions } from "../auth/PermissionsContext";
+import {
+  formatNepaliDate,
+  getAdDateForNepaliDate,
+  getNepaliDateForAdDate,
+  getNepaliDateRangeForDate,
+} from "../utils/nepaliDate";
 
 const ExpenseManagement = ({ token }) => {
+  const initialBsDate = formatNepaliDate(new Date());
   const [activeTab, setActiveTab] = useState("EXPENSES"); // EXPENSES | INCOMES | CATEGORIES
   const [expenses, setExpenses] = useState([]);
   const [incomes, setIncomes] = useState([]);
   const [categories, setCategories] = useState({ expense: [], income: [], custom: [] });
   const [treasuryAccounts, setTreasuryAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [todayInputDate, setTodayInputDate] = useState(initialBsDate);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("ALL");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [dateRangeEnabled, setDateRangeEnabled] = useState(false);
+  const [dateRangeDraft, setDateRangeDraft] = useState(() => getNepaliDateRangeForDate(initialBsDate));
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
 
@@ -64,7 +80,7 @@ const ExpenseManagement = ({ token }) => {
   const [purchaseVatRate, setPurchaseVatRate] = useState("13");
   const [supplierVatNumber, setSupplierVatNumber] = useState("");
   const [invoiceEvidenceUrl, setInvoiceEvidenceUrl] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(initialBsDate);
   const [paymentStatus, setPaymentStatus] = useState("PAID"); // PAID or PAYABLE
   const [paymentAccountId, setPaymentAccountId] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
@@ -84,7 +100,7 @@ const ExpenseManagement = ({ token }) => {
   const [incomeToAccountId, setIncomeToAccountId] = useState("");
   const [incomePayerName, setIncomePayerName] = useState("");
   const [incomeInvoiceNumber, setIncomeInvoiceNumber] = useState("");
-  const [incomeDate] = useState(new Date().toISOString().split("T")[0]);
+  const [incomeDate, setIncomeDate] = useState(initialBsDate);
   const [incomeNotes, setIncomeNotes] = useState("");
 
   // Category Modal State
@@ -137,6 +153,7 @@ const ExpenseManagement = ({ token }) => {
       if (selectedCategory && selectedCategory !== "ALL") params.category = selectedCategory;
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
+      params.calendar = "BS";
       if (searchTerm) params.search = searchTerm;
       params.page = page;
       params.limit = 10;
@@ -148,7 +165,7 @@ const ExpenseManagement = ({ token }) => {
         }),
         axios.get(`${backendUrl}/api/expense/summary`, {
           headers: { token },
-          params: { startDate, endDate },
+          params: { startDate, endDate, calendar: "BS" },
         }),
       ]);
 
@@ -178,7 +195,7 @@ const ExpenseManagement = ({ token }) => {
     if (!token) return;
     setLoading(true);
     try {
-      const params = { page, limit: 10 };
+      const params = { page, limit: 10, calendar: "BS" };
       if (searchTerm) params.search = searchTerm;
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
@@ -199,14 +216,44 @@ const ExpenseManagement = ({ token }) => {
   }, [token, page, searchTerm, startDate, endDate]);
 
   useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (!active) return;
+        const currentDate = response.data.currentDate;
+        setCalendarYears(response.data.years);
+        setTodayInputDate(currentDate);
+        setDate(currentDate);
+        setIncomeDate(currentDate);
+        setDateRangeDraft(getNepaliDateRangeForDate(currentDate));
+        setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load expense calendar error:", error);
+        if (!active) return;
+        const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+        setCalendarError(message);
+        setLoading(false);
+        toast.error(message);
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
+
+  useEffect(() => {
     fetchMetadata();
   }, [fetchMetadata]);
 
   useEffect(() => {
+    if (!calendarReady) return;
     if (activeTab === "EXPENSES") fetchExpenses();
     else if (activeTab === "INCOMES") fetchIncomes();
     else setLoading(false);
-  }, [activeTab, fetchExpenses, fetchIncomes]);
+  }, [activeTab, calendarReady, fetchExpenses, fetchIncomes]);
 
   const handlePageChange = (nextPage) => setPage(nextPage);
 
@@ -231,7 +278,7 @@ const ExpenseManagement = ({ token }) => {
     setPurchaseVatRate("13");
     setSupplierVatNumber("");
     setInvoiceEvidenceUrl("");
-    setDate(new Date().toISOString().split("T")[0]);
+    setDate(todayInputDate);
     setPaymentStatus("PAID");
     if (treasuryAccounts.length > 0) setPaymentAccountId(treasuryAccounts[0].id);
     setPaymentMethod("CASH");
@@ -253,7 +300,7 @@ const ExpenseManagement = ({ token }) => {
     setPurchaseVatRate(exp.purchaseVatRate?.toString() || "13");
     setSupplierVatNumber(exp.supplierVatNumber || "");
     setInvoiceEvidenceUrl(exp.invoiceEvidenceUrl || "");
-    setDate(exp.date ? new Date(exp.date).toISOString().split("T")[0] : "");
+    setDate(exp.date ? getNepaliDateForAdDate(exp.date, calendarYears) : todayInputDate);
     setPaymentStatus(exp.paymentStatus || "PAID");
     setPaymentAccountId(exp.financialAccountId || (treasuryAccounts[0]?.id || ""));
     setPaymentMethod(exp.paymentMethod || "CASH");
@@ -266,10 +313,15 @@ const ExpenseManagement = ({ token }) => {
   // Convert to Payable 1-Click Action
   const handleConvertToPayable = () => {
     setPaymentStatus("PAYABLE");
-    const nextWeek = new Date();
-    nextWeek.setDate(nextWeek.getDate() + 7);
-    setDueDate(nextWeek.toISOString().split("T")[0]);
+    setDueDate(getDefaultDueDate());
     toast.info("Switched payment method to Accounts Payable (Pay Later).");
+  };
+
+  const getDefaultDueDate = () => {
+    const adToday = getAdDateForNepaliDate(todayInputDate, calendarYears);
+    const nextWeek = new Date(`${adToday}T00:00:00.000Z`);
+    nextWeek.setUTCDate(nextWeek.getUTCDate() + 7);
+    return getNepaliDateForAdDate(nextWeek.toISOString().slice(0, 10), calendarYears);
   };
 
   // Submit Expense
@@ -311,6 +363,7 @@ const ExpenseManagement = ({ token }) => {
         dueDate: paymentStatus === "PAYABLE" ? dueDate : undefined,
         priority: paymentStatus === "PAYABLE" ? priority : undefined,
         notes: notes.trim() || undefined,
+        calendar: "BS",
       };
 
       const url = editingId ? `${backendUrl}/api/expense/update` : `${backendUrl}/api/expense/add`;
@@ -387,6 +440,7 @@ const ExpenseManagement = ({ token }) => {
           invoiceNumber: incomeInvoiceNumber.trim() || undefined,
           date: incomeDate,
           notes: incomeNotes.trim() || undefined,
+          calendar: "BS",
         },
         { headers: { token } }
       );
@@ -451,6 +505,29 @@ const ExpenseManagement = ({ token }) => {
       toast.error("Error deleting expense.");
     }
   };
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
+
+  if (!calendarReady) {
+    return (
+      <div className="flex min-h-[300px] items-center justify-center">
+        <p className="text-sm font-semibold text-slate-500">Loading configured Nepali calendar...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -637,34 +714,51 @@ const ExpenseManagement = ({ token }) => {
                 />
               </div>
 
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-slate-400" />
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-400 font-medium">to</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
-                />
-                {(startDate || endDate || searchTerm) && (
+              <div className="flex flex-wrap items-end gap-2">
+                {dateRangeEnabled ? (
+                  <>
+                    <NepaliDateRangePicker
+                      startDate={dateRangeDraft.startDate}
+                      endDate={dateRangeDraft.endDate}
+                      onApply={({ startDate: nextStart, endDate: nextEnd }) => {
+                        setStartDate(nextStart);
+                        setEndDate(nextEnd);
+                        setPage(1);
+                      }}
+                      calendars={calendarYears}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDateRangeEnabled(false);
+                        setStartDate("");
+                        setEndDate("");
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-600 underline"
+                    >
+                      Clear dates
+                    </button>
+                  </>
+                ) : (
                   <button
+                    type="button"
                     onClick={() => {
-                      setStartDate("");
-                      setEndDate("");
-                      setSearchTerm("");
+                      setDateRangeDraft(getNepaliDateRangeForDate(todayInputDate));
+                      setDateRangeEnabled(true);
                     }}
-                    className="text-xs text-slate-400 hover:text-slate-600 underline cursor-pointer whitespace-nowrap"
+                    className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700"
                   >
-                    Clear
+                    <Calendar className="h-4 w-4 text-slate-400" />
+                    Filter by BS date
+                  </button>
+                )}
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm("")}
+                    className="text-xs text-slate-400 hover:text-slate-600 underline"
+                  >
+                    Clear search
                   </button>
                 )}
               </div>
@@ -699,7 +793,7 @@ const ExpenseManagement = ({ token }) => {
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium">
                     {expenses.map((exp) => {
-                      const dateStr = exp.date ? new Date(exp.date).toLocaleDateString() : "N/A";
+                      const dateStr = exp.date ? formatNepaliDate(exp.date, calendarYears) : "N/A";
                       const isPayable = exp.paymentStatus === "PAYABLE";
 
                       return (
@@ -847,7 +941,7 @@ const ExpenseManagement = ({ token }) => {
                       <td className="py-3 px-4">
                         <span className="font-bold text-slate-900 block">{inc.title}</span>
                         <span className="text-[10px] text-slate-400 font-mono">
-                          {new Date(inc.date).toLocaleDateString()}
+                          {formatNepaliDate(inc.date, calendarYears)}
                         </span>
                       </td>
                       <td className="py-3 px-4">
@@ -944,6 +1038,7 @@ const ExpenseManagement = ({ token }) => {
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none focus:border-emerald-500 text-slate-900"
                 />
               </div>
+              <NepaliDatePicker label="Expense date" value={date} onChange={setDate} calendars={calendarYears} />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -1050,13 +1145,18 @@ const ExpenseManagement = ({ token }) => {
                 {paymentStatus === "PAYABLE" && (
                   <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200">
                     <div>
-                      <label className="block font-bold text-slate-700 mb-1">Due Date</label>
-                      <input
-                        type="date"
-                        value={dueDate}
-                        onChange={(e) => setDueDate(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-slate-900"
-                      />
+                      {dueDate ? (
+                        <>
+                          <NepaliDatePicker label="Due date" value={dueDate} onChange={setDueDate} calendars={calendarYears} />
+                          <button type="button" onClick={() => setDueDate("")} className="mt-1 text-[10px] text-slate-500 underline">
+                            Remove due date
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => setDueDate(getDefaultDueDate())} className="text-xs font-semibold text-slate-700 underline">
+                          Add optional due date
+                        </button>
+                      )}
                     </div>
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">Priority</label>
@@ -1121,7 +1221,6 @@ const ExpenseManagement = ({ token }) => {
                   />
                 </div>
               </div>
-
               {isVatBill && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -1220,6 +1319,7 @@ const ExpenseManagement = ({ token }) => {
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none text-slate-900"
                 />
               </div>
+              <NepaliDatePicker label="Income date" value={incomeDate} onChange={setIncomeDate} calendars={calendarYears} />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

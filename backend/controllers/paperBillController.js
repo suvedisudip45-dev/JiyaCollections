@@ -8,6 +8,7 @@ import {
   listPaperBillOrderReport,
   returnPaperBillAllocation,
 } from "../services/paperBillService.js";
+import { resolveCalendarDateRangeInput } from "../services/nepaliFiscalCalendar.js";
 
 const responseError = (res, error, fallbackMessage) => {
   console.error(fallbackMessage, error);
@@ -153,9 +154,14 @@ export const returnPaperBillRangeAdmin = async (req, res) => {
 
 export const getPaperBillOrderReportAdmin = async (req, res) => {
   try {
+    const { startDate: from, endDate: to } = await resolveCalendarDateRangeInput(
+      req.query.from,
+      req.query.to,
+      req.query.calendar,
+    );
     const report = await listPaperBillOrderReport({
-      from: req.query.from,
-      to: req.query.to,
+      from,
+      to,
       billFilter: req.query.billFilter,
       page: req.query.page,
       limit: req.query.limit,

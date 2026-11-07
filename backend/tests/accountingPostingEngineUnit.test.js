@@ -17,6 +17,9 @@ const createHarness = ({ periodStatus = "OPEN" } = {}) => {
   };
 
   const client = {
+    nepaliCalendarYear: {
+      findMany: async () => [],
+    },
     fiscalYear: {
       upsert: async ({ where, create }) => {
         if (!state.fiscalYears.has(where.name)) state.fiscalYears.set(where.name, { id: `fy-${where.name}`, ...create });

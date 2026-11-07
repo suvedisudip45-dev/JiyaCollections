@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { normalizeBalancedJournalLines } from "./accountingMoney.js";
-import { getNepaliFiscalPeriod } from "./nepaliFiscalCalendar.js";
+import {
+  getConfiguredNepaliFiscalPeriod,
+  getNepaliCalendarYears,
+} from "./nepaliFiscalCalendar.js";
 import { classifySaleChannel, calculateLegacyManufacturerCommission } from "./accountingRecognitionPolicy.js";
 import { ensureAccountingParty } from "./accountingPartyService.js";
 import { hasValidVatSupplierIdentity } from "./manufacturerTaxIdentity.js";
@@ -197,7 +200,8 @@ export const ensureStandardChartOfAccounts = async (client = prisma) => {
 
 // Ensure active Fiscal Year & Accounting Period
 export const ensureFiscalYearAndPeriod = async (txDate = new Date(), client = prisma) => {
-  const calendar = getNepaliFiscalPeriod(txDate);
+  const calendars = await getNepaliCalendarYears(client);
+  const calendar = await getConfiguredNepaliFiscalPeriod(txDate, calendars);
 
   const fiscalYear = await client.fiscalYear.upsert({
     where: { name: calendar.fiscalYearName },

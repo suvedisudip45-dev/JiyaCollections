@@ -1535,7 +1535,7 @@ model CorporateTaxPolicyVersion {
   updatedAt     DateTime @updatedAt
 
   @@unique([effectiveFrom])
-  @@index([status, effectiveFrom, effectiveUntil])
+  @@index([status, effectiveFrom, effectiveUntil], map: "CorpTaxPolicy_status_effective_idx")
 }
 
 model TaxFilingRecord {
@@ -1798,6 +1798,16 @@ model FiscalYear {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
   periods   AccountingPeriod[]
+}
+
+model NepaliCalendarYear {
+  year        Int      @id
+  adStartDate DateTime @db.Date
+  monthDays   Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([adStartDate])
 }
 
 model AccountingPeriod {

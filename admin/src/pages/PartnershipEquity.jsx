@@ -1,8 +1,10 @@
-/* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
+import NepaliDatePicker from "../components/NepaliDatePicker";
+import { getNepaliDateRangeForDate } from "../utils/nepaliDate";
 
 const PartnershipEquity = ({ token }) => {
   const [capTableData, setCapTableData] = useState({
@@ -14,6 +16,11 @@ const PartnershipEquity = ({ token }) => {
   const [liabilities, setLiabilities] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [calendarCurrentDate, setCalendarCurrentDate] = useState("");
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
   const [activeTab, setActiveTab] = useState("captable"); // captable, issue, transfer, valuation, loans, transactions, distribution
 
   // Modals
@@ -86,7 +93,7 @@ const PartnershipEquity = ({ token }) => {
     principalAmount: "",
     interestRate: "11.5",
     loanTermMonths: "12",
-    startDate: new Date().toISOString().split("T")[0],
+    startDate: "",
     depositAccountId: "",
     notes: "",
   });
@@ -100,15 +107,15 @@ const PartnershipEquity = ({ token }) => {
   });
 
   const [distForm, setDistForm] = useState({
-    periodStart: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0],
-    periodEnd: new Date().toISOString().split("T")[0],
+    periodStart: "",
+    periodEnd: "",
     fiscalYear: "2082/2083",
     retainedEarningsPercentage: 20,
     executePayout: false,
     fromAccountId: "",
   });
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const [capRes, liabRes, accRes] = await Promise.all([
@@ -130,11 +137,47 @@ const PartnershipEquity = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     if (token) fetchData();
-  }, [token]);
+  }, [fetchData, token]);
+
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    if (!token) return () => { active = false; };
+
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (active) {
+          const currentDate = response.data.currentDate;
+          setCalendarYears(response.data.years);
+          setCalendarCurrentDate(currentDate);
+          setLoanForm((current) => ({ ...current, startDate: current.startDate || currentDate }));
+          setDistForm((current) => ({
+            ...current,
+            periodStart: current.periodStart || getNepaliDateRangeForDate(currentDate).startDate,
+            periodEnd: current.periodEnd || currentDate,
+          }));
+          setCalendarReady(true);
+        }
+      })
+      .catch((error) => {
+        console.error("Load configured Nepali date error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          toast.error(message);
+        }
+      });
+
+    return () => { active = false; };
+  }, [calendarRetry, token]);
 
   // ==========================================
   // HANDLERS
@@ -277,12 +320,13 @@ const PartnershipEquity = ({ token }) => {
   // Add Loan / Financing
   const handleSaveLoan = async (e) => {
     e.preventDefault();
+    if (!calendarReady) return toast.error("The configured Nepali calendar is not available.");
     if (!loanForm.investorName || !loanForm.principalAmount) {
       return toast.warn("Lender name and principal amount are required");
     }
 
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, loanForm, {
+      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, { ...loanForm, calendar: "BS" }, {
         headers: { token },
       });
       if (res.data.success) {
@@ -297,7 +341,7 @@ const PartnershipEquity = ({ token }) => {
           principalAmount: "",
           interestRate: "11.5",
           loanTermMonths: "12",
-          startDate: new Date().toISOString().split("T")[0],
+          startDate: calendarCurrentDate,
           depositAccountId: "",
           notes: "",
         });
@@ -359,8 +403,9 @@ const PartnershipEquity = ({ token }) => {
   // Profit Distribution
   const handleProfitDistribution = async (e) => {
     e.preventDefault();
+    if (!calendarReady) return toast.error("The configured Nepali calendar is not available.");
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/profit-distribution`, distForm, {
+      const res = await axios.post(`${backendUrl}/api/finance/profit-distribution`, { ...distForm, calendar: "BS" }, {
         headers: { token },
       });
       if (res.data.success) {
@@ -410,6 +455,18 @@ const PartnershipEquity = ({ token }) => {
 
   return (
     <div className="space-y-8 pb-16 select-none">
+      {calendarError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <span>{calendarError}</span>
+          <button
+            type="button"
+            onClick={() => setCalendarRetry((retry) => retry + 1)}
+            className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-semibold hover:bg-rose-100"
+          >
+            Retry calendar
+          </button>
+        </div>
+      )}
       {/* HEADER */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200/80 shadow-xs">
         <div>
@@ -1752,6 +1809,13 @@ const PartnershipEquity = ({ token }) => {
                 </div>
               </div>
 
+              <NepaliDatePicker
+                label="Loan Start Date"
+                value={loanForm.startDate}
+                onChange={(startDate) => setLoanForm({ ...loanForm, startDate })}
+                calendars={calendarYears}
+              />
+
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   Disburse Principal Into Treasury Account (Capital Inflow)
@@ -1780,6 +1844,7 @@ const PartnershipEquity = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={!calendarReady}
                   className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs"
                 >
                   Register Loan Facility
@@ -1980,26 +2045,18 @@ const PartnershipEquity = ({ token }) => {
             </div>
 
             <form onSubmit={handleProfitDistribution} className="space-y-4 mt-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Period Start</label>
-                  <input
-                    type="date"
-                    value={distForm.periodStart}
-                    onChange={(e) => setDistForm({ ...distForm, periodStart: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-                  />
-                </div>
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Period End</label>
-                  <input
-                    type="date"
-                    value={distForm.periodEnd}
-                    onChange={(e) => setDistForm({ ...distForm, periodEnd: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-                  />
-                </div>
-              </div>
+              <NepaliDatePicker
+                label="Period Start"
+                value={distForm.periodStart}
+                onChange={(periodStart) => setDistForm({ ...distForm, periodStart })}
+                calendars={calendarYears}
+              />
+              <NepaliDatePicker
+                label="Period End"
+                value={distForm.periodEnd}
+                onChange={(periodEnd) => setDistForm({ ...distForm, periodEnd })}
+                calendars={calendarYears}
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2065,6 +2122,7 @@ const PartnershipEquity = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={!calendarReady}
                   className="px-5 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700"
                 >
                   Calculate &amp; Execute

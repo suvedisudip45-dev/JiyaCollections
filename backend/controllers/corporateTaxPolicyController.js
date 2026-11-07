@@ -5,6 +5,7 @@ import {
   createCorporateTaxPolicyVersion,
   listCorporateTaxPolicyVersions,
 } from "../services/corporateIncomeTaxService.js";
+import { resolveCalendarDateInput } from "../services/nepaliFiscalCalendar.js";
 
 const responseError = (res, error, fallbackMessage) => {
   console.error(fallbackMessage, error);
@@ -27,12 +28,13 @@ export const getCorporateTaxPolicyVersionsAdmin = async (_req, res) => {
 export const createCorporateTaxPolicyVersionAdmin = async (req, res) => {
   try {
     const actorId = req.auth?.accountId || req.auth?.userId || null;
+    const effectiveFrom = await resolveCalendarDateInput(req.body?.effectiveFrom, req.body?.calendar);
     const version = await createCorporateTaxPolicyVersion({
       baseRate: req.body?.baseRate,
       fiscalYear: req.body?.fiscalYear,
       brackets: req.body?.brackets,
       rules: req.body?.rules,
-      effectiveFrom: req.body?.effectiveFrom,
+      effectiveFrom,
       createdBy: actorId,
       client: prisma,
       afterCreate: (created, tx) => recordSystemAudit(

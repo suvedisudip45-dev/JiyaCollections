@@ -225,6 +225,13 @@ The application exposes modules such as:
 
 - `/finance`, `/treasury`, `/assets`, `/partners`, `/expenses`, `/tax`
 - `/returns`, `/payables`, `/statements`, `/chart-of-accounts`
+- Finance dashboard and financial statements accept inclusive Bikram Sambat date ranges (`YYYY-MM-DD`); the backend converts them to Asia/Kathmandu day boundaries before filtering reports. Fiscal periods, journal-entry filters/manual journal dates, general ledger, and trial balance use the same configured BS calendar.
+- Fiscal-year creation uses the shared BS year/month/day selectors for its start and end dates; selectable day values follow the configured month lengths.
+- `/nepali-calendar` lets finance-configure admins add a BS year, Gregorian Baisakh 1 date, and all 12 BS month lengths; saved years are immutable to protect historical date labels, and date ranges validate against saved mappings while weekdays derive from Gregorian dates.
+- Tax Compliance uses configured BS selectors for filing periods, paper-bill reporting/issue dates, registration and VAT-rate effective dates, VAT payments/amendments, and corporate-tax policies. It sends date-only BS values with `calendar: "BS"`; the backend performs the authoritative conversion to Kathmandu-day boundaries.
+- Operating expense, payable due-date, and direct-income dates and filters use the configured BS calendar; API requests pass date-only BS values with `calendar: "BS"` and transaction dates are stored at Kathmandu boundaries.
+- Partnership profit-distribution periods and loan start dates use the configured BS date pickers and send date-only values with `calendar: "BS"`; the backend resolves the persisted Gregorian instants using the configured mapping.
+- Fiscal-year setup requires an exact Shrawan 1-to-Ashadh-end BS range. The backend creates its 12 continuous month periods in the same transaction as the fiscal-year record, using configured month lengths and Kathmandu boundaries.
 - `/returns` includes Admin review of distributor-paid customer refund evidence and the separate treasury payout action for the resulting distributor payable.
 - The Admin Returns table shows each returned item's inspection condition and cost split, plus the inventory/cost journal reference. Distributor inspection cost posts are distinct from the later refund/credit-note journal; manufacturer/NCM returns continue showing their combined return journal.
 - Financial Statements' Export / Print action prints only the selected P&L, Balance Sheet, or Cash Flow statement; portal navigation, date controls, banners, and other page content are excluded. The cash-flow estimate warning remains on its printed statement.

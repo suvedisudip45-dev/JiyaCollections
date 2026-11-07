@@ -7,6 +7,10 @@ import {
   listVatFilingRecords,
   recordVatFilingPayment,
 } from "../services/vatFilingService.js";
+import {
+  resolveCalendarDateInput,
+  resolveCalendarDateRangeInput,
+} from "../services/nepaliFiscalCalendar.js";
 
 const responseError = (res, error, fallbackMessage) => {
   console.error(fallbackMessage, error);
@@ -47,11 +51,16 @@ export const getVatAssessmentAdjustmentAccountsAdmin = async (_req, res) => {
 export const createVatFilingDraftAdmin = async (req, res) => {
   try {
     const actorId = getActor(req);
+    const { startDate: periodStart, endDate: periodEnd } = await resolveCalendarDateRangeInput(
+      req.body?.periodStart,
+      req.body?.periodEnd,
+      req.body?.calendar,
+    );
     const record = await createVatFilingDraft({
       filingCadence: req.body?.filingCadence,
       periodKey: req.body?.periodKey,
-      periodStart: req.body?.periodStart,
-      periodEnd: req.body?.periodEnd,
+      periodStart,
+      periodEnd,
       createdBy: actorId,
       afterCreate: (created, tx) => recordSystemAudit(
         { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },
@@ -85,12 +94,13 @@ export const createVatFilingDraftAdmin = async (req, res) => {
 export const fileVatReturnAdmin = async (req, res) => {
   try {
     const actorId = getActor(req);
+    const filedDate = await resolveCalendarDateInput(req.body?.filedDate, req.body?.calendar);
     const record = await fileVatReturn({
       id: req.params.id,
       assessedAmount: req.body?.assessedAmount,
       paymentCreditApplied: req.body?.paymentCreditApplied,
       assessmentAdjustmentAccountId: req.body?.assessmentAdjustmentAccountId,
-      filedDate: req.body?.filedDate,
+      filedDate,
       filedReference: req.body?.filedReference,
       filingEvidenceUrl: req.body?.filingEvidenceUrl,
       adjustmentReason: req.body?.adjustmentReason,
@@ -123,10 +133,11 @@ export const fileVatReturnAdmin = async (req, res) => {
 export const createVatFilingPaymentAdmin = async (req, res) => {
   try {
     const actorId = getActor(req);
+    const paymentDate = await resolveCalendarDateInput(req.body?.paymentDate, req.body?.calendar);
     const record = await recordVatFilingPayment({
       filingRecordId: req.params.id,
       amount: req.body?.amount,
-      paymentDate: req.body?.paymentDate,
+      paymentDate,
       paymentReference: req.body?.paymentReference,
       treasuryAccountId: req.body?.treasuryAccountId,
       idempotencyKey: req.body?.idempotencyKey,
@@ -165,10 +176,11 @@ export const amendVatReturnAdmin = async (req, res) => {
   try {
     const actorId = getActor(req);
     const amendedReference = String(req.body?.amendedReference ?? "").trim();
+    const amendedDate = await resolveCalendarDateInput(req.body?.amendedDate, req.body?.calendar);
     const record = await amendVatReturn({
       id: req.params.id,
       amendedAssessedAmount: req.body?.amendedAssessedAmount,
-      amendedDate: req.body?.amendedDate,
+      amendedDate,
       amendedReference,
       adjustmentAccountId: req.body?.adjustmentAccountId,
       reason: req.body?.reason,

@@ -1,5 +1,6 @@
 import { prisma } from "../config/db.js";
 import { recordSystemAudit } from "../services/auditService.js";
+import { resolveCalendarDateInput } from "../services/nepaliFiscalCalendar.js";
 import {
   cancelFutureVatRateVersion,
   createVatRateVersion,
@@ -34,9 +35,10 @@ export const getVatRateVersions = async (_req, res) => {
 export const createVatRateVersionAdmin = async (req, res) => {
   try {
     const actorId = req.auth?.accountId || req.auth?.userId || null;
+    const effectiveFrom = await resolveCalendarDateInput(req.body?.effectiveFrom, req.body?.calendar);
     const version = await createVatRateVersion({
       vatRate: req.body?.vatRate,
-      effectiveFrom: req.body?.effectiveFrom,
+      effectiveFrom,
       createdBy: actorId,
       client: prisma,
       afterCreate: (created, tx) => recordSystemAudit(
@@ -133,10 +135,11 @@ export const getTaxRegistrationVersionsAdmin = async (_req, res) => {
 export const createTaxRegistrationVersionAdmin = async (req, res) => {
   try {
     const actorId = req.auth?.accountId || req.auth?.userId || null;
+    const effectiveFrom = await resolveCalendarDateInput(req.body?.effectiveFrom, req.body?.calendar);
     const version = await scheduleTaxRegistrationVersion({
       taxStatus: req.body?.taxStatus,
       vatNumber: req.body?.vatNumber,
-      effectiveFrom: req.body?.effectiveFrom,
+      effectiveFrom,
       createdBy: actorId,
       afterCreate: (created, tx) => recordSystemAudit(
         { actorId, actorRole: "ADMIN", portalSource: "ADMIN" },

@@ -4,6 +4,10 @@ import { postExpenseAccounting, postCustomerPaymentAccounting } from "../service
 import { reviewOperatingExpenseInputVat } from "../services/purchaseVatService.js";
 import { recordSystemAudit } from "../services/auditService.js";
 import { checkAccountSolvency } from "./financialController.js";
+import {
+  resolveCalendarDateFilterInput,
+  resolveCalendarDateInput,
+} from "../services/nepaliFiscalCalendar.js";
 
 // Helper: Calculate 13% embedded VAT amount
 const calculateVat = (amount, isVatBill, customVat) => {
@@ -166,6 +170,7 @@ export const createExpense = async (req, res) => {
       dueDate,
       priority = "MEDIUM",
       notes,
+      calendar,
     } = req.body;
 
     if (!title || !category || amount === undefined || amount === null || amount === "") {
@@ -191,7 +196,9 @@ export const createExpense = async (req, res) => {
     if (evidence.length > 5000 || (evidence && !isHttpUrl(evidence))) {
       return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_EVIDENCE", message: "Supplier invoice evidence must be a valid HTTP or HTTPS URL no longer than 5,000 characters." });
     }
-    const expenseDate = date ? new Date(date) : new Date();
+    const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : new Date();
+    const resolvedDueDate = dueDate ? await resolveCalendarDateInput(dueDate, calendar) : null;
+    const expenseDate = new Date(resolvedDate);
     if (Number.isNaN(expenseDate.getTime())) {
       return res.status(400).json({ success: false, code: "INVALID_EXPENSE_DATE", message: "Enter a valid expense and invoice date." });
     }
@@ -294,7 +301,7 @@ export const createExpense = async (req, res) => {
           totalAmount: numAmount,
           paidAmount: 0,
           remainingBalance: numAmount,
-          dueDate: dueDate ? new Date(dueDate) : null,
+          dueDate: resolvedDueDate ? new Date(resolvedDueDate) : null,
           invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
           priority: priority || "MEDIUM",
           status: "UNPAID",
@@ -346,7 +353,11 @@ export const createExpense = async (req, res) => {
     res.json({ success: false, message: "Invalid payment status specified" });
   } catch (error) {
     console.error("createExpense error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_ERROR",
+      message: error.message || "Expense could not be recorded.",
+    });
   }
 };
 
@@ -355,8 +366,9 @@ export const createExpense = async (req, res) => {
 // ==========================================
 export const getExpenses = async (req, res) => {
   try {
-    const { category, paymentStatus, startDate, endDate, search } = req.query;
+    const { category, paymentStatus, startDate, endDate, search, calendar } = req.query;
     const pagination = getPagination(req.query);
+    const dateRange = await resolveCalendarDateFilterInput(startDate, endDate, calendar);
 
     const where = {};
 
@@ -370,8 +382,8 @@ export const getExpenses = async (req, res) => {
 
     if (startDate || endDate) {
       where.date = {};
-      if (startDate) where.date.gte = new Date(startDate);
-      if (endDate) where.date.lte = new Date(endDate);
+      if (dateRange.startDate) where.date.gte = dateRange.startDate;
+      if (dateRange.endDate) where.date.lte = dateRange.endDate;
     }
 
     if (search) {
@@ -418,7 +430,11 @@ export const getExpenses = async (req, res) => {
     });
   } catch (error) {
     console.error("getExpenses error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_QUERY_ERROR",
+      message: error.message || "Expenses could not be loaded.",
+    });
   }
 };
 
@@ -445,9 +461,11 @@ export const updateExpense = async (req, res) => {
       vendorName,
       invoiceNumber,
       notes,
+      calendar,
     } = req.body;
 
     const numAmount = amount !== undefined ? Math.max(0, Number(amount)) : existing.amount;
+    const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : null;
     const vatBill = isVatBill !== undefined ? isVatBill === true || isVatBill === "true" : existing.isVatBill;
     const computedVat = calculateVat(numAmount, vatBill, vatAmount);
     if (existing.purchaseVatStatus === "VERIFIED") {
@@ -504,7 +522,7 @@ export const updateExpense = async (req, res) => {
           purchaseVatReviewReason: null,
           purchaseVatJournalEntryId: null,
         } : {}),
-        ...(date && { date: new Date(date) }),
+        ...(resolvedDate && { date: new Date(resolvedDate) }),
         ...(paymentMethod && { paymentMethod }),
         ...(vendorName !== undefined && { vendorName: vendorName ? vendorName.trim() : null }),
         ...(invoiceNumber !== undefined && { invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null }),
@@ -515,7 +533,11 @@ export const updateExpense = async (req, res) => {
     res.json({ success: true, message: "Expense updated successfully!", expense: updated });
   } catch (error) {
     console.error("updateExpense error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_ERROR",
+      message: error.message || "Expense could not be updated.",
+    });
   }
 };
 
@@ -581,13 +603,14 @@ export const reviewExpenseInputVat = async (req, res) => {
 // GET Expense Summary Breakdown
 export const getExpenseSummary = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, calendar } = req.query;
+    const dateRange = await resolveCalendarDateFilterInput(startDate, endDate, calendar);
 
     const where = {};
     if (startDate || endDate) {
       where.date = {};
-      if (startDate) where.date.gte = new Date(startDate);
-      if (endDate) where.date.lte = new Date(endDate);
+      if (dateRange.startDate) where.date.gte = dateRange.startDate;
+      if (dateRange.endDate) where.date.lte = dateRange.endDate;
     }
 
     const allExpenses = await prisma.operatingExpense.findMany({ where });
@@ -627,7 +650,11 @@ export const getExpenseSummary = async (req, res) => {
     });
   } catch (error) {
     console.error("getExpenseSummary error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "EXPENSE_QUERY_ERROR",
+      message: error.message || "Expense summary could not be loaded.",
+    });
   }
 };
 
@@ -636,7 +663,7 @@ export const getExpenseSummary = async (req, res) => {
 // ==========================================
 export const createDirectIncome = async (req, res) => {
   try {
-    const { title, category, amount, toAccountId, payerName, invoiceNumber, date, notes } = req.body;
+    const { title, category, amount, toAccountId, payerName, invoiceNumber, date, notes, calendar } = req.body;
 
     if (!title || !amount || !toAccountId) {
       return res.json({ success: false, message: "Title, Amount, and Deposit Account are required." });
@@ -652,7 +679,11 @@ export const createDirectIncome = async (req, res) => {
       return res.json({ success: false, message: "Selected deposit account not found." });
     }
 
-    const incomeDate = date ? new Date(date) : new Date();
+    const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : new Date();
+    const incomeDate = new Date(resolvedDate);
+    if (Number.isNaN(incomeDate.getTime())) {
+      return res.status(400).json({ success: false, code: "INVALID_INCOME_DATE", message: "Enter a valid income date." });
+    }
     const finalPayerName = (payerName || "Customer / Buyer").trim();
     const incomeCategory = (category || "DIRECT_SALES").toUpperCase();
 
@@ -707,14 +738,19 @@ export const createDirectIncome = async (req, res) => {
     });
   } catch (error) {
     console.error("createDirectIncome error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "INCOME_ERROR",
+      message: error.message || "Income could not be recorded.",
+    });
   }
 };
 
 export const getDirectIncomes = async (req, res) => {
   try {
-    const { category, startDate, endDate, search } = req.query;
+    const { category, startDate, endDate, search, calendar } = req.query;
     const pagination = getPagination(req.query);
+    const dateRange = await resolveCalendarDateFilterInput(startDate, endDate, calendar);
 
     const where = {};
 
@@ -724,8 +760,8 @@ export const getDirectIncomes = async (req, res) => {
 
     if (startDate || endDate) {
       where.date = {};
-      if (startDate) where.date.gte = new Date(startDate);
-      if (endDate) where.date.lte = new Date(endDate);
+      if (dateRange.startDate) where.date.gte = dateRange.startDate;
+      if (dateRange.endDate) where.date.lte = dateRange.endDate;
     }
 
     if (search) {
@@ -758,6 +794,10 @@ export const getDirectIncomes = async (req, res) => {
     });
   } catch (error) {
     console.error("getDirectIncomes error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "INCOME_QUERY_ERROR",
+      message: error.message || "Income records could not be loaded.",
+    });
   }
 };

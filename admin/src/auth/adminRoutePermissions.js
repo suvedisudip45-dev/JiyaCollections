@@ -5,6 +5,7 @@ export const ADMIN_ROUTE_PERMISSIONS = {
   "/partners": ["finance:captable_read", "finance:partnership_read"],
   "/expenses": ["expense:read", "expense:summary_read", "finance:income_read"],
   "/tax": ["finance:tax_report_read"],
+  "/nepali-calendar": ["finance:tax_configure"],
   "/returns": ["returns:supplier_read", "returns:customer_read", "returns:admin_refund", "exchange:admin_read", "finance:treasury_read"],
   "/payables": ["finance:payables_read"],
   "/statements": ["finance:statements_read", "accounting:statements_read"],

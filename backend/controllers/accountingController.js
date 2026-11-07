@@ -7,7 +7,12 @@ import {
 } from "../services/accountingPostingEngine.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { buildTreasuryGlReconciliation } from "../services/treasuryAccountingService.js";
-import { getNepaliFiscalPeriod } from "../services/nepaliFiscalCalendar.js";
+import {
+  getConfiguredNepaliDateRange,
+  getConfiguredNepaliFiscalPeriod,
+  getConfiguredNepaliFiscalYear,
+  getNepaliCalendarYears,
+} from "../services/nepaliFiscalCalendar.js";
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import { buildPartySubledgerReconciliation } from "../services/partySubledgerReconciliationService.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
@@ -138,9 +143,12 @@ export const getJournalEntries = async (req, res) => {
     if (sourceType) where.sourceType = sourceType;
     if (status) where.status = status;
     if (startDate && endDate) {
+      const dateRange = req.query.calendar === "BS"
+        ? await getConfiguredNepaliDateRange(startDate, endDate)
+        : { startDate: new Date(startDate), endDate: getNepalDateBoundary(endDate, true) };
       where.transactionDate = {
-        gte: new Date(startDate),
-        lte: new Date(new Date(endDate).setHours(23, 59, 59, 999)),
+        gte: dateRange.startDate,
+        lte: dateRange.endDate,
       };
     }
     if (search) {
@@ -212,7 +220,9 @@ export const createManualJournalEntry = async (req, res) => {
     }
 
     const result = await postJournalEntry({
-      transactionDate: transactionDate ? new Date(transactionDate) : new Date(),
+      transactionDate: req.body?.calendar === "BS" && transactionDate
+        ? (await getConfiguredNepaliDateRange(transactionDate, transactionDate)).startDate
+        : transactionDate ? new Date(transactionDate) : new Date(),
       sourceType: "MANUAL_JOURNAL",
       sourceId: `MANUAL-${Date.now()}`,
       referenceNumber: referenceNumber || "",
@@ -274,8 +284,13 @@ export const getGeneralLedgerReport = async (req, res) => {
       return res.json({ success: false, message: "Selected account not found." });
     }
 
-    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = endDate ? getNepalDateBoundary(endDate, true) : new Date();
+    const nepaliRange = req.query.calendar === "BS" && startDate && endDate
+      ? await getConfiguredNepaliDateRange(startDate, endDate)
+      : null;
+    const start = nepaliRange?.startDate || (startDate
+      ? getNepalDateBoundary(startDate)
+      : (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart);
+    const end = nepaliRange?.endDate || (endDate ? getNepalDateBoundary(endDate, true) : new Date());
 
     // 1. Calculate Opening Balance prior to startDate
     const priorLines = await prisma.journalLine.findMany({
@@ -393,12 +408,14 @@ export const getTrialBalanceReport = async (req, res) => {
   try {
     const { startDate, endDate, asOfDate } = req.query;
 
-    const start = startDate ? getNepalDateBoundary(startDate) : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = asOfDate
-      ? getNepalDateBoundary(asOfDate, true)
-      : endDate
-      ? getNepalDateBoundary(endDate, true)
-      : new Date();
+    const reportEndDate = asOfDate || endDate;
+    const nepaliRange = req.query.calendar === "BS" && startDate && reportEndDate
+      ? await getConfiguredNepaliDateRange(startDate, reportEndDate)
+      : null;
+    const start = nepaliRange?.startDate || (startDate
+      ? getNepalDateBoundary(startDate)
+      : (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart);
+    const end = nepaliRange?.endDate || (reportEndDate ? getNepalDateBoundary(reportEndDate, true) : new Date());
 
     const accounts = await prisma.account.findMany({
       orderBy: { accountCode: "asc" },
@@ -557,10 +574,13 @@ export const getRealtimeFinancialStatements = async (req, res) => {
       return new Date(startOfDay + (isEndOfDay ? 24 * 60 * 60 * 1000 - 1 : 0));
     };
 
-    const start = startDate
+    const nepaliRange = req.query.calendar === "BS" && (startDate || endDate)
+      ? await getConfiguredNepaliDateRange(startDate, endDate)
+      : null;
+    const start = nepaliRange?.startDate || (startDate
       ? parseDateBoundary(startDate, false)
-      : getNepaliFiscalPeriod(new Date()).fiscalYearStart;
-    const end = endDate ? parseDateBoundary(endDate, true) : new Date();
+      : (await getConfiguredNepaliFiscalPeriod(new Date())).fiscalYearStart);
+    const end = nepaliRange?.endDate || (endDate ? parseDateBoundary(endDate, true) : new Date());
 
     const [allAccounts, journalLines] = await Promise.all([
       prisma.account.findMany(),
@@ -577,7 +597,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         },
       }),
     ]);
-    const balanceSheetFiscalYearStart = getNepaliFiscalPeriod(end).fiscalYearStart;
+    const balanceSheetFiscalYearStart = (await getConfiguredNepaliFiscalPeriod(end)).fiscalYearStart;
 
     // Compute Net Activity per account for (1) Cumulative and (2) In-Period
     const accountPeriodMap = {};
@@ -904,7 +924,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
     });
   } catch (error) {
     console.error("Get Realtime Financial Statements Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 
@@ -1277,24 +1297,46 @@ export const getFiscalYearsAndPeriods = async (req, res) => {
 
 export const createFiscalYear = async (req, res) => {
   try {
-    const { name, startDate, endDate } = req.body;
+    const { name, startDate, endDate, calendar } = req.body;
     if (!name || !startDate || !endDate) {
-      return res.json({ success: false, message: "Fiscal Year Name, Start Date, and End Date are required." });
+      return res.status(400).json({ success: false, message: "Fiscal Year Name, BS start date, and BS end date are required." });
     }
-
-    const fy = await prisma.fiscalYear.create({
-      data: {
-        name: name.trim(),
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        status: "OPEN",
-      },
+    if (calendar && String(calendar).trim().toUpperCase() !== "BS") {
+      return res.status(400).json({
+        success: false,
+        message: "Fiscal year dates must use the BS calendar.",
+        code: "INVALID_CALENDAR",
+      });
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      const calendars = await getNepaliCalendarYears(tx);
+      const fiscalYear = await getConfiguredNepaliFiscalYear(startDate, endDate, calendars);
+      const record = await tx.fiscalYear.create({
+        data: {
+          name: name.trim(),
+          startDate: fiscalYear.fiscalYearStart,
+          endDate: fiscalYear.fiscalYearEnd,
+          status: "OPEN",
+        },
+      });
+      await tx.accountingPeriod.createMany({
+        data: fiscalYear.periods.map((period) => ({
+          ...period,
+          fiscalYearId: record.id,
+        })),
+      });
+      return { fiscalYear: record, periodCount: fiscalYear.periods.length };
     });
 
-    res.json({ success: true, message: "Fiscal Year created successfully.", fiscalYear: fy });
+    res.json({
+      success: true,
+      message: `Fiscal Year created successfully with ${result.periodCount} BS accounting periods.`,
+      fiscalYear: result.fiscalYear,
+      periodCount: result.periodCount,
+    });
   } catch (error) {
     console.error("Create Fiscal Year Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message, code: error.code });
   }
 };
 

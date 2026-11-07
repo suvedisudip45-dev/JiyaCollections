@@ -207,6 +207,25 @@ test("duplicate bill numbers and invalid report periods are rejected", async () 
   );
 });
 
+test("order report preserves preconverted BS Kathmandu boundaries", async () => {
+  const start = new Date("2023-04-14T18:15:00.000Z");
+  const end = new Date("2023-05-15T18:14:59.999Z");
+  let dateFilter;
+  const client = {
+    order: {
+      findMany: async ({ where }) => {
+        dateFilter = where.date;
+        return [];
+      },
+    },
+  };
+  await listPaperBillOrderReport({ from: start, to: end, client });
+  assert.deepEqual(dateFilter, {
+    gte: BigInt(start.getTime()),
+    lte: BigInt(end.getTime()),
+  });
+});
+
 test("order report filters VAT bills separately for the selected order-date period", async () => {
   const orders = [
     {

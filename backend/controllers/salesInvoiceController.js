@@ -3,6 +3,7 @@ import {
   listSalesInvoices,
   recordPaperSalesInvoice,
 } from "../services/salesInvoiceService.js";
+import { resolveCalendarDateInput } from "../services/nepaliFiscalCalendar.js";
 
 const responseError = (res, error, fallbackMessage) => {
   console.error(fallbackMessage, error);
@@ -25,10 +26,11 @@ export const getSalesInvoicesAdmin = async (_req, res) => {
 export const recordPaperSalesInvoiceAdmin = async (req, res) => {
   try {
     const actorId = req.auth?.accountId || req.auth?.userId || null;
+    const issueDate = await resolveCalendarDateInput(req.body?.issueDate, req.body?.calendar);
     const record = await recordPaperSalesInvoice({
       id: req.params.id,
       invoiceNumber: req.body?.invoiceNumber,
-      issueDate: req.body?.issueDate,
+      issueDate,
       evidenceUrl: req.body?.evidenceUrl,
       issuedBy: actorId,
       afterIssue: (before, updated, tx) => recordSystemAudit(

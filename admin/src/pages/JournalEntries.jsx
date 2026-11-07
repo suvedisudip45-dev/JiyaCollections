@@ -1,10 +1,11 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
 import Pagination from "../components/Pagination";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
+import { formatNepaliDate } from "../utils/nepaliDate";
 
 const SOURCE_TYPE_BADGES = {
   SALES_INVOICE: "bg-blue-50 text-blue-700 border-blue-200",
@@ -36,12 +37,14 @@ const JournalEntries = ({ token }) => {
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState(null);
   const [accountingPostingStatus, setAccountingPostingStatus] = useState(null);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const calendarDateInitialized = useRef(false);
 
   // Manual Journal Entry Modal State
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualDescription, setManualDescription] = useState("");
   const [manualReference, setManualReference] = useState("");
-  const [manualDate, setManualDate] = useState(new Date().toISOString().split("T")[0]);
+  const [manualDate, setManualDate] = useState(() => formatNepaliDate(new Date()));
   const [lines, setLines] = useState([
     { accountId: "", debit: "", credit: "", description: "" },
     { accountId: "", debit: "", credit: "", description: "" },
@@ -58,6 +61,7 @@ const JournalEntries = ({ token }) => {
       const params = {
         page,
         limit: 15,
+        calendar: "BS",
       };
       if (sourceTypeFilter !== "ALL") params.sourceType = sourceTypeFilter;
       if (statusFilter !== "ALL") params.status = statusFilter;
@@ -65,12 +69,13 @@ const JournalEntries = ({ token }) => {
       if (startDate) params.startDate = startDate;
       if (endDate) params.endDate = endDate;
 
-      const [entriesRes, accountsRes] = await Promise.all([
+      const [entriesRes, accountsRes, calendarRes] = await Promise.all([
         axios.get(`${backendUrl}/api/accounting/journal-entries`, {
           headers: { token },
           params,
         }),
         axios.get(`${backendUrl}/api/accounting/chart-of-accounts`, { headers: { token } }),
+        axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } }),
       ]);
 
       if (entriesRes.data.success) {
@@ -82,6 +87,12 @@ const JournalEntries = ({ token }) => {
       }
       if (accountsRes.data.success) {
         setAccounts(accountsRes.data.accounts || []);
+      }
+      if (!calendarRes.data?.success) throw new Error(calendarRes.data?.message || "Could not load the configured Nepali calendar.");
+      setCalendarYears(calendarRes.data.years || []);
+      if (calendarRes.data.currentDate && !calendarDateInitialized.current) {
+        setManualDate(calendarRes.data.currentDate);
+        calendarDateInitialized.current = true;
       }
     } catch (err) {
       console.error(err);
@@ -146,6 +157,7 @@ const JournalEntries = ({ token }) => {
     try {
       const payload = {
         transactionDate: manualDate,
+        calendar: "BS",
         description: manualDescription.trim() || "Manual Journal Entry",
         referenceNumber: manualReference.trim() || "",
         lines: lines.map((l) => ({
@@ -412,7 +424,7 @@ const JournalEntries = ({ token }) => {
                         {ent.description || ent.memo || "Double-entry Posting"}
                       </div>
                       <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-3">
-                        <span>Date: {txDate ? new Date(txDate).toLocaleDateString("en-NP", { year: "numeric", month: "short", day: "numeric" }) : "—"}</span>
+                        <span>Date (BS): {txDate ? formatNepaliDate(txDate, calendarYears) : "—"}</span>
                         {ent.referenceNumber && <span>• Ref: <strong className="text-slate-600 font-mono">{ent.referenceNumber}</strong></span>}
                         {ent.createdBy && <span>• By: {ent.createdBy}</span>}
                       </div>
@@ -525,7 +537,10 @@ const JournalEntries = ({ token }) => {
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1">Posting Date *</label>
                   <input
-                    type="date"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                    placeholder="2083-04-01"
                     required
                     value={manualDate}
                     onChange={(e) => setManualDate(e.target.value)}

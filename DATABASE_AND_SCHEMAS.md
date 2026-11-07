@@ -30,7 +30,7 @@ The schema currently contains a large multi-domain model set, including auth, pr
 | Inventory | `InventorySku`, `InventoryLocation`, `InventoryBalance`, `InventoryLedgerEntry`, `DistributorStockReturn`, `DistributorStockReturnLine`, `DistributorStockReturnCollection`, `DistributorStockReturnCollectionLine`, `DistributorStockReturnInspection`, `DistributorStockReturnInspectionLine`, `DistributorStockReturnEvent`, `ManufacturerInventory`, `DistributorGiftInventory`, `ManufacturerGiftInventory`, `GiftMovementLog`, `DistributorGiftMovementLog`, `StockLog`, `InboundShipment` | distributor hub product stock uses the ledger; dead-stock retrieval custody and inspection are separate from customer returns and replenishment transfers; legacy manufacturer product/gift records remain distinct |
 | Marketing | `MarketingCampaign`, `MarketingCardBatch`, `MarketingCard`, `MarketingCardCustomer`, `MarketingBenefit`, `MarketingBenefitRedemption` | campaigns, cards, benefits |
 | Legacy collaboration history | `CollaborationProduct`, `CollaborationTermsVersion`, `CollaborationSale`, `CollaborationFeeInvoice`, `CollaborationFeeInvoiceLine` | retained collaboration agreements, sales, invoices, and accounting history; new collaboration activity is disabled |
-| Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord` | double-entry accounting and operational finance |
+| Finance & accounting | `FinancialAccount`, `Account`, `JournalEntry`, `JournalLine`, `AccountPayable`, `AccountReceivable`, `TaxConfiguration`, `VatRateVersion`, `CorporateTaxPolicyVersion`, `TaxFilingRecord`, `NepaliCalendarYear` | double-entry accounting and operational finance; admin-defined BS year mappings link month lengths to a Gregorian Baisakh 1 date |
 | Delivery / NCM | `NcmRequestAttempt`, `NcmWebhookEvent`, `NcmSupportTicket`, `DeliveryOrder`, `DeliveryFinancialSettlement` | carrier submission, reconciliation, locally indexed NCM support tickets, and carrier-fee settlement |
 | Access & notifications | `Notification`, `NotificationAttempt`, `NotificationEvent`, `NotificationOutbox`, `AccessManagementAuditLog`, `SystemAuditLog`, `SystemAuditOutbox` | paging, notifications, access governance, and cross-domain audit events |
 | Platform configuration | `PlatformFeatureConfig`, `StorefrontContentConfig`, `CustomerTermsAcceptance` | singleton admin-managed customer-facing content; optional HTTPS `logoImage` is shared by the storefront header/footer, alongside retained, versioned customer Terms & Conditions acceptance events |
@@ -295,6 +295,7 @@ The schema includes a full accounting engine with:
 - `TaxFilingRecord`
 - `TaxFilingPayment`
 - `TaxFilingAmendment`
+- `NepaliCalendarYear`
 - `SellerTaxProfile`
 - `TaxRegistrationVersion`
 - `SalesInvoice`
@@ -307,6 +308,8 @@ The schema includes a full accounting engine with:
 - `SettlementReversion`
 
 This layer indicates the platform is designed beyond simple ecommerce transactions and includes operational finance, AP/AR, and reporting.
+
+`NepaliCalendarYear` stores one BS year, the Gregorian date corresponding to Baisakh 1, and 12 month lengths in Baisakh-to-Chaitra order. The calendar service derives every later AD date (and weekday) from these values. Configure consecutive years with continuous, non-overlapping AD dates. Saved mappings are immutable: creation is serializable and audited, identical retries are idempotent, and changed definitions are rejected so prior reports cannot be silently relabeled. Calendar correction requires a separately approved, audited correction process. Apply `20261107090000_nepali_calendar_years` and regenerate Prisma Client before using the Admin Nepali Calendar or configured BS finance date ranges. Financial and tax APIs accept date-only BS values with `calendar: "BS"` and convert them to Gregorian `DateTime` instants at Asia/Kathmandu day boundaries; persisted transaction dates remain Gregorian instants rather than BS strings.
 
 `ManufacturerProductionRequest.approvedUnitCogs` is the approved base unit COGS. New requests use `costTermsVersion = 2`: `approvedDeliveryCost` stores batch-total production other cost, allocated over actual good units and included in `ManufacturerInventoryCostLayer.unitCogs` (14 decimal places so the batch total is not prematurely rounded); new layers have zero separate delivery overhead. Existing version-1 requests keep their legacy per-unit `approvedDeliveryCost` interpretation, stored as `unitDeliveryCost`. New manufacturer registration requires a 9-digit PAN or VAT number; the production request snapshots this supplier identity at approval so later profile edits do not rewrite the payable bill's tax identity.
 

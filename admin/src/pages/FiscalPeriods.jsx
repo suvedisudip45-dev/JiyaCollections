@@ -1,20 +1,29 @@
 /* eslint-disable react/prop-types */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl } from "../App";
+import { formatNepaliDate, getNepaliMonthLength } from "../utils/nepaliDate";
+import NepaliDatePicker from "../components/NepaliDatePicker";
 
 const FiscalPeriods = ({ token }) => {
   const [fiscalYears, setFiscalYears] = useState([]);
+  const [calendarYears, setCalendarYears] = useState([]);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const initialBsDate = formatNepaliDate(new Date());
+  const [initialYear, initialMonth] = initialBsDate.split("-").map(Number);
+  const initialFiscalStartYear = initialMonth >= 4 ? initialYear : initialYear - 1;
   const [newFyForm, setNewFyForm] = useState({
-    name: `FY ${new Date().getFullYear()}/${new Date().getFullYear() + 1}`,
-    startDate: `${new Date().getFullYear()}-01-01`,
-    endDate: `${new Date().getFullYear()}-12-31`,
+    name: `FY ${initialFiscalStartYear}/${initialFiscalStartYear + 1}`,
+    startDate: `${initialFiscalStartYear}-04-01`,
+    endDate: `${initialFiscalStartYear + 1}-03-${String(getNepaliMonthLength(initialFiscalStartYear + 1, 3)).padStart(2, "0")}`,
   });
 
-  const fetchFiscalYears = async () => {
+  const fetchFiscalYears = useCallback(async () => {
     try {
       setLoading(true);
       const res = await axios.get(`${backendUrl}/api/accounting/fiscal-years`, {
@@ -31,14 +40,53 @@ const FiscalPeriods = ({ token }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token]);
 
   useEffect(() => {
     if (token) fetchFiscalYears();
-  }, [token]);
+  }, [fetchFiscalYears, token]);
+
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (!active) return;
+        const years = response.data.years || [];
+        const currentDate = response.data.currentDate;
+        const [year, month] = currentDate.split("-").map(Number);
+        const startYear = month >= 4 ? year : year - 1;
+        const endMonthLength = getNepaliMonthLength(startYear + 1, 3, years);
+        setCalendarYears(years);
+        setNewFyForm({
+          name: `FY ${startYear}/${startYear + 1}`,
+          startDate: `${startYear}-04-01`,
+          endDate: `${startYear + 1}-03-${String(endMonthLength).padStart(2, "0")}`,
+        });
+        setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load configured fiscal calendar error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          toast.error(message);
+        }
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
 
   const handleCreateFiscalYear = async (e) => {
     e.preventDefault();
+    if (!calendarReady) {
+      toast.error("The configured Nepali calendar is not available.");
+      return;
+    }
     if (!newFyForm.name || !newFyForm.startDate || !newFyForm.endDate) {
       toast.warn("Fiscal Year Name, Start Date, and End Date are required.");
       return;
@@ -47,7 +95,7 @@ const FiscalPeriods = ({ token }) => {
     try {
       const res = await axios.post(
         `${backendUrl}/api/accounting/create-fiscal-year`,
-        newFyForm,
+        { ...newFyForm, calendar: "BS" },
         { headers: { token } }
       );
       if (res.data.success) {
@@ -85,6 +133,18 @@ const FiscalPeriods = ({ token }) => {
 
   return (
     <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
+      {calendarError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+          <span>{calendarError}</span>
+          <button
+            type="button"
+            onClick={() => setCalendarRetry((retry) => retry + 1)}
+            className="rounded-lg border border-rose-300 bg-white px-3 py-1.5 font-semibold hover:bg-rose-100"
+          >
+            Retry calendar
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
@@ -110,6 +170,7 @@ const FiscalPeriods = ({ token }) => {
           </button>
           <button
             onClick={() => setShowCreateModal(true)}
+            disabled={!calendarReady}
             className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shadow-xs flex items-center gap-2 transition-all"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -155,7 +216,7 @@ const FiscalPeriods = ({ token }) => {
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Calendar Range: {new Date(fy.startDate).toLocaleDateString()} — {new Date(fy.endDate).toLocaleDateString()}
+                      Calendar Range (BS): {formatNepaliDate(fy.startDate, calendarYears)} — {formatNepaliDate(fy.endDate, calendarYears)}
                     </p>
                   </div>
 
@@ -201,7 +262,7 @@ const FiscalPeriods = ({ token }) => {
                               </span>
                             </div>
                             <p className="text-[11px] text-slate-400 mt-1">
-                              {period.startDate ? new Date(period.startDate).toLocaleDateString("en-NP", { month: "short", day: "numeric" }) : ""} — {period.endDate ? new Date(period.endDate).toLocaleDateString("en-NP", { month: "short", day: "numeric", year: "numeric" }) : ""}
+                              {period.startDate ? formatNepaliDate(period.startDate, calendarYears) : ""} — {period.endDate ? formatNepaliDate(period.endDate, calendarYears) : ""}
                             </p>
                           </div>
 
@@ -256,38 +317,26 @@ const FiscalPeriods = ({ token }) => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. FY 2026/2027"
+                  placeholder="e.g. FY 2083/2084"
                   value={newFyForm.name}
                   onChange={(e) => setNewFyForm({ ...newFyForm, name: e.target.value })}
                   className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white font-semibold"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Start Date *
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={newFyForm.startDate}
-                    onChange={(e) => setNewFyForm({ ...newFyForm, startDate: e.target.value })}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    End Date *
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={newFyForm.endDate}
-                    onChange={(e) => setNewFyForm({ ...newFyForm, endDate: e.target.value })}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
-                  />
-                </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NepaliDatePicker
+                  label="Start Date"
+                  value={newFyForm.startDate}
+                  calendars={calendarYears}
+                  onChange={(startDate) => setNewFyForm((current) => ({ ...current, startDate }))}
+                />
+                <NepaliDatePicker
+                  label="End Date"
+                  value={newFyForm.endDate}
+                  calendars={calendarYears}
+                  onChange={(endDate) => setNewFyForm((current) => ({ ...current, endDate }))}
+                />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
@@ -300,6 +349,7 @@ const FiscalPeriods = ({ token }) => {
                 </button>
                 <button
                   type="submit"
+                  disabled={!calendarReady}
                   className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl shadow-xs"
                 >
                   Create Calendar

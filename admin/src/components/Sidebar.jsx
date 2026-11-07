@@ -267,11 +267,12 @@ const Sidebar = ({ isOpen = false, onClose }) => {
         <SectionGroup
           label="Platform Settings"
           icon={Icon.ops}
-          requiredPermissions={ADMIN_SECTION_PERMISSIONS.platform}
-          routes={["/platform-features", "/storefront-content"]}
+          requiredPermissions={[...ADMIN_SECTION_PERMISSIONS.platform, "finance:tax_configure"]}
+          routes={["/platform-features", "/storefront-content", "/nepali-calendar"]}
         >
           <NavItem to="/platform-features" icon={Icon.ops} label="Feature Settings" />
           <NavItem to="/storefront-content" icon={Icon.ops} label="Storefront Content" />
+          <NavItem to="/nepali-calendar" icon={Icon.tax} label="Nepali Calendar" />
         </SectionGroup>
 
         <div className="h-px bg-slate-100 my-1" />

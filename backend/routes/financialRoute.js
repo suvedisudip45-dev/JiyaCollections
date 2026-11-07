@@ -71,6 +71,11 @@ import {
   getPaperBillOrderReportAdmin,
   returnPaperBillRangeAdmin,
 } from "../controllers/paperBillController.js";
+import {
+  listNepaliCalendarYears,
+  saveNepaliCalendarYearAdmin,
+} from "../controllers/nepaliCalendarController.js";
+import { authorizeAny } from "../middleware/authorize.js";
 
 const financialRouter = express.Router();
 
@@ -91,6 +96,24 @@ const setFinancialManufacturerContext = (req, res, next) => {
 
 // Executive Analytics & Overview
 financialRouter.get("/dashboard", authenticate, authorize("finance:dashboard_read"), getFinancialAnalyticsDashboard);
+financialRouter.get(
+  "/nepali-calendar/years",
+  authenticate,
+  authorizeAny(
+    "finance:dashboard_read",
+    "finance:statements_read",
+    "finance:tax_report_read",
+    "finance:tax_configure",
+    "accounting:fiscal_years_read",
+    "accounting:journal_read",
+    "accounting:journal_create",
+    "accounting:ledger_read",
+    "accounting:trial_balance_read",
+  ),
+  listNepaliCalendarYears,
+);
+financialRouter.post("/nepali-calendar/years", authenticate, authorize("finance:tax_configure"), saveNepaliCalendarYearAdmin);
+financialRouter.put("/nepali-calendar/years/:year", authenticate, authorize("finance:tax_configure"), saveNepaliCalendarYearAdmin);
 financialRouter.get("/manufacturer-summary", authenticate, authorize("finance:manufacturer_summary"), setFinancialManufacturerContext, getManufacturerFinancialSummary);
 
 // Treasury & Liquid Cash & Expenses

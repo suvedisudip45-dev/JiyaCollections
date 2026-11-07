@@ -489,6 +489,9 @@ const createReviewHarness = () => {
         return { id: "bank-account-1" };
       },
     },
+    nepaliCalendarYear: {
+      findMany: async () => [],
+    },
     fiscalYear: {
       upsert: async () => ({ id: "fy-1", status: "OPEN" }),
     },

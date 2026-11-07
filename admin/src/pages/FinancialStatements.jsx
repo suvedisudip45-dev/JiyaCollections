@@ -1,20 +1,11 @@
-/* eslint-disable no-unused-vars */
-import { useState, useEffect } from "react";
+/* eslint-disable no-unused-vars, react/prop-types */
+import { useCallback, useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import AccountingPostingStatusBanner from "../components/AccountingPostingStatusBanner";
-
-const getNepalDate = (date) => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Kathmandu",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
-  return `${values.year}-${values.month}-${values.day}`;
-};
+import NepaliDateRangePicker from "../components/NepaliDateRangePicker";
+import { getCurrentNepaliDateRange, getNepaliDateRangeForDate } from "../utils/nepaliDate";
 
 const formatPostedAmount = (value) =>
   value === null || value === undefined ? "Unavailable" : `Rs ${Number(value).toLocaleString()}`;
@@ -23,58 +14,132 @@ const FinancialStatements = ({ token }) => {
   const [activeTab, setActiveTab] = useState("PL"); // PL, BS, CF
   const [mode, setMode] = useState("REALTIME"); // REALTIME (from GL) | MONTHLY (Full cash flow & audited)
   const [loading, setLoading] = useState(true);
+  const [calendarReady, setCalendarReady] = useState(false);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarRetry, setCalendarRetry] = useState(0);
+  const [calendars, setCalendars] = useState([]);
+  const [reportError, setReportError] = useState("");
+  const statementRequestId = useRef(0);
 
   // Date filters
-  const [selectedMonth, setSelectedMonth] = useState(() => {
-    return getNepalDate(new Date()).slice(0, 7);
-  });
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState(() => getNepalDate(new Date()));
+  const [dateRange, setDateRange] = useState(() => getCurrentNepaliDateRange({ fiscalYear: true }));
+  const { startDate, endDate } = dateRange;
 
   const [realtimeData, setRealtimeData] = useState(null);
   const [monthlyData, setMonthlyData] = useState(null);
 
-  const fetchStatements = async () => {
+  useEffect(() => {
+    let active = true;
+    setCalendarReady(false);
+    setCalendarError("");
+    setLoading(true);
+    if (!token) return () => { active = false; };
+    axios.get(`${backendUrl}/api/finance/nepali-calendar/years`, { headers: { token } })
+      .then((response) => {
+        if (!response.data?.success || !Array.isArray(response.data.years) || !response.data.currentDate) {
+          throw new Error(response.data?.message || "Could not load the configured Nepali calendar.");
+        }
+        if (active) {
+          setCalendars(response.data.years);
+        }
+        if (active) {
+          setDateRange(getNepaliDateRangeForDate(response.data.currentDate, { fiscalYear: true }));
+        }
+        if (active) setCalendarReady(true);
+      })
+      .catch((error) => {
+        console.error("Load configured Nepali date error:", error);
+        if (active) {
+          const message = error.response?.data?.message || error.message || "Could not load the configured Nepali calendar.";
+          setCalendarError(message);
+          setLoading(false);
+          toast.error(message);
+        }
+      });
+    return () => { active = false; };
+  }, [calendarRetry, token]);
+
+  const fetchStatements = useCallback(async () => {
+    const requestId = ++statementRequestId.current;
     try {
       setLoading(true);
+      setRealtimeData(null);
+      setMonthlyData(null);
+      setReportError("");
       const [rtRes, moRes] = await Promise.all([
         axios.get(`${backendUrl}/api/accounting/financial-statements`, {
           headers: { token },
-          params: { startDate: startDate || undefined, endDate },
-        }).catch(() => ({ data: { success: false } })),
+          params: { startDate, endDate, calendar: "BS" },
+        }),
         axios.get(`${backendUrl}/api/finance/statements`, {
           headers: { token },
-          params: { month: selectedMonth },
-        }).catch(() => ({ data: { success: false } })),
+          params: { startDate, endDate, calendar: "BS" },
+        }),
       ]);
 
-      if (rtRes.data.success) {
-        setRealtimeData(rtRes.data);
+      if (!rtRes.data.success) {
+        throw new Error(rtRes.data.message || "Real-time financial statements could not be loaded.");
       }
-      if (moRes.data.success) {
+      if (!moRes.data.success) {
+        throw new Error(moRes.data.message || "Financial statements could not be loaded.");
+      }
+      if (requestId === statementRequestId.current) {
+        setRealtimeData(rtRes.data);
         setMonthlyData(moRes.data.data);
       }
     } catch (err) {
       console.error(err);
-      toast.error("Failed to load financial statements");
+      if (requestId === statementRequestId.current) {
+        const message = err.response?.data?.message || err.message || "Failed to load financial statements";
+        setReportError(message);
+        toast.error(message);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === statementRequestId.current) setLoading(false);
     }
-  };
+  }, [endDate, startDate, token]);
 
   useEffect(() => {
-    if (token) fetchStatements();
-  }, [token, startDate, endDate, selectedMonth]);
+    if (token && calendarReady) fetchStatements();
+  }, [token, dateRange, calendarReady, fetchStatements]);
+
+  if (calendarError) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{calendarError}</p>
+        <button
+          type="button"
+          onClick={() => setCalendarRetry((attempt) => attempt + 1)}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry calendar
+        </button>
+      </div>
+    );
+  }
 
   // Derive active statements based on data availability
   const rtPl = realtimeData?.incomeStatement || {};
   const rtBs = realtimeData?.balanceSheet || {};
-  const displayedStartDate = startDate || (realtimeData?.period?.start
-    ? getNepalDate(new Date(realtimeData.period.start))
-    : "Nepali fiscal-year start");
+  const displayedStartDate = startDate;
 
   const moPl = monthlyData?.incomeStatement || {};
   const moCf = monthlyData?.cashFlowStatement || {};
+
+  if (reportError && !realtimeData && !monthlyData && !loading) {
+    return (
+      <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
+        <p role="alert" className="text-sm font-semibold text-rose-800">{reportError}</p>
+        <button
+          type="button"
+          onClick={fetchStatements}
+          className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const rtRevenue = rtPl.revenue || {};
   const rtCogs = rtPl.costOfGoodsSold || {};
@@ -207,25 +272,12 @@ const FinancialStatements = ({ token }) => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-            <label className="text-xs font-semibold text-slate-600">From:</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-800 outline-none cursor-pointer"
-            />
-          </div>
-          <div className="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
-            <label className="text-xs font-semibold text-slate-600">To:</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="bg-transparent text-xs font-bold text-slate-800 outline-none cursor-pointer"
-            />
-          </div>
-
+          <NepaliDateRangePicker
+            startDate={dateRange.startDate}
+            endDate={dateRange.endDate}
+            onApply={setDateRange}
+            calendars={calendars}
+          />
           <button
             onClick={handlePrint}
             className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs rounded-xl transition-colors flex items-center gap-1.5 shadow-xs"
@@ -278,7 +330,7 @@ const FinancialStatements = ({ token }) => {
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Profit &amp; Loss</p>
             <p className="text-xs text-slate-500 font-medium mt-1">
-              For Period: {displayedStartDate} to {endDate}
+              For Period: BS {displayedStartDate} to {endDate}
             </p>
           </div>
 
@@ -462,7 +514,7 @@ const FinancialStatements = ({ token }) => {
           <div className="text-center pb-4 border-b border-slate-100">
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Financial Position (Balance Sheet)</p>
-            <p className="text-xs text-slate-500 font-medium mt-1">As of {endDate}</p>
+            <p className="text-xs text-slate-500 font-medium mt-1">As of BS {endDate}</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 text-xs">
@@ -662,7 +714,7 @@ const FinancialStatements = ({ token }) => {
           <div className="text-center pb-4 border-b border-slate-100">
             <h2 className="text-lg font-black text-slate-900">Aama Clothings Inc.</h2>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Cash Flows (Direct Method &amp; Reconciled)</p>
-            <p className="text-xs text-slate-500 font-medium mt-1">For Period: {selectedMonth}</p>
+            <p className="text-xs text-slate-500 font-medium mt-1">For Period: BS {startDate} to {endDate}</p>
           </div>
           <div role="status" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
             Cash flow is an operational estimate and is not yet generated from classified GL cash movements.
