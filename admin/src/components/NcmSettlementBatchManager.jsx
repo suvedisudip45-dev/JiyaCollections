@@ -399,7 +399,12 @@ const NcmSettlementBatchManager = ({ token, onClose, onSettled }) => {
                               <td className="py-2 pl-4" colSpan={2}>{resolution.action.replace(/_/g, " ")} · {formatDeliveredAt(resolution.createdAt)}</td>
                               <td className="text-right">NPR {money(resolution.amount)}</td>
                               <td colSpan={2}>{resolution.reference || "No reference"} · Journal {resolution.journalEntryId}</td>
-                              <td>{resolution.cashTransactionId ? "Cash recorded" : "Applied to open COD"}</td>
+                              <td>{resolution.cashTransactionId ? `Cash ${resolution.cashTransactionId}` : "Applied to open COD"}</td>
+                            </tr>
+                          ))}
+                          {batch.varianceResolutions?.map((resolution) => (
+                            <tr key={`${resolution.id}-notes`} className="bg-slate-50 text-slate-500">
+                              <td colSpan={6} className="pb-2 pl-4">{resolution.notes}</td>
                             </tr>
                           ))}
                           {hasOpenVariance && (

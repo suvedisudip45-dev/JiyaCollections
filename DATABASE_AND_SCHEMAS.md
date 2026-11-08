@@ -136,7 +136,8 @@ reference, notes, journal, optional cash movement, and associated documents.
 The batch's resolved and remaining amounts are derived from those rows, not
 stored as replaceable snapshots. Apply
 `20261107170000_ncm_variance_resolutions` and regenerate Prisma Client before
-using variance resolution.
+using variance resolution. The batch-history API returns the latest 20
+resolution details per batch while deriving totals from all resolution rows.
 
 Admin monitoring lists are paginated and return compact row fields; detail
 routes load bounded event, return, exchange, rating, and settlement sections

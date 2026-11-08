@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   confirmNcmSettlementBatch,
+  listNcmSettlementBatches,
   listNcmSettlementCandidates,
   resolveNcmSettlementVariance,
 } from "../services/ncmSettlementService.js";
@@ -282,6 +283,39 @@ test("NCM settlement candidates are date-filtered and paginated for manual selec
   assert.deepEqual(result.candidates.map(({ id }) => id), ["settlement-b"]);
   assert.equal(result.candidates[0].calculatedNetDeposit, 460);
   assert.deepEqual(result.pagination, { page: 2, limit: 1, total: 2, pages: 2 });
+});
+
+test("NCM batch history bounds resolution details but derives remaining variance from all resolutions", async () => {
+  let resolutionQuery;
+  let batchQuery;
+  const result = await listNcmSettlementBatches({
+    ncmSettlementBatch: {
+      findMany: async (query) => {
+        batchQuery = query;
+        return [{
+          id: "batch-history",
+          varianceAmount: "-100.00",
+          varianceResolutions: [
+            { id: "latest-resolution", amount: "20.00", createdAt: new Date("2026-11-07T00:00:00Z") },
+          ],
+          _count: { items: 2 },
+        }];
+      },
+    },
+    ncmSettlementVarianceResolution: {
+      groupBy: async (query) => {
+        resolutionQuery = query;
+        return [{ batchId: "batch-history", _sum: { amount: "75.00" } }];
+      },
+    },
+  });
+
+  assert.equal(batchQuery.take, 50);
+  assert.equal(batchQuery.include.varianceResolutions.take, 20);
+  assert.equal(resolutionQuery.by[0], "batchId");
+  assert.equal(result.batches[0].resolvedVarianceAmount, "75.00");
+  assert.equal(result.batches[0].remainingVarianceAmount, "25.00");
+  assert.equal(result.batches[0].varianceResolutions[0].id, "latest-resolution");
 });
 
 test("NCM batch posts a net receipt once and atomically claims and links every order", async () => {

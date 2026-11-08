@@ -165,18 +165,30 @@ export const listNcmSettlementBatches = async (client = prisma) => {
     take: 50,
     include: {
       _count: { select: { items: true } },
-      varianceResolutions: { orderBy: { createdAt: "asc" } },
+      varianceResolutions: { orderBy: { createdAt: "desc" }, take: 20 },
     },
   });
+  const batchIds = batches.map(({ id }) => id);
+  const resolvedByBatch = batchIds.length
+    ? await client.ncmSettlementVarianceResolution.groupBy({
+      by: ["batchId"],
+      where: { batchId: { in: batchIds } },
+      _sum: { amount: true },
+    })
+    : [];
+  const resolvedAmounts = new Map(
+    resolvedByBatch.map(({ batchId, _sum }) => [
+      batchId,
+      new Prisma.Decimal(String(_sum.amount || 0)),
+    ]),
+  );
   return {
     success: true,
     batches: batches.map((batch) => {
-      const resolved = batch.varianceResolutions.reduce(
-        (sum, resolution) => sum.plus(new Prisma.Decimal(String(resolution.amount))),
-        new Prisma.Decimal(0),
-      );
+      const resolved = resolvedAmounts.get(batch.id) || new Prisma.Decimal(0);
       return {
         ...batch,
+        varianceResolutions: batch.varianceResolutions.reverse(),
         resolvedVarianceAmount: resolved.toFixed(2),
         remainingVarianceAmount: Prisma.Decimal.max(
           new Prisma.Decimal(String(batch.varianceAmount)).abs().minus(resolved),
