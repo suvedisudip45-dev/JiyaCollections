@@ -1,0 +1,104 @@
+- generic [ref=e3]:
+  - generic "Store announcements" [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e7]: •
+        - text: Made for everyday movement
+      - generic [aria-hidden] [ref=e8]:
+        - text: Free shipping on orders over Rs 3,000
+        - generic [ref=e9]: •
+        - text: Made for everyday movement
+  - navigation [ref=e10]:
+    - generic [ref=e11]:
+      - link "Aama Clothings home" [ref=e12] [cursor=pointer]:
+        - /url: /
+        - img "Aama Clothings" [ref=e13]
+        - generic [ref=e14]: Kathmandu / Nepal
+      - list [ref=e15]:
+        - listitem [ref=e16]:
+          - link "MEN" [ref=e17] [cursor=pointer]:
+            - /url: /shop?category=Men
+        - listitem [ref=e18]:
+          - link "WOMEN" [ref=e19] [cursor=pointer]:
+            - /url: /shop?category=Women
+        - link "Unisex UNISEX" [ref=e20] [cursor=pointer]:
+          - /url: /shop?category=Unisex
+          - generic [ref=e21]: Unisex
+          - generic [ref=e22]: UNISEX
+        - link "New Arrivals" [ref=e23] [cursor=pointer]:
+          - /url: /shop?featured=new
+        - link "Best Sellers" [ref=e24] [cursor=pointer]:
+          - /url: /shop?featured=bestseller
+        - link "The Journal" [ref=e25] [cursor=pointer]:
+          - /url: /about
+      - generic [ref=e26]:
+        - button "Search products" [ref=e27] [cursor=pointer]
+        - button "Account" [ref=e32] [cursor=pointer]
+        - button "Wishlist" [ref=e36] [cursor=pointer]
+        - link "Shopping bag, 0 items" [ref=e39] [cursor=pointer]:
+          - /url: /cart
+          - generic [ref=e43]: "0"
+  - main [ref=e44]:
+    - navigation "Breadcrumb" [ref=e45]:
+      - link "Home" [ref=e47] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e48]: My Orders
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - generic [ref=e55]:
+          - generic [ref=e56]: MY ORDER HISTORY & TRACKING
+          - paragraph [ref=e61]: Track deliveries in real-time, view itemized receipts, and manage your purchase history
+        - button "Refresh Status" [ref=e62] [cursor=pointer]
+      - generic [ref=e67]:
+        - generic [ref=e74]:
+          - paragraph [ref=e75]: Total Orders
+          - heading "2" [level=3] [ref=e76]
+        - generic [ref=e82]:
+          - paragraph [ref=e83]: Total Items
+          - heading "2" [level=3] [ref=e84]
+        - generic [ref=e92]:
+          - paragraph [ref=e93]: In-Transit
+          - heading "1" [level=3] [ref=e94]
+        - generic [ref=e100]:
+          - paragraph [ref=e101]: Delivered
+          - heading "1" [level=3] [ref=e102]
+      - generic [ref=e103]:
+        - generic [ref=e104]:
+          - button "All Orders 2" [ref=e105] [cursor=pointer]:
+            - generic [ref=e106]: All Orders
+            - generic [ref=e107]: "2"
+          - button "In-Transit 1" [ref=e108] [cursor=pointer]:
+            - generic [ref=e109]: In-Transit
+            - generic [ref=e110]: "1"
+          - button "Delivered 1" [ref=e111] [cursor=pointer]:
+            - generic [ref=e112]: Delivered
+            - generic [ref=e113]: "1"
+          - button "Cancelled 0" [ref=e114] [cursor=pointer]:
+            - generic [ref=e115]: Cancelled
+            - generic [ref=e116]: "0"
+        - generic [ref=e117]:
+          - textbox "Search order reference, item name..." [ref=e122]
+          - combobox [ref=e123] [cursor=pointer]:
+            - 'option "Sort: Newest First" [selected]'
+            - 'option "Sort: Oldest First"'
+            - 'option "Sort: Highest Amount"'
+            - 'option "Sort: Lowest Amount"'
+  - contentinfo [ref=e137]:
+    - generic [ref=e138]:
+      - generic [ref=e139]:
+        - img "Aama Collections" [ref=e140]
+        - paragraph [ref=e141]: At Aama Collections, we redefine everyday fashion with a focus on refined structure, confident silhouettes, and long-wearing essentials. Each piece is designed to move seamlessly from daily life to elevated moments, helping you feel polished, comfortable, and effortlessly styled.
+      - generic [ref=e142]:
+        - paragraph [ref=e143]: Company
+        - list [ref=e144]:
+          - listitem [ref=e145]: Home
+          - listitem [ref=e146]: About us
+          - listitem [ref=e147]: Delivery
+          - listitem [ref=e148]: Privacy policy
+      - generic [ref=e149]:
+        - paragraph [ref=e150]: Get in touch
+        - list [ref=e151]:
+          - listitem [ref=e152]: +1-8515-56789
+          - listitem [ref=e153]: contact@aamacollections.com
+    - paragraph [ref=e155]: Copyright 2026 @ Aasha Technologies - All Rights Reserved.

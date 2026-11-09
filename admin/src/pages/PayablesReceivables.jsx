@@ -395,8 +395,10 @@ const PayablesReceivables = ({ token }) => {
     e.preventDefault();
     if (mfgLoading) return;
     const amt=Number(mfgPayForm.amount);
-    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt||!mfgPayForm.externalPaymentReference.trim()) return toast.warn("Manufacturer, amount, payment account, and transfer reference are required");
-    if (mfgPayForm.payoutId && !mfgPayForm.bankEvidenceReference.trim()) return toast.warn("Bank transfer evidence reference is required before confirming settlement.");
+    const externalPaymentReference = String(mfgPayForm.externalPaymentReference ?? "").trim();
+    const bankEvidenceReference = String(mfgPayForm.bankEvidenceReference ?? "").trim();
+    if (!mfgPayForm.manufacturerId||!mfgPayForm.fromAccountId||!amt||!externalPaymentReference) return toast.warn("Manufacturer, amount, payment account, and transfer reference are required");
+    if (mfgPayForm.payoutId && !bankEvidenceReference) return toast.warn("Bank transfer evidence reference is required before confirming settlement.");
     const acc=accounts.find(a=>a.id===mfgPayForm.fromAccountId);
     if (acc&&acc.currentBalance<amt) return toast.warn(`Insufficient liquid cash in ${acc.accountName} (Available: ${fmt(acc.currentBalance)})`);
     
@@ -405,7 +407,7 @@ const PayablesReceivables = ({ token }) => {
       manufacturerId: mfgPayForm.manufacturerId,
       amount: amt,
       fromAccountId: mfgPayForm.fromAccountId,
-      externalPaymentReference: mfgPayForm.externalPaymentReference.trim(),
+      externalPaymentReference,
     });
     try {
       const res = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`,{
@@ -414,9 +416,9 @@ const PayablesReceivables = ({ token }) => {
         amount: amt,
         fromAccountId: mfgPayForm.fromAccountId,
         notes: mfgPayForm.notes,
-        externalPaymentReference: mfgPayForm.externalPaymentReference.trim(),
+        externalPaymentReference,
         payoutId: mfgPayForm.payoutId || undefined,
-        bankEvidenceReference: mfgPayForm.bankEvidenceReference.trim() || undefined,
+        bankEvidenceReference: bankEvidenceReference || undefined,
         idempotencyKey,
       },{headers:{token}});
       if (res.data.success){
@@ -444,7 +446,8 @@ const PayablesReceivables = ({ token }) => {
   };
 
   const failManufacturerPayout = async () => {
-    if (!mfgPayForm.payoutId || !mfgPayForm.failureReason.trim() || mfgLoading) {
+    const failureReason = String(mfgPayForm.failureReason ?? "").trim();
+    if (!mfgPayForm.payoutId || !failureReason || mfgLoading) {
       return toast.warn("Enter why the initiated payout failed.");
     }
     setMfgLoading(true);
@@ -452,7 +455,7 @@ const PayablesReceivables = ({ token }) => {
       const response = await axios.post(`${backendUrl}/api/finance/pay-manufacturer`, {
         action: "FAIL",
         payoutId: mfgPayForm.payoutId,
-        failureReason: mfgPayForm.failureReason.trim(),
+        failureReason,
       }, { headers: { token } });
       if (!response.data?.success) throw new Error(response.data?.message || "Unable to mark payout failed.");
       toast.success("Payout marked failed; its reserved balance was released.");
@@ -558,6 +561,9 @@ const PayablesReceivables = ({ token }) => {
               fromAccountId: accounts[0]?.id || "",
               notes: "",
               externalPaymentReference: "",
+              bankEvidenceReference: "",
+              failureReason: "",
+              payoutId: "",
               partial: false,
             });
           }} className="px-3 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 flex items-center gap-1.5 shadow-sm cursor-pointer">
@@ -839,6 +845,9 @@ const PayablesReceivables = ({ token }) => {
                                     fromAccountId: accounts[0]?.id || "",
                                     notes: `Approved COGS settlement for ${m.name}`,
                                     externalPaymentReference: "",
+                                    bankEvidenceReference: "",
+                                    failureReason: "",
+                                    payoutId: "",
                                     partial: false,
                                   });
                                 }}

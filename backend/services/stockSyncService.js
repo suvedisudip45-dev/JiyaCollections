@@ -1,5 +1,8 @@
 import { prisma } from "../config/db.js";
 
+const STOCK_SYNC_PAGE_SIZE = 100;
+const STOCK_SYNC_CONCURRENCY = 4;
+
 const normalizeVariantKey = (size, color) =>
   JSON.stringify([
     String(size || "Standard").trim().replace(/\s+/g, " ").toLowerCase(),
@@ -90,9 +93,40 @@ export const syncProductStock = async (productId, { client = prisma, throwOnErro
 /**
  * Sync stock for all products in DB
  */
-export const syncAllProductsStock = async () => {
-  const products = await prisma.product.findMany({ select: { id: true } });
-  await Promise.all(products.map((product) =>
-    syncProductStock(product.id, { throwOnError: true })
-  ));
+export const syncAllProductsStock = async ({
+  client = prisma,
+  pageSize = STOCK_SYNC_PAGE_SIZE,
+  concurrency = STOCK_SYNC_CONCURRENCY,
+} = {}) => {
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
+    throw new TypeError("Stock sync pageSize must be a positive safe integer.");
+  }
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new TypeError("Stock sync concurrency must be a positive safe integer.");
+  }
+
+  let cursor;
+  let syncedCount = 0;
+  while (true) {
+    const products = await client.product.findMany({
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: pageSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (products.length === 0) break;
+
+    for (let index = 0; index < products.length; index += concurrency) {
+      const batch = products.slice(index, index + concurrency);
+      await Promise.all(batch.map(({ id }) =>
+        syncProductStock(id, { client, throwOnError: true })
+      ));
+      syncedCount += batch.length;
+    }
+
+    if (products.length < pageSize) break;
+    cursor = products[products.length - 1].id;
+  }
+
+  return syncedCount;
 };

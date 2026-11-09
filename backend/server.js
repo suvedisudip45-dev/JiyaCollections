@@ -56,6 +56,12 @@ import { ensureStandardChartOfAccounts } from "./services/accountingPostingEngin
 import { startDeliveryAccountingOutboxWorker } from "./services/accountingOutboxService.js";
 import { startSystemAuditOutboxWorker } from "./services/auditService.js";
 import { syncAllProductsStock } from "./services/stockSyncService.js";
+import {
+  createReadinessHandler,
+  livenessHandler,
+  markApplicationInitialized,
+  setStockProjectionStatus,
+} from "./services/runtimeStatus.js";
 import { invalidatePrismaQueryCache } from "./utils/prismaQueryCache.js";
 import { verifyRequestSignature } from "./middleware/verifyRequestSignature.js";
 
@@ -69,13 +75,27 @@ const startServer = async () => {
   if (!connected) throw new Error("Database connection is required before startup.");
   await connectCloudinary();
   await ensureStandardChartOfAccounts();
-  await syncAllProductsStock();
   startSystemAuditOutboxWorker();
   startDeliveryAccountingOutboxWorker();
 
+  markApplicationInitialized();
+  setStockProjectionStatus("syncing");
   app.listen(port, () => {
     logger.info("Server started", { port });
   });
+
+  void syncAllProductsStock()
+    .then((syncedCount) => {
+      setStockProjectionStatus("ready");
+      logger.info("Startup stock projection synchronization completed.", { syncedCount });
+    })
+    .catch((error) => {
+      setStockProjectionStatus("failed");
+      logger.error("Startup stock projection synchronization failed.", {
+        error: error.message,
+        name: error.name,
+      });
+    });
 };
 
 // Middleware
@@ -126,6 +146,9 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(verifyRequestSignature);
 app.use(sanitizeMiddleware);
+
+app.get("/health/live", livenessHandler);
+app.get("/health/ready", createReadinessHandler());
 
 //  Api Endpoints
 app.use("/api/auth", authRouter);

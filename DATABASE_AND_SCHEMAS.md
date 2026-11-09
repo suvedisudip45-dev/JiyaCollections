@@ -16,7 +16,24 @@ The primary schema definition is in:
 
 - `backend/prisma/schema.prisma`
 
-The schema currently contains a large multi-domain model set, including auth, product catalogs, finance, delivery, returns, marketing cards, manufacturer inventory, and access management. The schema includes 136 model definitions grouped by domain.
+The schema currently contains a large multi-domain model set, including auth, product catalogs, finance, delivery, returns, marketing cards, manufacturer inventory, and access management.
+
+### Migration provenance and deployment checks
+
+The checked-in migration history starts with `0_init` and then applies the
+forward migrations in `backend/prisma/migrations/`. The initial baseline already
+contains several structures that older rollout notes attribute to migration IDs
+that are no longer present, including password-reset quota fields,
+`SystemAuditOutbox`, and the scheduled `AccountingEvent` fields. Those historical
+IDs are not executable migrations in this repository. Their presence in the
+baseline also does not prove that any deployed database has those structures.
+
+Before deploying, inspect the target database's `_prisma_migrations` history
+and compare its schema with the checked-in Prisma schema and migrations using an
+approved isolated copy. If history or schema differs, stop and prepare a reviewed
+forward migration and recovery plan; do not mark a migration applied based only
+on its name, edit an already-deployed migration, or use `db push`, `db:sync`, or
+`db:reset` to reconcile production.
 
 ## 2. Core Model Families
 
@@ -54,7 +71,7 @@ Customer disable state is stored on `User`, not by deleting or replacing the ide
 | `Permission` | `code`, `description`, `isActive` | Fine-grained permission values |
 | `AuthAuditLog` | `identifier`, `action`, `status`, `metadata` | Security/audit trail |
 
-The password reset timestamp enforces a rolling seven-day interval, while the monthly quota key uses the UTC calendar month. Recovery requires matching account email and phone plus the active primary role/profile for the selected portal; role mappings for other workspaces do not grant cross-portal recovery. Ineligible accounts return a portal-specific not-found response, intentionally disclosing portal eligibility. Before creating a challenge or SMS, the flow enforces one OTP request per rolling seven days and at most three per month; quota violations return HTTP 429. Apply `20261016000000_add_password_reset_limits` before deploying the updated Prisma client.
+The password reset timestamp enforces a rolling seven-day interval, while the monthly quota key uses the UTC calendar month. Recovery requires matching account email and phone plus the active primary role/profile for the selected portal; role mappings for other workspaces do not grant cross-portal recovery. Ineligible accounts return a portal-specific not-found response, intentionally disclosing portal eligibility. Before creating a challenge or SMS, the flow enforces one OTP request per rolling seven days and at most three per month; quota violations return HTTP 429. These quota fields are in the checked-in `0_init` baseline; older notes that refer to `20261016000000_add_password_reset_limits` refer to a migration absent from this repository and must not be used as a deployment command.
 
 ### 3.2 Customer and profile models
 
@@ -66,9 +83,12 @@ The password reset timestamp enforces a rolling seven-day interval, while the mo
 | `Distributor` | `name`, linked account email/phone, `province`, `district`, NCM branch/covered-area and pickup details, contract dates, `status`, `qualityRating`, `ratingCount` | distributor application and operational hub profile with customer-review aggregate |
 | `MarketingPartner` | `code`, `name`, `status`, `email`, `passwordHash` | partner for marketing card campaigns |
 
-Migration `20261028064000_remove_manufacturer_commission` drops manufacturer
-commission proposal/agreement columns and removes their RBAC permissions.
-Previously posted accounting journals are retained for audit history.
+The current schema no longer defines manufacturer commission proposal or
+agreement fields. Older notes refer to
+`20261028064000_remove_manufacturer_commission`, which is absent from the
+checked-in migration history. Confirm the target database's actual schema and
+migration state before deploying; retain previously posted accounting journals
+for audit history.
 
 ### 3.3 Catalog and merchandising
 
@@ -83,11 +103,10 @@ Previously posted accounting journals are retained for audit history.
 | `DistributorReview` | `orderId`, `userId`, `distributorId`, `rating`, `comment` | one verified hub review per delivered customer order; updates the distributor's aggregate rating |
 | `SpecialOffer` | `title`, `startDate`, `endDate`, `discount`, `productIds`, `themeColor`, `themeColorSecondary` | time-bound offers; admin-selected six-digit hex start/end colors theme the storefront offer banner gradient |
 
-Migration `20261028094400_disable_marketing_collaborations` marks all
-collaboration listings as ended, unpublishes their products, inactivates combo
-bundles containing those products, and deactivates collaboration permissions.
-It preserves the related rows and posted accounting history; no new
-collaboration activity is accepted by the application.
+New collaboration activity is disabled. Older notes refer to
+`20261028094400_disable_marketing_collaborations`, which is absent from the
+checked-in migration history. Legacy collaboration rows and posted accounting
+history must be preserved; confirm the target database state before deployment.
 
 ### 3.4 Orders, fulfillment, and delivery
 
@@ -191,8 +210,16 @@ limited to known local NCM order IDs.
 | `StockLog` | `productId`, `quantityChange`, `reason`, `createdAt` | stock movement audit |
 | `InboundShipment` | `manufacturerId`, `shipmentNumber`, `quantity`, `notes` | inbound logistics model |
 
-Apply `backend/prisma/migrations/20261017120000_manufacturer_production_vat/migration.sql` before deploying the production VAT changes. Existing production records migrate as exempt, and existing cost layers receive zero VAT by default. The `20261028092400_admin_manufacturer_production_quotes` migration changes the default request state to manufacturer quote, matching the admin-issued quote/approval workflow; existing request states are preserved. Apply `20261102034000_manufacturer_supplier_tax_identity` to store manufacturer tax IDs, approved supplier identity snapshots, and tax identity on accounting documents. It leaves existing manufacturers and documents without tax identity; do not infer missing PAN/VAT information or recoverable VAT during migration.
-Apply `backend/prisma/migrations/20261017130000_reconcile_manufacturer_freight_settlements/migration.sql` to persist the portion of each local shipment's freight charge settled through approved manufacturer logistics payments.
+Manufacturer production VAT, production quotes, supplier tax identity, and
+freight settlement are represented by the current Prisma schema and the
+checked-in migration history. Older rollout notes cite
+`20261017120000_manufacturer_production_vat`,
+`20261028092400_admin_manufacturer_production_quotes`, and
+`20261017130000_reconcile_manufacturer_freight_settlements`; these migration
+directories are absent. Do not use those paths as deployment instructions.
+Validate the target schema and migration history against the current checked-in
+baseline and migrations, preserving historical records and never inferring
+missing PAN/VAT details or recoverable VAT.
 
 Factory receipts from production remain in manufacturer-owned factory locations and are not available to customer checkout. Stock becomes storefront-eligible only when a distributor confirms receipt into an active distributor location. Product-level and variant-level stock fields mirror the sum of unreserved active distributor ledger balances; `InventoryBalance` and its ledger entries remain authoritative.
 
@@ -332,7 +359,7 @@ This layer indicates the platform is designed beyond simple ecommerce transactio
 
 For posted accounting, accepted production layers are traced to distributor stock through `StockTransferShipmentLineCostLayer` and good-receipt `InventoryLedgerEntry.productionCostLayerId` values. Admin acceptance of production posts accepted good-unit value to inventory (1140), input VAT to receivable (1150) only when the supplier has a valid VAT identity, the supplier invoice is verified and dated, and the buyer was VAT-registered at that date, and the corresponding gross manufacturer payable (2160) in the same transaction. An idempotent payable bill keyed to the production request snapshots the supplier's PAN/VAT identity. Otherwise VAT is included in capitalized cost and no input VAT receivable is posted. `ManufacturerInventoryCostLayer.inputVatRecoverable` records the acquisition-time treatment; subsequent VAT registration cannot retroactively create an input credit. The cost layer also records its payable-recognition point; downstream delivery records COGS (5100) and inventory relief (1140) without accruing the manufacturer payable again. Distributor order fulfillment records the consumed layer ID on its `FULFILLMENT` ledger movement and persists its accepted cost allocation in `Order.items`. Existing received stock without ledger layer provenance is not assigned a guessed layer cost, and its historical payable recognition is not inferred. Manufacturer-paid local transfer freight is recognized as delivery expense (6430) and manufacturer payable (2160) on dispatch, when the carrier service is performed; the same transaction creates an idempotent `MANUFACTURER_LOGISTICS` payable bill keyed to the shipment. Manufacturer logistics payouts allocate against those bills and retain the existing shipment-level paid/outstanding status. Accounting Health separately compares posted 2160 `MANUFACTURER_PRODUCTION` journals to request-linked production bills and `MANUFACTURER_LOGISTICS` journals to shipment-linked freight bills. These checks are source-scoped; legacy delivery-accrued costs, other manufacturer payable sources, and historical balances remain unresolved.
 
-`AccountingEvent` also serves as the durable delivered-sale outbox for NCM and distributor self-delivery. The delivery transaction stores a versioned source snapshot and payload hash; `nextAttemptAt` and `claimedAt` support scheduled retries and stale-claim recovery. The worker links the journal to the source event and commits journal creation plus the `POSTED` event state atomically. The additive migration `20261017000000_delivery_accounting_outbox_schedule` must be applied and Prisma Client regenerated before deploying this worker; it has not yet been applied.
+`AccountingEvent` also serves as the durable delivered-sale outbox for NCM and distributor self-delivery. The delivery transaction stores a versioned source snapshot and payload hash; `nextAttemptAt` and `claimedAt` support scheduled retries and stale-claim recovery. The worker links the journal to the source event and commits journal creation plus the `POSTED` event state atomically. These fields are present in the checked-in `0_init` baseline. Older notes that call `20261017000000_delivery_accounting_outbox_schedule` an unapplied migration refer to a directory absent from this repository; confirm the target database independently before deployment.
 
 Completed self-delivery and phone orders create immutable `DistributorServiceEarning` rows with delivery charge, zero new per-delivery incentive, commission/tax snapshots, and linked journal/payable `AccountingDocument` references. A separate `STOCK_TRANSFER` earning pays the configured rate for each product unit successfully delivered by NCM, self-delivery, phone order, or hub walk-in sale; it is additive to channel-specific delivery/counter-sale compensation and snapshots the per-unit rate and order quantity. Historical NCM-only `NCM_TRANSFER` earnings remain included in the unified stock-transfer statement category. Both use expense account 6440; later merchandise returns do not reverse delivered-unit compensation. Completed hub walk-in sales also use a separate `COUNTER_SALE` earning, approved flat `counterSaleCharge` rate, and expense account 6450. Historical incentive values in old earning snapshots are preserved. Verified hub-sale returns create proportional, idempotent negative `COUNTER_SALE_REVERSAL` earnings, a payable `CREDIT_NOTE`, and a debit to distributor payable 2190 against the counter-sale expense. Credit notes are allocated as payable offsets against open service-earning documents; unapplied credits remain in the payable subledger and are applied to later service-earning bills. `appliedReversalAmount` records how much has been applied. Payable subledger balances treat open credit notes as reductions. Admin-configured `DistributorBonusPlan` records define additive monthly completed-self-delivery tiers; eligible closed periods create idempotent `DistributorBonusEarning` records with delivery-count/tier snapshots and linked journal/payable documents. Distributor settlement requests snapshot gross earnings, legacy incentives, target bonuses, deductions, VAT, and itemized service lines; their `bonuses` column keeps the target-bonus total separate. Admin payouts allocate against earning documents and clear control 2190. Old `DistributorSettlementRequest` and `AccountPayable` data remain a legacy reconciliation path; do not generate duplicate expense accruals for deliveries already represented by an earning snapshot.
 
@@ -344,7 +371,7 @@ NCM-delivered COD records receivable `AccountingDocument` rows by source order a
 
 `SalesInvoice` stores an immutable seller/buyer/line/tax snapshot for an order. `PaperBillBook` and `PaperBillBookAllocation` track physical PAN/VAT books and non-reusable distributor serial ranges. New allocations start as `PENDING_ACCEPTANCE`; the distributor confirms physical receipt through its portal, which records `acceptedAt`/`acceptedBy` and activates the range. Bill-number validation and packing accept only active allocations. Existing active rows remain active for backward compatibility. The assigned order captures the customer's physical-copy choice and actual bill number during the packing checklist. Delivery is blocked until a distributor records that choice, and a requested number must belong to that distributor's active allocation. Admin can audit allocations and filter distributor orders by placement date into orders with and without a physical VAT bill. Same-value exchanges retain the original number; unequal-value distributor exchanges that have a requested physical copy require a new allocated number before replacement dispatch. The replacement number is recorded on the exchange, while the original invoice remains immutable and is not automatically voided or regenerated as a replacement invoice. `SalesInvoiceAdjustment` links return/exchange accounting to the original invoice and marks when paper credit/debit-note action is still required. These controls do not generate or print statutory documents, validate legal serial formats, or submit to IRD/third-party e-billing. `OperatingExpense` supplier VAT is separately recorded as pending, verified, or rejected; Finance review requires supplier identity, invoice reference/evidence, a reconciled taxable base/VAT/rate, and buyer VAT registration on the invoice date. Verification posts a linked input-VAT reclassification journal, and verified records are immutable through ordinary expense edits. Manufacturer production input VAT likewise requires retained invoice evidence and registration at acquisition before it is recoverable. `TaxFilingRecord` stores the selected filing cadence, exact assigned period dates, posted-ledger estimate, sales-invoice/adjustment and partial verified-purchase reconciliation, opening/ending VAT input credits, IRD assessment, payment credit applied, and any linked assessment-adjustment journal. Filing settlement and assessment-adjustment journals are excluded from period operating VAT calculations. An assessment variance requires an explanation and active accountant-selected offset account; it posts an idempotent balanced journal in the filing transaction. `TaxFilingPayment` stores actual partial/overpayments with Treasury/journal links; only overpayments require an exception reason, and overpayments post to GL account 1165 for carry-forward/application. `TaxFilingAmendment` preserves each filed-amount revision, IRD reference/date, accountant reason, evidence link, offset account, and linked balanced journal. A paid amendment that creates a VAT credit must post the offset to account 1165. Purchase reconciliation covers only verified operating expenses and evidenced, completed production invoices; other purchases, timing differences, returns, historical opening balances, and any GL variance require accountant reconciliation. These records are workpapers, not IRD submission integration.
 
-Migrations `20261027150000_distributor_service_earnings`, `20261027160000_effective_vat_rate_versions`, `20261101110000_distributor_compensation_channels`, `20261101120000_general_stock_transfer_compensation`, `20261101130000_legacy_ncm_rate_compatibility`, `20261102020000_seller_tax_profile_and_filing_payments`, `20261102025710_new_vat_system`, `20261102030143_post_new_vat`, `20261102034000_manufacturer_supplier_tax_identity`, `20261102035000_distributor_paper_billing`, `20261102040000_exchange_paper_billing`, `20261102050000_distributor_paper_bill_acceptance`, `20261103010000_vat_filing_cadence_and_credits`, and `20261104010000_verified_operating_expense_input_vat` must be applied, then Prisma Client regenerated, before deploying these changes. If the configured database still records `20261102025710_new_vat_system` as failed, resolve that migration state first; do not apply later migrations over a failed predecessor. The stock-transfer migrations preserve configured rate values in the new field and retain a synchronized legacy NCM column for older application instances during rollout. Do not treat schema validation alone as migration rollout or as reconciliation of legacy financial rows.
+The checked-in migrations include the distributor compensation, tax, VAT, supplier identity, and paper-billing changes described here. Some older rollout notes cite migration IDs that are absent from this repository, including `20261027150000_distributor_service_earnings` and `20261027160000_effective_vat_rate_versions`. Treat the checked-in directories as the repository migration source of truth, but do not infer deployment status from them: compare the target's `_prisma_migrations` history and schema, review failed migrations before proceeding, regenerate Prisma Client from the deployed schema, and reconcile legacy financial rows separately.
 
 ### 3.9 Gift promotions and distributor gift stock
 
@@ -359,7 +386,7 @@ Migrations `20261027150000_distributor_service_earnings`, `20261027160000_effect
 
 An order stores its gift catalog reference and the exact inventory batch reserved for it, using `assignedDistributorGiftInventoryId` for distributor hub orders while retaining the legacy manufacturer reference for historical orders. Loyalty gift allowances are represented by `CustomerLevel.giftAmount` and `giftDescription`; eligible rewards are snapshotted into `Order.rewardApplied`. Card gifts become pending entitlements when claimed and are reserved by the customer's next checkout. At the distributor `letter_ready` transition, the backend selects one exact-value gift for the checkout group from already-assigned distributors' accepted stock, prioritizing the customer's district, province, then other eligible hubs; it randomizes equivalent choices and reserves the selected batch atomically. `giftStatus` progresses through `NONE`, `PENDING_PACKING`, `RESERVED`, and `DELIVERED`, or to `RETURNED` / `LOST` when a protected return decision is recorded. Admin replacement is restricted to the same value and distributor before packing. Delivered stock is deducted through the delivery transition.
 
-Migration `20261028193000_gift_reward_lifecycle` adds the entitlement table and distributor dispatch/receipt counts. It is additive but has not been applied to the configured database; validate and deploy it using the isolated migration and backup process, then regenerate Prisma Client before enabling the flow.
+The current schema and checked-in migration history define the gift entitlement and distributor dispatch/receipt workflow. Older notes refer to `20261028193000_gift_reward_lifecycle`, which is absent from this repository. The configured database's migration status has not been verified here; validate it on an isolated copy and with a recoverable backup before enabling the flow.
 
 Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Order.distributorId`. Their product quantities are deducted transactionally from unreserved distributor stock, with FIFO production cost-layer allocations snapshotted on each order item for COGS, inventory, and VAT accounting. Legacy stock without cost-layer provenance uses the admin-controlled product cost as a COGS fallback against inventory; confirmed returns reverse the same inventory cost and payment account. Legacy version-1 per-unit delivery/other cost is recognized separately as delivery expense and manufacturer payable; version-2 batch other cost is already included in unit COGS. Paid cash/COD sales debit cash on hand; unpaid phone orders record customer receivables that are cleared when payment is confirmed. These orders do not use `ManufacturerInventory` or manufacturer assignment records. Product prices come from the admin-controlled catalog, and manual distributor discounts are rejected; only eligible customer loyalty rewards may apply automatically.
 
@@ -418,9 +445,15 @@ Distributor direct hub orders use `Order.orderType = DIRECT_DISTRIBUTOR` and `Or
 - New features should preserve existing relationships and status semantics rather than inventing alternate tables for domain concepts already covered here.
 - Location-aware pricing and assignment rules are enforced server-side using the geography map, covered districts, and per-product discounts; they should not be reimplemented in the frontend as a trust boundary.
 - The repo uses a `db push` / `prisma db seed` workflow in local development, but production deployment guidance in the notifications docs warns against using `db push` in production and prefers staged migration review.
-- Apply `20261001193000_return_exchange_lifecycle_overhaul`, run the RBAC seed to register new return/exchange permissions, and regenerate Prisma Client before restarting the API. The migration is additive, preserves existing processed return data, and maps its composite attempt indexes to MySQL-safe names under the 64-character identifier limit.
-- Apply `20261005000000_add_system_audit_outbox`, run the RBAC seed to grant `access:audit_read` to the system Admin role, and regenerate Prisma Client before enabling the audit-history API or worker. This migration adds the two audit tables and their query/claim indexes without changing existing business tables. Preserve audit records under a documented retention policy and monitor outbox rows in `FAILED`.
-- Apply `20261017000000_delivery_accounting_outbox_schedule` and regenerate Prisma Client before deploying the delivered-sale accounting worker. Verify migration state in an approved isolated environment; do not use production or an unverified database for validation.
-- Apply `20261027120000_return_and_cash_evidence_images` and regenerate Prisma Client before requiring return-goods inspection photos. Distributor remittance and refund evidence are uploaded as JPG/PNG images and stored through Cloudinary.
-- Apply `20261027130000_distributor_refund_receivable_netting` and regenerate Prisma Client before enabling Admin-approved settlement offsets. This additive migration stores each offset and its journal link; verify idempotency-key uniqueness before deployment.
-- Apply `20261015193000_admin_delivery_monitoring_indexes` to add the monitor query indexes before deploying the new paginated delivery views.
+Older rollout checklists in this document cited migration IDs that are absent
+from the current repository, including IDs for return/exchange, audit outbox,
+delivered-sale accounting, evidence images, settlement offsets, and delivery
+monitoring indexes. Do not run or mark those historical IDs as applied. The
+checked-in `0_init` baseline contains the audit and accounting outbox tables;
+other target structures must be verified against the current schema and
+available migration directories. Confirm the target database history and schema
+on an isolated copy, use only reviewed checked-in migrations or a reviewed
+forward correction migration, regenerate Prisma Client, and retain backup and
+recovery steps. Independently preserve audit retention, verify permissions,
+Cloudinary evidence storage, idempotency, and query-index coverage before
+enabling affected workflows.

@@ -16,6 +16,7 @@ import {
 import { getDeliveryAccountingOutboxStatus } from "../services/accountingOutboxService.js";
 import { buildPartySubledgerReconciliation } from "../services/partySubledgerReconciliationService.js";
 import { isLegacyPerOrderDeliveryExpenseEntry } from "../services/accountingRecognitionPolicy.js";
+import { buildDirectCashFlowStatement } from "../services/accountingCashFlowService.js";
 import {
   BALANCE_REPORT_JOURNAL_STATUSES,
   buildGeneralLedgerBalanceReconciliation,
@@ -592,12 +593,17 @@ export const getRealtimeFinancialStatements = async (req, res) => {
           },
         },
         include: {
-          journalEntry: { select: { transactionDate: true, sourceType: true } },
+          journalEntry: { select: { id: true, transactionDate: true, sourceType: true } },
           account: true,
         },
       }),
     ]);
     const balanceSheetFiscalYearStart = (await getConfiguredNepaliFiscalPeriod(end)).fiscalYearStart;
+    const cashFlowStatement = buildDirectCashFlowStatement({
+      journalLines,
+      startDate: start,
+      endDate: end,
+    });
 
     // Compute Net Activity per account for (1) Cumulative and (2) In-Period
     const accountPeriodMap = {};
@@ -920,6 +926,7 @@ export const getRealtimeFinancialStatements = async (req, res) => {
         totalLiabilitiesAndEquity,
         isBalanceSheetBalanced,
       },
+      cashFlowStatement,
       accountingPostingStatus: await getDeliveryAccountingOutboxStatus(),
     });
   } catch (error) {

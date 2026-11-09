@@ -8,6 +8,15 @@ The API remains independent of RabbitMQ. Run the worker separately with `npm run
 
 From the `backend` directory, run `npm run rabbitmq:check` to test broker connectivity and queue setup without publishing or consuming messages. `connected: true` confirms the broker and queues are reachable; each queue should also have a nonzero consumer count while the notification worker is running. Start the worker in a separate terminal with `npm run worker:notifications`.
 
+Run `npm run notifications:health` from `backend/` as a periodic operational
+check. It reports enabled-channel queue depth and consumer count, notification
+counts by channel/status, and the age of the oldest pending or queued
+notification. It exits unsuccessfully if the broker/database check fails or an
+enabled channel has no consumer. Schedule it from the deployment monitor or
+operations runner and alert on growing queue age, `FAILED`, `DEAD_LETTERED`, or
+`UNKNOWN` counts; those message states still require operator review and are
+not automatically retried by this check.
+
 The worker requires `NOTIFICATIONS_ENABLED=true` plus RabbitMQ connection values. TLS is required for production RabbitMQ. Enable SMS and email separately. Sparrow sending requires an HTTPS endpoint because credentials are sent to the provider. The current supplied endpoint uses HTTP, so SMS remains disabled until a secure endpoint is confirmed. SMTP sending requires a verified `SMTP_FROM` sender identity.
 
 ## Migration and deployment

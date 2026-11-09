@@ -32,11 +32,24 @@ import {
   Gift,
 } from "lucide-react";
 
+const parseOrderItems = (items) => {
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(items)
+    ? items.filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    : [];
+};
+
 const toCustomerDisplayItems = (items = []) => {
   const displayItems = [];
   const comboBundleRows = new Map();
 
-  items.forEach((item) => {
+  parseOrderItems(items).forEach((item) => {
     if (!item.comboBundleId) {
       displayItems.push(item);
       return;
@@ -176,40 +189,36 @@ const Orders = () => {
       );
 
       if (response.data.success) {
+        if (!Array.isArray(response.data.orders)) {
+          throw new Error("The orders response did not contain a valid order list.");
+        }
         // Keep orders intact as individual order records (do NOT flatten items)
-        const formattedOrders = (response.data.orders || []).map((order) => {
-          let parsedReward = null;
-          if (order.rewardApplied) {
-            try {
-              parsedReward =
-                typeof order.rewardApplied === "string"
-                  ? JSON.parse(order.rewardApplied)
-                  : order.rewardApplied;
-            } catch {
-              parsedReward = null;
+        const formattedOrders = response.data.orders
+          .filter((order) => order && typeof order === "object" && !Array.isArray(order))
+          .map((order) => {
+            let parsedReward = null;
+            if (order.rewardApplied) {
+              try {
+                parsedReward =
+                  typeof order.rewardApplied === "string"
+                    ? JSON.parse(order.rewardApplied)
+                    : order.rewardApplied;
+              } catch {
+                parsedReward = null;
+              }
             }
-          }
 
-          let items = [];
-          if (Array.isArray(order.items)) {
-            items = order.items;
-          } else if (typeof order.items === "string") {
-            try {
-              items = JSON.parse(order.items);
-            } catch {
-              items = [];
-            }
-          }
+            const items = parseOrderItems(order.items);
 
-          return {
-            ...order,
-            id: order._id || order.id,
-            items,
-            displayItems: toCustomerDisplayItems(items),
-            parsedReward,
-            dateNum: Number(order.date || 0),
-          };
-        });
+            return {
+              ...order,
+              id: order._id || order.id,
+              items,
+              displayItems: toCustomerDisplayItems(items),
+              parsedReward,
+              dateNum: Number(order.date || 0),
+            };
+          });
 
         setOrders(formattedOrders);
         setPagination(response.data.pagination || null);
@@ -464,8 +473,8 @@ const Orders = () => {
       return sum + items.reduce((iSum, it) => iSum + Number(it.quantity || 1), 0);
     }, 0);
     const activeOrders = orders.filter((o) => {
-      const s = (o.status || "").toLowerCase();
-      const f = (o.fulfillmentStatus || "").toLowerCase();
+      const s = String(o.status || "").toLowerCase();
+      const f = String(o.fulfillmentStatus || "").toLowerCase();
       return (
         !s.includes("delivered") &&
         !s.includes("cancelled") &&
@@ -474,8 +483,8 @@ const Orders = () => {
       );
     }).length;
     const deliveredOrders = orders.filter((o) => {
-      const s = (o.status || "").toLowerCase();
-      const f = (o.fulfillmentStatus || "").toLowerCase();
+      const s = String(o.status || "").toLowerCase();
+      const f = String(o.fulfillmentStatus || "").toLowerCase();
       return s.includes("delivered") || f.includes("delivered");
     }).length;
 
@@ -487,8 +496,8 @@ const Orders = () => {
     return orders
       .filter((order) => {
         // Status filter
-        const s = (order.status || "").toLowerCase();
-        const f = (order.fulfillmentStatus || "").toLowerCase();
+        const s = String(order.status || "").toLowerCase();
+        const f = String(order.fulfillmentStatus || "").toLowerCase();
         const isDelivered = s.includes("delivered") || f.includes("delivered");
         const isCancelled = s.includes("cancelled") || f.includes("failed");
         const isActive = !isDelivered && !isCancelled;
@@ -500,14 +509,14 @@ const Orders = () => {
         // Search term filter
         if (searchTerm.trim()) {
           const query = searchTerm.toLowerCase().trim();
-          const matchId = (order.id || "").toLowerCase().includes(query) ||
-            (order.orderReference || "").toLowerCase().includes(query);
-          const matchCity = (order.address?.city || "").toLowerCase().includes(query);
+          const matchId = String(order.id || "").toLowerCase().includes(query) ||
+            String(order.orderReference || "").toLowerCase().includes(query);
+          const matchCity = String(order.address?.city || "").toLowerCase().includes(query);
           const matchItems = (order.items || []).some(
             (item) =>
-              (item.name || "").toLowerCase().includes(query) ||
-              (item.category || "").toLowerCase().includes(query) ||
-              (item.subCategory || "").toLowerCase().includes(query)
+              String(item.name || "").toLowerCase().includes(query) ||
+              String(item.category || "").toLowerCase().includes(query) ||
+              String(item.subCategory || "").toLowerCase().includes(query)
           );
           if (!matchId && !matchCity && !matchItems) return false;
         }
@@ -561,8 +570,8 @@ const Orders = () => {
 
   // Helper for Status Badges
   const getStatusBadge = (status = "", fulfillmentStatus = "", order = {}) => {
-    const s = status.toLowerCase();
-    const f = (fulfillmentStatus || "").toLowerCase();
+    const s = String(status || "").toLowerCase();
+    const f = String(fulfillmentStatus || "").toLowerCase();
     const distributorStatus = String(order.distributorDelivery?.status || "").toLowerCase().replaceAll(" ", "_");
 
     if (order.distributorDelivery?.deliveryType === "SELF_DELIVERY") {

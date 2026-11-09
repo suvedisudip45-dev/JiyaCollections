@@ -1,5 +1,5 @@
-/* eslint-disable react/prop-types */
 import { useEffect, useState } from "react";
+import PropTypes from "prop-types";
 import { isValidNepaliDate } from "../utils/nepaliDate";
 import NepaliDatePicker from "./NepaliDatePicker";
 
@@ -59,6 +59,19 @@ const NepaliDateRangePicker = ({ startDate, endDate, onApply, calendars = [] }) 
       {error && <p role="alert" className="w-full text-[10px] text-rose-700">{error}</p>}
     </form>
   );
+};
+
+NepaliDateRangePicker.propTypes = {
+  startDate: PropTypes.string.isRequired,
+  endDate: PropTypes.string.isRequired,
+  onApply: PropTypes.func.isRequired,
+  calendars: PropTypes.arrayOf(PropTypes.shape({
+    year: PropTypes.oneOfType([PropTypes.number, PropTypes.string]).isRequired,
+    monthDays: PropTypes.arrayOf(
+      PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+    ).isRequired,
+    adStartDate: PropTypes.string.isRequired,
+  })),
 };
 
 export default NepaliDateRangePicker;

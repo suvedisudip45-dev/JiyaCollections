@@ -91,6 +91,7 @@ test("direct hub sale consumes unreserved stock and snapshots FIFO cost-layer da
     unitCogs: "125.50",
     unitVatAmount: "0",
     vatInvoiceVerified: false,
+    inputVatRecoverable: false,
     unitDeliveryCost: "12.00",
   }]);
   assert.equal(result.accountingItems[0].legacyCostQuantity, 0);

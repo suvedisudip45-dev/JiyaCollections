@@ -57,4 +57,7 @@ test("realtime balance sheet includes distributor COD receivables and distributo
   assert.equal(response.balanceSheet.assets.totalAssets, 1500);
   assert.equal(response.balanceSheet.totalLiabilitiesAndEquity, 1500);
   assert.equal(response.balanceSheet.isBalanceSheetBalanced, true);
+  assert.equal(response.cashFlowStatement.basis, "POSTED_GL_CASH_EQUIVALENTS");
+  assert.equal(response.cashFlowStatement.isReconciled, true);
+  assert.equal(response.cashFlowStatement.netCashFlow, 0);
 });

@@ -415,7 +415,7 @@ const NepalMapModal = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-      <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[92vh] flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-scaleUp">
+      <div className="bg-white rounded-2xl w-full max-w-3xl h-[92vh] max-h-[calc(100dvh-1.5rem)] flex flex-col shadow-2xl border border-gray-100 overflow-hidden animate-scaleUp">
         
         {/* Header */}
         <div className="bg-gray-900 text-white px-5 py-3.5 flex items-center justify-between flex-shrink-0">
@@ -565,8 +565,8 @@ const NepalMapModal = ({
         </div>
 
         {/* Leaflet Map Container */}
-        <div className="relative flex-1 min-h-[300px] sm:min-h-[360px] w-full bg-slate-100">
-          <div ref={mapContainerRef} className="w-full h-full" style={{ minHeight: "320px" }} />
+        <div className="relative flex-1 min-h-0 w-full bg-slate-100">
+          <div ref={mapContainerRef} className="w-full h-full" />
           <div className="absolute top-2 right-2 z-[400] bg-white/90 backdrop-blur-sm px-2.5 py-1 rounded-md text-[10px] text-gray-600 shadow-sm pointer-events-none">
             📍 Drag pin or click map to move
           </div>

@@ -2,7 +2,7 @@ import { v2 as cloudinary } from "cloudinary";
 import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { prisma } from "../config/db.js";
-import { syncProductStock, syncAllProductsStock } from "../services/stockSyncService.js";
+import { syncProductStock } from "../services/stockSyncService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import { sanitizeText } from "../middleware/sanitize.js";
 import { resolveLocationProductPrices } from "../services/locationPricingService.js";
@@ -695,11 +695,6 @@ const listProducts = async (req, res) => {
       .split(",")
       .map((id) => id.trim())
       .filter(Boolean);
-    // Synchronize current stockQuantity & variant stock from ManufacturerInventory
-    if (requestedProductIds.length === 0) {
-      await syncAllProductsStock();
-    }
-
     // Admin sees all products; Public customers see only published products
     // Both views exclude soft-deleted products
     const whereCondition = isAdmin ? { deletedAt: null } : {

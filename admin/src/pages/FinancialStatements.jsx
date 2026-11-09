@@ -12,7 +12,6 @@ const formatPostedAmount = (value) =>
 
 const FinancialStatements = ({ token }) => {
   const [activeTab, setActiveTab] = useState("PL"); // PL, BS, CF
-  const [mode, setMode] = useState("REALTIME"); // REALTIME (from GL) | MONTHLY (Full cash flow & audited)
   const [loading, setLoading] = useState(true);
   const [calendarReady, setCalendarReady] = useState(false);
   const [calendarError, setCalendarError] = useState("");
@@ -26,7 +25,6 @@ const FinancialStatements = ({ token }) => {
   const { startDate, endDate } = dateRange;
 
   const [realtimeData, setRealtimeData] = useState(null);
-  const [monthlyData, setMonthlyData] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -64,28 +62,17 @@ const FinancialStatements = ({ token }) => {
     try {
       setLoading(true);
       setRealtimeData(null);
-      setMonthlyData(null);
       setReportError("");
-      const [rtRes, moRes] = await Promise.all([
-        axios.get(`${backendUrl}/api/accounting/financial-statements`, {
-          headers: { token },
-          params: { startDate, endDate, calendar: "BS" },
-        }),
-        axios.get(`${backendUrl}/api/finance/statements`, {
-          headers: { token },
-          params: { startDate, endDate, calendar: "BS" },
-        }),
-      ]);
+      const rtRes = await axios.get(`${backendUrl}/api/accounting/financial-statements`, {
+        headers: { token },
+        params: { startDate, endDate, calendar: "BS" },
+      });
 
       if (!rtRes.data.success) {
         throw new Error(rtRes.data.message || "Real-time financial statements could not be loaded.");
       }
-      if (!moRes.data.success) {
-        throw new Error(moRes.data.message || "Financial statements could not be loaded.");
-      }
       if (requestId === statementRequestId.current) {
         setRealtimeData(rtRes.data);
-        setMonthlyData(moRes.data.data);
       }
     } catch (err) {
       console.error(err);
@@ -123,10 +110,9 @@ const FinancialStatements = ({ token }) => {
   const rtBs = realtimeData?.balanceSheet || {};
   const displayedStartDate = startDate;
 
-  const moPl = monthlyData?.incomeStatement || {};
-  const moCf = monthlyData?.cashFlowStatement || {};
+  const moCf = realtimeData?.cashFlowStatement || {};
 
-  if (reportError && !realtimeData && !monthlyData && !loading) {
+  if (reportError && !realtimeData && !loading) {
     return (
       <div className="mx-auto mt-10 max-w-2xl rounded-2xl border border-rose-200 bg-white p-6 text-center shadow-xs">
         <p role="alert" className="text-sm font-semibold text-rose-800">{reportError}</p>
@@ -267,7 +253,7 @@ const FinancialStatements = ({ token }) => {
           </div>
           <h1 className="text-2xl font-black text-slate-900 mt-1">Financial Statements</h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            P&amp;L and balance sheet use posted journals. Cash flow is currently an operational estimate.
+            Income statement, balance sheet, and cash flow use posted General Ledger journals.
           </p>
         </div>
 
@@ -549,7 +535,7 @@ const FinancialStatements = ({ token }) => {
                     <span className="font-mono">Rs {Number(bsCurrentAssets.distributorCodReceivable || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
-                    <span>Payment Gateway Clearing (Account 1180)</span>
+                    <span>Wallets &amp; Payment Gateway Clearing (Account 1180)</span>
                     <span className="font-mono">Rs {Number(bsCurrentAssets.gatewayClearing || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-1 border-b border-slate-50">
@@ -716,8 +702,17 @@ const FinancialStatements = ({ token }) => {
             <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Statement of Cash Flows (Direct Method &amp; Reconciled)</p>
             <p className="text-xs text-slate-500 font-medium mt-1">For Period: BS {startDate} to {endDate}</p>
           </div>
-          <div role="status" className="border border-amber-200 bg-amber-50 p-4 rounded-lg text-xs text-amber-900">
-            Cash flow is an operational estimate and is not yet generated from classified GL cash movements.
+          <div
+            role={moCf.isReconciled ? "status" : "alert"}
+            className={`rounded-lg border p-4 text-xs ${
+              moCf.isReconciled
+                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                : "border-amber-200 bg-amber-50 text-amber-900"
+            }`}
+          >
+            {moCf.isReconciled
+              ? "Cash flows use posted movements in cash, bank, and wallet/gateway clearing accounts (1110, 1120, 1180) and reconcile to their General Ledger balance. Account 1180 combines Treasury wallets and payment gateway clearing."
+              : `Cash flow uses posted cash, bank, and wallet/gateway clearing journals but does not reconcile to the General Ledger balance. Difference: Rs ${Number(moCf.reconciliationDifference || 0).toLocaleString()}. Check opening balances and journal postings. Account 1180 combines Treasury wallets and payment gateway clearing.`}
           </div>
 
           <div className="space-y-6 text-xs text-slate-700">
@@ -730,29 +725,27 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Cash Inflows from Customer Sales &amp; Collections</span>
                   <span className="font-mono text-emerald-700 font-bold">
-                    +Rs {Number(moCf.details?.cashFromCustomers || (typeof moCf.operatingActivities === 'number' ? moCf.operatingActivities : 0)).toLocaleString()}
+                    +Rs {Number(moCf.details?.cashReceivedFromCustomers || 0).toLocaleString()}
                   </span>
                 </div>
-                {moCf.details?.cashPaidToSuppliers !== undefined && (
-                  <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                    <span>Cash Outflows to Suppliers / Manufacturer COGS</span>
-                    <span className="font-mono">
-                      (Rs {Math.abs(moCf.details.cashPaidToSuppliers).toLocaleString()})
-                    </span>
-                  </div>
-                )}
-                {moCf.details?.cashPaidForOperatingExpenses !== undefined && (
-                  <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                    <span>Cash Outflows for Overhead (Rent, Ads, Salaries, Utilities)</span>
-                    <span className="font-mono">
-                      (Rs {Math.abs(moCf.details.cashPaidForOperatingExpenses).toLocaleString()})
-                    </span>
+                <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>Cash Paid to Suppliers / Manufacturers</span>
+                  <span className="font-mono">(Rs {Number(moCf.details?.supplierPayments || 0).toLocaleString()})</span>
+                </div>
+                <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>Other Operating Cash Outflows</span>
+                  <span className="font-mono">(Rs {Number(moCf.details?.otherOperatingOutflows || 0).toLocaleString()})</span>
+                </div>
+                {Number(moCf.details?.otherOperatingInflows || 0) > 0 && (
+                  <div className="flex justify-between py-1 border-b border-slate-50 text-emerald-700">
+                    <span>Other Operating Cash Inflows</span>
+                    <span className="font-mono">+Rs {Number(moCf.details.otherOperatingInflows).toLocaleString()}</span>
                   </div>
                 )}
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-2 border-t border-slate-200">
                   <span>Net Cash Provided by / (Used in) Operating Activities</span>
-                  <span className={`font-mono ${(typeof moCf.operatingActivities === 'number' ? moCf.operatingActivities : moCf.details?.netOperatingCashFlow || 0) >= 0 ? "text-emerald-700 font-bold" : "text-rose-600 font-bold"}`}>
-                    Rs {Number(typeof moCf.operatingActivities === 'number' ? moCf.operatingActivities : moCf.details?.netOperatingCashFlow || 0).toLocaleString()}
+                  <span className={`font-mono ${Number(moCf.operatingActivities || 0) >= 0 ? "text-emerald-700 font-bold" : "text-rose-600 font-bold"}`}>
+                    Rs {Number(moCf.operatingActivities || 0).toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -767,11 +760,7 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Fixed Asset Additions &amp; Capital Purchases</span>
                   <span className="font-mono">
-                    {moCf.details?.assetAdditionsInPeriod !== undefined ? (
-                      moCf.details.assetAdditionsInPeriod === 0 ? "Rs 0" : `(Rs ${Math.abs(moCf.details.assetAdditionsInPeriod).toLocaleString()})`
-                    ) : (
-                      `Rs ${Number(moCf.investingActivities || 0).toLocaleString()}`
-                    )}
+                    Inflows: Rs {Number(moCf.details?.investingInflows || 0).toLocaleString()} · Outflows: (Rs {Number(moCf.details?.investingOutflows || 0).toLocaleString()})
                   </span>
                 </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
@@ -790,17 +779,13 @@ const FinancialStatements = ({ token }) => {
                 <div className="flex justify-between py-1 border-b border-slate-50">
                   <span>Capital Contributed &amp; Debt Borrowings</span>
                   <span className="font-mono text-emerald-700">
-                    +Rs {Number((moCf.details?.capitalInjectionsInPeriod || 0) + (moCf.details?.loansDisbursedInPeriod || 0)).toLocaleString()}
+                    +Rs {Number(moCf.details?.financingInflows || 0).toLocaleString()}
                   </span>
                 </div>
-                {(moCf.details?.loanRepaymentsInPeriod !== undefined || moCf.details?.partnerDrawingsInPeriod !== undefined) && (
-                  <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
-                    <span>Loan Principal Repayments &amp; Partner Drawings</span>
-                    <span className="font-mono">
-                      (Rs {Math.abs((moCf.details?.loanRepaymentsInPeriod || 0) + (moCf.details?.partnerDrawingsInPeriod || 0)).toLocaleString()})
-                    </span>
-                  </div>
-                )}
+                <div className="flex justify-between py-1 border-b border-slate-50 text-rose-600">
+                  <span>Loan Repayments &amp; Partner Distributions</span>
+                  <span className="font-mono">(Rs {Number(moCf.details?.financingOutflows || 0).toLocaleString()})</span>
+                </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-1 border-t border-slate-200">
                   <span>Net Cash from Financing Activities</span>
                   <span className="font-mono">Rs {Number(moCf.financingActivities || 0).toLocaleString()}</span>
@@ -816,15 +801,21 @@ const FinancialStatements = ({ token }) => {
                   Rs {Number(moCf.netCashFlow || 0).toLocaleString()}
                 </span>
               </div>
+              <div className="flex justify-between py-0.5 text-slate-600">
+                <span>Cash Reconciliation Difference</span>
+                <span className={`font-mono ${moCf.isReconciled ? "text-emerald-700" : "text-rose-700 font-bold"}`}>
+                  Rs {Number(moCf.reconciliationDifference || 0).toLocaleString()}
+                </span>
+              </div>
 
               {moCf.beginningCash !== undefined && (
                 <div className="space-y-1.5 pt-2 border-t border-slate-100 text-slate-600 font-medium">
                   <div className="flex justify-between py-0.5">
-                    <span>Beginning Liquid Cash Balance</span>
+                    <span>Beginning Cash, Bank &amp; Wallet/Gateway Clearing Balance</span>
                     <span className="font-mono">Rs {Number(moCf.beginningCash || 0).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between py-0.5 font-bold text-slate-900 text-xs">
-                    <span>Ending Liquid Treasury Cash Balance</span>
+                    <span>Ending Cash, Bank &amp; Wallet/Gateway Clearing Balance</span>
                     <span className="font-mono text-emerald-700 font-extrabold">Rs {Number(moCf.endingCash || 0).toLocaleString()}</span>
                   </div>
                 </div>

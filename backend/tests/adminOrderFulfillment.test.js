@@ -71,6 +71,13 @@ test("Admin fulfillment validates distributor stages and records a reason in the
       },
     },
     orderAssignment: {
+      findUnique: async () => ({
+        status: "accepted",
+        paperBillStatus: "NOT_SELECTED",
+        paperBillRequested: null,
+        paperBillNumber: null,
+        paperBillDocumentType: null,
+      }),
       updateMany: async ({ where, data }) => {
         assert.equal(where.status, "accepted");
         assignmentUpdate = data;
