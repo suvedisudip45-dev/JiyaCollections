@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
-import { extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, requestOrderReturn } from "./ncmClient.js";
+import { extractNcmCharge, getNcmErrorMessage, getNcmResponseRejection, getOrder, getOrderStatus, requestOrderReturn } from "./ncmClient.js";
 import { syncProductStock } from "./stockSyncService.js";
 import { postCustomerReturnAccounting } from "./accountingPostingEngine.js";
 import { applyCollaborationReturnAdjustments } from "./collaborationSalesService.js";
@@ -1010,8 +1010,11 @@ export const nextCustomerReturnNcmState = ({ currentStatus, currentPickupStatus,
   } else if (["arrived", "order arrived"].includes(statusText)) {
     returnPickupStatus = "ARRIVED_AT_DESTINATION";
     if (["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT"].includes(currentStatus)) lifecycleStatus = "RETURN_IN_TRANSIT";
-  } else if (["delivered", "delivery complete", "delivery completed", "returned to vendor"].includes(statusText)) {
-    if (currentStatus === "RETURN_IN_TRANSIT" || (statusText === "returned to vendor" && currentStatus === "NCM_RETURN_INITIATED")) {
+  } else if (["delivered", "delivery complete", "delivery completed", "returned to vendor", "sent to vendor"].includes(statusText)) {
+    if (
+      currentStatus === "RETURN_IN_TRANSIT" ||
+      (["returned to vendor", "sent to vendor"].includes(statusText) && currentStatus === "NCM_RETURN_INITIATED")
+    ) {
       returnPickupStatus = "DELIVERED_TO_MANUFACTURER";
       lifecycleStatus = "RECEIVED_AT_WAREHOUSE";
     }
@@ -1040,7 +1043,15 @@ export const resolveCustomerReturnNcmState = ({ currentStatus, currentPickupStat
   };
 };
 
-export const applyCustomerReturnNcmStatus = async ({ ncmOrderId, status, event, timestamp }) => {
+export const applyCustomerReturnNcmStatus = async ({
+  ncmOrderId,
+  status,
+  event,
+  timestamp,
+  source = "NCM_WEBHOOK",
+  actorId = null,
+  actorRole = "SYSTEM",
+}) => {
   const numericId = Number(ncmOrderId);
   if (!Number.isInteger(numericId) || numericId <= 0) return false;
   const returnRecord = await prisma.customerReturn.findFirst({
@@ -1078,13 +1089,86 @@ export const applyCustomerReturnNcmStatus = async ({ ncmOrderId, status, event, 
       eventType: `NCM_${String(status || event || "STATUS").toUpperCase().replace(/[^A-Z0-9]+/g, "_").slice(0, 48)}`,
       fromStatus: returnRecord.lifecycleStatus,
       toStatus: nextStatus,
-      metadata: { ncmOrderId: numericId, status, event, timestamp: happenedAt.toISOString() },
+      actorId,
+      actorRole,
+      metadata: { ncmOrderId: numericId, status, event, timestamp: happenedAt.toISOString(), source },
       idempotencyKey: `RETURN_NCM:${numericId}:${status || event}:${timestamp || "NO_TIMESTAMP"}`.slice(0, 191),
     }).catch((error) => {
       if (error.code !== "P2002") throw error;
     });
   }, { isolationLevel: "Serializable" });
   return true;
+};
+
+export const reconcileCustomerReturnNcmStatus = async ({ returnId, adminId = null }) => {
+  const current = await prisma.customerReturn.findUnique({ where: { id: returnId } });
+  if (!current) throw fail("Return request not found.", "RETURN_NOT_FOUND", 404);
+  if (
+    current.deliveryRoute !== "NCM" ||
+    !["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT"].includes(current.lifecycleStatus)
+  ) {
+    throw fail("Only an active NCM return can be reconciled with the carrier.", "RETURN_NCM_RECONCILIATION_NOT_ALLOWED", 409);
+  }
+  const ncmOrderId = current.ncmReturnOrderId || current.originalNcmOrderId;
+  if (!Number.isSafeInteger(Number(ncmOrderId)) || Number(ncmOrderId) <= 0) {
+    throw fail("The return has no valid NCM order ID to reconcile.", "RETURN_NCM_IDS_MISSING", 409);
+  }
+
+  let response;
+  try {
+    response = await getOrderStatus(ncmOrderId);
+  } catch (error) {
+    throw fail(
+      getNcmErrorMessage(error),
+      error.code || "NCM_RETURN_STATUS_LOOKUP_FAILED",
+      502,
+    );
+  }
+  if (!Array.isArray(response.data)) {
+    throw fail("NCM returned an invalid status-history response for this return.", "NCM_RETURN_STATUS_INVALID", 502);
+  }
+  const statusHistory = response.data
+    .map((item, index) => ({
+      status: typeof item?.status === "string" ? item.status.trim() : "",
+      event: typeof item?.event === "string" ? item.event.trim() : "",
+      timestamp: item?.added_time,
+      index,
+      time: item?.added_time ? new Date(item.added_time).getTime() : Number.NaN,
+    }))
+    .sort((left, right) => {
+      if (!Number.isFinite(left.time)) return Number.isFinite(right.time) ? 1 : left.index - right.index;
+      if (!Number.isFinite(right.time)) return -1;
+      return left.time - right.time || left.index - right.index;
+    });
+  const validStatusHistory = statusHistory.filter(
+    (item) => (item.status || item.event) && Number.isFinite(item.time),
+  );
+  let processedStatusCount = 0;
+
+  for (const item of validStatusHistory) {
+    const applied = await applyCustomerReturnNcmStatus({
+      ncmOrderId,
+      status: item.status,
+      event: item.event,
+      timestamp: item.timestamp,
+      source: "NCM_POLL",
+      actorId: adminId,
+      actorRole: "ADMIN",
+    });
+    if (applied) processedStatusCount += 1;
+  }
+
+  const skippedStatusCount = statusHistory.length - processedStatusCount;
+  return {
+    returnRecord: await prisma.customerReturn.findUnique({ where: { id: returnId } }),
+    latestNcmStatus: validStatusHistory.at(-1)?.status || validStatusHistory.at(-1)?.event || null,
+    processedStatusCount,
+    skippedStatusCount,
+    partial: skippedStatusCount > 0,
+    message: skippedStatusCount > 0
+      ? `Reconciled ${processedStatusCount} of ${statusHistory.length} NCM status entries; ${skippedStatusCount} were missing usable status/timestamp data or were no longer applicable.`
+      : `Reconciled ${processedStatusCount} NCM status entries.`,
+  };
 };
 
 export const recordLegacyReturn = async () => {

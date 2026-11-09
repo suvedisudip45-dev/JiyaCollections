@@ -1,17 +1,17 @@
+import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import {
   postFixedAssetPurchaseAccounting,
-  postDepreciationAccounting,
-  postLoanDisbursementAccounting,
-  postLoanRepaymentAccounting,
+  postFixedAssetDisposalAccounting,
   postShareIssuanceAccounting,
-  postShareBuybackAccounting,
   postSupplierPaymentAccounting,
   postCustomerPaymentAccounting,
+  postTreasuryMovementAccounting,
   postDirectExpenseAccounting,
   postProfitDistributionAccounting,
 } from "../services/accountingPostingEngine.js";
+import { runFixedAssetDepreciationBatch } from "../services/fixedAssetDepreciationService.js";
 import {
   calculateFinancialDashboardProductCosts,
   calculateInventoryValuationAtCost,
@@ -37,7 +37,13 @@ import { recordSystemAudit } from "../services/auditService.js";
 import { requireExternalPaymentReference } from "../utils/externalPaymentReference.js";
 import { confirmNcmSettlementBatch } from "../services/ncmSettlementService.js";
 import { allocateManufacturerPaymentToDocuments } from "../services/manufacturerSettlementService.js";
-import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
+import { recordLoanDisbursement, recordLoanRepayment } from "../services/loanAccountingService.js";
+import { recordShareBuyback } from "../services/shareBuybackService.js";
+import { recordPeerShareTransfer } from "../services/peerShareTransferService.js";
+import {
+  normalizeStockReturnExpenseReference,
+  validateTreasuryPayoutAccount,
+} from "../services/treasuryAccountingService.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
 import {
   getConfiguredNepaliDateRange,
@@ -1207,138 +1213,194 @@ export const createTreasuryAccount = async (req, res) => {
 
 export const recordCashTransfer = async (req, res) => {
   try {
-    const { fromAccountId, toAccountId, amount, category, description, type } = req.body;
-    const transferAmount = Number(amount || 0);
-
-    if (transferAmount <= 0) {
-      return res.json({ success: false, message: "A positive transaction amount is required" });
+    const {
+      fromAccountId,
+      toAccountId,
+      amount,
+      category,
+      description,
+      type,
+      partyName,
+      payeeName,
+      invoiceNumber,
+      stockReturnId,
+    } = req.body;
+    const transferAmount = Number(amount);
+    if (!Number.isFinite(transferAmount) || transferAmount <= 0 ||
+        Math.abs(transferAmount * 100 - Math.round(transferAmount * 100)) > 0.000001) {
+      return res.status(400).json({ success: false, message: "Enter a positive transaction amount with no more than two decimal places." });
     }
 
-    // 1. Inter-Account Transfer
-    if (type === "TRANSFER" && fromAccountId && toAccountId) {
-      if (fromAccountId === toAccountId) {
-        return res.json({ success: false, message: "Source and destination accounts must be different" });
-      }
-
-      const fromAccount = await prisma.financialAccount.findUnique({ where: { id: fromAccountId } });
-      if (!fromAccount) {
-        return res.json({ success: false, message: "Source account not found" });
-      }
-      let accountingAccount;
-      try {
-        accountingAccount = await validateTreasuryPayoutAccount(fromAccount, prisma);
-      } catch (error) {
-        return res.status(error.statusCode || 409).json({
-          success: false,
-          message: error.message || "Source Treasury account is not valid for NPR payouts.",
-          code: "INVALID_TREASURY_ACCOUNT",
-        });
-      }
-
-      // CRITICAL CHECK: Overdraft protection
-      if (fromAccount.currentBalance < transferAmount) {
-        return res.json({
-          success: false,
-          message: `Insufficient funds in ${fromAccount.accountName}. Available: Rs ${fromAccount.currentBalance.toLocaleString()}, Requested: Rs ${transferAmount.toLocaleString()}.`,
-        });
-      }
-
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: fromAccountId },
-          data: { currentBalance: { decrement: transferAmount } },
-        }),
-        prisma.financialAccount.update({
-          where: { id: toAccountId },
-          data: { currentBalance: { increment: transferAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: transferAmount,
-            type: "TRANSFER",
-            fromAccountId,
-            toAccountId,
-            category: "INTERNAL_TRANSFER",
-            description: description || "Internal account transfer",
-          },
-        }),
-      ]);
-
-      return res.json({ success: true, message: "Transfer completed successfully" });
+    const normalizedType = String(type || "").toUpperCase();
+    const normalizedCategory = String(category || "").toUpperCase();
+    if (!["TRANSFER", "INFLOW", "OUTFLOW"].includes(normalizedType)) {
+      return res.status(400).json({ success: false, message: "Select a supported Treasury transaction type." });
+    }
+    if (normalizedType === "TRANSFER" && (!fromAccountId || !toAccountId || fromAccountId === toAccountId)) {
+      return res.status(400).json({ success: false, message: "Select different source and destination Treasury accounts." });
+    }
+    if (normalizedType === "INFLOW" && (!toAccountId || normalizedCategory !== "MISC_INFLOW")) {
+      return res.status(400).json({ success: false, message: "Only mapped, non-sales other-income receipts are supported here." });
+    }
+    if (normalizedType === "OUTFLOW" && (!fromAccountId || !["EXPENSE", "DRAWINGS"].includes(normalizedCategory))) {
+      return res.status(400).json({ success: false, message: "Only direct operating expenses and drawings are supported here." });
     }
 
-    // 2. Direct Inflow
-    if (type === "INFLOW" && toAccountId) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: toAccountId },
-          data: { currentBalance: { increment: transferAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: transferAmount,
-            type: "INFLOW",
-            toAccountId,
-            category: category || "SALES",
-            description: description || "Direct cash deposit",
-          },
-        }),
-      ]);
-      return res.json({ success: true, message: "Inflow recorded successfully" });
-    }
-
-    // 3. Direct Outflow
-    if (type === "OUTFLOW" && fromAccountId) {
-      const { partyName, payeeName, invoiceNumber } = req.body;
-      const finalPayeeName = (partyName || payeeName || "Vendor / Payee").trim();
-      const fromAccount = await prisma.financialAccount.findUnique({ where: { id: fromAccountId } });
-      if (!fromAccount) {
-        return res.json({ success: false, message: "Source account not found" });
-      }
-
-      // CRITICAL CHECK: Overdraft protection / Capital Solvency
-      if (fromAccount.currentBalance < transferAmount) {
-        return res.json({
-          success: false,
-          message: `Capital Solvency Constraint: Cannot deduct Rs ${transferAmount.toLocaleString()} from ${fromAccount.accountName}. Available liquid balance is Rs ${fromAccount.currentBalance.toLocaleString()} (Shortfall: Rs ${(transferAmount - fromAccount.currentBalance).toLocaleString()}). You cannot execute cash disbursements beyond available liquid capital. You can record this expense as an Accounts Payable (Liability) to pay later when funds are available.`,
-        });
-      }
-
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: fromAccountId },
-          data: { currentBalance: { decrement: transferAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: transferAmount,
-            type: "OUTFLOW",
-            fromAccountId,
-            category: category || "EXPENSE",
-            partyName: finalPayeeName,
-            invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-            description: description || `Payment to ${finalPayeeName}`,
-          },
-        }),
-      ]);
-      // Post Direct Outflow Expense to Double-Entry General Ledger
-      postDirectExpenseAccounting({
-        amount: transferAmount,
-        category: category || "EXPENSE",
-        description: description || `Payment to ${finalPayeeName}`,
-        payeeName: finalPayeeName,
-        fromAccountId,
-      }).catch((glErr) => {
-        console.error("General Ledger direct expense posting error:", glErr);
+    const finalPartyName = String(partyName || payeeName || "").trim();
+    const finalDescription = String(description || "").trim();
+    const finalInvoiceNumber = String(invoiceNumber || "").trim();
+    let normalizedStockReturnId = null;
+    if (normalizedType === "OUTFLOW" && normalizedCategory === "EXPENSE") {
+      normalizedStockReturnId = normalizeStockReturnExpenseReference({
+        type: normalizedType,
+        category: normalizedCategory,
+        stockReturnId,
       });
-
-      return res.json({ success: true, message: `Outflow payment of Rs ${transferAmount.toLocaleString()} to ${finalPayeeName} recorded successfully` });
+    } else if (stockReturnId) {
+      return res.status(400).json({ success: false, message: "A stock return reference is valid only for a direct expense." });
     }
 
-    res.json({ success: false, message: "Invalid transaction parameters" });
+    const rawIdempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
+    }
+    const requestHash = createHash("sha256").update(rawIdempotencyKey).digest("hex");
+    const sourceId = `TREASURY-${requestHash.slice(0, 32)}`;
+    const idempotencyKey = `TREASURY_MOVEMENT:${requestHash}`;
+    const payloadHash = createHash("sha256").update(JSON.stringify({
+      type: normalizedType,
+      category: normalizedType === "TRANSFER" ? "INTERNAL_TRANSFER" : normalizedCategory,
+      amount: transferAmount,
+      fromAccountId: fromAccountId || null,
+      toAccountId: toAccountId || null,
+      partyName: finalPartyName,
+      invoiceNumber: finalInvoiceNumber,
+      description: finalDescription,
+      stockReturnId: normalizedStockReturnId,
+    })).digest("hex");
+
+    const outcome = await prisma.$transaction(async (tx) => {
+      const existingEntry = await tx.journalEntry.findUnique({ where: { idempotencyKey } });
+      if (existingEntry) {
+        if (existingEntry.status !== "POSTED") {
+          const error = new Error("A non-posted Treasury journal exists for this request. Finance review is required.");
+          error.statusCode = 409;
+          error.code = "TREASURY_JOURNAL_CONFLICT";
+          throw error;
+        }
+        if (existingEntry.sourceId !== sourceId || existingEntry.referenceNumber !== payloadHash) {
+          const error = new Error("This Idempotency-Key was already used for a different Treasury movement.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        return { alreadyProcessed: true };
+      }
+
+      let fromAccount = null;
+      let toAccount = null;
+      let fromAccountCode = null;
+      let toAccountCode = null;
+      if (normalizedType !== "INFLOW") {
+        fromAccount = await tx.financialAccount.findUnique({ where: { id: fromAccountId } });
+        fromAccountCode = (await validateTreasuryPayoutAccount(fromAccount, tx)).accountCode;
+        const available = new Prisma.Decimal(String(fromAccount.currentBalance || 0))
+          .minus(new Prisma.Decimal(String(fromAccount.reservedBalance || 0)));
+        if (available.lessThan(transferAmount)) {
+          const error = new Error(`Insufficient unreserved funds in ${fromAccount.accountName}.`);
+          error.statusCode = 409;
+          error.code = "INSUFFICIENT_TREASURY_FUNDS";
+          throw error;
+        }
+      }
+      if (normalizedType !== "OUTFLOW") {
+        toAccount = await tx.financialAccount.findUnique({ where: { id: toAccountId } });
+        toAccountCode = (await validateTreasuryPayoutAccount(toAccount, tx)).accountCode;
+      }
+
+      if (fromAccount) {
+        const debitResult = await tx.financialAccount.updateMany({
+          where: {
+            id: fromAccount.id,
+            status: "ACTIVE",
+            currency: "NPR",
+            currentBalance: fromAccount.currentBalance,
+            reservedBalance: fromAccount.reservedBalance || new Prisma.Decimal(0),
+          },
+          data: { currentBalance: { decrement: transferAmount } },
+        });
+        if (debitResult.count !== 1) {
+          const error = new Error("Treasury balance or reservations changed. Refresh and retry.");
+          error.statusCode = 409;
+          error.code = "TREASURY_BALANCE_CONFLICT";
+          throw error;
+        }
+      }
+      if (toAccount) {
+        const creditResult = await tx.financialAccount.updateMany({
+          where: { id: toAccount.id, status: "ACTIVE", currency: "NPR" },
+          data: { currentBalance: { increment: transferAmount } },
+        });
+        if (creditResult.count !== 1) {
+          const error = new Error("Destination Treasury account changed. Refresh and retry.");
+          error.statusCode = 409;
+          error.code = "TREASURY_ACCOUNT_CONFLICT";
+          throw error;
+        }
+      }
+
+      const transactionData = {
+        idempotencyKey: `TREASURY_CASH:${requestHash}`,
+        amount: transferAmount,
+        type: normalizedType,
+        fromAccountId: fromAccount?.id || null,
+        toAccountId: toAccount?.id || null,
+        category: normalizedType === "TRANSFER" ? "INTERNAL_TRANSFER" : normalizedCategory,
+        partyName: finalPartyName,
+        invoiceNumber: finalInvoiceNumber,
+        referenceId: normalizedStockReturnId || sourceId,
+        description: finalDescription || (
+          normalizedType === "TRANSFER"
+            ? "Internal account transfer"
+            : `${normalizedType === "INFLOW" ? "Other receipt" : normalizedCategory === "DRAWINGS" ? "Owner / partner drawings" : "Direct operating expense"}${finalPartyName ? ` - ${finalPartyName}` : ""}`
+        ),
+      };
+      await tx.cashTransaction.create({ data: transactionData });
+      await postTreasuryMovementAccounting({
+        movementType: normalizedType,
+        category: normalizedCategory,
+        amount: transferAmount,
+        sourceId,
+        idempotencyKey,
+        referenceNumber: payloadHash,
+        fromAccountCode,
+        toAccountCode,
+        description: transactionData.description,
+        partyName: finalPartyName,
+        transactionDate: new Date(),
+        client: tx,
+      });
+      return { alreadyProcessed: false };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+    return res.json({
+      success: true,
+      alreadyProcessed: outcome.alreadyProcessed,
+      message: outcome.alreadyProcessed
+        ? "This Treasury movement was already recorded."
+        : normalizedType === "TRANSFER"
+        ? "Transfer completed successfully"
+        : normalizedType === "INFLOW"
+        ? "Other-income receipt recorded successfully"
+        : "Treasury outflow and accounting entry recorded successfully",
+    });
   } catch (error) {
     console.error("Record Cash Transfer Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "TREASURY_MOVEMENT_ERROR",
+      message: error.message || "Treasury movement could not be recorded.",
+    });
   }
 };
 
@@ -1410,7 +1472,19 @@ export const createFixedAsset = async (req, res) => {
       return res.json({ success: false, message: "Purchase cost must be greater than zero" });
     }
 
+    const rawIdempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
+    }
+    const tag = `AST-${createHash("sha256").update(rawIdempotencyKey).digest("hex").slice(0, 24)}`;
     const finalVendorName = (vendorName && vendorName.trim()) || "Asset Vendor";
+    let rate = Number(depreciationRate);
+    if (!rate || rate <= 0) {
+      if (category === "COMPUTERS_IT" || category === "FURNITURE_FIXTURES") rate = 25;
+      else if (category === "VEHICLES") rate = 20;
+      else if (category === "MACHINERY_EQUIPMENT") rate = 15;
+      else rate = 25;
+    }
 
     // Determine Settlement Breakdown (Cash vs Payable)
     let paidAmount = 0;
@@ -1428,7 +1502,43 @@ export const createFixedAsset = async (req, res) => {
       payableAmount = cost;
     }
 
-    // Capital Solvency Verification on the upfront cash portion
+    const existingAsset = await prisma.fixedAsset.findUnique({ where: { assetTag: tag } });
+    if (existingAsset) {
+      const existingPayable = await prisma.accountPayable.findFirst({
+        where: { referenceType: "FIXED_ASSET", referenceId: existingAsset.id },
+      });
+      const requestMatches =
+        existingAsset.assetName === assetName.trim() &&
+        existingAsset.category === (category || "COMPUTERS_IT") &&
+        existingAsset.vendorName === finalVendorName &&
+        existingAsset.invoiceNumber === (invoiceNumber ? invoiceNumber.trim() : "") &&
+        Number(existingAsset.purchaseCost) === cost &&
+        Number(existingAsset.salvageValue) === Number(salvageValue || 0) &&
+        Number(existingAsset.depreciationRate) === rate &&
+        existingAsset.depreciationMethod === (depreciationMethod || "WRITTEN_DOWN_VALUE_SLAB") &&
+        Number(existingAsset.usefulLifeMonths) === Number(usefulLifeMonths || 60) &&
+        existingAsset.paidFromAccountId === (paidAmount > 0 ? paidFromAccountId : null) &&
+        Number(existingAsset.paidAmount) === paidAmount &&
+        Number(existingAsset.payableAmount) === payableAmount &&
+        (!purchaseDate || new Date(existingAsset.purchaseDate).getTime() === new Date(purchaseDate).getTime()) &&
+        (!dueDate ||
+          (existingPayable && new Date(existingPayable.dueDate).getTime() === new Date(dueDate).getTime()));
+      if (!requestMatches) {
+        return res.status(409).json({
+          success: false,
+          code: "IDEMPOTENCY_KEY_REUSED",
+          message: "This Idempotency-Key was already used for a different fixed-asset purchase.",
+        });
+      }
+      return res.json({
+        success: true,
+        message: `Fixed asset ${existingAsset.assetName} was already registered for this request.`,
+        asset: existingAsset,
+        payable: existingPayable,
+      });
+    }
+
+    // Preliminary solvency check; the transactional compare-and-set below is authoritative.
     let payingAccount = null;
     if (paidAmount > 0) {
       if (!paidFromAccountId) {
@@ -1441,57 +1551,74 @@ export const createFixedAsset = async (req, res) => {
       if (!payingAccount) {
         return res.json({ success: false, message: "Selected payment account not found" });
       }
-      if (payingAccount.currentBalance < paidAmount) {
+      const availableBalance = new Prisma.Decimal(String(payingAccount.currentBalance || 0))
+        .minus(new Prisma.Decimal(String(payingAccount.reservedBalance || 0)));
+      if (availableBalance.lessThan(paidAmount)) {
         return res.json({
           success: false,
-          message: `Capital Solvency Constraint: Cannot pay Rs ${paidAmount.toLocaleString()} from ${payingAccount.accountName}. Available liquid balance is Rs ${payingAccount.currentBalance.toLocaleString()} (Shortfall: Rs ${(paidAmount - payingAccount.currentBalance).toLocaleString()}). Select 'Purchase on Credit / Record as Payable' or reduce the upfront payment amount.`,
+          message: `Capital Solvency Constraint: Cannot pay Rs ${paidAmount.toLocaleString()} from ${payingAccount.accountName}. Available unreserved balance is Rs ${Number(availableBalance).toLocaleString()}. Select 'Purchase on Credit / Record as Payable' or reduce the upfront payment amount.`,
         });
       }
     }
 
-    const tag = `AST-${Date.now().toString().slice(-6)}`;
-
-    // Default rates per Nepal Tax Slabs
-    let rate = Number(depreciationRate);
-    if (!rate || rate <= 0) {
-      if (category === "COMPUTERS_IT" || category === "FURNITURE_FIXTURES") rate = 25;
-      else if (category === "VEHICLES") rate = 20;
-      else if (category === "MACHINERY_EQUIPMENT") rate = 15;
-      else rate = 25;
-    }
-
-    // 1. Create the Fixed Asset
-    const asset = await prisma.fixedAsset.create({
-      data: {
-        assetName: assetName.trim(),
-        assetTag: tag,
-        category: category || "COMPUTERS_IT",
-        vendorName: finalVendorName,
-        invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-        purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
-        purchaseCost: cost,
-        salvageValue: Number(salvageValue || 0),
-        depreciationRate: rate,
-        depreciationMethod: depreciationMethod || "WRITTEN_DOWN_VALUE_SLAB",
-        usefulLifeMonths: Number(usefulLifeMonths || 60),
-        accumulatedDepreciation: 0,
-        currentBookValue: cost,
-        paidFromAccountId: paidAmount > 0 ? paidFromAccountId : null,
-        paidAmount,
-        payableAmount,
-        status: "ACTIVE",
-      },
-    });
-
-    // 2. Handle Upfront Cash Deduction
-    if (paidAmount > 0 && payingAccount) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: paidFromAccountId },
+    const acquisition = await prisma.$transaction(async (tx) => {
+      let cashAccountCode = null;
+      if (paidAmount > 0) {
+        const account = await tx.financialAccount.findUnique({ where: { id: paidFromAccountId } });
+        const mappedAccount = await validateTreasuryPayoutAccount(account, tx);
+        cashAccountCode = mappedAccount.accountCode;
+        const currentBalance = new Prisma.Decimal(String(account.currentBalance || 0));
+        const reservedBalance = new Prisma.Decimal(String(account.reservedBalance || 0));
+        if (currentBalance.minus(reservedBalance).lessThan(paidAmount)) {
+          const error = new Error(`Insufficient unreserved funds in ${account.accountName}.`);
+          error.statusCode = 409;
+          error.code = "INSUFFICIENT_TREASURY_FUNDS";
+          throw error;
+        }
+        const debitResult = await tx.financialAccount.updateMany({
+          where: {
+            id: paidFromAccountId,
+            status: "ACTIVE",
+            currency: "NPR",
+            currentBalance: account.currentBalance,
+            reservedBalance: account.reservedBalance || new Prisma.Decimal(0),
+          },
           data: { currentBalance: { decrement: paidAmount } },
-        }),
-        prisma.cashTransaction.create({
+        });
+        if (debitResult.count !== 1) {
+          const error = new Error("Treasury balance or reservations changed. Refresh and retry the asset purchase.");
+          error.statusCode = 409;
+          error.code = "TREASURY_BALANCE_CONFLICT";
+          throw error;
+        }
+      }
+
+      const asset = await tx.fixedAsset.create({
+        data: {
+          assetName: assetName.trim(),
+          assetTag: tag,
+          category: category || "COMPUTERS_IT",
+          vendorName: finalVendorName,
+          invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
+          purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
+          purchaseCost: cost,
+          salvageValue: Number(salvageValue || 0),
+          depreciationRate: rate,
+          depreciationMethod: depreciationMethod || "WRITTEN_DOWN_VALUE_SLAB",
+          usefulLifeMonths: Number(usefulLifeMonths || 60),
+          accumulatedDepreciation: 0,
+          currentBookValue: cost,
+          paidFromAccountId: paidAmount > 0 ? paidFromAccountId : null,
+          paidAmount,
+          payableAmount,
+          status: "ACTIVE",
+        },
+      });
+
+      if (paidAmount > 0) {
+        await tx.cashTransaction.create({
           data: {
+            idempotencyKey: `FIXED_ASSET_PURCHASE:${tag}`,
             amount: paidAmount,
             type: "OUTFLOW",
             fromAccountId: paidFromAccountId,
@@ -1501,61 +1628,64 @@ export const createFixedAsset = async (req, res) => {
             referenceId: asset.id,
             description: `Asset Purchase Upfront Payment: ${asset.assetName} (${tag}) to ${finalVendorName}`,
           },
-        }),
-      ]);
-    }
+        });
+      }
 
-    // 3. Handle Remaining Payable Liability Record
-    let payableRecord = null;
-    if (payableAmount > 0) {
-      payableRecord = await prisma.accountPayable.create({
-        data: {
-          title: `Asset Purchase: ${asset.assetName} (${tag})`,
-          payeeName: finalVendorName,
-          category: "ASSET_PURCHASE",
-          referenceType: "FIXED_ASSET",
-          referenceId: asset.id,
-          totalAmount: payableAmount,
-          paidAmount: 0,
-          remainingBalance: payableAmount,
-          dueDate: dueDate ? new Date(dueDate) : null,
-          invoiceNumber: invoiceNumber || "",
-          status: "UNPAID",
-          priority: "MEDIUM",
-          notes: `Asset ${asset.assetName} (${tag}) acquired with Rs ${payableAmount.toLocaleString()} credit balance owed to ${finalVendorName}. Settle from Liquid Treasury when funds are available.`,
-        },
+      let payableRecord = null;
+      if (payableAmount > 0) {
+        payableRecord = await tx.accountPayable.create({
+          data: {
+            title: `Asset Purchase: ${asset.assetName} (${tag})`,
+            payeeName: finalVendorName,
+            category: "ASSET_PURCHASE",
+            referenceType: "FIXED_ASSET",
+            referenceId: asset.id,
+            totalAmount: payableAmount,
+            paidAmount: 0,
+            remainingBalance: payableAmount,
+            dueDate: dueDate ? new Date(dueDate) : null,
+            invoiceNumber: invoiceNumber || "",
+            status: "UNPAID",
+            priority: "MEDIUM",
+            notes: `Asset ${asset.assetName} (${tag}) acquired with Rs ${payableAmount.toLocaleString()} credit balance owed to ${finalVendorName}. Settle from Liquid Treasury when funds are available.`,
+          },
+        });
+        await tx.fixedAsset.update({
+          where: { id: asset.id },
+          data: { payableId: payableRecord.id },
+        });
+      }
+
+      await postFixedAssetPurchaseAccounting({
+        ...asset,
+        paidAmount,
+        payableAmount,
+        vendorName: finalVendorName,
+      }, {
+        client: tx,
+        cashAccountCode,
       });
-
-      await prisma.fixedAsset.update({
-        where: { id: asset.id },
-        data: { payableId: payableRecord.id },
-      });
-    }
-
-    // Post Fixed Asset Acquisition to Double-Entry General Ledger
-    postFixedAssetPurchaseAccounting({
-      ...asset,
-      paidAmount,
-      payableAmount,
-      vendorName: finalVendorName,
-    }).catch((glErr) => {
-      console.error("General Ledger fixed asset posting error:", glErr);
+      return { asset, payable: payableRecord };
     });
 
     res.json({
       success: true,
       message:
         paidAmount > 0 && payableAmount > 0
-          ? `Fixed asset ${asset.assetName} acquired: Rs ${paidAmount.toLocaleString()} paid from ${payingAccount?.accountName || "treasury"} and Rs ${payableAmount.toLocaleString()} registered under Accounts Payable to ${finalVendorName}.`
+          ? `Fixed asset ${acquisition.asset.assetName} acquired: Rs ${paidAmount.toLocaleString()} paid from ${payingAccount?.accountName || "treasury"} and Rs ${payableAmount.toLocaleString()} registered under Accounts Payable to ${finalVendorName}.`
           : paidAmount > 0
-          ? `Fixed asset ${asset.assetName} fully purchased (Rs ${paidAmount.toLocaleString()}) from ${payingAccount?.accountName || "treasury"}.`
-          : `Fixed asset ${asset.assetName} recorded and registered under Accounts Payable (Rs ${payableAmount.toLocaleString()}) to ${finalVendorName}.`,
-      asset,
-      payable: payableRecord,
+          ? `Fixed asset ${acquisition.asset.assetName} fully purchased (Rs ${paidAmount.toLocaleString()}) from ${payingAccount?.accountName || "treasury"}.`
+          : `Fixed asset ${acquisition.asset.assetName} recorded and registered under Accounts Payable (Rs ${payableAmount.toLocaleString()}) to ${finalVendorName}.`,
+      asset: acquisition.asset,
+      payable: acquisition.payable,
     });
   } catch (error) {
     console.error("Create Fixed Asset Error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "FIXED_ASSET_ACQUISITION_ERROR",
+      message: error.message || "Fixed asset acquisition could not be recorded.",
+    });
   }
 };
 
@@ -1577,57 +1707,123 @@ export const recordOperatingExpense = async (req, res) => {
       notes,
     } = req.body;
 
-    const totalCost = Number(amount || 0);
-    if (!title || totalCost <= 0) {
-      return res.json({ success: false, message: "Expense title and a positive amount are required." });
+    const totalCost = Number(amount);
+    if (!String(title || "").trim() || !Number.isFinite(totalCost) || totalCost <= 0) {
+      return res.status(400).json({ success: false, message: "Expense title and a positive amount are required." });
+    }
+    if (Math.abs(totalCost * 100 - Math.round(totalCost * 100)) > 0.000001) {
+      return res.status(400).json({ success: false, message: "Expense amount cannot have more than two decimal places." });
+    }
+    if (!["FULL_CASH", "CREDIT_PAYABLE", "PARTIAL"].includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: "Select a valid expense payment method." });
     }
 
-    const finalPayee = (payeeName && payeeName.trim()) || "Vendor / Service Provider";
+    const rawIdempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
+    }
+    const requestHash = createHash("sha256").update(rawIdempotencyKey).digest("hex");
+    const expenseRefId = `EXP-${requestHash.slice(0, 32)}`;
+    const journalIdempotencyKey = `EXPENSE_RECORD:${requestHash}`;
+    const finalTitle = String(title).trim();
+    const finalPayee = String(payeeName || "").trim() || "Vendor / Service Provider";
+    const upfront = Number(upfrontPaidAmount || 0);
 
     let paidAmt = 0;
     let payableAmt = 0;
 
     if (paymentMethod === "FULL_CASH") {
       paidAmt = totalCost;
-      payableAmt = 0;
     } else if (paymentMethod === "PARTIAL") {
-      paidAmt = Math.min(totalCost, Math.max(0, Number(upfrontPaidAmount || 0)));
+      if (!Number.isFinite(upfront) || upfront < 0 || upfront > totalCost) {
+        return res.status(400).json({ success: false, message: "Partial payment must be between zero and the total expense." });
+      }
+      if (Math.abs(upfront * 100 - Math.round(upfront * 100)) > 0.000001) {
+        return res.status(400).json({ success: false, message: "Partial payment cannot have more than two decimal places." });
+      }
+      paidAmt = upfront;
       payableAmt = Number((totalCost - paidAmt).toFixed(2));
     } else {
-      // CREDIT_PAYABLE
-      paidAmt = 0;
       payableAmt = totalCost;
     }
 
-    // Solvency Check on Cash Portion
-    let payingAccount = null;
-    if (paidAmt > 0) {
-      if (!paidFromAccountId) {
-        return res.json({ success: false, message: "Please select a Treasury / Bank account to disburse the cash payment." });
-      }
-      payingAccount = await prisma.financialAccount.findUnique({ where: { id: paidFromAccountId } });
-      if (!payingAccount) {
-        return res.json({ success: false, message: "Selected payment account not found" });
-      }
-      if (payingAccount.currentBalance < paidAmt) {
-        return res.json({
-          success: false,
-          message: `Capital Solvency Constraint: Cannot pay Rs ${paidAmt.toLocaleString()} from ${payingAccount.accountName}. Available liquid balance is Rs ${payingAccount.currentBalance.toLocaleString()} (Shortfall: Rs ${(paidAmt - payingAccount.currentBalance).toLocaleString()}). Please record as Accounts Payable (on credit) or reduce the upfront payment.`,
-        });
-      }
+    const payloadHash = createHash("sha256").update(JSON.stringify({
+      title: finalTitle,
+      category,
+      amount: totalCost,
+      paymentMethod,
+      paidAmount: paidAmt,
+      payableAmount: payableAmt,
+      paidFromAccountId: paidAmt > 0 ? paidFromAccountId : null,
+      payeeName: finalPayee,
+      invoiceNumber: invoiceNumber || "",
+      dueDate: dueDate || null,
+      notes: notes || "",
+    })).digest("hex");
+
+    if (paidAmt > 0 && !paidFromAccountId) {
+      return res.status(400).json({ success: false, message: "Please select a Treasury / Bank account to disburse the cash payment." });
     }
 
-    const expenseRefId = `EXP-${Date.now().toString().slice(-6)}`;
+    const outcome = await prisma.$transaction(async (tx) => {
+      const existingEntry = await tx.journalEntry.findUnique({
+        where: { idempotencyKey: journalIdempotencyKey },
+      });
+      if (existingEntry) {
+        if (existingEntry.status !== "POSTED" || existingEntry.sourceId !== expenseRefId) {
+          const error = new Error("An incomplete expense posting exists for this request. Finance review is required.");
+          error.statusCode = 409;
+          error.code = "EXPENSE_POSTING_CONFLICT";
+          throw error;
+        }
+        if (existingEntry.referenceNumber !== payloadHash) {
+          const error = new Error("This Idempotency-Key was already used for a different expense.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        return {
+          alreadyProcessed: true,
+          payable: await tx.accountPayable.findFirst({
+            where: { referenceType: "EXPENSE", referenceId: expenseRefId },
+          }),
+          accountName: null,
+        };
+      }
 
-    // 1. Cash Deduction
-    if (paidAmt > 0 && payingAccount) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: paidFromAccountId },
+      let payingAccount = null;
+      let cashAccountCode = null;
+      if (paidAmt > 0) {
+        payingAccount = await tx.financialAccount.findUnique({ where: { id: paidFromAccountId } });
+        const mappedAccount = await validateTreasuryPayoutAccount(payingAccount, tx);
+        cashAccountCode = mappedAccount.accountCode;
+        const currentBalance = new Prisma.Decimal(String(payingAccount.currentBalance || 0));
+        const reservedBalance = new Prisma.Decimal(String(payingAccount.reservedBalance || 0));
+        if (currentBalance.minus(reservedBalance).lessThan(paidAmt)) {
+          const error = new Error(`Insufficient unreserved funds in ${payingAccount.accountName}.`);
+          error.statusCode = 409;
+          error.code = "INSUFFICIENT_TREASURY_FUNDS";
+          throw error;
+        }
+        const debitResult = await tx.financialAccount.updateMany({
+          where: {
+            id: paidFromAccountId,
+            status: "ACTIVE",
+            currency: "NPR",
+            currentBalance: payingAccount.currentBalance,
+            reservedBalance: payingAccount.reservedBalance || new Prisma.Decimal(0),
+          },
           data: { currentBalance: { decrement: paidAmt } },
-        }),
-        prisma.cashTransaction.create({
+        });
+        if (debitResult.count !== 1) {
+          const error = new Error("Treasury balance or reservations changed. Refresh and retry the expense.");
+          error.statusCode = 409;
+          error.code = "TREASURY_BALANCE_CONFLICT";
+          throw error;
+        }
+        await tx.cashTransaction.create({
           data: {
+            idempotencyKey: `EXPENSE_CASH:${requestHash}`,
             amount: paidAmt,
             type: "OUTFLOW",
             fromAccountId: paidFromAccountId,
@@ -1635,175 +1831,226 @@ export const recordOperatingExpense = async (req, res) => {
             partyName: finalPayee,
             invoiceNumber: invoiceNumber || "",
             referenceId: expenseRefId,
-            description: `${title} paid to ${finalPayee}`,
+            description: `${finalTitle} paid to ${finalPayee}`,
           },
-        }),
-      ]);
-    }
+        });
+      }
 
-    // 2. Payable Liability Record
-    let payableRecord = null;
-    if (payableAmt > 0) {
-      payableRecord = await prisma.accountPayable.create({
-        data: {
-          title: `${title} (${finalPayee})`,
-          payeeName: finalPayee,
-          category: "OPERATING_EXPENSE",
-          referenceType: "EXPENSE",
-          referenceId: expenseRefId,
-          totalAmount: payableAmt,
-          paidAmount: 0,
-          remainingBalance: payableAmt,
-          dueDate: dueDate ? new Date(dueDate) : null,
-          invoiceNumber: invoiceNumber || "",
-          priority: "MEDIUM",
-          status: "UNPAID",
-          notes: notes || `Operating expense owed to ${finalPayee}. Total expense Rs ${totalCost.toLocaleString()}, upfront paid Rs ${paidAmt.toLocaleString()}, remaining payable Rs ${payableAmt.toLocaleString()}.`,
-        },
+      let payableRecord = null;
+      if (payableAmt > 0) {
+        payableRecord = await tx.accountPayable.create({
+          data: {
+            title: `${finalTitle} (${finalPayee})`,
+            payeeName: finalPayee,
+            category: "OPERATING_EXPENSE",
+            referenceType: "EXPENSE",
+            referenceId: expenseRefId,
+            totalAmount: payableAmt,
+            paidAmount: 0,
+            remainingBalance: payableAmt,
+            dueDate: dueDate ? new Date(dueDate) : null,
+            invoiceNumber: invoiceNumber || "",
+            priority: "MEDIUM",
+            status: "UNPAID",
+            notes: notes || `Operating expense owed to ${finalPayee}. Total expense Rs ${totalCost.toLocaleString()}, upfront paid Rs ${paidAmt.toLocaleString()}, remaining payable Rs ${payableAmt.toLocaleString()}.`,
+          },
+        });
+      }
+
+      await postDirectExpenseAccounting({
+        expenseId: expenseRefId,
+        category,
+        title: finalTitle,
+        amount: totalCost,
+        paidAmount: paidAmt,
+        payableAmount: payableAmt,
+        paidFromAccountCode: cashAccountCode,
+        idempotencyKey: journalIdempotencyKey,
+        referenceNumber: payloadHash,
+        payeeName: finalPayee,
+        client: tx,
+        throwOnError: true,
       });
-    }
-
-    // 3. Post to General Ledger
-    postDirectExpenseAccounting({
-      expenseId: expenseRefId,
-      category,
-      title,
-      amount: totalCost,
-      fromAccountId: paidAmt > 0 ? paidFromAccountId : null,
-      isPayable: payableAmt > 0,
-      payeeName: finalPayee,
-    }).catch((glErr) => {
-      console.error("General Ledger operating expense posting error:", glErr);
-    });
+      return { alreadyProcessed: false, payable: payableRecord, accountName: payingAccount?.accountName || null };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     res.json({
       success: true,
-      message:
-        paidAmt > 0 && payableAmt > 0
-          ? `Expense recorded: Rs ${paidAmt.toLocaleString()} paid from ${payingAccount?.accountName || "treasury"} and Rs ${payableAmt.toLocaleString()} registered under Accounts Payable to ${finalPayee}.`
-          : paidAmt > 0
-          ? `Expense fully paid (Rs ${paidAmt.toLocaleString()}) from ${payingAccount?.accountName || "treasury"} to ${finalPayee}.`
-          : `Expense registered under Accounts Payable (Rs ${payableAmt.toLocaleString()}) to ${finalPayee}.`,
-      payable: payableRecord,
+      alreadyProcessed: outcome.alreadyProcessed,
+      message: outcome.alreadyProcessed
+        ? "This operating expense was already recorded."
+        : paidAmt > 0 && payableAmt > 0
+        ? `Expense recorded: Rs ${paidAmt.toLocaleString()} paid from ${outcome.accountName || "treasury"} and Rs ${payableAmt.toLocaleString()} registered under Accounts Payable to ${finalPayee}.`
+        : paidAmt > 0
+        ? `Expense fully paid (Rs ${paidAmt.toLocaleString()}) from ${outcome.accountName || "treasury"} to ${finalPayee}.`
+        : `Expense registered under Accounts Payable (Rs ${payableAmt.toLocaleString()}) to ${finalPayee}.`,
+      payable: outcome.payable,
     });
   } catch (error) {
     console.error("Record Operating Expense Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "OPERATING_EXPENSE_ERROR",
+      message: error.message || "Operating expense could not be recorded.",
+    });
   }
 };
 
 export const runDepreciationBatch = async (req, res) => {
   try {
-    const { monthsCount = 1 } = req.body;
-    const assets = await prisma.fixedAsset.findMany({ where: { status: "ACTIVE" } });
-    
-    let totalDepreciated = 0;
-    const updatedAssets = [];
-
-    for (const asset of assets) {
-      const annualRate = Number(asset.depreciationRate || 25) / 100;
-      const currentBook = Number(asset.currentBookValue);
-      const salvage = Number(asset.salvageValue || 0);
-
-      if (currentBook <= salvage) continue;
-
-      let depAmount = 0;
-      if (asset.depreciationMethod === "STRAIGHT_LINE") {
-        const monthlyDep = (Number(asset.purchaseCost) - salvage) / Math.max(1, Number(asset.usefulLifeMonths || 60));
-        depAmount = monthlyDep * Number(monthsCount);
-      } else {
-        const monthlyRate = annualRate / 12;
-        depAmount = currentBook * monthlyRate * Number(monthsCount);
-      }
-
-      depAmount = Math.min(depAmount, currentBook - salvage);
-      depAmount = Number(depAmount.toFixed(2));
-
-      const newBookValue = Number((currentBook - depAmount).toFixed(2));
-      const newAccDep = Number((Number(asset.accumulatedDepreciation) + depAmount).toFixed(2));
-
-      const updated = await prisma.fixedAsset.update({
-        where: { id: asset.id },
-        data: {
-          currentBookValue: newBookValue,
-          accumulatedDepreciation: newAccDep,
-        },
-      });
-
-      totalDepreciated += depAmount;
-      updatedAssets.push(updated);
-    }
-
-    // Post Depreciation Batch to Double-Entry General Ledger
-    if (totalDepreciated > 0) {
-      postDepreciationAccounting({
-        totalDepreciation: totalDepreciated,
-        count: updatedAssets.length,
-        date: new Date(),
-      }).catch((glErr) => {
-        console.error("General Ledger depreciation posting error:", glErr);
-      });
-    }
+    const result = await runFixedAssetDepreciationBatch({
+      monthsCount: req.body?.monthsCount ?? 1,
+    });
 
     res.json({
       success: true,
-      message: `Depreciation executed for ${updatedAssets.length} assets`,
-      totalDepreciated: Number(totalDepreciated.toFixed(2)),
+      message: result.alreadyProcessed
+        ? "Depreciation has already been processed for the current BS accounting month."
+        : `Depreciation executed for ${result.count} assets`,
+      alreadyProcessed: result.alreadyProcessed,
+      totalDepreciated: result.totalDepreciated,
     });
   } catch (error) {
     console.error("Run Depreciation Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "DEPRECIATION_BATCH_ERROR",
+      message: error.message || "Depreciation batch could not be completed.",
+    });
   }
 };
 
 export const recordAssetDamageOrDisposal = async (req, res) => {
   try {
-    const { assetId, status, damageNotes, disposalAmount, depositAccountId } = req.body;
-    const asset = await prisma.fixedAsset.findUnique({ where: { id: assetId } });
-    if (!asset) {
-      return res.json({ success: false, message: "Asset not found" });
+    const { assetId, status, damageNotes, disposalAmount } = req.body;
+    const rawIdempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
+    }
+    if (status === "SOLD") {
+      return res.status(409).json({
+        success: false,
+        code: "ASSET_SALE_TAX_FLOW_REQUIRED",
+        message: "Asset sales are unavailable until the tax-aware sale and VAT treatment is approved and implemented.",
+      });
+    }
+    if (!["DAMAGED", "WRITTEN_OFF"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Select a valid asset damage or write-off status." });
+    }
+    const recoveredAmount = Number(disposalAmount ?? 0);
+    if (!Number.isFinite(recoveredAmount) || recoveredAmount < 0) {
+      return res.status(400).json({ success: false, message: "Recovery amount must be a non-negative number." });
+    }
+    if (recoveredAmount > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "ASSET_SALE_TAX_FLOW_REQUIRED",
+        message: "Recording disposal proceeds is unavailable until the tax-aware sale and VAT treatment is approved and implemented.",
+      });
     }
 
-    const currentBook = Number(asset.currentBookValue);
-    const recoveredAmount = Number(disposalAmount || 0);
-    const scrapLoss = Math.max(0, currentBook - recoveredAmount);
+    const payloadHash = createHash("sha256").update(JSON.stringify({
+      assetId,
+      status,
+      damageNotes: String(damageNotes || "").trim(),
+      recoveredAmount,
+    })).digest("hex");
+    const requestHash = createHash("sha256").update(rawIdempotencyKey).digest("hex");
+    const idempotencyKey = `ASSET_DISPOSAL:${requestHash}`;
+    const outcome = await prisma.$transaction(async (tx) => {
+      const existingEntry = await tx.journalEntry.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existingEntry) {
+        if (existingEntry.status !== "POSTED") {
+          const error = new Error("A non-posted disposal journal exists for this request. Finance review is required.");
+          error.statusCode = 409;
+          error.code = "ASSET_DISPOSAL_JOURNAL_CONFLICT";
+          throw error;
+        }
+        if (existingEntry.sourceId !== assetId || existingEntry.referenceNumber !== payloadHash) {
+          const error = new Error("This Idempotency-Key was already used for a different asset disposal.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        const existingAsset = await tx.fixedAsset.findUnique({ where: { id: assetId } });
+        return {
+          asset: existingAsset,
+          scrapLoss: Number(existingAsset?.scrapLossAmount || 0),
+          alreadyProcessed: true,
+        };
+      }
 
-    const updated = await prisma.fixedAsset.update({
-      where: { id: assetId },
-      data: {
-        status: status || "DAMAGED",
-        damageNotes: damageNotes || "Damaged/Disposed",
-        disposalDate: new Date(),
-        disposalAmount: recoveredAmount,
-        scrapLossAmount: scrapLoss,
-        currentBookValue: 0,
-      },
+      const asset = await tx.fixedAsset.findUnique({ where: { id: assetId } });
+      if (!asset) {
+        const error = new Error("Asset not found.");
+        error.statusCode = 404;
+        throw error;
+      }
+      if (asset.status !== "ACTIVE") {
+        const error = new Error("Only an active fixed asset can be damaged or disposed.");
+        error.statusCode = 409;
+        error.code = "FIXED_ASSET_NOT_ACTIVE";
+        throw error;
+      }
+
+      const disposalDate = new Date();
+      const scrapLoss = Math.max(0, Number((Number(asset.currentBookValue) - recoveredAmount).toFixed(2)));
+      const updateResult = await tx.fixedAsset.updateMany({
+        where: {
+          id: asset.id,
+          status: "ACTIVE",
+          currentBookValue: asset.currentBookValue,
+          accumulatedDepreciation: asset.accumulatedDepreciation,
+        },
+        data: {
+          status,
+          damageNotes: String(damageNotes || "").trim() || "Damaged/Disposed",
+          disposalDate,
+          disposalAmount: recoveredAmount,
+          scrapLossAmount: scrapLoss,
+          currentBookValue: 0,
+        },
+      });
+      if (updateResult.count !== 1) {
+        const error = new Error("Asset values changed during disposal. Refresh and retry.");
+        error.statusCode = 409;
+        error.code = "FIXED_ASSET_BALANCE_CONFLICT";
+        throw error;
+      }
+
+      await postFixedAssetDisposalAccounting(asset, {
+        status,
+        damageNotes: String(damageNotes || "").trim(),
+        recoveredAmount,
+        disposalDate,
+        idempotencyKey,
+        payloadHash,
+      }, { client: tx });
+      return {
+        asset: await tx.fixedAsset.findUnique({ where: { id: asset.id } }),
+        scrapLoss,
+        alreadyProcessed: false,
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+    res.json({
+      success: true,
+      message: outcome.alreadyProcessed
+        ? "This asset disposal was already recorded."
+        : `Asset marked as ${status} and disposal accounting posted.`,
+      asset: outcome.asset,
+      scrapLoss: outcome.scrapLoss,
+      alreadyProcessed: outcome.alreadyProcessed,
     });
-
-    // If salvage cash was recovered, deposit into treasury
-    if (recoveredAmount > 0 && depositAccountId) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: depositAccountId },
-          data: { currentBalance: { increment: recoveredAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: recoveredAmount,
-            type: "INFLOW",
-            toAccountId: depositAccountId,
-            category: "CAPITAL_INJECTION",
-            referenceId: asset.id,
-            description: `Salvage Recovery for ${asset.assetName}`,
-          },
-        }),
-      ]);
-    }
-
-    res.json({ success: true, message: `Asset marked as ${status}`, asset: updated, scrapLoss });
   } catch (error) {
     console.error("Asset Damage/Disposal Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "ASSET_DISPOSAL_ERROR",
+      message: error.message || "Asset disposal could not be recorded.",
+    });
   }
 };
 
@@ -2011,183 +2258,257 @@ export const issueNewShares = async (req, res) => {
       roundName = "New Equity Round",
       notes,
     } = req.body;
-
-    if (!investorName || !email || !investmentAmount || !preMoneyValuation) {
-      return res.json({
+    const rawIdempotencyKey = String(req.get?.("Idempotency-Key") || req.body?.idempotencyKey || "").trim();
+    if (!/^[A-Za-z0-9._:-]{1,140}$/.test(rawIdempotencyKey)) {
+      return res.status(400).json({ success: false, message: "A valid Idempotency-Key is required." });
+    }
+    if (!String(investorName || "").trim() || !String(email || "").trim() ||
+        investmentAmount === undefined || preMoneyValuation === undefined || !depositAccountId) {
+      return res.status(400).json({
         success: false,
-        message: "Investor Name, Email, Pre-Money Valuation, and Investment Amount are required.",
+        message: "Investor name, email, pre-money valuation, investment amount, and mapped Treasury account are required.",
       });
     }
-
     const preVal = Number(preMoneyValuation);
     const invAmt = Number(investmentAmount);
-
-    if (preVal <= 0 || invAmt <= 0) {
-      return res.json({ success: false, message: "Valuation and Investment Amount must be greater than zero." });
+    if (!Number.isFinite(preVal) || !Number.isFinite(invAmt) || preVal <= 0 || invAmt <= 0) {
+      return res.status(400).json({ success: false, message: "Valuation and investment amount must be positive finite values." });
     }
-
-    // 1. Fetch current active shareholders
-    const partners = await prisma.partnerEquity.findMany({
-      where: { status: { in: ["ACTIVE", "INACTIVE"] } },
-    });
-
-    const BASE_SHARES = 100000;
-    let totalPreShares = partners.reduce((acc, p) => acc + Number(p.shareCount || 0), 0);
-    if (totalPreShares === 0) {
-      totalPreShares = BASE_SHARES;
-      // Auto-assign baseline shares to existing partners before dilution
-      for (const p of partners) {
-        const allocatedShares = Number(((Number(p.ownershipPercentage || 0) / 100) * BASE_SHARES).toFixed(2));
-        await prisma.partnerEquity.update({
-          where: { id: p.id },
-          data: { shareCount: allocatedShares },
+    if ([preVal, invAmt].some((amount) => Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001)) {
+      return res.status(400).json({ success: false, message: "Valuation and investment amounts cannot have more than two decimal places." });
+    }
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const normalizedInvestorName = String(investorName).trim();
+    const normalizedRoundName = String(roundName || "").trim();
+    if (!normalizedRoundName) {
+      return res.status(400).json({ success: false, message: "Equity round name is required." });
+    }
+    const requestHash = createHash("sha256").update(rawIdempotencyKey).digest("hex");
+    const idempotencyKey = `CAPITAL_INJECTION:${requestHash}`;
+    const payloadHash = createHash("sha256").update(JSON.stringify({
+      investorName: normalizedInvestorName,
+      email: normalizedEmail,
+      phone: phone || "",
+      role,
+      preMoneyValuation: preVal,
+      investmentAmount: invAmt,
+      depositAccountId,
+      roundName: normalizedRoundName,
+      notes: notes || "",
+    })).digest("hex");
+    const transactionDate = new Date();
+    const outcome = await prisma.$transaction(async (tx) => {
+      const existingEntry = await tx.journalEntry.findUnique({ where: { idempotencyKey } });
+      if (existingEntry) {
+        if (existingEntry.status !== "POSTED" || existingEntry.sourceType !== "CAPITAL_INJECTION") {
+          const error = new Error("An incomplete equity posting exists for this request. Finance review is required.");
+          error.statusCode = 409;
+          error.code = "EQUITY_POSTING_CONFLICT";
+          throw error;
+        }
+        if (existingEntry.referenceNumber !== payloadHash) {
+          const error = new Error("This Idempotency-Key was already used for a different share issuance.");
+          error.statusCode = 409;
+          error.code = "IDEMPOTENCY_KEY_REUSED";
+          throw error;
+        }
+        const valuation = await tx.companyValuation.findUnique({ where: { id: existingEntry.sourceId } });
+        const shareTransaction = await tx.shareTransaction.findFirst({
+          where: { valuationRoundId: existingEntry.sourceId, transactionType: "PRIMARY_ISSUANCE" },
         });
-        p.shareCount = allocatedShares;
+        const investor = shareTransaction?.toPartnerId
+          ? await tx.partnerEquity.findUnique({ where: { id: shareTransaction.toPartnerId } })
+          : null;
+        if (!valuation || !shareTransaction || !investor) {
+          const error = new Error("The existing equity journal is missing its source records. Finance review is required.");
+          error.statusCode = 409;
+          error.code = "EQUITY_SOURCE_RECORDS_MISSING";
+          throw error;
+        }
+        return { alreadyProcessed: true, valuation, investor, metrics: null };
       }
-    }
 
-    // 2. Venture Capital Standard Post-Money Math
-    const postMoneyValuation = preVal + invAmt;
-    const sharePrice = Number((preVal / totalPreShares).toFixed(4));
-    const newSharesIssued = Number((invAmt / sharePrice).toFixed(2));
-    const totalPostShares = Number((totalPreShares + newSharesIssued).toFixed(2));
-
-    // Investor's post-money equity percentage: (Investment / Post-Money) * 100
-    const investorOwnershipPct = Number(((invAmt / postMoneyValuation) * 100).toFixed(2));
-
-    // 3. Pro-Rata Dilution of Existing Shareholders
-    // New % = (Existing Share Count / Total Post Shares) * 100
-    for (const p of partners) {
-      const dilutedPct = Number(((Number(p.shareCount) / totalPostShares) * 100).toFixed(2));
-      await prisma.partnerEquity.update({
-        where: { id: p.id },
-        data: {
-          ownershipPercentage: dilutedPct,
-          notes: `${p.notes || ""}\n[Dilution Round: ${roundName}] Diluted to ${dilutedPct}% on ${new Date().toISOString().split("T")[0]}`.trim(),
-        },
+      const treasuryAccount = await tx.financialAccount.findUnique({ where: { id: depositAccountId } });
+      const mappedAccount = await validateTreasuryPayoutAccount(treasuryAccount, tx);
+      const partners = await tx.partnerEquity.findMany({
+        where: { status: { in: ["ACTIVE", "INACTIVE"] } },
       });
-    }
+      const baseShares = 100000;
+      let totalPreShares = partners.reduce((sum, partner) => sum + Number(partner.shareCount || 0), 0);
+      if (totalPreShares === 0) {
+        totalPreShares = baseShares;
+        for (const partner of partners) {
+          const shareCount = Number(((Number(partner.ownershipPercentage || 0) / 100) * baseShares).toFixed(2));
+          await tx.partnerEquity.update({ where: { id: partner.id }, data: { shareCount } });
+          partner.shareCount = shareCount;
+        }
+      }
 
-    // 4. Create or Update New Investor Shareholder
-    let existingInvestor = await prisma.partnerEquity.findUnique({ where: { email: email.trim() } });
-    let investorPartner;
+      const postMoneyValuation = preVal + invAmt;
+      const sharePrice = Number((preVal / totalPreShares).toFixed(4));
+      if (!Number.isFinite(sharePrice) || sharePrice <= 0) {
+        const error = new Error("Pre-money valuation and current shares do not produce a valid issue price.");
+        error.statusCode = 400;
+        throw error;
+      }
+      const newSharesIssued = Number((invAmt / sharePrice).toFixed(2));
+      if (!Number.isFinite(newSharesIssued) || newSharesIssued <= 0) {
+        const error = new Error("Investment amount is too small to issue a positive number of shares at the calculated price.");
+        error.statusCode = 400;
+        throw error;
+      }
+      const totalPostShares = Number((totalPreShares + newSharesIssued).toFixed(2));
+      const investorOwnershipPct = Number(((invAmt / postMoneyValuation) * 100).toFixed(2));
 
-    if (existingInvestor) {
-      investorPartner = await prisma.partnerEquity.update({
-        where: { id: existingInvestor.id },
-        data: {
-          partnerName: investorName.trim(),
-          phone: phone || existingInvestor.phone,
-          role: role || existingInvestor.role,
-          shareCount: Number(existingInvestor.shareCount) + newSharesIssued,
-          ownershipPercentage: Number(existingInvestor.ownershipPercentage) + investorOwnershipPct,
-          currentCapital: Number(existingInvestor.currentCapital) + invAmt,
-          sharePrice,
+      for (const partner of partners) {
+        const dilutedPct = Number(((Number(partner.shareCount) / totalPostShares) * 100).toFixed(2));
+        await tx.partnerEquity.update({
+          where: { id: partner.id },
+          data: {
+            ownershipPercentage: dilutedPct,
+            notes: `${partner.notes || ""}\n[Dilution Round: ${normalizedRoundName}] Diluted to ${dilutedPct}% on ${transactionDate.toISOString().split("T")[0]}`.trim(),
+          },
+        });
+      }
+
+      let investor = await tx.partnerEquity.findUnique({ where: { email: normalizedEmail } });
+      if (investor) {
+        investor = await tx.partnerEquity.update({
+          where: { id: investor.id },
+          data: {
+            partnerName: normalizedInvestorName,
+            phone: phone || investor.phone,
+            role: role || investor.role,
+            shareCount: Number(investor.shareCount) + newSharesIssued,
+            ownershipPercentage: Number(investor.ownershipPercentage) + investorOwnershipPct,
+            currentCapital: Number(investor.currentCapital) + invAmt,
+            sharePrice,
+            status: "ACTIVE",
+            notes: `${investor.notes || ""}\n[New Investment: ${normalizedRoundName}] Injected Rs ${invAmt.toLocaleString()} for ${newSharesIssued.toLocaleString()} shares.`.trim(),
+          },
+        });
+      } else {
+        investor = await tx.partnerEquity.create({
+          data: {
+            partnerName: normalizedInvestorName,
+            email: normalizedEmail,
+            phone: phone || "",
+            role,
+            shareCount: newSharesIssued,
+            sharePrice,
+            ownershipPercentage: investorOwnershipPct,
+            initialCapital: invAmt,
+            currentCapital: invAmt,
+            status: "ACTIVE",
+            notes: notes || `Issued ${newSharesIssued.toLocaleString()} shares in ${normalizedRoundName}`,
+          },
+        });
+      }
+
+      const balanceResult = await tx.financialAccount.updateMany({
+        where: {
+          id: treasuryAccount.id,
           status: "ACTIVE",
-          notes: `${existingInvestor.notes || ""}\n[New Investment: ${roundName}] Injected Rs ${invAmt.toLocaleString()} for ${newSharesIssued.toLocaleString()} shares.`.trim(),
+          currency: "NPR",
+          currentBalance: treasuryAccount.currentBalance,
+        },
+        data: { currentBalance: { increment: invAmt } },
+      });
+      if (balanceResult.count !== 1) {
+        const error = new Error("Treasury balance changed during share issuance. Refresh and retry.");
+        error.statusCode = 409;
+        error.code = "TREASURY_BALANCE_CONFLICT";
+        throw error;
+      }
+      await tx.cashTransaction.create({
+        data: {
+          idempotencyKey: `CAPITAL_INJECTION_CASH:${requestHash}`,
+          amount: invAmt,
+          type: "INFLOW",
+          toAccountId: treasuryAccount.id,
+          category: "CAPITAL_INJECTION",
+          referenceId: investor.id,
+          description: `Primary Share Issuance (${normalizedRoundName}): ${normalizedInvestorName} injected Rs ${invAmt.toLocaleString()} for ${investorOwnershipPct}% equity`,
         },
       });
-    } else {
-      investorPartner = await prisma.partnerEquity.create({
+      const valuation = await tx.companyValuation.create({
         data: {
-          partnerName: investorName.trim(),
-          email: email.trim(),
-          phone: phone || "",
-          role,
+          roundName: normalizedRoundName,
+          effectiveDate: transactionDate,
+          preMoneyValuation: preVal,
+          investmentAmount: invAmt,
+          postMoneyValuation,
+          totalPreShares,
+          newSharesIssued,
+          totalPostShares,
+          sharePrice,
+          valuationMethod: "EQUITY_ROUND",
+          leadInvestor: normalizedInvestorName,
+          notes: notes || `Primary Share Issuance: ${normalizedInvestorName} acquired ${investorOwnershipPct}% stake.`,
+        },
+      });
+      await tx.shareTransaction.create({
+        data: {
+          transactionType: "PRIMARY_ISSUANCE",
+          toPartnerId: investor.id,
+          toPartnerName: normalizedInvestorName,
           shareCount: newSharesIssued,
           sharePrice,
-          ownershipPercentage: investorOwnershipPct,
-          initialCapital: invAmt,
-          currentCapital: invAmt,
-          status: "ACTIVE",
-          notes: notes || `Issued ${newSharesIssued.toLocaleString()} shares in ${roundName}`,
+          totalAmount: invAmt,
+          equityPercentageTransferred: investorOwnershipPct,
+          depositAccountId: treasuryAccount.id,
+          settlementType: "COMPANY_TREASURY",
+          valuationRoundId: valuation.id,
+          date: transactionDate,
+          notes: `Issued ${newSharesIssued.toLocaleString()} primary shares in ${normalizedRoundName} at Rs ${sharePrice}/share.`,
         },
       });
-    }
-
-    // 5. Link Direct Capital Inflow to Treasury Account
-    if (depositAccountId) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: depositAccountId },
-          data: { currentBalance: { increment: invAmt } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: invAmt,
-            type: "INFLOW",
-            toAccountId: depositAccountId,
-            category: "CAPITAL_INJECTION",
-            referenceId: investorPartner.id,
-            description: `Primary Share Issuance (${roundName}): ${investorName} injected Rs ${invAmt.toLocaleString()} for ${investorOwnershipPct}% equity`,
-          },
-        }),
-      ]);
-    }
-
-    // 6. Record Company Valuation Milestone
-    const valuationRecord = await prisma.companyValuation.create({
-      data: {
-        roundName: roundName.trim(),
-        preMoneyValuation: preVal,
-        investmentAmount: invAmt,
-        postMoneyValuation,
-        totalPreShares,
+      await postShareIssuanceAccounting({
+        investorPartner: investor,
+        valuationRecord: valuation,
+        invAmt,
         newSharesIssued,
-        totalPostShares,
-        sharePrice,
-        valuationMethod: "EQUITY_ROUND",
-        leadInvestor: investorName.trim(),
-        notes: notes || `Primary Share Issuance: ${investorName} acquired ${investorOwnershipPct}% stake.`,
-      },
-    });
+        depositAccountId: treasuryAccount.id,
+        cashAccountCode: mappedAccount.accountCode,
+        idempotencyKey,
+        referenceNumber: payloadHash,
+        transactionDate,
+        throwOnError: true,
+      }, { client: tx, throwOnError: true, throwOnIdempotencyConflict: true });
 
-    // 7. Record Immutable Share Transaction Ledger
-    await prisma.shareTransaction.create({
-      data: {
-        transactionType: "PRIMARY_ISSUANCE",
-        toPartnerId: investorPartner.id,
-        toPartnerName: investorName.trim(),
-        shareCount: newSharesIssued,
-        sharePrice,
-        totalAmount: invAmt,
-        equityPercentageTransferred: investorOwnershipPct,
-        depositAccountId: depositAccountId || null,
-        settlementType: "COMPANY_TREASURY",
-        valuationRoundId: valuationRecord.id,
-        notes: `Issued ${newSharesIssued.toLocaleString()} primary shares in ${roundName} at Rs ${sharePrice}/share.`,
-      },
-    });
-
-    // Post Primary Share Issuance to Double-Entry General Ledger
-    postShareIssuanceAccounting({
-      investorPartner,
-      valuationRecord,
-      invAmt,
-      newSharesIssued,
-      depositAccountId,
-    }).catch((glErr) => {
-      console.error("General Ledger share issuance posting error:", glErr);
-    });
+      return {
+        alreadyProcessed: false,
+        valuation,
+        investor,
+        metrics: {
+          preMoneyValuation: preVal,
+          investmentAmount: invAmt,
+          postMoneyValuation,
+          sharePrice,
+          newSharesIssued,
+          investorOwnershipPct,
+          totalPostShares,
+        },
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
     res.json({
       success: true,
-      message: `Successfully issued ${newSharesIssued.toLocaleString()} new shares to ${investorName}. Post-Money Valuation is Rs ${postMoneyValuation.toLocaleString()} and treasury capital updated.`,
-      valuation: valuationRecord,
-      investor: investorPartner,
-      metrics: {
-        preMoneyValuation: preVal,
-        investmentAmount: invAmt,
-        postMoneyValuation,
-        sharePrice,
-        newSharesIssued,
-        investorOwnershipPct,
-        totalPostShares,
-      },
+      alreadyProcessed: outcome.alreadyProcessed,
+      message: outcome.alreadyProcessed
+        ? "This share issuance was already recorded."
+        : `Successfully issued ${outcome.metrics.newSharesIssued.toLocaleString()} new shares to ${normalizedInvestorName}. Post-Money Valuation is Rs ${outcome.metrics.postMoneyValuation.toLocaleString()} and Treasury capital was updated.`,
+      valuation: outcome.valuation,
+      investor: outcome.investor,
+      metrics: outcome.metrics,
     });
   } catch (error) {
     console.error("Issue New Shares Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "SHARE_ISSUANCE_ERROR",
+      message: error.message || "Share issuance could not be recorded.",
+    });
   }
 };
 
@@ -2215,216 +2536,51 @@ export const transferOrSellShare = async (req, res) => {
       return res.json({ success: false, message: "Valid Seller and Share Count to transfer are required." });
     }
 
-    const sharesCount = Number(sharesToTransfer);
-    const unitPrice = Number(sharePrice || 100);
-    const totalTransactionValue = Number((sharesCount * unitPrice).toFixed(2));
-
-    const seller = await prisma.partnerEquity.findUnique({ where: { id: sellerPartnerId } });
-    if (!seller) {
-      return res.json({ success: false, message: "Seller partner record not found." });
-    }
-
-    if (Number(seller.shareCount) < sharesCount) {
-      return res.json({
-        success: false,
-        message: `Insufficient shares: ${seller.partnerName} owns ${seller.shareCount.toLocaleString()} shares, but attempted to sell ${sharesCount.toLocaleString()} shares.`,
-      });
-    }
-
-    // 1. Fetch total issued shares across active partners
-    const allPartners = await prisma.partnerEquity.findMany({ where: { status: { in: ["ACTIVE", "INACTIVE"] } } });
-    const currentTotalShares = allPartners.reduce((acc, p) => acc + Number(p.shareCount || 0), 0);
-
-    // ==========================================
-    // CASE A: COMPANY SHARE BUYBACK (Capital Reduction & Share Retirement)
-    // ==========================================
     if (transferType === "COMPANY_BUYBACK") {
-      // Solvency Check on Treasury Account
-      if (fromTreasuryAccountId) {
-        const solvency = await checkAccountSolvency(fromTreasuryAccountId, totalTransactionValue, "Share Buyback Payout");
-        if (!solvency.allowed) {
-          return res.json({ success: false, message: solvency.error });
-        }
-
-        // Deduct payout from Treasury
-        await prisma.$transaction([
-          prisma.financialAccount.update({
-            where: { id: fromTreasuryAccountId },
-            data: { currentBalance: { decrement: totalTransactionValue } },
-          }),
-          prisma.cashTransaction.create({
-            data: {
-              amount: totalTransactionValue,
-              type: "OUTFLOW",
-              fromAccountId: fromTreasuryAccountId,
-              category: "DRAWINGS",
-              referenceId: seller.id,
-              description: `Company Share Buyback: Repurchased ${sharesCount.toLocaleString()} shares from ${seller.partnerName} at Rs ${unitPrice}/share`,
-            },
-          }),
-        ]);
-      }
-
-      // Update Seller shares & status
-      const newSellerShares = Number((Number(seller.shareCount) - sharesCount).toFixed(2));
-      const sellerStatus = newSellerShares <= 0 ? "EXITED" : seller.status;
-
-      await prisma.partnerEquity.update({
-        where: { id: seller.id },
-        data: {
-          shareCount: newSellerShares,
-          currentCapital: Math.max(0, Number(seller.currentCapital) - totalTransactionValue),
-          status: sellerStatus,
-        },
-      });
-
-      // Total company shares reduce by bought back shares
-      const newTotalCompanyShares = Math.max(1, Number((currentTotalShares - sharesCount).toFixed(2)));
-
-      // Recalculate remaining active partners' ownership % to maintain exact 100% cap table
-      const remainingPartners = await prisma.partnerEquity.findMany({
-        where: { status: { in: ["ACTIVE", "INACTIVE"] } },
-      });
-
-      for (const p of remainingPartners) {
-        const rebalancedPct = Number(((Number(p.shareCount) / newTotalCompanyShares) * 100).toFixed(2));
-        await prisma.partnerEquity.update({
-          where: { id: p.id },
-          data: { ownershipPercentage: rebalancedPct },
-        });
-      }
-
-      // Record Share Buyback in Audit Ledger
-      await prisma.shareTransaction.create({
-        data: {
-          transactionType: "SHARE_BUYBACK",
-          fromPartnerId: seller.id,
-          fromPartnerName: seller.partnerName,
-          toPartnerName: "Company Treasury (Retired)",
-          shareCount: sharesCount,
-          sharePrice: unitPrice,
-          totalAmount: totalTransactionValue,
-          equityPercentageTransferred: Number(((sharesCount / currentTotalShares) * 100).toFixed(2)),
-          depositAccountId: fromTreasuryAccountId || null,
-          settlementType: "COMPANY_TREASURY",
-          notes: notes || `Company repurchased and retired ${sharesCount.toLocaleString()} shares from ${seller.partnerName}.`,
-        },
-      });
-
-      // Post Share Buyback to Double-Entry General Ledger
-      postShareBuybackAccounting({
-        seller,
-        sharesCount,
-        unitPrice,
-        totalTransactionValue,
+      const outcome = await recordShareBuyback({
+        sellerPartnerId,
+        sharesToTransfer,
+        sharePrice: sharePrice || 100,
         fromTreasuryAccountId,
-      }).catch((glErr) => {
-        console.error("General Ledger share buyback posting error:", glErr);
+        notes,
+        idempotencyKey: req.get?.("Idempotency-Key") || req.body?.idempotencyKey,
       });
-
       return res.json({
         success: true,
-        message: `Successfully executed share buyback of ${sharesCount.toLocaleString()} shares from ${seller.partnerName} for Rs ${totalTransactionValue.toLocaleString()}. Cap table rebalanced to 100%.`,
+        alreadyProcessed: outcome.alreadyProcessed,
+        message: outcome.alreadyProcessed
+          ? "This share buyback was already recorded."
+          : "Share buyback and Treasury payout were recorded successfully.",
       });
     }
 
-    // ==========================================
-    // CASE B: PEER-TO-PEER SECONDARY SHARE SALE / TRANSFER
-    // ==========================================
-    let buyerPartner;
-
-    if (buyerType === "EXISTING_PARTNER") {
-      if (!buyerPartnerId) {
-        return res.json({ success: false, message: "Please select an existing buyer partner." });
-      }
-      if (buyerPartnerId === sellerPartnerId) {
-        return res.json({ success: false, message: "Seller and Buyer cannot be the same partner." });
-      }
-      buyerPartner = await prisma.partnerEquity.findUnique({ where: { id: buyerPartnerId } });
-      if (!buyerPartner) {
-        return res.json({ success: false, message: "Buyer partner record not found." });
-      }
-
-      // Update Buyer shares
-      await prisma.partnerEquity.update({
-        where: { id: buyerPartner.id },
-        data: {
-          shareCount: Number((Number(buyerPartner.shareCount) + sharesCount).toFixed(2)),
-          currentCapital: Number((Number(buyerPartner.currentCapital) + totalTransactionValue).toFixed(2)),
-        },
-      });
-    } else {
-      // New incoming investor purchasing secondary shares
-      if (!buyerName || !buyerEmail) {
-        return res.json({ success: false, message: "Buyer Name and Email are required for new incoming investor." });
-      }
-
-      buyerPartner = await prisma.partnerEquity.create({
-        data: {
-          partnerName: buyerName.trim(),
-          email: buyerEmail.trim(),
-          phone: buyerPhone || "",
-          role: buyerRole || "ANGEL_INVESTOR",
-          shareCount: sharesCount,
-          sharePrice: unitPrice,
-          ownershipPercentage: 0, // Recalculated below
-          initialCapital: totalTransactionValue,
-          currentCapital: totalTransactionValue,
-          status: "ACTIVE",
-          notes: `Acquired ${sharesCount.toLocaleString()} secondary shares from ${seller.partnerName}`,
-        },
-      });
-    }
-
-    // Deduct shares from Seller
-    const newSellerShares = Number((Number(seller.shareCount) - sharesCount).toFixed(2));
-    const sellerStatus = newSellerShares <= 0 ? "EXITED" : seller.status;
-
-    await prisma.partnerEquity.update({
-      where: { id: seller.id },
-      data: {
-        shareCount: newSellerShares,
-        status: sellerStatus,
-      },
+    const outcome = await recordPeerShareTransfer({
+      sellerPartnerId,
+      buyerType,
+      buyerPartnerId,
+      buyerName,
+      buyerEmail,
+      buyerPhone,
+      buyerRole,
+      sharesToTransfer,
+      sharePrice: sharePrice || 100,
+      notes,
+      idempotencyKey: req.get?.("Idempotency-Key") || req.body?.idempotencyKey,
     });
-
-    // Total company shares remain invariant in secondary transactions.
-    // Recalculate ownership % for all active partners to ensure precision
-    const activePartners = await prisma.partnerEquity.findMany({ where: { status: { in: ["ACTIVE", "INACTIVE"] } } });
-    for (const p of activePartners) {
-      const updatedPct = Number(((Number(p.shareCount) / currentTotalShares) * 100).toFixed(2));
-      await prisma.partnerEquity.update({
-        where: { id: p.id },
-        data: { ownershipPercentage: updatedPct },
-      });
-    }
-
-    const transferEquityPct = Number(((sharesCount / currentTotalShares) * 100).toFixed(2));
-
-    // Record Immutable Share Transaction
-    await prisma.shareTransaction.create({
-      data: {
-        transactionType: "SECONDARY_TRANSFER",
-        fromPartnerId: seller.id,
-        fromPartnerName: seller.partnerName,
-        toPartnerId: buyerPartner.id,
-        toPartnerName: buyerPartner.partnerName,
-        shareCount: sharesCount,
-        sharePrice: unitPrice,
-        totalAmount: totalTransactionValue,
-        equityPercentageTransferred: transferEquityPct,
-        settlementType: "PRIVATE_PEER_TO_PEER",
-        notes: notes || `Secondary sale: ${seller.partnerName} transferred ${sharesCount.toLocaleString()} shares (${transferEquityPct}%) to ${buyerPartner.partnerName} at Rs ${unitPrice}/share.`,
-      },
-    });
-
     res.json({
       success: true,
-      message: `Successfully transferred ${sharesCount.toLocaleString()} shares (${transferEquityPct}%) from ${seller.partnerName} to ${buyerPartner.partnerName}.`,
+      alreadyProcessed: outcome.alreadyProcessed,
+      message: outcome.alreadyProcessed
+        ? "This share transfer was already recorded."
+        : `Successfully transferred ${outcome.shares.toLocaleString()} shares (${outcome.ownershipPercentage}%) from ${outcome.sellerName} to ${outcome.buyerName}.`,
     });
   } catch (error) {
     console.error("Secondary Share Transfer Error:", error);
-    res.json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "SHARE_TRANSFER_ERROR",
+      message: error.message || "Share transfer could not be recorded.",
+    });
   }
 };
 
@@ -2804,13 +2960,41 @@ export const recordInvestorFinancing = async (req, res) => {
       calendar,
     } = req.body;
 
-    if (!investorName || !principalAmount) {
-      return res.json({ success: false, message: "Investor/Lender Name and Principal Amount are required" });
+    if (calendar && String(calendar).trim().toUpperCase() !== "BS") {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_CALENDAR",
+        message: "Financial dates must use the configured Bikram Sambat calendar.",
+      });
     }
 
-    const principal = Number(principalAmount);
-    const rate = Number(interestRate || 0);
-    const term = Number(loanTermMonths || 12);
+    if (!investorName || !principalAmount || !depositAccountId) {
+      return res.status(400).json({
+        success: false,
+        code: "LOAN_DISBURSEMENT_FIELDS_REQUIRED",
+        message: "Lender name, principal amount, and the Treasury account receiving the loan proceeds are required.",
+      });
+    }
+
+    let principalDecimal;
+    try {
+      principalDecimal = new Prisma.Decimal(String(principalAmount));
+    } catch {
+      return res.status(400).json({ success: false, code: "INVALID_LOAN_PRINCIPAL", message: "Enter a valid loan principal amount." });
+    }
+    const principal = Number(principalDecimal.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
+    const rate = Number(interestRate ?? 0);
+    const term = Number(loanTermMonths ?? 12);
+    if (!principalDecimal.isFinite() || principalDecimal.lessThanOrEqualTo(0) ||
+        !principalDecimal.equals(String(principal)) ||
+        !Number.isFinite(rate) || rate < 0 ||
+        !Number.isInteger(term) || term < 1) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_LOAN_TERMS",
+        message: "Principal must be a positive NPR amount to two decimals, interest rate must be non-negative, and term must be a positive whole number of months.",
+      });
+    }
     const resolvedStart = startDate ? await resolveCalendarDateInput(startDate, calendar) : new Date();
     const resolvedMaturity = maturityDate
       ? await resolveCalendarDateInput(maturityDate, calendar)
@@ -2832,8 +3016,9 @@ export const recordInvestorFinancing = async (req, res) => {
       matDate.setMonth(matDate.getMonth() + term);
     }
 
-    const record = await prisma.investorLiability.create({
-      data: {
+    const idempotencyKey = req.body.idempotencyKey || req.headers?.["idempotency-key"];
+    const result = await recordLoanDisbursement({
+      loanData: {
         investorName: investorName.trim(),
         contactPhone: contactPhone || "",
         contactEmail: contactEmail || "",
@@ -2849,44 +3034,22 @@ export const recordInvestorFinancing = async (req, res) => {
         loanTermMonths: term,
         monthlyInstallment: amortization.emi,
         equityGrantedPercentage: 0,
-        disbursementAccountId: depositAccountId || "",
         loanSchedule: amortization.schedule,
         startDate: start,
         maturityDate: matDate,
         status: "ACTIVE",
         notes: notes || null,
       },
-    });
-
-    // Automatically deposit disbursed funds into Liquid Treasury account
-    if (depositAccountId && principal > 0) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: depositAccountId },
-          data: { currentBalance: { increment: principal } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: principal,
-            type: "INFLOW",
-            toAccountId: depositAccountId,
-            category: "LOAN_DISBURSEMENT",
-            referenceId: record.id,
-            description: `Loan Disbursement Received: ${record.investorName} (${principal.toLocaleString()} at ${rate}% APR)`,
-          },
-        }),
-      ]);
-    }
-
-    // Post Loan Disbursement to Double-Entry General Ledger
-    postLoanDisbursementAccounting(record).catch((glErr) => {
-      console.error("General Ledger loan disbursement posting error:", glErr);
+      depositAccountId,
+      idempotencyKey,
+      verifyStartDate: Boolean(startDate),
+      verifyMaturityDate: Boolean(maturityDate),
     });
 
     res.json({
       success: true,
       message: `Financing facility registered. Principal Rs ${principal.toLocaleString()} disbursed to treasury with monthly EMI Rs ${amortization.emi.toLocaleString()}.`,
-      record,
+      record: result.record,
       amortization,
     });
   } catch (error) {
@@ -2901,114 +3064,28 @@ export const recordInvestorFinancing = async (req, res) => {
 
 export const recordLiabilityRepayment = async (req, res) => {
   try {
-    const {
-      liabilityId,
-      repaymentAmount,
-      principalPortion,
-      interestPortion,
-      fromAccountId,
-      notes,
-    } = req.body;
-
-    const amount = Number(repaymentAmount || 0);
-    if (amount <= 0) {
-      return res.json({ success: false, message: "Repayment amount must be greater than zero" });
-    }
-
-    const liability = await prisma.investorLiability.findUnique({ where: { id: liabilityId } });
-    if (!liability) {
-      return res.json({ success: false, message: "Liability record not found" });
-    }
-
-    // Capital Solvency / Overdraft check against selected treasury account
-    if (fromAccountId) {
-      const solvency = await checkAccountSolvency(fromAccountId, amount, "Loan Repayment");
-      if (!solvency.allowed) {
-        return res.json({ success: false, message: solvency.error });
-      }
-    }
-
-    // Principal vs Interest breakdown
-    let pPortion = principalPortion !== undefined ? Number(principalPortion) : 0;
-    let iPortion = interestPortion !== undefined ? Number(interestPortion) : 0;
-
-    if (pPortion === 0 && iPortion === 0) {
-      // Auto-compute based on outstanding balance and rate
-      const annualRate = Number(liability.interestRate || 0) / 100;
-      const monthlyRate = annualRate / 12;
-      iPortion = Number((Number(liability.outstandingBalance) * monthlyRate).toFixed(2));
-      pPortion = Math.max(0, Number((amount - iPortion).toFixed(2)));
-    }
-
-    const newPrincipalPaid = Number(liability.principalPaid || 0) + pPortion;
-    const newInterestPaid = Number(liability.interestPaid || 0) + iPortion;
-    const newTotalRepaid = Number(liability.amountRepaid || 0) + amount;
-    const newOutstandingPrincipal = Math.max(0, Number(liability.principalAmount) - newPrincipalPaid);
-    const newStatus = newOutstandingPrincipal === 0 ? "SETTLED" : "ACTIVE";
-
-    // Update loan schedule status if matches milestone
-    let updatedSchedule = Array.isArray(liability.loanSchedule) ? [...liability.loanSchedule] : [];
-    if (updatedSchedule.length > 0) {
-      const nextUpcomingIdx = updatedSchedule.findIndex((s) => s.status === "UPCOMING");
-      if (nextUpcomingIdx !== -1) {
-        updatedSchedule[nextUpcomingIdx].status = "PAID";
-        updatedSchedule[nextUpcomingIdx].paidDate = new Date().toISOString().split("T")[0];
-        updatedSchedule[nextUpcomingIdx].paidAmount = amount;
-      }
-    }
-
-    const updated = await prisma.investorLiability.update({
-      where: { id: liabilityId },
-      data: {
-        principalPaid: newPrincipalPaid,
-        interestPaid: newInterestPaid,
-        amountRepaid: newTotalRepaid,
-        outstandingBalance: newOutstandingPrincipal,
-        loanSchedule: updatedSchedule,
-        status: newStatus,
-        notes: notes ? `${liability.notes || ""}\n${notes}` : liability.notes,
-      },
-    });
-
-    // Deduct cash from liquid treasury
-    if (fromAccountId) {
-      await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: fromAccountId },
-          data: { currentBalance: { decrement: amount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount,
-            type: "OUTFLOW",
-            fromAccountId,
-            category: "LOAN_REPAYMENT",
-            referenceId: liability.id,
-            description: `Loan Repayment to ${liability.investorName} (Principal: Rs ${pPortion.toLocaleString()}, Interest: Rs ${iPortion.toLocaleString()})`,
-          },
-        }),
-      ]);
-    }
-
-    // Post Loan Repayment to Double-Entry General Ledger
-    postLoanRepaymentAccounting({
-      liability: updated,
-      amount,
-      principalPortion: pPortion,
-      interestPortion: iPortion,
-      fromAccountId,
-    }).catch((glErr) => {
-      console.error("General Ledger loan repayment posting error:", glErr);
+    const result = await recordLoanRepayment({
+      liabilityId: req.body.liabilityId,
+      repaymentAmount: req.body.repaymentAmount,
+      principalPortion: req.body.principalPortion,
+      interestPortion: req.body.interestPortion,
+      fromAccountId: req.body.fromAccountId,
+      idempotencyKey: req.body.idempotencyKey || req.headers?.["idempotency-key"],
+      notes: req.body.notes,
     });
 
     res.json({
       success: true,
-      message: `Repayment of Rs ${amount.toLocaleString()} processed (Principal: Rs ${pPortion.toLocaleString()}, Interest: Rs ${iPortion.toLocaleString()}). Remaining Balance: Rs ${newOutstandingPrincipal.toLocaleString()}.`,
-      liability: updated,
+      message: result.isReplay ? "This loan repayment was already recorded." : "Loan repayment and accounting journal posted successfully.",
+      liability: result.liability,
     });
   } catch (error) {
     console.error("Record Repayment Error:", error);
-    res.json({ success: false, message: error.message });
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      code: error.code || "LOAN_REPAYMENT_ERROR",
+      message: error.message || "Loan repayment could not be recorded.",
+    });
   }
 };
 

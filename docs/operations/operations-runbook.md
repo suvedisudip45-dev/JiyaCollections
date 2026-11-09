@@ -38,6 +38,32 @@ confirms whether the carrier created the operation. Record the Admin decision,
 carrier reference, evidence, and follow-up owner in the existing audited
 workflow.
 
+An optional one-shot recovery job can be run by an external scheduler with
+`npm run delivery:ncm-reconcile` from `backend/`. It is disabled unless
+`NCM_DELIVERY_AUTO_RECONCILIATION_ENABLED=true`, requires a server-side NCM token
+and explicit base URL, and processes no more than 25 due deliveries per run.
+Set `NCM_DELIVERY_RECONCILIATION_STALE_MINUTES` with the operations owner after
+confirming the NCM rate limit and expected callback delay. Schedule a single
+non-overlapping runner; inspect exit code `2` for flagged reviews, failed
+lookups, or remaining backlog. Records requiring manual reconciliation are
+not automatically polled again. In production, the job rejects demo/test NCM
+hosts. Do not treat successful HTTP polling as proof of COD settlement.
+
+For a staging callback smoke test, use an externally reachable staging API URL
+and a dedicated unmatched synthetic order ID. `localhost` (including
+`http://localhost:4000`) is reachable only from the machine making the request;
+it is not a callback address NCM can reach from its infrastructure. The Admin
+Delivery Monitor simulator now calls an authenticated backend endpoint and is
+disabled by default. Enable `NCM_WEBHOOK_SIMULATOR_ENABLED=true` only in an
+isolated development/staging environment; if `NODE_ENV=production`, also set
+`APP_ENV=staging` explicitly. Never put `NCM_WEBHOOK_SECRET` in a `VITE_`
+variable or browser bundle. If a webhook secret was previously included in a
+deployed frontend build, rotate it and update the backend and NCM configuration.
+A simulator event is rejected when its numeric order ID is already linked to a
+customer delivery, stock transfer, return, or exchange. Use an unmatched
+synthetic ID. This tests receiver processing only; it does not prove that NCM is
+configured to deliver callbacks.
+
 After each NCM remittance, reconcile locally linked orders, COD, carrier fees,
 and any open/partially resolved settlement variance against the carrier
 statement and bank evidence. NCM does not expose a complete order listing or a

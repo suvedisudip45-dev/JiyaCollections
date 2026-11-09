@@ -7,6 +7,7 @@ import {
   listCustomerReturnRequests,
   listManufacturerCustomerReturns,
   markCustomerReturnRefunded,
+  reconcileCustomerReturnNcmStatus,
   resolveUnknownCustomerReturn,
   submitApprovedCustomerReturn,
 } from "../services/customerReturnWorkflowService.js";
@@ -230,6 +231,21 @@ export const adminResolveUnknownReturn = async (req, res) => {
       reason: req.body.reason,
     });
     return res.json({ success: true, returnRecord });
+  } catch (error) {
+    return sendError(res, error);
+  }
+};
+
+export const adminReconcileCustomerReturnNcmStatus = async (req, res) => {
+  try {
+    const result = await reconcileCustomerReturnNcmStatus({
+      returnId: req.params.id,
+      adminId: req.adminId,
+    });
+    return res.json({
+      success: true,
+      ...result,
+    });
   } catch (error) {
     return sendError(res, error);
   }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import PropTypes from "prop-types";
 import { toast } from "react-toastify";
 import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../App";
@@ -74,7 +75,8 @@ const ExchangeRequestsPanel = ({ token }) => {
       });
       if (response.data.success) {
         const request = response.data.request;
-        if (request?.status === "NCM_REJECTED") toast.error(request.ncmSubmissionError || "NCM rejected the exchange request");
+        if (response.data.partial) toast.warning(response.data.message || "NCM exchange history was only partially reconciled. Review skipped entries.");
+        else if (request?.status === "NCM_REJECTED") toast.error(request.ncmSubmissionError || "NCM rejected the exchange request");
         else if (request?.status === "NCM_SUBMISSION_UNKNOWN") toast.warning("NCM outcome is unknown. Reconcile with the carrier before retrying.");
         else if (request?.status === "APPROVED_FOR_DISTRIBUTOR") toast.success("Exchange approved and assigned to the distributor for return pickup and replacement delivery.");
         else toast.success(successMessage);
@@ -390,6 +392,10 @@ const ExchangeRequestsPanel = ({ token }) => {
       })}
     </div>
   );
+};
+
+ExchangeRequestsPanel.propTypes = {
+  token: PropTypes.string.isRequired,
 };
 
 export default ExchangeRequestsPanel;

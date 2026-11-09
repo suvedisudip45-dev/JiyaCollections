@@ -36,6 +36,39 @@ const parseJSON = (val, fallback = []) => {
 
 const normalize = (val) => String(val || "").trim().toLowerCase();
 const normalizeSkuKey = (value) => String(value || "Standard").trim().replace(/\s+/g, " ").toLowerCase();
+const returnQuantitiesBySku = (items) => {
+  const parsedItems = parseJSON(items, []);
+  if (!Array.isArray(parsedItems)) return null;
+  const quantities = new Map();
+  for (const item of parsedItems) {
+    const productId = String(item.productId || item._id || item.id || "");
+    const quantity = Number(item.quantity);
+    if (!productId || !Number.isSafeInteger(quantity) || quantity <= 0) return null;
+    const key = `${productId}|${normalizeSkuKey(item.size)}|${normalizeSkuKey(item.color)}`;
+    const total = (quantities.get(key) || 0) + quantity;
+    if (!Number.isSafeInteger(total)) return null;
+    quantities.set(key, total);
+  }
+  return quantities;
+};
+
+export const hasFullyReturnedAllOrderItems = (orderItems, returnItemSets = []) => {
+  const purchased = returnQuantitiesBySku(orderItems);
+  if (!purchased?.size) return false;
+  const returned = new Map();
+  for (const items of returnItemSets) {
+    const quantities = returnQuantitiesBySku(items);
+    if (!quantities) return false;
+    for (const [key, quantity] of quantities) {
+      const total = (returned.get(key) || 0) + quantity;
+      if (!Number.isSafeInteger(total)) return false;
+      returned.set(key, total);
+    }
+  }
+  return purchased.size === returned.size &&
+    [...purchased].every(([key, quantity]) => returned.get(key) === quantity);
+};
+
 const resolveReturnUnitCost = (orderLine) => {
   const savedUnitCost = orderLine.agreedUnitCogsVatInclusiveAtAcceptance ?? orderLine.costPrice;
   if (savedUnitCost !== undefined && savedUnitCost !== null && String(savedUnitCost).trim() !== "") {
@@ -810,6 +843,21 @@ export const processSelfDeliveryReturn = async ({
     if (claimedReturn.count !== 1) {
       throw fail("This approved return is already being processed or is no longer available.", 409, "RETURN_PROCESSING_CONFLICT");
     }
+    const previousCompletedReturns = await tx.customerReturn.findMany({
+      where: {
+        orderId: order.id,
+        id: { not: approvedReturn.id },
+        OR: [
+          { lifecycleStatus: "REFUNDED" },
+          { requestKey: null, refundStatus: "COMPLETED" },
+        ],
+      },
+      select: { items: true },
+    });
+    const isFullyReturned = hasFullyReturnedAllOrderItems(orderItems, [
+      ...previousCompletedReturns.map((returnRecord) => returnRecord.items),
+      approvedItems,
+    ]);
 
     // 1. Ensure Distributor Stock & Damaged Locations exist
     let stockLocation = await tx.inventoryLocation.findFirst({
@@ -1086,21 +1134,23 @@ export const processSelfDeliveryReturn = async ({
     });
 
     // 3. Update Order and Assignment status
-    await tx.orderAssignment.update({
-      where: { id: assignment.id },
-      data: {
-        status: "returned",
-        returnedAt: now,
-      },
-    });
+    if (isFullyReturned) {
+      await tx.orderAssignment.update({
+        where: { id: assignment.id },
+        data: {
+          status: "returned",
+          returnedAt: now,
+        },
+      });
 
-    await tx.order.update({
-      where: { id: order.id },
-      data: {
-        status: "Returned",
-        fulfillmentStatus: "returned",
-      },
-    });
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: "Returned",
+          fulfillmentStatus: "returned",
+        },
+      });
+    }
 
     // 4. System Audit log to notify admin
     await recordSystemAudit(
@@ -1117,6 +1167,7 @@ export const processSelfDeliveryReturn = async ({
         beforeState: { orderId: order.id, fulfillmentStatus: order.fulfillmentStatus },
         afterState: {
           customerReturnId: customerReturn.id,
+          isFullyReturned,
           totalRefundAmount,
           approvedRefundAmount: approvedReturn.approvedRefundAmount.toString(),
           hasDamagedItems,
@@ -1132,6 +1183,7 @@ export const processSelfDeliveryReturn = async ({
       message: "Customer return and QA inspection recorded successfully.",
       customerReturn,
       hasDamagedItems,
+      isFullyReturned,
       totalRefundAmount,
     };
   });

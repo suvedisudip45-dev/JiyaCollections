@@ -17,6 +17,7 @@ import {
   adminDecideReturnRequest,
   adminInspectReturn,
   adminListReturnRequests,
+  adminReconcileCustomerReturnNcmStatus,
   adminRetryReturnSubmission,
   adminResolveUnknownReturn,
   adminReviewDistributorCustomerRefund,
@@ -74,6 +75,7 @@ returnsRouter.get("/customer/list", authenticate, authorize("returns:admin_read"
 returnsRouter.post("/customer/create", authenticate, authorize("returns:admin_create"), adminCreateReturnRequest);
 returnsRouter.get("/customer/admin/requests", authenticate, authorize("returns:admin_read"), adminListReturnRequests);
 returnsRouter.post("/customer/admin/:id/decision", authenticate, authorize("returns:admin_review"), adminDecideReturnRequest);
+returnsRouter.post("/customer/admin/:id/reconcile-ncm", authenticate, authorize("returns:admin_review"), adminReconcileCustomerReturnNcmStatus);
 returnsRouter.post("/customer/admin/:id/retry-ncm", authenticate, authorize("returns:admin_review"), adminRetryReturnSubmission);
 returnsRouter.post("/customer/admin/:id/resolve-ncm", authenticate, authorize("returns:admin_review"), adminResolveUnknownReturn);
 returnsRouter.post("/customer/admin/:id/inspection", authenticate, authorize("returns:admin_inspect"), adminInspectReturn);

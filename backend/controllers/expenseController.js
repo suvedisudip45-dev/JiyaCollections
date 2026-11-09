@@ -1,23 +1,44 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/db.js";
 import { getPagination, paginatedResponse } from "../utils/pagination.js";
-import { postExpenseAccounting, postCustomerPaymentAccounting } from "../services/accountingPostingEngine.js";
+import {
+  postDirectIncomeAccounting,
+  postExpenseAccounting,
+} from "../services/accountingPostingEngine.js";
 import { reviewOperatingExpenseInputVat } from "../services/purchaseVatService.js";
 import { recordSystemAudit } from "../services/auditService.js";
-import { checkAccountSolvency } from "./financialController.js";
+import { validateTreasuryPayoutAccount } from "../services/treasuryAccountingService.js";
 import {
   resolveCalendarDateFilterInput,
   resolveCalendarDateInput,
 } from "../services/nepaliFiscalCalendar.js";
 
 // Helper: Calculate 13% embedded VAT amount
-const calculateVat = (amount, isVatBill, customVat) => {
+const calculateVat = (amount, isVatBill, customVat, rate = 13) => {
   if (!isVatBill) return 0;
   if (customVat !== undefined && customVat !== null && customVat !== "") {
-    return Math.max(0, Number(customVat));
+    const vat = new Prisma.Decimal(String(customVat));
+    if (!vat.isFinite() || vat.isNegative()) throw new Error("VAT amount must be a non-negative decimal amount.");
+    return Number(vat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
   }
-  const amt = Number(amount) || 0;
-  // 13% Nepal VAT embedded: amount - (amount / 1.13)
-  return Number((amt - amt / 1.13).toFixed(2));
+  const amt = new Prisma.Decimal(String(amount || 0));
+  const vatRate = new Prisma.Decimal(String(rate || 0));
+  if (vatRate.isZero() || vatRate.isNegative()) return 0;
+  const vat = amt.minus(amt.dividedBy(new Prisma.Decimal(1).plus(vatRate.dividedBy(100))));
+  return Number(vat.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
+};
+
+const normalizeNprAmount = (value, fieldName) => {
+  let amountValue;
+  try {
+    amountValue = new Prisma.Decimal(String(value));
+  } catch {
+    throw Object.assign(new Error(`${fieldName} must be a valid decimal amount.`), { statusCode: 400 });
+  }
+  if (!amountValue.isFinite() || amountValue.isNegative()) {
+    throw Object.assign(new Error(`${fieldName} must be a non-negative finite amount.`), { statusCode: 400 });
+  }
+  return Number(amountValue.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toFixed(2));
 };
 
 const isHttpUrl = (value) => {
@@ -177,16 +198,22 @@ export const createExpense = async (req, res) => {
       return res.json({ success: false, message: "Title, Category, and Amount are required." });
     }
 
-    const numAmount = Number(amount);
-    if (isNaN(numAmount) || numAmount <= 0) {
+    const numAmount = normalizeNprAmount(amount, "Expense amount");
+    if (numAmount <= 0) {
       return res.json({ success: false, message: "Expense amount must be a positive number." });
     }
 
     const vatBill = isVatBill === true || isVatBill === "true";
-    const computedVat = calculateVat(numAmount, vatBill, vatAmount);
     const vatRate = purchaseVatRate === undefined || purchaseVatRate === "" ? 13 : Number(purchaseVatRate);
     if (vatBill && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
       return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
+    let computedVat;
+    try {
+      computedVat = calculateVat(numAmount, vatBill, vatAmount, vatRate);
+      if (computedVat > numAmount) throw new Error("VAT amount cannot exceed the total supplier invoice amount.");
+    } catch (error) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_AMOUNT", message: error.message });
     }
     const supplierVatId = supplierVatNumber ? String(supplierVatNumber).trim() : "";
     const evidence = invoiceEvidenceUrl ? String(invoiceEvidenceUrl).trim() : "";
@@ -211,105 +238,71 @@ export const createExpense = async (req, res) => {
       purchaseVatStatus: vatBill ? "PENDING_REVIEW" : "NOT_CLAIMED",
     };
 
-    // CASE A: PAID NOW (requires sufficient funds in selected Treasury account)
-    if (paymentStatus === "PAID") {
-      if (!paymentAccountId) {
-        return res.json({
-          success: false,
-          message: "Please select a Bank or Cash-in-hand account to disburse this payment from.",
-        });
-      }
+    if (!["PAID", "PAYABLE", "UNPAID"].includes(String(paymentStatus).toUpperCase())) {
+      return res.status(400).json({ success: false, code: "INVALID_EXPENSE_PAYMENT_STATUS", message: "Select paid now or record the expense as payable." });
+    }
 
-      // STRICT SOLVENCY CHECK
-      const solvency = await checkAccountSolvency(paymentAccountId, numAmount, `Expense: ${title}`);
-      if (!solvency.allowed) {
-        return res.json({
-          success: false,
-          insufficientFunds: true,
-          availableBalance: solvency.currentBalance,
-          shortfall: solvency.shortfall,
-          message: solvency.error,
-        });
-      }
-
-      const [updatedAccount, cashTx, expense] = await prisma.$transaction([
-        prisma.financialAccount.update({
-          where: { id: paymentAccountId },
-          data: { currentBalance: { decrement: numAmount } },
-        }),
-        prisma.cashTransaction.create({
-          data: {
-            amount: numAmount,
-            type: "OUTFLOW",
-            fromAccountId: paymentAccountId,
-            category: "EXPENSE",
-            partyName: finalVendorName,
-            invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-            description: `Expense: ${title.trim()} (${category.toUpperCase()}) to ${finalVendorName}`,
-          },
-        }),
-        prisma.operatingExpense.create({
-          data: {
-            title: title.trim(),
-            category: category.toUpperCase(),
-            amount: numAmount,
-            isVatBill: vatBill,
-            vatAmount: computedVat,
-            ...purchaseVatData,
-            date: expenseDate,
-            paymentMethod: paymentMethod || "CASH",
-            paymentStatus: "PAID",
-            financialAccountId: paymentAccountId,
-            vendorName: finalVendorName,
-            invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null,
-            notes: notes ? notes.trim() : null,
-            createdBy: "ADMIN",
-          },
-        }),
-      ]);
-
-      // Post to Double-Entry General Ledger
-      postExpenseAccounting({
-        expenseId: expense.id,
-        category: expense.category,
-        title: expense.title,
-        amount: expense.amount,
-        paidFromAccountType: updatedAccount.accountType === "CASH" ? "CASH" : "BANK",
-        isPayable: false,
-        payeeName: expense.vendorName,
-        transactionDate: expense.date,
-      }).catch((glErr) => {
-        console.error("General Ledger expense posting error:", glErr);
-      });
-
-      return res.json({
-        success: true,
-        message: `Expense of Rs ${numAmount.toLocaleString()} paid from ${updatedAccount.accountName} successfully!`,
-        expense,
-        account: updatedAccount,
+    if (String(paymentStatus).toUpperCase() === "PAID" && !paymentAccountId) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a mapped Bank, Cash, or Wallet Treasury account to disburse this payment from.",
       });
     }
 
-    // CASE B: PAY LATER (Record as Accounts Payable Liability)
-    if (paymentStatus === "PAYABLE" || paymentStatus === "UNPAID") {
-      const payable = await prisma.accountPayable.create({
-        data: {
-          title: title.trim(),
-          payeeName: finalVendorName,
-          category: "OPERATING_EXPENSE",
-          referenceType: "EXPENSE",
-          totalAmount: numAmount,
-          paidAmount: 0,
-          remainingBalance: numAmount,
-          dueDate: resolvedDueDate ? new Date(resolvedDueDate) : null,
-          invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-          priority: priority || "MEDIUM",
-          status: "UNPAID",
-          notes: notes ? notes.trim() : null,
-        },
-      });
+    const result = await prisma.$transaction(async (tx) => {
+      let updatedAccount = null;
+      let depositAccountCode = null;
+      let payable = null;
+      const isPaid = String(paymentStatus).toUpperCase() === "PAID";
 
-      const expense = await prisma.operatingExpense.create({
+      if (isPaid) {
+        const treasuryAccount = await tx.financialAccount.findUnique({ where: { id: paymentAccountId } });
+        depositAccountCode = (await validateTreasuryPayoutAccount(treasuryAccount, tx)).accountCode;
+        const debitResult = await tx.financialAccount.updateMany({
+          where: {
+            id: paymentAccountId,
+            status: "ACTIVE",
+            currency: "NPR",
+            currentBalance: { gte: numAmount },
+          },
+          data: { currentBalance: { decrement: numAmount } },
+        });
+        if (debitResult.count !== 1) {
+          const current = await tx.financialAccount.findUnique({
+            where: { id: paymentAccountId },
+            select: { currentBalance: true, accountName: true },
+          });
+          const availableBalance = Number(current?.currentBalance || 0);
+          const error = new Error(
+            current
+              ? `Insufficient funds in ${current.accountName}. Available Rs ${availableBalance.toLocaleString()}, required Rs ${numAmount.toLocaleString()}.`
+              : "Selected Treasury account was not found.",
+          );
+          error.statusCode = current ? 409 : 404;
+          error.code = current ? "INSUFFICIENT_TREASURY_FUNDS" : "TREASURY_ACCOUNT_NOT_FOUND";
+          throw error;
+        }
+        updatedAccount = await tx.financialAccount.findUnique({ where: { id: paymentAccountId } });
+      } else {
+        payable = await tx.accountPayable.create({
+          data: {
+            title: title.trim(),
+            payeeName: finalVendorName,
+            category: "OPERATING_EXPENSE",
+            referenceType: "EXPENSE",
+            totalAmount: numAmount,
+            paidAmount: 0,
+            remainingBalance: numAmount,
+            dueDate: resolvedDueDate ? new Date(resolvedDueDate) : null,
+            invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
+            priority: priority || "MEDIUM",
+            status: "UNPAID",
+            notes: notes ? notes.trim() : null,
+          },
+        });
+      }
+
+      const expense = await tx.operatingExpense.create({
         data: {
           title: title.trim(),
           category: category.toUpperCase(),
@@ -318,9 +311,10 @@ export const createExpense = async (req, res) => {
           vatAmount: computedVat,
           ...purchaseVatData,
           date: expenseDate,
-          paymentMethod: "CREDIT",
-          paymentStatus: "PAYABLE",
-          payableId: payable.id,
+          paymentMethod: isPaid ? paymentMethod || "CASH" : "CREDIT",
+          paymentStatus: isPaid ? "PAID" : "PAYABLE",
+          financialAccountId: isPaid ? paymentAccountId : null,
+          payableId: payable?.id || null,
           vendorName: finalVendorName,
           invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null,
           notes: notes ? notes.trim() : null,
@@ -328,29 +322,52 @@ export const createExpense = async (req, res) => {
         },
       });
 
-      // Post Accrued Expense to GL (DR Operating Expense, CR Accounts Payable)
-      postExpenseAccounting({
+      if (isPaid) {
+        await tx.cashTransaction.create({
+          data: {
+            amount: numAmount,
+            date: expenseDate,
+            type: "OUTFLOW",
+            fromAccountId: paymentAccountId,
+            category: "EXPENSE",
+            partyName: finalVendorName,
+            invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
+            referenceId: expense.id,
+            description: `Expense: ${title.trim()} (${category.toUpperCase()}) to ${finalVendorName}`,
+          },
+        });
+      }
+
+      await postExpenseAccounting({
         expenseId: expense.id,
         category: expense.category,
         title: expense.title,
         amount: expense.amount,
-        paidFromAccountType: "BANK",
-        isPayable: true,
+        paidFromAccountCode: depositAccountCode,
+        isPayable: !isPaid,
         payeeName: expense.vendorName,
         transactionDate: expense.date,
-      }).catch((glErr) => {
-        console.error("General Ledger accrued expense posting error:", glErr);
+        client: tx,
+        throwOnError: true,
       });
 
+      return { expense, payable, account: updatedAccount };
+    });
+
+    if (result.account) {
       return res.json({
         success: true,
-        message: `Expense recorded as Accounts Payable liability (Pay Later) due on ${dueDate || "upcoming"}.`,
-        expense,
-        payable,
+        message: `Expense of Rs ${numAmount.toLocaleString()} paid from ${result.account.accountName} successfully!`,
+        expense: result.expense,
+        account: result.account,
       });
     }
-
-    res.json({ success: false, message: "Invalid payment status specified" });
+    return res.json({
+      success: true,
+      message: `Expense recorded as Accounts Payable liability (Pay Later) due on ${dueDate || "upcoming"}.`,
+      expense: result.expense,
+      payable: result.payable,
+    });
   } catch (error) {
     console.error("createExpense error:", error);
     return res.status(error.statusCode || 500).json({
@@ -464,10 +481,22 @@ export const updateExpense = async (req, res) => {
       calendar,
     } = req.body;
 
-    const numAmount = amount !== undefined ? Math.max(0, Number(amount)) : existing.amount;
+    const numAmount = amount !== undefined ? normalizeNprAmount(amount, "Expense amount") : existing.amount;
     const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : null;
     const vatBill = isVatBill !== undefined ? isVatBill === true || isVatBill === "true" : existing.isVatBill;
-    const computedVat = calculateVat(numAmount, vatBill, vatAmount);
+    const vatRate = purchaseVatRate === undefined || purchaseVatRate === ""
+      ? Number(existing.purchaseVatRate || 13)
+      : Number(purchaseVatRate);
+    if (vatBill && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
+    }
+    let computedVat;
+    try {
+      computedVat = calculateVat(numAmount, vatBill, vatAmount, vatRate);
+      if (computedVat > numAmount) throw new Error("VAT amount cannot exceed the total supplier invoice amount.");
+    } catch (error) {
+      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_AMOUNT", message: error.message });
+    }
     if (existing.purchaseVatStatus === "VERIFIED") {
       const taxFieldsChanged =
         numAmount !== existing.amount ||
@@ -496,11 +525,6 @@ export const updateExpense = async (req, res) => {
     if (evidence.length > 5000 || (evidence && !isHttpUrl(evidence))) {
       return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_EVIDENCE", message: "Supplier invoice evidence must be a valid HTTP or HTTPS URL no longer than 5,000 characters." });
     }
-    const vatRate = purchaseVatRate === undefined || purchaseVatRate === "" ? existing.purchaseVatRate : Number(purchaseVatRate);
-    if (vatBill && vatRate !== null && (!Number.isFinite(vatRate) || vatRate <= 0 || vatRate > 100)) {
-      return res.status(400).json({ success: false, code: "INVALID_PURCHASE_VAT_RATE", message: "Enter the VAT rate printed on the supplier invoice." });
-    }
-
     const updated = await prisma.operatingExpense.update({
       where: { id },
       data: {
@@ -665,18 +689,22 @@ export const createDirectIncome = async (req, res) => {
   try {
     const { title, category, amount, toAccountId, payerName, invoiceNumber, date, notes, calendar } = req.body;
 
-    if (!title || !amount || !toAccountId) {
-      return res.json({ success: false, message: "Title, Amount, and Deposit Account are required." });
+    const incomeTitle = typeof title === "string" ? title.trim() : "";
+    const incomeCategory = String(category || "OTHER").trim().toUpperCase();
+    if (!incomeTitle || amount === undefined || amount === null || amount === "" || !toAccountId) {
+      return res.status(400).json({ success: false, message: "Title, Amount, and Deposit Account are required." });
     }
 
-    const numAmount = Number(amount);
-    if (isNaN(numAmount) || numAmount <= 0) {
-      return res.json({ success: false, message: "Income amount must be a positive number." });
+    const numAmount = normalizeNprAmount(amount, "Income amount");
+    if (numAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Income amount must be a positive number." });
     }
-
-    const toAccount = await prisma.financialAccount.findUnique({ where: { id: toAccountId } });
-    if (!toAccount) {
-      return res.json({ success: false, message: "Selected deposit account not found." });
+    if (incomeCategory !== "OTHER") {
+      return res.status(400).json({
+        success: false,
+        code: "UNSUPPORTED_MANUAL_INCOME_CATEGORY",
+        message: "This form is only for Other Income confirmed by finance as not requiring output VAT. Record sales, scrap disposals, and VAT-bearing services through their tax-aware accounting workflows.",
+      });
     }
 
     const resolvedDate = date ? await resolveCalendarDateInput(date, calendar) : new Date();
@@ -684,57 +712,64 @@ export const createDirectIncome = async (req, res) => {
     if (Number.isNaN(incomeDate.getTime())) {
       return res.status(400).json({ success: false, code: "INVALID_INCOME_DATE", message: "Enter a valid income date." });
     }
-    const finalPayerName = (payerName || "Customer / Buyer").trim();
-    const incomeCategory = (category || "DIRECT_SALES").toUpperCase();
+    const finalPayerName = typeof payerName === "string" && payerName.trim()
+      ? payerName.trim()
+      : "Other income source";
+    const finalInvoiceNumber = typeof invoiceNumber === "string" ? invoiceNumber.trim() : "";
+    const finalNotes = typeof notes === "string" ? notes.trim() : "";
 
-    const [updatedAccount, cashTx, income] = await prisma.$transaction([
-      prisma.financialAccount.update({
+    const result = await prisma.$transaction(async (tx) => {
+      const treasuryAccount = await tx.financialAccount.findUnique({ where: { id: toAccountId } });
+      const depositAccount = await validateTreasuryPayoutAccount(treasuryAccount, tx);
+      const updatedAccount = await tx.financialAccount.update({
         where: { id: toAccountId },
         data: { currentBalance: { increment: numAmount } },
-      }),
-      prisma.cashTransaction.create({
+      });
+      const income = await tx.directIncome.create({
         data: {
-          amount: numAmount,
-          type: "INFLOW",
-          toAccountId,
-          category: "SALES",
-          partyName: finalPayerName,
-          invoiceNumber: invoiceNumber ? invoiceNumber.trim() : "",
-          description: `Direct Income: ${title.trim()} (${incomeCategory}) from ${finalPayerName}`,
-        },
-      }),
-      prisma.directIncome.create({
-        data: {
-          title: title.trim(),
+          title: incomeTitle,
           category: incomeCategory,
           amount: numAmount,
           toAccountId,
           payerName: finalPayerName,
-          invoiceNumber: invoiceNumber ? invoiceNumber.trim() : null,
+          invoiceNumber: finalInvoiceNumber || null,
           date: incomeDate,
-          notes: notes ? notes.trim() : null,
+          notes: finalNotes || null,
           createdBy: "ADMIN",
         },
-      }),
-    ]);
-
-    // Post to Double-Entry General Ledger (DR Bank/Cash, CR Sales/Other Income)
-    postCustomerPaymentAccounting({
-      id: income.id,
-      orderId: `INC-${income.id.slice(-6)}`,
-      customerName: finalPayerName,
-      amount: numAmount,
-      depositAccountType: updatedAccount.accountType === "CASH" ? "CASH" : "BANK",
-      referenceNumber: invoiceNumber || `INC-${Date.now()}`,
-    }).catch((glErr) => {
-      console.error("General Ledger direct income posting error:", glErr);
+      });
+      await tx.cashTransaction.create({
+        data: {
+          amount: numAmount,
+          date: incomeDate,
+          type: "INFLOW",
+          toAccountId,
+          category: "MISC_INFLOW",
+          partyName: finalPayerName,
+          invoiceNumber: finalInvoiceNumber,
+          referenceId: income.id,
+          description: `Other Income: ${incomeTitle} from ${finalPayerName}`,
+        },
+      });
+      await postDirectIncomeAccounting({
+        incomeId: income.id,
+        category: income.category,
+        title: income.title,
+        amount: income.amount,
+        depositAccountCode: depositAccount.accountCode,
+        payerName: finalPayerName,
+        invoiceNumber: finalInvoiceNumber,
+        transactionDate: incomeDate,
+        client: tx,
+      });
+      return { income, account: updatedAccount };
     });
 
-    res.json({
+    return res.json({
       success: true,
-      message: `Income of Rs ${numAmount.toLocaleString()} deposited into ${updatedAccount.accountName} successfully!`,
-      income,
-      account: updatedAccount,
+      message: `Other income of Rs ${numAmount.toLocaleString()} deposited into ${result.account.accountName} successfully!`,
+      income: result.income,
+      account: result.account,
     });
   } catch (error) {
     console.error("createDirectIncome error:", error);

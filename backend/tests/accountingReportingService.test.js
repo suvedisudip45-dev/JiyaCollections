@@ -80,3 +80,23 @@ test("posted finance query restricts lines to posted journals through requested 
   assert.equal(new Date(query.where.journalEntry.transactionDate.lte).toISOString(), "2026-10-31T23:59:59.999Z");
   assert.equal(snapshot.incomeStatement.netRevenue, 500);
 });
+
+test("posted statement includes Other Income and Other Expenses in net profit", () => {
+  const snapshot = buildPostedFinanceSnapshot({
+    startDate: "2026-10-01T00:00:00.000Z",
+    endDate: "2026-10-31T23:59:59.999Z",
+    lines: [
+      line("8100", "CREDIT", 0, "250.75", "2026-10-05T10:00:00.000Z", "DIRECT_INCOME"),
+      line("6700", "DEBIT", "75.25", 0, "2026-10-06T10:00:00.000Z", "EXPENSE_PAYMENT"),
+      line("7100", "DEBIT", "20.00", 0, "2026-10-07T10:00:00.000Z", "LOAN_REPAYMENT"),
+      line("7200", "DEBIT", "5.00", 0, "2026-10-08T10:00:00.000Z", "BANK_FEE"),
+    ],
+  });
+
+  assert.equal(snapshot.incomeStatement.otherIncome, 250.75);
+  assert.equal(snapshot.incomeStatement.otherOperatingExpenses, 75.25);
+  assert.equal(snapshot.incomeStatement.loanInterestExpense, 20);
+  assert.equal(snapshot.incomeStatement.bankCharges, 5);
+  assert.equal(snapshot.incomeStatement.totalOperatingExpenses, 75.25);
+  assert.equal(snapshot.incomeStatement.netProfitBeforeTax, 150.5);
+});

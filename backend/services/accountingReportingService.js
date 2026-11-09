@@ -81,7 +81,10 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
   const totalCogs = balance("5100") + balance("5200") + balance("5300") + balance("5500") - balance("5400");
   const totalOperatingExpenses = ["6100", "6200", "6300", "6400", "6410", "6420", "6430", "6440", "6500", "6600", "6700"]
     .reduce((total, code) => total + balance(code), 0);
-  const nonOperatingNet = balance("8100") - balance("7100") - balance("7200");
+  const otherIncome = balance("8100");
+  const loanInterestExpense = balance("7100");
+  const bankCharges = balance("7200");
+  const nonOperatingNet = otherIncome - loanInterestExpense - bankCharges;
   const grossProfit = netRevenue - totalCogs;
   const netProfitBeforeTax = grossProfit - totalOperatingExpenses + nonOperatingNet;
   const outputVat = toAmount(vatPeriodCents.outputVat);
@@ -111,6 +114,10 @@ export const buildPostedFinanceSnapshot = ({ lines = [], startDate, endDate }) =
       totalCogs: toAmount(toCents(totalCogs)),
       grossProfit: toAmount(toCents(grossProfit)),
       totalOperatingExpenses: toAmount(toCents(totalOperatingExpenses)),
+      otherOperatingExpenses: toAmount(toCents(balance("6700"))),
+      otherIncome: toAmount(toCents(otherIncome)),
+      loanInterestExpense: toAmount(toCents(loanInterestExpense)),
+      bankCharges: toAmount(toCents(bankCharges)),
       netProfitBeforeTax: toAmount(toCents(netProfitBeforeTax)),
     },
     vat: {

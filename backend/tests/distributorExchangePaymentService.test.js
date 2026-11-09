@@ -6,13 +6,14 @@ import {
   submitDistributorExchangePaymentEvidence,
 } from "../services/distributorExchangePaymentService.js";
 
-const createHarness = (priceDifference = "250.00") => {
+const createHarness = (priceDifference = "250.00", deliveryRoute = "NCM") => {
   const state = {
     request: {
       id: "exchange-1",
-      deliveryRoute: "NCM",
-      settlementDistributorId: "dist-1",
-      status: "NCM_CREATED",
+      deliveryRoute,
+      distributorId: deliveryRoute === "DISTRIBUTOR" ? "dist-1" : null,
+      settlementDistributorId: deliveryRoute === "NCM" ? "dist-1" : null,
+      status: deliveryRoute === "DISTRIBUTOR" ? "APPROVED_FOR_DISTRIBUTOR" : "NCM_CREATED",
       priceDifference: new Prisma.Decimal(priceDifference),
       exchangeJournalEntryId: "journal-1",
     },
@@ -20,9 +21,10 @@ const createHarness = (priceDifference = "250.00") => {
     exchangeEvents: [],
     audits: [],
   };
-  const matches = (record, where) => Object.entries(where).every(([key, value]) => (
-    value?.in ? value.in.includes(record[key]) : record[key] === value
-  ));
+  const matches = (record, where) => Object.entries(where).every(([key, value]) => {
+    if (key === "OR") return value.some((condition) => matches(record, condition));
+    return value?.in ? value.in.includes(record[key]) : record[key] === value;
+  });
   const tx = {
     orderExchangeRequest: {
       findFirst: async ({ where }) => matches(state.request, where) ? state.request : null,
@@ -102,6 +104,27 @@ test("NCM exchange downgrade evidence records a distributor-paid customer refund
   assert.equal(result.cashEvent.eventType, "EXCHANGE_DOWNGRADE_REFUND");
   assert.equal(result.cashEvent.amount.toFixed(2), "175.50");
   assert.equal(state.request.settlementDistributorId, "dist-1");
+});
+
+test("self-delivery exchange price-difference evidence is exact, audited, and Admin-verifiable", async () => {
+  const { state, client } = createHarness("75.00", "DISTRIBUTOR");
+  const submitted = await submit(client, {
+    amount: "75.00",
+    idempotencyKey: "self-delivery-exchange-payment",
+  });
+  assert.equal(submitted.cashEvent.eventType, "EXCHANGE_UPGRADE_COLLECTION");
+  assert.equal(submitted.cashEvent.status, "PENDING_VERIFICATION");
+  assert.equal(state.request.distributorId, "dist-1");
+
+  const reviewed = await reviewDistributorExchangePaymentEvidence({
+    requestId: "exchange-1",
+    cashEventId: submitted.cashEvent.id,
+    decision: "VERIFY",
+    reviewerAccountId: "admin-1",
+    client,
+  });
+  assert.equal(reviewed.decision, "VERIFIED");
+  assert.equal(state.cashEvents[0].status, "VERIFIED");
 });
 
 test("Admin can verify distributor payment evidence and link an existing accounting document", async () => {

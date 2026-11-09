@@ -1090,7 +1090,7 @@ model CashTransaction {
   type           String // INFLOW, OUTFLOW, TRANSFER
   fromAccountId  String?
   toAccountId    String?
-  category       String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
+  category       String // SALES, SUPPLIER_PAYMENT, EXPENSE, CAPITAL_INJECTION, SHARE_BUYBACK, DRAWINGS, LOAN_DISBURSEMENT, LOAN_REPAYMENT, ASSET_PURCHASE, REFUND, INTERNAL_TRANSFER
   partyName      String?           @default("") // Whom paid to / Whom received from
   invoiceNumber  String?           @default("")
   referenceId    String?           @default("")
@@ -1206,6 +1206,8 @@ model CompanyValuation {
 
 model ShareTransaction {
   id                          String   @id @default(uuid())
+  idempotencyKey              String?  @unique @db.VarChar(191)
+  requestPayloadHash          String?  @db.VarChar(64)
   transactionType             String // PRIMARY_ISSUANCE, SECONDARY_TRANSFER, SHARE_BUYBACK, FOUNDER_ALLOCATION, DILUTION_REBALANCE
   fromPartnerId               String? // null if PRIMARY_ISSUANCE or FOUNDER_ALLOCATION
   fromPartnerName             String?  @default("")

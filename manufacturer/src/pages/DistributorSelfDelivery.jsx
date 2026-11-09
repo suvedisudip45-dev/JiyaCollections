@@ -608,6 +608,7 @@ const DistributorSelfDelivery = () => {
             {exchangeRequests.map((request) => {
               const difference = Number(request.priceDifference || 0);
               const paymentEvidence = request.distributorCashEvents?.[0];
+              const hasPriceDifference = difference !== 0;
               const isNcmSettlement = request.deliveryRoute === "NCM" && difference !== 0;
               return (
               <article key={request.id} className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3">
@@ -627,13 +628,15 @@ const DistributorSelfDelivery = () => {
                     Replacement {request.originalPaperBillDocumentType === "VAT_TAX_INVOICE" ? "VAT invoice" : "PAN bill"}: {request.replacementPaperBillNumber || "number not recorded"}{request.replacementPaperBillIssuedAt ? " · Admin confirmed physical attachment" : ""}
                   </p>
                 )}
-                {isNcmSettlement && (
+                {hasPriceDifference && (
                   <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
                     <p className="text-[11px] font-semibold text-amber-900">
                       {difference > 0
                         ? `Collect the NPR ${Math.abs(difference).toFixed(2)} upgrade payment from the customer.`
                         : `Pay the customer NPR ${Math.abs(difference).toFixed(2)} for the downgrade.`}
-                      {" "}NCM transports the replacement only; upload the online payment screenshot for Admin verification.
+                      {" "}{isNcmSettlement
+                        ? "NCM transports the replacement only; upload evidence for Admin verification."
+                        : "Admin must verify payment evidence before you can mark the replacement delivered."}
                     </p>
                     {paymentEvidence && (
                       <p className={`mt-2 text-[10px] font-semibold ${paymentEvidence.status === "VERIFIED" ? "text-emerald-800" : paymentEvidence.status === "REJECTED" ? "text-rose-800" : "text-amber-800"}`}>
@@ -643,7 +646,7 @@ const DistributorSelfDelivery = () => {
                     {paymentEvidence?.evidenceUrl && <a href={paymentEvidence.evidenceUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[10px] font-semibold text-blue-700 underline">View submitted screenshot</a>}
                     {paymentEvidence?.status !== "PENDING_VERIFICATION" && paymentEvidence?.status !== "VERIFIED" && (
                       <button type="button" onClick={() => openExchangePaymentEvidence(request)} className="mt-2 rounded-lg bg-amber-800 px-3 py-2 text-[10px] font-bold text-white">
-                        {paymentEvidence?.status === "REJECTED" ? "Resubmit payment evidence" : "Record payment & upload screenshot"}
+                        {paymentEvidence?.status === "REJECTED" ? "Resubmit payment evidence" : "Record payment & upload evidence"}
                       </button>
                     )}
                   </div>
@@ -1101,7 +1104,9 @@ const DistributorSelfDelivery = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <form onSubmit={submitExchangePaymentEvidence} className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-4">
             <div>
-              <h2 className="text-base font-bold text-[#171717]">Record NCM exchange payment</h2>
+              <h2 className="text-base font-bold text-[#171717]">
+                {exchangePaymentToSubmit.deliveryRoute === "NCM" ? "Record NCM exchange payment" : "Record self-delivery exchange payment"}
+              </h2>
               <p className="mt-1 text-xs text-[#575757]">
                 {Number(exchangePaymentToSubmit.priceDifference || 0) > 0
                   ? "Record the upgrade payment received from the customer."

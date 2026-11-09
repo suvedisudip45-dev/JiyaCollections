@@ -7,6 +7,7 @@ import {
   listAssignedDistributorOrders,
   markDistributorSelfDeliveryReady,
   dispatchDistributorSelfDeliveryOrders,
+  hasFullyReturnedAllOrderItems,
   updateSelfDeliveryStatus,
   processSelfDeliveryReturn,
 } from "../services/distributorSelfDeliveryService.js";
@@ -619,6 +620,23 @@ test("COD delivery without SMS OTP requires explicit distributor collection conf
   );
 });
 
+test("self-delivery return marks the order returned only after every purchased unit is returned", () => {
+  const purchased = [
+    { productId: "prod-1", size: "M", color: "Black", quantity: 1 },
+    { productId: "prod-2", size: "L", color: "Blue", quantity: 2 },
+  ];
+  assert.equal(hasFullyReturnedAllOrderItems(purchased, [[
+    { productId: "prod-1", size: "M", color: "Black", quantity: 1 },
+  ]]), false);
+  assert.equal(hasFullyReturnedAllOrderItems(purchased, [
+    [{ productId: "prod-1", size: "M", color: "Black", quantity: 1 }],
+    [{ productId: "prod-2", size: "L", color: "Blue", quantity: 2 }],
+  ]), true);
+  assert.equal(hasFullyReturnedAllOrderItems(purchased, [[
+    { productId: "prod-2", size: "L", color: "Blue", quantity: 3 },
+  ]]), false);
+});
+
 test("4. processSelfDeliveryReturn restocks good items and writes off damaged items with discrepancy", async (t) => {
   const mockAssignment = {
     id: "assign-1",
@@ -665,6 +683,8 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   const discrepancies = [];
   const createdLocations = [];
   const serviceCharges = [];
+  const assignmentUpdates = [];
+  const orderUpdates = [];
   let inventoryAccountingRecord;
   let logisticsSettlementRequest;
   const updatedCustomerReturn = { id: "return-1" };
@@ -716,6 +736,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
       },
       customerReturn: {
         updateMany: async () => ({ count: 1 }),
+        findMany: async () => [],
         update: async ({ data }) => Object.assign(updatedCustomerReturn, data),
       },
       distributor: { findUnique: async () => ({ id: "dist-1", name: "Distributor One" }) },
@@ -724,10 +745,16 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
       },
       customerReturnEvent: { create: async () => ({ id: "event-1" }) },
       orderAssignment: {
-        update: async () => ({ id: "assign-1", status: "returned" }),
+        update: async ({ data }) => {
+          assignmentUpdates.push(data);
+          return { id: "assign-1", ...data };
+        },
       },
       order: {
-        update: async () => ({ id: "order-1", status: "Returned" }),
+        update: async ({ data }) => {
+          orderUpdates.push(data);
+          return { id: "order-1", ...data };
+        },
       },
       systemAuditOutbox: { create: async () => ({ id: "audit-1" }) },
     })
@@ -757,6 +784,7 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   });
 
   assert.equal(res.success, true);
+  assert.equal(res.isFullyReturned, true);
   assert.equal(res.hasDamagedItems, true);
   assert.equal(res.totalRefundAmount, 3400);
   assert.equal(logisticsSettlementRequest.operation, "RETURN");
@@ -789,6 +817,8 @@ test("4. processSelfDeliveryReturn restocks good items and writes off damaged it
   assert.equal(serviceCharges[0].assignmentId, "assign-1");
   assert.equal(serviceCharges[0].chargeAmount, 50);
   assert.equal(serviceCharges[0].vatRate, 13);
+  assert.equal(assignmentUpdates[0].status, "returned");
+  assert.equal(orderUpdates[0].fulfillmentStatus, "returned");
 });
 
 test("self-delivery return QA requires an admin-approved return request", async (t) => {

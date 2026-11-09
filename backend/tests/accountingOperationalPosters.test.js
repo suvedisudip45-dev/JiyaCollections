@@ -5,6 +5,16 @@ import {
   postDeliveredOrderAccounting,
   postConfirmedDeliveryReturnAccounting,
   postCustomerPaymentAccounting,
+  postDirectIncomeAccounting,
+  postDirectExpenseAccounting,
+  postTreasuryMovementAccounting,
+  postExpenseAccounting,
+  postFixedAssetPurchaseAccounting,
+  postFixedAssetDisposalAccounting,
+  postLoanDisbursementAccounting,
+  postLoanRepaymentAccounting,
+  postShareIssuanceAccounting,
+  postShareBuybackAccounting,
   postDistributorCustomerRefundAccounting,
   postDistributorReturnInventoryAccounting,
   postCustomerReturnAccounting,
@@ -13,6 +23,7 @@ import {
   postNcmRemittanceAccounting,
   postNcmSettlementAccounting,
   postJournalEntry,
+  postDepreciationAccounting,
   postManufacturerProductionAccounting,
   postManufacturerLogisticsAccounting,
   postSupplierPaymentAccounting,
@@ -844,6 +855,349 @@ test("unpaid direct distributor phone sales post to receivables that clear on ca
   assert.equal(receipt.totalDebit.toFixed(2), receipt.totalCredit.toFixed(2));
 });
 
+test("manual Other Income posts to income instead of Accounts Receivable", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const entry = await postDirectIncomeAccounting({
+    incomeId: "income-other-001",
+    category: "OTHER",
+    title: "Approved other receipt",
+    amount: "250.75",
+    depositAccountCode: "1180",
+    payerName: "Verified source",
+    client,
+  });
+
+  assert.equal(entry.sourceType, "DIRECT_INCOME");
+  assert.equal(entry.idempotencyKey, "DIRECT_INCOME:income-other-001");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "250.75");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "8100").credit.toFixed(2), "250.75");
+  assert.equal(entry.lines.some((line) => line.account.accountCode === "1130"), false);
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+  assert.equal(state.entries.length, 1);
+});
+
+test("manual income poster rejects sales categories requiring tax-aware accounting", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(
+    postDirectIncomeAccounting({
+      incomeId: "income-sales-001",
+      category: "DIRECT_SALES",
+      amount: 100,
+      depositAccountCode: "1120",
+      client,
+    }),
+    /Other Income only/,
+  );
+  assert.equal(state.entries.length, 0);
+});
+
+test("Other Expenses post to miscellaneous expense and the selected mapped Treasury account", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postDirectExpenseAccounting({
+    expenseId: "expense-other-001",
+    category: "MISCELLANEOUS",
+    title: "Approved other expense",
+    amount: "75.25",
+    paidFromAccountCode: "1180",
+    transactionDate: new Date("2026-10-15T00:00:00.000Z"),
+    client,
+    throwOnError: true,
+  });
+
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "6700").debit.toFixed(2), "75.25");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1180").credit.toFixed(2), "75.25");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+});
+
+test("direct expense poster splits the journal between mapped Treasury and Accounts Payable", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postDirectExpenseAccounting({
+    expenseId: "expense-partial-001",
+    category: "UTILITIES",
+    title: "Partial electricity bill",
+    amount: 125,
+    paidAmount: 50,
+    payableAmount: 75,
+    paidFromAccountCode: "1110",
+    idempotencyKey: "EXPENSE_RECORD:partial-001",
+    referenceNumber: "partial-expense-payload",
+    client,
+    throwOnError: true,
+  });
+
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "6300").debit.toFixed(2), "125.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "50.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "75.00");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+});
+
+test("operating expense poster rejects an unbalanced payment allocation", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(postExpenseAccounting({
+    expenseId: "expense-invalid-split",
+    category: "UTILITIES",
+    amount: 125,
+    paidAmount: 50,
+    payableAmount: 74,
+    client,
+    throwOnError: true,
+  }), /must be non-negative and equal the total expense/);
+  assert.equal(state.entries.length, 0);
+});
+
+test("direct Treasury receipt posts to the mapped GL account and Other Income once", async () => {
+  const { client, state } = createComprehensiveHarness();
+  const params = {
+    movementType: "INFLOW",
+    category: "MISC_INFLOW",
+    amount: 125,
+    sourceId: "TREASURY-receipt-001",
+    idempotencyKey: "TREASURY_MOVEMENT:receipt-001",
+    referenceNumber: "receipt-payload",
+    toAccountCode: "1180",
+    description: "Non-sales receipt",
+    client,
+  };
+  const entry = await postTreasuryMovementAccounting(params);
+  const replay = await postTreasuryMovementAccounting(params);
+
+  assert.equal(entry.id, replay.id);
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "125.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "8100").credit.toFixed(2), "125.00");
+  assert.equal(state.entries.length, 1);
+});
+
+test("direct Treasury expense and drawings use their intended account mappings", async () => {
+  const { client } = createComprehensiveHarness();
+  const expense = await postTreasuryMovementAccounting({
+    movementType: "OUTFLOW",
+    category: "EXPENSE",
+    amount: 80,
+    sourceId: "TREASURY-expense-001",
+    idempotencyKey: "TREASURY_MOVEMENT:expense-001",
+    referenceNumber: "expense-payload",
+    fromAccountCode: "1110",
+    client,
+  });
+  const drawings = await postTreasuryMovementAccounting({
+    movementType: "OUTFLOW",
+    category: "DRAWINGS",
+    amount: 45,
+    sourceId: "TREASURY-drawings-001",
+    idempotencyKey: "TREASURY_MOVEMENT:drawings-001",
+    referenceNumber: "drawings-payload",
+    fromAccountCode: "1120",
+    client,
+  });
+
+  assert.equal(expense.lines.find((line) => line.account.accountCode === "6700").debit.toFixed(2), "80.00");
+  assert.equal(expense.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "80.00");
+  assert.equal(drawings.lines.find((line) => line.account.accountCode === "3500").debit.toFixed(2), "45.00");
+  assert.equal(drawings.lines.find((line) => line.account.accountCode === "1120").credit.toFixed(2), "45.00");
+});
+
+test("internal Treasury transfer posts mapped debit and credit and rejects unsupported direct categories", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postTreasuryMovementAccounting({
+    movementType: "TRANSFER",
+    category: "INTERNAL_TRANSFER",
+    amount: 200,
+    sourceId: "TREASURY-transfer-001",
+    idempotencyKey: "TREASURY_MOVEMENT:transfer-001",
+    referenceNumber: "transfer-payload",
+    fromAccountCode: "1110",
+    toAccountCode: "1120",
+    client,
+  });
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1120").debit.toFixed(2), "200.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "200.00");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+
+  await assert.rejects(postTreasuryMovementAccounting({
+    movementType: "INFLOW",
+    category: "SALES",
+    amount: 100,
+    sourceId: "TREASURY-invalid-inflow",
+    idempotencyKey: "TREASURY_MOVEMENT:invalid-inflow",
+    referenceNumber: "invalid-payload",
+    toAccountCode: "1120",
+    client,
+  }), /not supported/);
+});
+
+test("loan journals use the mapped Treasury GL account and stable repayment identity", async () => {
+  const { client } = createComprehensiveHarness();
+  const disbursement = await postLoanDisbursementAccounting({
+    id: "loan-bank-cash-test",
+    investorName: "Example Bank",
+    principalAmount: 500,
+    interestRate: 12,
+    startDate: new Date("2026-10-01T00:00:00.000Z"),
+  }, {
+    client,
+    cashAccountCode: "1110",
+    throwOnError: true,
+  });
+  assert.equal(disbursement.lines.find((line) => line.account.accountCode === "1110").debit.toFixed(2), "500.00");
+  assert.equal(disbursement.lines.find((line) => line.account.accountCode === "2510").credit.toFixed(2), "500.00");
+
+  const repayment = await postLoanRepaymentAccounting({
+    liability: { id: "loan-bank-cash-test", investorName: "Example Bank" },
+    amount: 110,
+    principalPortion: 100,
+    interestPortion: 10,
+  }, {
+    client,
+    cashAccountCode: "1180",
+    idempotencyKey: "LOAN_REPAYMENT:retry-stable-001",
+    transactionDate: new Date("2026-10-15T00:00:00.000Z"),
+    throwOnError: true,
+  });
+  assert.equal(repayment.idempotencyKey, "LOAN_REPAYMENT:retry-stable-001");
+  assert.equal(repayment.lines.find((line) => line.account.accountCode === "2510").debit.toFixed(2), "100.00");
+  assert.equal(repayment.lines.find((line) => line.account.accountCode === "7100").debit.toFixed(2), "10.00");
+  assert.equal(repayment.lines.find((line) => line.account.accountCode === "1180").credit.toFixed(2), "110.00");
+  assert.equal(repayment.totalDebit.toFixed(2), repayment.totalCredit.toFixed(2));
+});
+
+test("strict loan repayment posting rejects a principal and interest split that does not balance", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(postLoanRepaymentAccounting({
+    liability: { id: "loan-invalid-split", investorName: "Example Bank" },
+    amount: 110,
+    principalPortion: 100,
+    interestPortion: 9.99,
+  }, {
+    client,
+    throwOnError: true,
+  }), /must be non-negative and equal the total payment/);
+  assert.equal(state.entries.length, 0);
+});
+
+test("fixed-asset purchase posts paid portion to mapped Treasury and balance to payable", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postFixedAssetPurchaseAccounting({
+    id: "asset-purchase-mapped-001",
+    assetName: "Office laptop",
+    assetTag: "AST-TEST-001",
+    category: "COMPUTERS_IT",
+    vendorName: "Equipment Supplier",
+    purchaseCost: 1000,
+    paidAmount: 300,
+    payableAmount: 700,
+    purchaseDate: new Date("2026-10-10T00:00:00.000Z"),
+  }, {
+    client,
+    cashAccountCode: "1110",
+  });
+
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1510").debit.toFixed(2), "1000.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1110").credit.toFixed(2), "300.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "2110").credit.toFixed(2), "700.00");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+});
+
+test("fixed-asset write-off clears cost and accumulated depreciation and recognizes book loss", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postFixedAssetDisposalAccounting({
+    id: "asset-disposal-001",
+    assetName: "Office laptop",
+    assetTag: "AST-DISPOSAL-001",
+    category: "COMPUTERS_IT",
+    purchaseCost: 1000,
+    accumulatedDepreciation: 200,
+    currentBookValue: 800,
+  }, {
+    status: "WRITTEN_OFF",
+    recoveredAmount: 0,
+    disposalDate: new Date("2026-10-15T00:00:00.000Z"),
+    idempotencyKey: "ASSET_DISPOSAL:test-writeoff-001",
+    payloadHash: "writeoff-payload",
+  }, { client });
+
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1590").debit.toFixed(2), "200.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "6800").debit.toFixed(2), "800.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1510").credit.toFixed(2), "1000.00");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+});
+
+test("fixed-asset disposal recognizes proceeds and gain using mapped Treasury GL", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postFixedAssetDisposalAccounting({
+    id: "asset-disposal-002",
+    assetName: "Office laptop",
+    assetTag: "AST-DISPOSAL-002",
+    category: "COMPUTERS_IT",
+    purchaseCost: 1000,
+    accumulatedDepreciation: 200,
+    currentBookValue: 800,
+  }, {
+    status: "SOLD",
+    recoveredAmount: 900,
+    disposalDate: new Date("2026-10-15T00:00:00.000Z"),
+    idempotencyKey: "ASSET_DISPOSAL:test-sale-002",
+    payloadHash: "sale-payload",
+  }, { client, cashAccountCode: "1180" });
+
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "900.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "8100").credit.toFixed(2), "100.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1590").debit.toFixed(2), "200.00");
+  assert.equal(entry.totalDebit.toFixed(2), entry.totalCredit.toFixed(2));
+});
+
+test("fixed-asset disposal rejects book values that do not reconcile", async () => {
+  const { client, state } = createComprehensiveHarness();
+  await assert.rejects(postFixedAssetDisposalAccounting({
+    id: "asset-disposal-mismatch",
+    assetName: "Office laptop",
+    assetTag: "AST-DISPOSAL-MISMATCH",
+    category: "COMPUTERS_IT",
+    purchaseCost: 1000,
+    accumulatedDepreciation: 100,
+    currentBookValue: 800,
+  }, {
+    status: "WRITTEN_OFF",
+    recoveredAmount: 0,
+    idempotencyKey: "ASSET_DISPOSAL:test-mismatch",
+    payloadHash: "mismatch-payload",
+  }, { client }), { code: "FIXED_ASSET_BOOK_RECONCILIATION_REQUIRED" });
+  assert.equal(state.entries.length, 0);
+});
+
+test("depreciation poster uses the caller transaction and stable period identity", async () => {
+  const { client } = createComprehensiveHarness();
+  const entry = await postDepreciationAccounting({
+    totalDepreciation: 10,
+    count: 1,
+    date: new Date("2026-04-15T00:00:00.000Z"),
+    periodName: "2026-04",
+    sourceId: "DEP-2026-04",
+    idempotencyKey: "ASSET_DEPRECIATION:2026-04",
+    client,
+    throwOnError: true,
+  });
+
+  assert.equal(entry.sourceId, "DEP-2026-04");
+  assert.equal(entry.idempotencyKey, "ASSET_DEPRECIATION:2026-04");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "6600").debit.toFixed(2), "10.00");
+  assert.equal(entry.lines.find((line) => line.account.accountCode === "1590").credit.toFixed(2), "10.00");
+});
+
+test("depreciation poster surfaces GL failures to its transaction caller", async () => {
+  const failingClient = {
+    $transaction: async () => {
+      throw new Error("GL unavailable");
+    },
+  };
+  await assert.rejects(postDepreciationAccounting({
+    totalDepreciation: 10,
+    periodName: "2026-04",
+    idempotencyKey: "ASSET_DEPRECIATION:2026-04",
+    client: failingClient,
+    throwOnError: true,
+  }), /GL unavailable/);
+});
+
 test("duplicate delivery sale posting is idempotent and does not create duplicate journals", async () => {
   const { client, state } = createComprehensiveHarness();
 
@@ -1253,6 +1607,51 @@ test("NCM remittance overpayment remains in payable suspense", async () => {
   assert.equal(journal.totalDebit.toFixed(2), "1050.00");
   assert.equal(journal.totalCredit.toFixed(2), "1050.00");
   assert.equal(journal.lines.find((line) => line.account.accountCode === "2185").credit.toFixed(2), "50.00");
+});
+
+test("primary share issuance uses the mapped Treasury GL account and caller transaction", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  const journal = await postShareIssuanceAccounting({
+    investorPartner: { partnerName: "Investor One" },
+    valuationRecord: { id: "valuation-equity-001" },
+    invAmt: 250000,
+    cashAccountCode: "1180",
+    idempotencyKey: "CAPITAL_INJECTION:test-equity-001",
+    referenceNumber: "payload-hash",
+    transactionDate: new Date("2026-11-09T00:00:00.000Z"),
+  }, { client, throwOnError: true, throwOnIdempotencyConflict: true });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1180").debit.toFixed(2), "250000.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "3100").credit.toFixed(2), "250000.00");
+  assert.equal(journal.idempotencyKey, "CAPITAL_INJECTION:test-equity-001");
+  assert.equal(journal.referenceNumber, "payload-hash");
+  assert.equal(journal.transactionDate.toISOString(), "2026-11-09T00:00:00.000Z");
+  assert.equal(state.entries.length, 1);
+});
+
+test("share buyback posts to the mapped Treasury GL account through the caller transaction", async () => {
+  const { client, state } = createComprehensiveHarness();
+  delete client.$transaction;
+
+  const journal = await postShareBuybackAccounting({
+    seller: { id: "seller-001", partnerName: "Seller One" },
+    totalTransactionValue: 125000,
+    cashAccountCode: "1180",
+    sourceId: "BUYBACK-request-001",
+    idempotencyKey: "SHARE_BUYBACK:request-001",
+    referenceNumber: "buyback-payload",
+    transactionDate: new Date("2026-11-09T00:00:00.000Z"),
+    throwOnError: true,
+  }, { client, throwOnError: true, throwOnIdempotencyConflict: true });
+
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "3100").debit.toFixed(2), "125000.00");
+  assert.equal(journal.lines.find((line) => line.account.accountCode === "1180").credit.toFixed(2), "125000.00");
+  assert.equal(journal.idempotencyKey, "SHARE_BUYBACK:request-001");
+  assert.equal(journal.referenceNumber, "buyback-payload");
+  assert.equal(journal.transactionDate.toISOString(), "2026-11-09T00:00:00.000Z");
+  assert.equal(state.entries.length, 1);
 });
 
 test("NCM remittance rejects carrier fees greater than collected COD", async () => {

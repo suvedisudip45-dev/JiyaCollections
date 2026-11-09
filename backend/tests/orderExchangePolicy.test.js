@@ -3,7 +3,7 @@ import test from "node:test";
 import { prisma } from "../config/db.js";
 import { isBeforeNcmHandoff } from "../services/orderCancellationService.js";
 import { calculateCustomerReturnRefundPolicy, decideCustomerReturnRequest, nextCustomerReturnNcmState, resolveCustomerReturnNcmState, returnItemsFromOrder } from "../services/customerReturnWorkflowService.js";
-import { buildExchangeNcmReturnComment, decideCustomerExchangeRequest, listAdminExchangeRequests, mapExchangeNcmStatus, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
+import { applyExchangeNcmStatus, buildExchangeNcmReturnComment, decideCustomerExchangeRequest, isExchangeReturnReceiptConfirmed, listAdminExchangeRequests, mapExchangeNcmStatus, reconcileCustomerExchange, requestHashFor, snapshotReplacementItems, toAdminExchangeRequestDto } from "../services/orderExchangeService.js";
 import { resolveReturnExchangeRoute } from "../services/returnExchangeRouting.js";
 import {
   createReturnExchangeSettlementPayable,
@@ -198,7 +198,185 @@ test("exchange NCM statuses normalize pickup and both delivery legs", () => {
   assert.equal(mapExchangeNcmStatus("Pickup Complete"), "PICKUP_COMPLETE");
   assert.equal(mapExchangeNcmStatus("pickup_completed"), "PICKUP_COMPLETE");
   assert.equal(mapExchangeNcmStatus("Delivered"), "DELIVERED");
+  assert.equal(mapExchangeNcmStatus("Sent to Vendor"), "DELIVERED_TO_VENDOR");
   assert.equal(mapExchangeNcmStatus("Sent for Delivery"), "IN_TRANSIT");
+  assert.equal(isExchangeReturnReceiptConfirmed({
+    mappedStatus: "DELIVERED",
+    currentStatus: "AWAITING_PICKUP",
+  }), false);
+  assert.equal(isExchangeReturnReceiptConfirmed({
+    mappedStatus: "DELIVERED",
+    currentStatus: "PICKUP_COMPLETE",
+  }), true);
+  assert.equal(isExchangeReturnReceiptConfirmed({
+    mappedStatus: "DELIVERED_TO_VENDOR",
+    currentStatus: "AWAITING_PICKUP",
+  }), true);
+});
+
+test("return-only NCM vendor receipt labels cannot complete the exchange replacement leg", async (t) => {
+  const attemptedAt = new Date("2026-10-16T08:00:00.000Z");
+  const request = {
+    id: "exchange-vendor-label-leg",
+    status: "IN_PROGRESS",
+    ncmReturnOrderId: 12359,
+    ncmReplacementOrderId: 12360,
+    ncmSubmissionAttemptedAt: attemptedAt,
+    returnPickupStatus: "PICKUP_COMPLETE",
+    returnPickupCompletedAt: new Date("2026-10-16T09:00:00.000Z"),
+    manufacturerReceivedAt: null,
+    replacementStatus: "IN_TRANSIT",
+    replacementDeliveredAt: null,
+    replacementStockReservedAt: null,
+    replacementStockConsumedAt: null,
+    inspectionResult: null,
+  };
+  let persistedRequest = { ...request };
+  const eventRows = [];
+  const tx = {
+    orderExchangeRequest: {
+      findUnique: async () => ({ ...persistedRequest }),
+      update: async ({ data }) => {
+        persistedRequest = { ...persistedRequest, ...data };
+        return { ...persistedRequest };
+      },
+    },
+    orderExchangeEvent: {
+      create: async ({ data }) => {
+        eventRows.push(data);
+        return data;
+      },
+    },
+  };
+  stubMethod(t, prisma.orderExchangeRequest, "findFirst", async () => ({ ...persistedRequest }));
+  stubMethod(t, prisma, "$transaction", async (callback) => callback(tx));
+
+  const applied = await applyExchangeNcmStatus({
+    ncmOrderId: request.ncmReplacementOrderId,
+    status: "Sent to Vendor",
+    timestamp: "2026-10-16T10:00:00.000Z",
+  });
+
+  assert.equal(applied, true);
+  assert.equal(persistedRequest.replacementStatus, "IN_TRANSIT");
+  assert.equal(persistedRequest.replacementDeliveredAt, null);
+  assert.equal(persistedRequest.replacementStockConsumedAt, null);
+  assert.equal(persistedRequest.status, "RETURN_PICKUP_COMPLETE");
+  assert.equal(eventRows[0].eventType, "NCM_REPLACEMENT_DELIVERED_TO_VENDOR");
+
+  const deliveredApplied = await applyExchangeNcmStatus({
+    ncmOrderId: request.ncmReplacementOrderId,
+    status: "Delivered",
+    timestamp: "2026-10-16T11:00:00.000Z",
+  });
+
+  assert.equal(deliveredApplied, true);
+  assert.equal(persistedRequest.replacementStatus, "DELIVERED");
+  assert.equal(persistedRequest.replacementDeliveredAt.toISOString(), "2026-10-16T11:00:00.000Z");
+  assert.equal(persistedRequest.status, "RETURN_PICKUP_COMPLETE");
+});
+
+test("Admin NCM exchange reconciliation replays both complete histories oldest-first", async (t) => {
+  const attemptedAt = new Date("2026-10-16T08:00:00.000Z");
+  let request = {
+    id: "exchange-ncm-reconcile",
+    status: "NCM_CREATED",
+    ncmReturnOrderId: 12357,
+    ncmReplacementOrderId: 12358,
+    ncmSubmissionAttemptedAt: attemptedAt,
+    returnPickupStatus: "AWAITING_PICKUP",
+    returnPickupCompletedAt: null,
+    manufacturerReceivedAt: null,
+    replacementStatus: "PICKUP_PENDING",
+    replacementDeliveredAt: null,
+    replacementStockReservedAt: null,
+    replacementStockConsumedAt: null,
+    inspectionResult: null,
+    completedAt: null,
+  };
+  const exchangeEvents = [];
+  const eventKeys = new Set();
+  const updateSnapshots = [];
+  const originalFetch = global.fetch;
+  const originalToken = process.env.NCM_API_TOKEN;
+  const originalBaseUrl = process.env.NCM_API_BASE_URL;
+  const returnHistory = [
+    { status: "Sent to Vendor", added_time: "2026-10-16T10:50:00.000Z" },
+    { status: "Delivered", added_time: "2026-10-16T09:02:00.000Z" },
+    { status: "Pickup Complete", added_time: "2026-10-16T09:03:00.000Z" },
+    { status: "Delivered", added_time: "2026-10-15T12:00:00.000Z" },
+  ];
+  for (let index = 0; index < 101; index += 1) {
+    returnHistory.push({
+      status: "Sent for Delivery",
+      added_time: new Date(Date.parse("2026-10-16T09:04:00.000Z") + index * 60000).toISOString(),
+    });
+  }
+  returnHistory.push({ status: "Unknown status without timestamp" });
+  const replacementHistory = [
+    { status: "Delivered", added_time: "2026-10-16T11:00:00.000Z" },
+    { status: "Sent for Delivery", added_time: "2026-10-16T10:00:00.000Z" },
+  ];
+  process.env.NCM_API_TOKEN = "test-ncm-token";
+  process.env.NCM_API_BASE_URL = "https://ncm.test";
+  global.fetch = async (url) => {
+    const orderId = new URL(String(url)).searchParams.get("id");
+    const data = orderId === "12357" ? returnHistory : replacementHistory;
+    return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  const tx = {
+    orderExchangeRequest: {
+      findUnique: async () => ({ ...request }),
+      update: async ({ data }) => {
+        request = { ...request, ...data };
+        updateSnapshots.push({ ...request });
+        return { ...request };
+      },
+    },
+    orderExchangeEvent: {
+      create: async ({ data }) => {
+        if (eventKeys.has(data.idempotencyKey)) {
+          throw Object.assign(new Error("Duplicate exchange event"), { code: "P2002" });
+        }
+        eventKeys.add(data.idempotencyKey);
+        exchangeEvents.push(data);
+        return { id: `exchange-event-${exchangeEvents.length}`, ...data };
+      },
+    },
+  };
+  stubMethod(t, prisma.orderExchangeRequest, "findUnique", async () => ({ ...request, events: exchangeEvents }));
+  stubMethod(t, prisma.orderExchangeRequest, "findFirst", async () => ({ ...request }));
+  stubMethod(t, prisma, "$transaction", async (callback) => callback(tx));
+
+  try {
+    const result = await reconcileCustomerExchange(request.id);
+    assert.equal(request.returnPickupStatus, "DELIVERED_TO_VENDOR");
+    assert.equal(request.manufacturerReceivedAt.toISOString(), "2026-10-16T10:50:00.000Z");
+    assert.equal(request.returnPickupCompletedAt.toISOString(), "2026-10-16T09:03:00.000Z");
+    assert.equal(request.replacementStatus, "DELIVERED");
+    assert.equal(request.replacementDeliveredAt.toISOString(), "2026-10-16T11:00:00.000Z");
+    assert.equal(result.processedStatusCount, 106);
+    assert.equal(result.skippedStatusCount, 2);
+    assert.equal(result.partial, true);
+    assert.equal(exchangeEvents.length, 106);
+    assert.equal(exchangeEvents[0].eventType, "NCM_RETURN_DELIVERED");
+    assert.equal(updateSnapshots[0].returnPickupStatus, "AWAITING_PICKUP");
+    assert.equal(updateSnapshots[0].manufacturerReceivedAt, null);
+    assert.equal(exchangeEvents.find((item) => item.eventType === "NCM_RETURN_PICKUP_COMPLETE").metadata.status, "Pickup Complete");
+    assert.equal(exchangeEvents.at(-2).eventType, "NCM_REPLACEMENT_IN_TRANSIT");
+    assert.equal(exchangeEvents.at(-1).eventType, "NCM_REPLACEMENT_DELIVERED");
+
+    const replay = await reconcileCustomerExchange(request.id);
+    assert.equal(replay.processedStatusCount, 106);
+    assert.equal(exchangeEvents.length, 106);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalToken === undefined) delete process.env.NCM_API_TOKEN;
+    else process.env.NCM_API_TOKEN = originalToken;
+    if (originalBaseUrl === undefined) delete process.env.NCM_API_BASE_URL;
+    else process.env.NCM_API_BASE_URL = originalBaseUrl;
+  }
 });
 
 test("exchange request fingerprint is stable regardless of item order", () => {
@@ -373,6 +551,14 @@ test("return webhooks ignore original delivery completion until the return leg s
   assert.deepEqual(nextCustomerReturnNcmState({ currentStatus: "NCM_RETURN_INITIATED", status: "Pickup Complete" }), {
     lifecycleStatus: "RETURN_IN_TRANSIT",
     returnPickupStatus: "PICKUP_COMPLETE",
+  });
+  assert.deepEqual(nextCustomerReturnNcmState({ currentStatus: "NCM_RETURN_INITIATED", status: "Delivered" }), {
+    lifecycleStatus: "NCM_RETURN_INITIATED",
+    returnPickupStatus: undefined,
+  });
+  assert.deepEqual(nextCustomerReturnNcmState({ currentStatus: "NCM_RETURN_INITIATED", status: "Sent to Vendor" }), {
+    lifecycleStatus: "RECEIVED_AT_WAREHOUSE",
+    returnPickupStatus: "DELIVERED_TO_MANUFACTURER",
   });
   assert.deepEqual(nextCustomerReturnNcmState({ currentStatus: "RETURN_IN_TRANSIT", status: "sent_for_delivery" }), {
     lifecycleStatus: "RETURN_IN_TRANSIT",

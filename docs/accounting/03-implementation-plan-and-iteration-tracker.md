@@ -1,7 +1,7 @@
 # Accounting Implementation Plan And Iteration Tracker
 
 **Owner:** Engineering + business/accounting approver  
-**Last updated:** 2026-10-29
+**Last updated:** 2026-11-09
 **Overall status:** Core recognition, payout mapping, bill/document controls, and the payout initiation/confirmation/failure lifecycle are implemented in code. The 2026-10-29 revalidation added strict manufacturer attribution and an Admin resolution path for legacy distributor settlement claims. Admin supplier-credit application is implemented against the existing return journal without a duplicate posting. Full Decimal writer migration, verified-source historical backfill, isolated-database migration 05 validation, and cutover remain incomplete.
 **Scope:** Accounting/finance models, services, routes, UI, reports, tests and minimal event hooks only. Do not rewrite unrelated product/order/manufacturer/marketing/delivery/auth business behavior.
 
@@ -103,11 +103,22 @@ These phases are implementation-complete, not production-approved. Existing unma
 | 7 | Sales, manufacturer COGS and delivery-triggered payable | COMPLETE | Delivered/non-returned rule, approved-cost snapshot, direct-order commission classification, COD/revenue event timing and idempotency pass |
 | 8 | Customer/supplier returns, RTO and exchanges | COMPLETE | Original-event links, reversals, manufacturer supplier-credit notes for documented delivery bills, inventory/ownership treatment, refund and tax effects pass |
 | 9 | Manufacturer, marketing-partner and NCM settlements | IN PROGRESS (legacy cutover remains) | Manufacturer delivery bills/allocations, NPR mapped payouts, payout lifecycle code, COD warnings, and gross COD/service-payable handling pass focused tests; legacy distributor claims have a safe Admin resolution path but need historical reconciliation and database-backed payout transition tests |
-| 10 | Expenses, procurement, tax, assets, debt and equity | NOT STARTED | Each supported finance event posts exactly once; policy-based tax and period behavior verified |
+| 10 | Expenses, procurement, tax, assets, debt and equity | IN PROGRESS (partial) | Direct expense and Treasury movements now post atomically/idempotently; fixed-asset acquisition, period depreciation, write-off, and primary share issuance have transactional GL controls; tax-aware asset sales, procurement, other debt/equity domains, historical reconciliation, and CA policy approval remain incomplete |
 | 11 | GL reports, statements, ageing and health reconciliation | IN PROGRESS (partial) | GL statement now includes key manufacturer/partner/carrier controls; report UI has no operational P&L/BS fallback; AP/AR/event coverage and ledger cash flow remain incomplete |
 | 12 | Admin accounting UI and permissions | NOT STARTED | Existing required finance capability covered with drill-down, filters, statuses, warnings and exports |
 | 13 | Failure, concurrency, security and portal regression | NOT STARTED | Duplicate/retry/out-of-order/concurrent/failure scenarios pass; customer/manufacturer/marketing/admin flows remain compatible |
 | 14 | Cutover and final audit | IN PROGRESS (sandbox gate) | Sandbox migration runbook, reconciliation gate, rollback plan and accountant sign-off are documented; live deployment remains blocked |
+
+### NCM return and settlement hardening increment
+
+- NCM return requests now remain `RETURN_REQUESTED`: the order is not marked fully `Returned`, `returnedAt` is not set, and no refund, restock, sales/VAT/COGS reversal, or supplier credit is inferred from the carrier event.
+- A return before delivery creates a zero-COD pending settlement. A return after delivery preserves the order's payment and original COD expectation; an already-settled remittance and its journal link remain intact. Delivery-fee and COD settlement-write errors propagate so the delivery transaction can roll back instead of acknowledging an incomplete settlement record.
+- Focused evidence: **12 tests passed** in `backend/tests/deliveryAccountingOutboxIntegration.test.js`, covering manual and webhook return requests, missed-webhook status reconciliation, pre-delivery returns, post-delivery COD preservation, settled remittances, and failed settlement writes.
+- Comparative provider review supports separate shipment/return legs, durable idempotent and timestamp-aware status ingestion, and separate carrier-status versus bank-settlement evidence. NCM's documented `/order/return` sets a vendor-return flag; it does not establish physical receipt. NCM exchange creation returns distinct vendor-return and customer-replacement order IDs. See the [operations guide](./05-accounting-operations-guide.md#104-ncm-returns-and-exchanges) and its cited provider documentation.
+- Confirmed customer-return receipt now also recognizes NCM's `Sent to Vendor` label for an active NCM return; a generic `Delivered` status remains insufficient until the return is in transit. Warehouse receipt enables the existing inspection workflow only; it does not automatically restock or post refund/tax/accounting entries.
+- Added Admin-triggered NCM status reconciliation for active customer returns. It polls the documented status history, processes timestamped events oldest-first, ignores pre-request updates, records the source and Admin actor, and fails explicitly on carrier errors or malformed responses. The Admin Returns panel exposes a refresh action without adding any automatic refund/restock/posting behavior.
+- Final targeted run: **56 tests passed** across delivery accounting, NCM client, and return/exchange state suites; the Admin production build passed with its existing large-chunk warning. Targeted ESLint reports the component's existing missing `react/prop-types` declaration for `token`. No migration or database operation was performed.
+- Still open: confirm NCM's exact operational meaning and webhook delivery of `Sent to Vendor`, verify carrier statement evidence with NCM, and run database-backed transaction, concurrency, recovery, and webhook replay tests. No migration, database operation, live-provider check, or accountant approval was performed in this increment.
 
 ### Supplier-credit application increment
 
@@ -120,6 +131,47 @@ These phases are implementation-complete, not production-approved. Existing unma
 - Migration `20261029000005_financial_payout_lifecycle` is staged but not confirmed deployed through migrations or validated in a dedicated isolated database. Code generation and unit tests do not establish database migration correctness or production readiness.
 - The payout lifecycle requires Admin review of bank evidence before settlement. It does not automate bank confirmation.
 - Full Decimal migration, historical backfill, isolated-database reconciliation, and accountant approval remain release gates.
+
+## Loan accounting integrity follow-up (2026-11-09)
+
+- Loan disbursement now requires the actual mapped NPR Treasury destination. The loan liability, Treasury balance, cash transaction, and GL journal are written in one serializable transaction; journal failure rolls back the source and cash changes.
+- Loan repayment now requires the mapped NPR Treasury source and explicit principal/interest amounts that sum exactly to the payment. The account's unreserved balance and loan principal are guarded inside the transaction. The old monthly interest formula is displayed only as a guidance estimate and is not posted unless finance enters/validates the split.
+- Repayment and disbursement requests use stable idempotency keys; mismatched key reuse is rejected. Focused service tests cover balanced posting inputs, retry replay, source rollback on posting failure, and mapped GL account selection. Final focused run: **61 passed, 0 failed** across loan, accounting poster/reporting, and financial calendar tests.
+- Validation is code/unit-test evidence only. No database-backed migration, concurrency, recovery, or historical loan reconciliation was run. Loan schema amounts remain `Float`; this does not complete the roadmap's Decimal phase. Other financing/equity behaviors and CA review remain open.
+
+## Fixed-asset acquisition integrity follow-up (2026-11-09)
+
+- Fixed-asset creation, Treasury deduction and cash transaction, payable document, asset-to-payable link, and acquisition journal now run in one Prisma transaction. A journal or source-write error rolls the transaction back instead of leaving an unposted asset or cash movement.
+- Paid acquisition validates an active NPR Treasury mapping and credits the corresponding GL account (1110/1120/1180), rather than hard-coding Bank (1120). The conditional Treasury update checks the unreserved balance and detects a concurrent balance/reservation change.
+- The Admin request reuses an idempotency key for an unchanged form submission. The API derives a stable asset tag from that key, returns an existing matching acquisition on retry, rejects changed purchase details, and gives paid cash transactions a unique idempotency key.
+- A focused journal test verifies that a partial purchase debits the asset account and credits both the mapped Treasury account and Accounts Payable with balanced totals.
+- At this checkpoint, depreciation atomicity and period idempotency were not yet addressed; the following iteration records that follow-up. Asset disposal and full fixed-asset control reconciliation also remain open. No schema migration, DB-backed concurrency/recovery validation, historical reconciliation, or CA review was performed.
+
+## Fixed-asset depreciation integrity follow-up (2026-11-09)
+
+- Depreciation now uses a stable `ASSET_DEPRECIATION:BS-YYYY-MM` key from the configured Bikram Sambat accounting period. A posted period batch is replay-safe, including detection of earlier depreciation journals dated within the same BS period, and the UI reports that the period has already been processed.
+- Asset book-value and accumulated-depreciation updates use conditional updates within a serializable Prisma transaction together with the GL journal. Journal failure or a conflicting source update aborts the batch; errors are returned explicitly instead of a success-shaped response.
+- The endpoint now accepts exactly one month per batch to keep period identity unambiguous. Focused service tests cover period selection, atomic rollback, retry behavior, and rejection of multi-month input.
+- This is a technical integrity control, not a CA-approved depreciation policy. Start-date/available-for-use rule, missed-period catch-up, disposal/impairment, reconciliation to GL, and database-backed concurrency/recovery remain open. No migration or historical data correction was performed.
+
+## Fixed-asset write-off integrity follow-up (2026-11-09)
+
+- Damage/write-off now commits asset status/book derecognition and its journal together in a serializable transaction. The journal clears gross category cost and accumulated depreciation, recognizes the net book-value loss, rejects an asset whose register values do not reconcile, and uses an idempotency key that rejects payload mismatches.
+- The UI no longer offers the previous unjournaled “sold”/salvage-receipt path. Backend requests for sale proceeds fail closed until the CA-approved tax/VAT sale treatment is implemented; write-off with no proceeds remains available. The finance guide and control coverage now describe this limitation accurately.
+- Focused poster tests verify balanced write-off and gain/proceeds journal shapes, and reject unreconciled asset amounts. These are unit-level checks; transaction rollback/concurrency against an isolated database, tax policy, and full asset-to-GL reconciliation remain pending. No migration or historical correction was performed.
+
+## Direct operating-expense posting integrity follow-up (2026-11-09)
+
+- The direct expense endpoint now requires an idempotency key, validates the requested cash/credit split, and transactionally records the mapped Treasury deduction/cash transaction, payable document, and GL journal. Journal failures roll back the source effects, and retries with changed details are rejected.
+- Partial-expense journals debit the expense account and credit the paid Treasury portion and remaining AP portion separately. Treasury spend is guarded against reservations and concurrent balance changes.
+- Focused poster tests verify mapped cash/AP split balance and reject mismatched allocations. No isolated-database rollback/concurrency test, historical expense reconciliation, or CA/tax review was performed. The generic cash outflow is covered in the following Treasury direct-entry iteration.
+
+## Treasury direct-entry and transfer integrity follow-up (2026-11-09)
+
+- Treasury inflows, outflows, and internal transfers now require stable request idempotency and use one serializable transaction for Treasury balance changes, cash-log records, and mapped double-entry journals.
+- Internal transfers debit the destination GL mapping and credit the source mapping; allowed direct receipts post to Other Income only, and direct outflows are restricted to operating expenses or drawings. Unsupported categories such as sales are rejected and must use dedicated accounting flows.
+- Spend checks exclude reserved balances and use conditional account updates. Retry payload mismatch is rejected, and journal failures prevent partial Treasury/cash effects.
+- Focused poster tests cover receipt, expense, drawings, transfer, retry, and unsupported category behavior. Database-backed rollback/concurrency validation and independent statement-to-bank reconciliation remain outstanding.
 
 ## Delivery Accounting Outbox Follow-up (2026-10-17)
 
@@ -151,6 +203,20 @@ Known issues and next gate:
 ```
 
 Do not mark an iteration complete because it compiles. It is complete only after its stated accounting invariants, focused tests, integration checks, reconciliation gates and review are satisfied.
+
+### Equity control increments
+
+- The issuance endpoint now requires an active NPR cash/bank/wallet account with the existing Treasury-to-GL mapping and posts to that mapped code (1110, 1120, or 1180); Share Capital remains the existing credit classification pending CA approval.
+- Cap-table dilution/investor updates, the compare-and-set Treasury balance increase, cash receipt, valuation, share transaction, and journal are executed in one serializable transaction. Journal failures are surfaced and roll back the operational changes.
+- Admin sends a stable idempotency key. A posted retry returns its existing valuation/investor/source records; mismatched request reuse is rejected. Missing prior source records result in a finance-review conflict rather than an invented success response.
+- Focused poster coverage validates mapped-wallet GL posting and caller-transaction use. Route-level rollback/retry/concurrency validation still requires isolated database testing; company-law allotment evidence, historical cap-table reconciliation, CA approval, and production cutover remain release gates. This iteration does not change share premium policy or claim statutory compliance.
+- Company buyback now requires an active mapped NPR Treasury account and checks unreserved funds. Treasury, share retirement/cap-table rebalance, cash record, immutable share transaction, and the existing Share Capital (3100) debit/mapped Treasury credit journal commit atomically. Buyback API errors are surfaced with conflict/error status rather than success-shaped responses.
+- Buyback Admin requests carry stable idempotency keys; unchanged retries replay the posted journal result, and changed-payload reuse is rejected. Focused tests cover mapped-account journal posting, atomic rollback after posting failure, idempotent replay, mismatch rejection, insufficient available balance, and missing mapping.
+- Peer-to-peer transfers update seller/buyer shares, ownership percentages, and the transfer ledger in one serializable transaction; compare-and-set checks guard both parties, and transaction failures roll back all changes. The share ledger has nullable unique idempotency-key and payload-hash fields, with an additive migration; same-key retries replay the original transfer and changed-payload reuse is rejected.
+- A private secondary sale does not change company cash or company contributed capital. Existing buyers' `currentCapital` is no longer increased by the private purchase price, and new secondary buyers start with zero company `initialCapital`/`currentCapital`; agreed private consideration remains on the PRIVATE_PEER_TO_PEER share transaction.
+- Peer-transfer focused tests cover replay, mismatch, existing/new investors, total-share conservation, seller exit, capital neutrality, invalid/insufficient shares, and rollback on a ledger-write failure. Schema validation and isolated clean/populated migration tests remain required before deploying the additive migration.
+- Share counts/ownership continue to use legacy Float fields, and the cap-table overview retains a 100,000-share fallback that may not match the legally issued/outstanding share register after non-standard allotments or repurchases. Reconcile against the statutory register and obtain CA/company-secretary approval of authorized-versus-issued-share rules before changing denominator or fractional-share policy. Historical capital fields and classifications also need reconciliation. No database operation was performed.
+- Final validation: **142 backend test files passed; 10 database-integration files skipped**; 10 focused peer-transfer/buyback tests passed; `npx prisma validate`, `npm run check:migrations`, targeted Admin ESLint/build, syntax checks, and `git diff --check` passed. The Admin build retains its existing large-chunk warning. Prisma Client generation and migration application were not run; regenerate the client and validate/apply the migration only against the verified isolated database before deploying this service code.
 
 ## Stop Conditions
 

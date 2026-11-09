@@ -131,6 +131,46 @@ The system blocks unsupported categories such as:
 
 This is a major design principle: no “best guess” accounting.
 
+The Expense Management income form is limited to **Other Income** receipts that finance has confirmed do not require output VAT. It posts the deposit to the Treasury account's mapped GL account and credits Other Income (8100) in the same transaction as the income and cash-transaction records. Do not use it for sales, scrap disposals, or services; use their tax-aware workflows instead. VAT-bearing receipts remain blocked from this manual form until their tax treatment is implemented and approved.
+
+Operating expenses post the expense and either the mapped Treasury outflow or Accounts Payable within one database transaction. A failed GL posting rolls back the associated expense and Treasury/subledger change. Supplier VAT remains pending review; input VAT is recognized only after evidence and the effective-dated Admin VAT registration checks pass.
+
+The direct operating-expense endpoint requires an idempotency key and writes its cash movement, payable (if any), and GL journal in one transaction. Partial payments must reconcile exactly to the expense total; paid amounts use the selected mapped Treasury account. Retrying an unchanged request returns the prior posting, while reuse of the key for different details is rejected.
+
+Treasury direct entries and internal transfers also post their mapped journal in the same transaction as the balance and cash-log changes. Supported direct entries are limited to non-sales other receipts, operating expenses, and drawings. Internal transfers debit the destination mapping and credit the source mapping. Sales, asset proceeds, loans, vendor-bill payments, and other specialized receipts/disbursements must use their dedicated workflows.
+
+### 4.6 Loan funding and repayments
+
+Record a loan only when its proceeds are received into an active NPR Treasury account mapped to the matching cash, bank, or wallet GL account. The liability record, Treasury balance, cash transaction, and journal must commit together; a failed posting must not leave a partial loan or cash balance.
+
+For repayments, select the actual mapped Treasury source and enter the principal and interest portions from approved repayment evidence. The two portions must equal the total payment. The displayed monthly-interest calculation is a legacy estimate for guidance only; it is not posted automatically and is not a substitute for the lender's statement or approved amortization evidence. Repayment balance, Treasury balance, cash transaction, and journal post atomically and retries use an idempotency key.
+
+### 4.7 Fixed-asset acquisition
+
+For a fixed-asset purchase paid in full or in part, use the actual active NPR Treasury account and confirm it is mapped to the correct cash, bank, or wallet GL account. The asset register, Treasury outflow, related payable (if any), and acquisition journal are committed together. The journal debits the asset category account, credits the mapped Treasury account for the paid amount, and credits Accounts Payable for the unpaid amount. It must not assume every cash payment came from Bank (1120).
+
+The Admin form sends an idempotency key for each unchanged submission. Retrying that request returns the existing acquisition without repeating cash or GL effects; reusing the key with changed purchase details is rejected. Keep the same request key when retrying after an uncertain network result.
+
+The monthly depreciation batch uses the configured Bikram Sambat accounting period and can be posted only once for that period. Asset book-value updates and the 6600/1590 journal are committed together; if posting fails, the asset updates roll back. A retry of a posted period returns the existing result without changing asset values again. This guard does not determine the correct accounting or tax depreciation start date and does not provide catch-up batches for missed periods; confirm those policies with the finance approver before use.
+
+Damage/write-off derecognition is transactional and idempotent. It removes the gross asset cost, clears accumulated depreciation, recognizes the remaining book-value loss in GL 6800, and updates the register only if the three amounts reconcile. Asset sales and any disposal proceeds are disabled pending CA-approved tax/VAT treatment; do not record sale receipts as capital injections or other income. The control-coverage report remains unreconciled until asset-register balances and additions, depreciation, and disposals are independently tied to the fixed-asset GL accounts.
+
+### 4.8 Primary share issuance
+
+Record a primary share issue only after the funds are received into an active NPR cash, bank, or wallet Treasury account mapped to its matching GL account. The share register/dilution, Treasury balance and cash receipt, valuation milestone, share-transaction record, and journal must commit together. The journal debits the selected mapped Treasury account and credits Share Capital (3100), retaining the current configured classification; any share-premium or legal-capital reclassification requires CA approval and a separate policy change.
+
+The Admin request carries an idempotency key. Retrying an unchanged request returns the prior recorded issue, while reusing its key for different terms is rejected. A journal failure rolls back the cap-table and Treasury changes. Preserve bank receipt evidence and approved allotment/company records. This system workflow does not establish compliance with company-law allotment, board/shareholder approval, OCR filing, tax, or statutory register requirements; confirm those with the company secretary and Nepal CA.
+
+### 4.9 Company share buyback
+
+Record a company buyback only against an active NPR cash, bank, or wallet account mapped to the matching Treasury GL account, and only from funds available after reservations. Treasury, seller share count/status, remaining ownership percentages, the cash outflow, share-transaction record, and journal are committed together. The journal uses the currently configured Share Capital (3100) debit and credits the selected mapped Treasury account; do not infer a different treasury-share or capital-reduction presentation without CA approval.
+
+The Admin request uses an idempotency key; retry an unchanged request with that same key after an uncertain network result. Reusing the key with changed terms is rejected. The accounting record is not proof of legal authority to repurchase, solvency under company law, required board/shareholder approvals, tax treatment, or required OCR/company-register filings. Obtain and retain those approvals and source documents before processing, and have a Nepal CA/company secretary verify applicable requirements. Database-backed concurrent execution and production reconciliations remain separate release checks.
+
+Private peer-to-peer share transfers update the seller/buyer cap table and append a share-transaction record in one database transaction; they do not represent company Treasury movement or a company GL cash receipt/payment. The private purchase consideration is recorded on the share transaction only: it does not increase the company's contributed capital or the buyer's company-capital balance. Record and retain the parties' signed transfer agreement and settlement evidence outside this company-cash workflow. Admin retries use a durable idempotency key after the additive ShareTransaction migration is deployed; until the application schema is migrated and generated client updated, do not assume production retries are protected.
+
+The cap table uses share counts to calculate ownership, but still includes legacy floating-point share fields and a 100,000-share fallback for some overview/valuation calculations. Do not treat that fallback as the entity's authorized or issued share capital. Reconcile holdings to the legal shareholder register and approved allotment/transfer records; obtain CA/company-secretary approval of authorized versus issued shares, fractional-share precision, and capital presentation before changing those rules.
+
 ---
 
 ## 5. General Ledger (GL)
@@ -352,6 +392,14 @@ The posted receipt must match the net remittance, not the gross COD value.
 ### 10.3 Why this matters
 
 This avoids double-counting or book-cash before funds are actually received. It also keeps gross COD receivable and carrier fee obligations separate and visible.
+
+### 10.4 NCM returns and exchanges
+
+An NCM return request or return status is not proof that the goods reached the seller, passed inspection, or were refunded. Keep it in `RETURN_REQUESTED`; do not mark the order fully returned, set physical-return dates, restock inventory, reverse sales/VAT/COGS, or create a manufacturer supplier credit from that event alone. A delivered order retains its payment and COD settlement facts while the return and any refund/remittance variance are reconciled separately. A return before delivery has no recognized COD sale.
+
+Use the customer-return workflow for authorization, physical receipt, inspection, refund, and restocking decisions. Post any customer refund, VAT adjustment, inventory movement, and manufacturer credit only from their verified workflow evidence, without duplicating an existing journal. NCM's exchange operation creates separate return and replacement order IDs; track both legs independently and do not treat either leg's delivery status as settlement proof.
+
+Carrier status and money are separate evidence streams. Reconcile COD and carrier fees to the carrier statement and actual bank receipt; a delivery scan, return request, or COD transfer-ticket request is not bank evidence. Other courier APIs follow the same useful separation: [EasyPost tracking](https://docs.easypost.com/docs/trackers) distinguishes return-to-sender tracking from a return shipment, and its [webhook guidance](https://docs.easypost.com/docs/webhooks) recommends idempotent handling; [Shiprocket's API documentation](https://apidocs.shiprocket.in/) distinguishes order/tracking identifiers but does not establish COD remittance. Confirm NCM's own statement and return-status semantics before treating provider events as physical or financial evidence.
 
 ---
 

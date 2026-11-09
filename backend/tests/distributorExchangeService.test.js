@@ -54,8 +54,8 @@ test("replacement cannot be dispatched before the distributor receives and inspe
 });
 
 test("distributor receives and records a good exchange return before replacement dispatch", async (t) => {
-  const now = new Date();
   let updatedRequest;
+  const ledgerEntries = [];
   const tx = {
     orderExchangeRequest: {
       findFirst: async () => ({
@@ -63,7 +63,7 @@ test("distributor receives and records a good exchange return before replacement
         distributorId: "dist-1",
         deliveryRoute: "DISTRIBUTOR",
         status: "APPROVED_FOR_DISTRIBUTOR",
-        items: [{ productId: "product-1", size: "S", color: "Red", quantity: 1 }],
+        items: [{ productId: "product-1", size: "S", color: "Red", quantity: 2 }],
         inspectedAt: null,
       }),
       update: async ({ data }) => {
@@ -78,7 +78,10 @@ test("distributor receives and records a good exchange return before replacement
     },
     inventoryLedgerEntry: {
       findUnique: async () => null,
-      create: async ({ data }) => data,
+      create: async ({ data }) => {
+        ledgerEntries.push(data);
+        return data;
+      },
     },
     inventorySku: {
       findUnique: async () => ({ id: "sku-1", productId: "product-1", isActive: true }),
@@ -103,13 +106,18 @@ test("distributor receives and records a good exchange return before replacement
     distributorId: "dist-1",
     actorId: "account-1",
     action: "RECEIVE_AND_INSPECT",
-    inspectedItems: [{ productId: "product-1", size: "S", color: "Red", quantity: 1, condition: "GOOD" }],
+    inspectedItems: [
+      { productId: "product-1", size: "S", color: "Red", quantity: 1, condition: "GOOD" },
+      { productId: "product-1", size: "S", color: "Red", quantity: 1, condition: "GOOD" },
+    ],
   });
 
   assert.equal(result.status, "IN_PROGRESS");
   assert.equal(updatedRequest.returnPickupStatus, "PICKUP_COMPLETE");
   assert.ok(updatedRequest.inspectedAt instanceof Date);
   assert.equal(updatedRequest.inspectionResult, "RESTOCKABLE");
+  assert.equal(ledgerEntries.length, 1);
+  assert.equal(ledgerEntries[0].quantity, 2);
 });
 
 test("dispatch consumes the approved distributor stock reservation", async (t) => {
@@ -251,6 +259,7 @@ test("completed distributor exchange accrues its configured settlement into dist
     distributorId: "dist-1",
     deliveryRoute: "DISTRIBUTOR",
     logisticsSettlementAmount: 50,
+    priceDifference: 25,
     status: "IN_PROGRESS",
     replacementStatus: "DISPATCHED",
     replacementStockConsumedAt: new Date(),
@@ -263,6 +272,11 @@ test("completed distributor exchange accrues its configured settlement into dist
     },
     orderAssignment: {
       findFirst: async () => ({ id: "assignment-1" }),
+    },
+    distributorCashEvent: {
+      findFirst: async ({ where }) => where.eventType === "EXCHANGE_UPGRADE_COLLECTION"
+        ? { amount: 25, status: "VERIFIED" }
+        : null,
     },
     distributor: {
       findUnique: async () => ({ id: "dist-1", name: "Distributor One" }),
@@ -286,4 +300,52 @@ test("completed distributor exchange accrues its configured settlement into dist
   assert.equal(serviceCharges[0].chargeAmount, 50);
   assert.equal(serviceCharges[0].sourceId, "exchange-1");
   assert.equal(serviceCharges[0].assignmentId, "assignment-1");
+});
+
+test("self-delivery exchange cannot be marked delivered before Admin verifies exact price-difference evidence", async (t) => {
+  let accountingPosted = false;
+  let paymentEvidence = null;
+  const tx = {
+    orderExchangeRequest: {
+      findFirst: async () => ({
+        id: "exchange-1",
+        orderId: "order-1",
+        distributorId: "dist-1",
+        deliveryRoute: "DISTRIBUTOR",
+        status: "IN_PROGRESS",
+        replacementStatus: "DISPATCHED",
+        replacementStockConsumedAt: new Date(),
+        priceDifference: -50,
+      }),
+    },
+    distributorCashEvent: { findFirst: async () => paymentEvidence },
+  };
+  stubMethod(t, prisma, "$transaction", (callback) => callback(tx));
+
+  await assert.rejects(
+    processDistributorExchange({
+      requestId: "exchange-1",
+      distributorId: "dist-1",
+      actorId: "account-1",
+      action: "DELIVER",
+      postExchangeAccounting: async () => {
+        accountingPosted = true;
+      },
+    }),
+    (error) => error.code === "EXCHANGE_PAYMENT_NOT_VERIFIED" && error.status === 409,
+  );
+  paymentEvidence = { amount: 49, status: "VERIFIED" };
+  await assert.rejects(
+    processDistributorExchange({
+      requestId: "exchange-1",
+      distributorId: "dist-1",
+      actorId: "account-1",
+      action: "DELIVER",
+      postExchangeAccounting: async () => {
+        accountingPosted = true;
+      },
+    }),
+    (error) => error.code === "EXCHANGE_PAYMENT_NOT_VERIFIED" && error.status === 409,
+  );
+  assert.equal(accountingPosted, false);
 });

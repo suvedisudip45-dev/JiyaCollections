@@ -436,7 +436,7 @@ const FinancialStatements = ({ token }) => {
                   <span className="font-mono">Rs {Number(plOpex.softwareTools || 0).toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between py-1 border-b border-slate-50">
-                  <span>Miscellaneous &amp; Overhead (Account 6700)</span>
+                  <span>Other &amp; Miscellaneous Operating Expenses (Account 6700)</span>
                   <span className="font-mono">Rs {Number(plOpex.miscExpenses || 0).toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between py-1.5 font-bold text-slate-900 pt-2 border-t border-slate-200">
@@ -474,10 +474,14 @@ const FinancialStatements = ({ token }) => {
                     <span className="font-mono">(Rs {Number(plNonOp.bankCharges).toLocaleString()})</span>
                   </div>
                 )}
-                {Number(plNonOp.otherIncome || 0) > 0 && (
-                  <div className="flex justify-between py-1 border-b border-slate-50 text-emerald-700">
-                    <span>Other Operating Income (Account 8100)</span>
-                    <span className="font-mono">+Rs {Number(plNonOp.otherIncome).toLocaleString()}</span>
+                {Math.abs(Number(plNonOp.otherIncome || 0)) > 0.005 && (
+                  <div className={`flex justify-between py-1 border-b border-slate-50 ${Number(plNonOp.otherIncome) >= 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                    <span>Other Income (Account 8100)</span>
+                    <span className="font-mono">
+                      {Number(plNonOp.otherIncome) > 0
+                        ? `+Rs ${Number(plNonOp.otherIncome).toLocaleString()}`
+                        : `(Rs ${Math.abs(Number(plNonOp.otherIncome)).toLocaleString()})`}
+                    </span>
                   </div>
                 )}
               </div>

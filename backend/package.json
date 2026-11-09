@@ -12,6 +12,7 @@
     "rabbitmq:check": "node scripts/checkNotificationBroker.js",
     "notifications:health": "node scripts/checkNotificationHealth.js",
     "ops:exceptions": "node scripts/reportOperationalExceptions.js",
+    "delivery:ncm-reconcile": "node scripts/reconcileNcmDeliveries.js",
     "check:migrations": "node scripts/checkMigrationFiles.js",
     "worker:notifications": "node notificationWorker.js",
     "start": "node server.js",

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
+import PropTypes from "prop-types";
 import { toast } from "react-toastify";
 import { Link } from "react-router-dom";
 import { backendUrl, currency } from "../App";
@@ -44,7 +45,9 @@ const CustomerReturnRequestsPanel = ({ token }) => {
       const response = await axios.post(`${backendUrl}/api/returns/customer/admin/${returnId}/${path}`, payload, { headers: { token } });
       if (!response.data.success) throw new Error(response.data.message || "Return action failed");
       const record = response.data.returnRecord;
-      if (record?.lifecycleStatus === "NCM_REJECTED") {
+      if (response.data.partial) {
+        toast.warning(response.data.message || "NCM history was only partially reconciled. Review skipped entries.");
+      } else if (record?.lifecycleStatus === "NCM_REJECTED") {
         toast.error(record.ncmSubmissionError || "NCM rejected the return request");
       } else if (record?.lifecycleStatus === "NCM_SUBMISSION_UNKNOWN") {
         toast.warning("NCM outcome is unknown. Reconcile with the carrier before retrying.");
@@ -93,7 +96,7 @@ const CustomerReturnRequestsPanel = ({ token }) => {
               </p>
               <p className="mt-1">
                 {isNcmRoute
-                  ? "Approval asks NCM to mark the original shipment for return. Track the return-leg updates below; a carrier status is not physical receipt. Manufacturer inspection and refund processing follow delivery."
+                  ? "Approval asks NCM to mark the original shipment for return. Webhook updates and the manual status refresh track the return; a carrier status is not physical receipt unless it reaches the recognized receipt milestone. Inspection and refund processing remain separate."
                   : isDistributorRoute
                     ? `Approval assigns the return to distributor ${record.distributorId || "(profile unavailable)"} for customer pickup, receipt, QA, and inventory/refund processing.`
                     : "The original delivery route is not recorded on this request. Verify the delivered order route before approving."}
@@ -174,6 +177,15 @@ const CustomerReturnRequestsPanel = ({ token }) => {
                 <button disabled={busyId === record.id || resolution.reason.trim().length < 5} onClick={() => postAction(record.id, "resolve-ncm", resolution, "NCM return outcome recorded")} className="px-3 py-2 rounded-md bg-orange-800 text-white text-xs font-bold disabled:opacity-50">Resolve NCM outcome</button>
               </div>
             )}
+            {isNcmRoute && ["NCM_RETURN_INITIATED", "RETURN_IN_TRANSIT"].includes(record.lifecycleStatus) && (
+              <button
+                disabled={busyId === record.id}
+                onClick={() => postAction(record.id, "reconcile-ncm", {}, "NCM return status refreshed")}
+                className="px-3 py-2 rounded-md border border-blue-300 text-blue-800 text-xs font-bold disabled:opacity-50"
+              >
+                Refresh return status from NCM
+              </button>
+            )}
             {record.lifecycleStatus === "RECEIVED_AT_WAREHOUSE" && (
               <div className="grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-[auto_1fr_auto]">
                 <select value={inspection.result} onChange={(event) => setInspections({ ...inspections, [record.id]: { ...inspection, result: event.target.value } })} className="border border-slate-300 rounded-md px-2 py-2 text-xs">
@@ -191,6 +203,10 @@ const CustomerReturnRequestsPanel = ({ token }) => {
       })}
     </section>
   );
+};
+
+CustomerReturnRequestsPanel.propTypes = {
+  token: PropTypes.string.isRequired,
 };
 
 export default CustomerReturnRequestsPanel;

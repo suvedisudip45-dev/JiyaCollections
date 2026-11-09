@@ -67,12 +67,21 @@ export const submitDistributorExchangePaymentEvidence = async ({
     const request = await tx.orderExchangeRequest.findFirst({
       where: {
         id: requestId,
-        deliveryRoute: "NCM",
-        settlementDistributorId: distributorId,
-        status: { in: ["APPROVED", "NCM_CREATED", "IN_PROGRESS", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED"] },
+        OR: [
+          {
+            deliveryRoute: "NCM",
+            settlementDistributorId: distributorId,
+            status: { in: ["APPROVED", "NCM_CREATED", "IN_PROGRESS", "RETURN_PICKUP_COMPLETE", "RETURN_RECEIVED", "INSPECTED", "COMPLETED"] },
+          },
+          {
+            deliveryRoute: "DISTRIBUTOR",
+            distributorId,
+            status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS", "COMPLETED"] },
+          },
+        ],
       },
     });
-    if (!request) throw fail("This NCM exchange is not assigned to the distributor for price settlement.", 404, "EXCHANGE_PAYMENT_NOT_FOUND");
+    if (!request) throw fail("This exchange is not assigned to the distributor for price settlement.", 404, "EXCHANGE_PAYMENT_NOT_FOUND");
     const difference = new Prisma.Decimal(String(request.priceDifference || 0)).toDecimalPlaces(2);
     if (difference.isZero()) throw fail("This exchange has no price difference to settle.", 409, "EXCHANGE_PAYMENT_NOT_REQUIRED");
     const eventType = eventTypeFor(difference);
@@ -121,8 +130,8 @@ export const submitDistributorExchangePaymentEvidence = async ({
         occurredAt: now,
         recordedByAccountId,
         notes: eventType === "EXCHANGE_UPGRADE_COLLECTION"
-          ? "Distributor-submitted evidence that the customer paid the NCM exchange upgrade difference."
-          : "Distributor-submitted evidence that the customer received the NCM exchange downgrade refund.",
+          ? "Distributor-submitted evidence that the customer paid the exchange upgrade difference."
+          : "Distributor-submitted evidence that the customer received the exchange downgrade refund.",
       },
     });
     await tx.orderExchangeEvent.create({
@@ -171,18 +180,33 @@ export const reviewDistributorExchangePaymentEvidence = async ({
 
   return client.$transaction(async (tx) => {
     const request = await tx.orderExchangeRequest.findFirst({
-      where: { id: requestId, deliveryRoute: "NCM" },
+      where: {
+        id: requestId,
+        deliveryRoute: { in: ["NCM", "DISTRIBUTOR"] },
+      },
     });
-    if (!request) throw fail("NCM exchange not found.", 404, "EXCHANGE_NOT_FOUND");
+    if (!request) throw fail("Exchange not found.", 404, "EXCHANGE_NOT_FOUND");
+    const distributorId = request.deliveryRoute === "DISTRIBUTOR"
+      ? request.distributorId
+      : request.settlementDistributorId;
+    if (!distributorId) throw fail("Exchange has no distributor assigned for price settlement.", 409, "EXCHANGE_SETTLEMENT_DISTRIBUTOR_MISSING");
     const event = await tx.distributorCashEvent.findFirst({
       where: {
         id: cashEventId,
         orderExchangeRequestId: requestId,
-        distributorId: request.settlementDistributorId,
+        distributorId,
         eventType: { in: ["EXCHANGE_UPGRADE_COLLECTION", "EXCHANGE_DOWNGRADE_REFUND"] },
       },
     });
     if (!event) throw fail("Exchange payment evidence not found.", 404, "EXCHANGE_PAYMENT_EVIDENCE_NOT_FOUND");
+    const difference = new Prisma.Decimal(String(request.priceDifference || 0)).toDecimalPlaces(2);
+    if (
+      difference.isZero() ||
+      event.eventType !== eventTypeFor(difference) ||
+      !new Prisma.Decimal(String(event.amount)).equals(difference.abs())
+    ) {
+      throw fail("Exchange payment evidence does not match the recorded price difference.", 409, "EXCHANGE_PAYMENT_AMOUNT_MISMATCH");
+    }
     if (event.status === "VERIFIED" && normalizedDecision === "VERIFY") {
       return { success: true, decision: "VERIFIED", cashEvent: event, isReplay: true };
     }

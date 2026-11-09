@@ -165,8 +165,8 @@ export const adminRetryExchangeSubmission = async (req, res) => {
 
 export const adminReconcileExchange = async (req, res) => {
   try {
-    const request = await reconcileCustomerExchange(req.params.id);
-    return res.json({ success: true, request });
+    const result = await reconcileCustomerExchange(req.params.id);
+    return res.json({ success: true, ...result });
   } catch (error) {
     return sendError(res, error);
   }

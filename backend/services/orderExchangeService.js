@@ -696,7 +696,7 @@ export const listDistributorExchangeRequests = async ({ distributorId }) => {
   const requests = await prisma.orderExchangeRequest.findMany({
     where: {
       OR: [
-        { distributorId, deliveryRoute: "DISTRIBUTOR", status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS"] } },
+        { distributorId, deliveryRoute: "DISTRIBUTOR", status: { in: ["APPROVED_FOR_DISTRIBUTOR", "IN_PROGRESS", "COMPLETED"] } },
         {
           settlementDistributorId: distributorId,
           deliveryRoute: "NCM",
@@ -1147,6 +1147,7 @@ export const resolveUnknownExchangeSubmission = async ({ requestId, adminId, out
 export const mapExchangeNcmStatus = (status, event) => {
   const value = normalized(status || event).replace(/[_-]+/g, " ");
   if (["pickup complete", "pickup completed"].includes(value)) return "PICKUP_COMPLETE";
+  if (["returned to vendor", "sent to vendor"].includes(value)) return "DELIVERED_TO_VENDOR";
   if (["delivered", "delivery complete", "delivery completed"].includes(value)) return "DELIVERED";
   if (["sent for pickup", "pickup order created"].includes(value)) return "PICKUP_PENDING";
   if (["sent for delivery", "dispatched", "arrived", "out for delivery"].includes(value)) return "IN_TRANSIT";
@@ -1157,10 +1158,16 @@ const ncmStatusRank = (status) => ({
   CREATED: 0,
   AWAITING_PICKUP: 0,
   PICKUP_PENDING: 1,
-  IN_TRANSIT: 2,
-  PICKUP_COMPLETE: 3,
+  PICKUP_COMPLETE: 2,
+  IN_TRANSIT: 3,
   DELIVERED: 4,
+  DELIVERED_TO_VENDOR: 5,
 }[String(status || "").toUpperCase()] ?? -1);
+
+export const isExchangeReturnReceiptConfirmed = ({ mappedStatus, currentStatus }) => (
+  mappedStatus === "DELIVERED_TO_VENDOR" ||
+  (mappedStatus === "DELIVERED" && ncmStatusRank(currentStatus) >= ncmStatusRank("PICKUP_COMPLETE"))
+);
 
 export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timestamp, source = "NCM_WEBHOOK" }) => {
   const numericId = Number(ncmOrderId);
@@ -1171,20 +1178,32 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
   if (!request) return false;
 
   const isReturnLeg = request.ncmReturnOrderId === numericId;
-  const nextLegStatus = mapExchangeNcmStatus(status, event);
   const happenedAt = timestamp && !Number.isNaN(new Date(timestamp).getTime()) ? new Date(timestamp) : new Date();
+  if (request.ncmSubmissionAttemptedAt && happenedAt < request.ncmSubmissionAttemptedAt) return false;
   const updated = await prisma.$transaction(async (tx) => {
     const current = await tx.orderExchangeRequest.findUnique({ where: { id: request.id } });
     if (!current) return null;
     const fromStatus = current.status;
     const currentLegStatus = isReturnLeg ? current.returnPickupStatus : current.replacementStatus;
-    const isStaleStatus = ncmStatusRank(nextLegStatus) >= 0 && ncmStatusRank(currentLegStatus) > ncmStatusRank(nextLegStatus);
-    const appliedLegStatus = isStaleStatus ? currentLegStatus : nextLegStatus;
+    const mappedLegStatus = mapExchangeNcmStatus(status, event);
+    const returnReceiptConfirmed = isReturnLeg && isExchangeReturnReceiptConfirmed({
+      mappedStatus: mappedLegStatus,
+      currentStatus: currentLegStatus,
+    });
+    const requestedLegStatus = isReturnLeg
+      ? mappedLegStatus === "DELIVERED"
+        ? (returnReceiptConfirmed ? "DELIVERED_TO_VENDOR" : currentLegStatus)
+        : mappedLegStatus
+      : mappedLegStatus === "DELIVERED_TO_VENDOR"
+        ? currentLegStatus
+        : mappedLegStatus;
+    const isStaleStatus = ncmStatusRank(requestedLegStatus) >= 0 && ncmStatusRank(currentLegStatus) > ncmStatusRank(requestedLegStatus);
+    const appliedLegStatus = isStaleStatus ? currentLegStatus : requestedLegStatus;
     const patch = isReturnLeg
       ? {
           returnPickupStatus: appliedLegStatus,
           ...(appliedLegStatus === "PICKUP_COMPLETE" ? { returnPickupCompletedAt: current.returnPickupCompletedAt || happenedAt } : {}),
-          ...(appliedLegStatus === "DELIVERED" ? { manufacturerReceivedAt: current.manufacturerReceivedAt || happenedAt } : {}),
+          ...(returnReceiptConfirmed ? { manufacturerReceivedAt: current.manufacturerReceivedAt || happenedAt } : {}),
         }
       : {
           replacementStatus: appliedLegStatus,
@@ -1217,7 +1236,7 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       patch.replacementStockConsumedAt = happenedAt;
     }
 
-    const returnReceivedAt = isReturnLeg && appliedLegStatus === "DELIVERED"
+    const returnReceivedAt = returnReceiptConfirmed
       ? current.manufacturerReceivedAt || happenedAt
       : current.manufacturerReceivedAt;
     const replacementDeliveredAt = !isReturnLeg && appliedLegStatus === "DELIVERED"
@@ -1234,7 +1253,7 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
       where: { id: current.id },
       data: { ...patch, status: exchangeStatus, ...(exchangeStatus === "COMPLETED" ? { completedAt: current.completedAt || happenedAt } : {}) },
     });
-    if (exchangeStatus === "COMPLETED") {
+    if (exchangeStatus === "COMPLETED" && current.status !== "COMPLETED") {
       await postOrderExchangeAccounting({ exchangeRequest: result, client: tx });
       const logisticsPayable = await createReturnExchangeSettlementPayable(tx, result, "EXCHANGE");
       if (logisticsPayable) {
@@ -1246,10 +1265,10 @@ export const applyExchangeNcmStatus = async ({ ncmOrderId, status, event, timest
         });
       }
     }
-    const eventKey = `EXCHANGE_NCM:${numericId}:${nextLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
+    const eventKey = `EXCHANGE_NCM:${numericId}:${mappedLegStatus}:${timestamp || "NO_TIMESTAMP"}`;
     await addEvent(tx, {
       exchangeRequestId: current.id,
-      eventType: `NCM_${isReturnLeg ? "RETURN" : "REPLACEMENT"}_${nextLegStatus}`.slice(0, 64),
+      eventType: `NCM_${isReturnLeg ? "RETURN" : "REPLACEMENT"}_${mappedLegStatus}`.slice(0, 64),
       fromStatus,
       toStatus: exchangeStatus,
       actorRole: source,
@@ -1403,13 +1422,68 @@ export const reconcileCustomerExchange = async (requestId) => {
     getOrderStatus(request.ncmReturnOrderId),
     getOrderStatus(request.ncmReplacementOrderId),
   ]);
-  const latestReturn = Array.isArray(returnStatuses.data) ? returnStatuses.data[0] : null;
-  const latestReplacement = Array.isArray(replacementStatuses.data) ? replacementStatuses.data[0] : null;
-  if (latestReturn?.status) {
-    await applyExchangeNcmStatus({ ncmOrderId: request.ncmReturnOrderId, status: latestReturn.status, timestamp: latestReturn.added_time, source: "NCM_POLL" });
+  if (!Array.isArray(returnStatuses.data) || !Array.isArray(replacementStatuses.data)) {
+    throw fail("NCM returned an invalid status-history response for this exchange.", "EXCHANGE_NCM_STATUS_INVALID", 502);
   }
-  if (latestReplacement?.status) {
-    await applyExchangeNcmStatus({ ncmOrderId: request.ncmReplacementOrderId, status: latestReplacement.status, timestamp: latestReplacement.added_time, source: "NCM_POLL" });
+
+  const histories = [
+    { ncmOrderId: request.ncmReturnOrderId, entries: returnStatuses.data },
+    { ncmOrderId: request.ncmReplacementOrderId, entries: replacementStatuses.data },
+  ];
+  let processedStatusCount = 0;
+  let skippedStatusCount = 0;
+  let totalStatusCount = 0;
+
+  for (const history of histories) {
+    const entries = history.entries
+      .map((item, index) => ({
+        status: typeof item?.status === "string" ? item.status.trim() : "",
+        event: typeof item?.event === "string" ? item.event.trim() : "",
+        timestamp: item?.added_time,
+        index,
+        time: item?.added_time ? new Date(item.added_time).getTime() : Number.NaN,
+      }))
+      .sort((left, right) => {
+        if (!Number.isFinite(left.time)) return Number.isFinite(right.time) ? 1 : left.index - right.index;
+        if (!Number.isFinite(right.time)) return -1;
+        return left.time - right.time || left.index - right.index;
+      });
+    totalStatusCount += entries.length;
+
+    for (const item of entries) {
+      if (!(item.status || item.event) || !Number.isFinite(item.time)) {
+        skippedStatusCount += 1;
+        continue;
+      }
+      if (request.ncmSubmissionAttemptedAt && item.time < request.ncmSubmissionAttemptedAt.getTime()) {
+        skippedStatusCount += 1;
+        continue;
+      }
+      const applied = await applyExchangeNcmStatus({
+        ncmOrderId: history.ncmOrderId,
+        status: item.status,
+        event: item.event,
+        timestamp: item.timestamp,
+        source: "NCM_POLL",
+      });
+      if (applied) processedStatusCount += 1;
+      else skippedStatusCount += 1;
+    }
   }
-  return prisma.orderExchangeRequest.findUnique({ where: { id: requestId }, include: { events: { orderBy: { occurredAt: "asc" } } } });
+
+  const partial = skippedStatusCount > 0 || totalStatusCount === 0;
+  return {
+    request: await prisma.orderExchangeRequest.findUnique({
+      where: { id: requestId },
+      include: { events: { orderBy: { occurredAt: "asc" } } },
+    }),
+    processedStatusCount,
+    skippedStatusCount,
+    partial,
+    message: totalStatusCount === 0
+      ? "NCM returned no status-history entries; no exchange state was changed."
+      : partial
+        ? `Reconciled ${processedStatusCount} of ${totalStatusCount} NCM status entries; ${skippedStatusCount} were missing usable status/timestamp data or were older than the exchange submission.`
+        : `Reconciled ${processedStatusCount} NCM status entries.`,
+  };
 };

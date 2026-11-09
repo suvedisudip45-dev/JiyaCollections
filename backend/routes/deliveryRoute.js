@@ -13,6 +13,7 @@ import {
   adminReconcileDelivery,
   adminResolveNcmDeliveryReconciliation,
   adminResolveNcmHandoff,
+  adminSimulateNcmWebhook,
   getCustomerDelivery,
   getDelivery,
   getRecentSystemLogs,
@@ -72,6 +73,7 @@ deliveryRouter.post("/ncm", receiveOrderStatusWebhook);
 deliveryRouter.post("/", receiveOrderStatusWebhook);
 deliveryRouter.post("/webhook/ncm/order-status", receiveOrderStatusWebhook);
 deliveryRouter.post("/webhook/ncm/order-comment", receiveOrderCommentWebhook);
+deliveryRouter.post("/admin/ncm/webhook/simulate", authenticate, authorize("delivery:reconcile"), adminSimulateNcmWebhook);
 deliveryRouter.post("/ncm-webhook", receiveOrderStatusWebhook);
 deliveryRouter.post("/webhook", receiveOrderStatusWebhook);
 deliveryRouter.post("/manufacturer/ready", authenticate, authorizeAny("distributor:delivery_ready", "manufacturer:delivery_ready"), setFulfillmentContext, readyForDelivery);

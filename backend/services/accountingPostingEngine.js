@@ -93,6 +93,7 @@ export const STANDARD_CHART_OF_ACCOUNTS = [
   { accountCode: "6500", accountName: "Software & Technology Tools", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6600", accountName: "Fixed Asset Depreciation Expense", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
   { accountCode: "6700", accountName: "Miscellaneous Operating Expenses", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
+  { accountCode: "6800", accountName: "Fixed Asset Disposal Loss", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: "6000" },
 
   // FINANCE & OTHER (7000 - 8999)
   { accountCode: "7000", accountName: "Finance Costs & Other", accountType: "EXPENSE", normalBalance: "DEBIT", isSystemAccount: true, parentCode: null },
@@ -281,6 +282,7 @@ export const postJournalEntry = async ({
   allowClosedPeriod = false,
   accountingEventId = null,
   afterPost = null,
+  throwOnIdempotencyConflict = false,
   client = prisma,
 }) => {
   const cleanDate = transactionDate ? new Date(transactionDate) : new Date();
@@ -438,6 +440,12 @@ export const postJournalEntry = async ({
       : postWithinTransaction(client));
   } catch (error) {
     if (idempKey && error.code === "P2002") {
+      if (throwOnIdempotencyConflict) {
+        const conflictError = new Error(`Concurrent journal posting used the same idempotency key: ${error.message}`);
+        conflictError.statusCode = 409;
+        conflictError.code = "ACCOUNTING_IDEMPOTENCY_CONFLICT";
+        throw conflictError;
+      }
       const existingEntry = await client.journalEntry.findUnique({
         where: { idempotencyKey: idempKey },
         include: { lines: { include: { account: true } } },
@@ -2831,9 +2839,81 @@ export const postDirectExpenseAccounting = async (params) => {
     category: params.category || "EXPENSE",
     title: params.description || params.title || "Operating Expense",
     amount: params.amount,
-    paidFromAccountType: params.fromAccountId ? "BANK" : "BANK",
-    isPayable: false,
+    paidFromAccountCode: params.paidFromAccountCode,
+    paidAmount: params.paidAmount,
+    payableAmount: params.payableAmount,
+    idempotencyKey: params.idempotencyKey,
+    referenceNumber: params.referenceNumber,
+    isPayable: params.isPayable,
     payeeName: params.payeeName || "Vendor",
+    client: params.client || prisma,
+    throwOnError: params.throwOnError === true,
+  });
+};
+
+export const postTreasuryMovementAccounting = async ({
+  movementType,
+  category,
+  amount,
+  sourceId,
+  idempotencyKey,
+  referenceNumber,
+  fromAccountCode,
+  toAccountCode,
+  description,
+  partyName,
+  client = prisma,
+  transactionDate = new Date(),
+}) => {
+  const normalizedType = String(movementType || "").toUpperCase();
+  const normalizedCategory = String(category || "").toUpperCase();
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) throw new Error("Treasury movement amount must be positive.");
+  if (!sourceId || !idempotencyKey || !referenceNumber) {
+    throw new Error("Treasury movement posting requires a stable source, idempotency key, and payload reference.");
+  }
+
+  let lines;
+  if (normalizedType === "TRANSFER") {
+    if (!fromAccountCode || !toAccountCode) {
+      throw new Error("Internal Treasury transfers require mapped source and destination GL accounts.");
+    }
+    lines = [
+      { accountCode: toAccountCode, debit: value, credit: 0, description: description || "Treasury transfer received" },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Treasury transfer sent" },
+    ];
+  } else if (normalizedType === "INFLOW" && normalizedCategory === "MISC_INFLOW") {
+    if (!toAccountCode) throw new Error("Other receipts require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: toAccountCode, debit: value, credit: 0, description: description || "Other non-sales receipt" },
+      { accountCode: "8100", debit: 0, credit: value, description: description || "Other income" },
+    ];
+  } else if (normalizedType === "OUTFLOW" && normalizedCategory === "EXPENSE") {
+    if (!fromAccountCode) throw new Error("Direct expenses require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: getOperatingExpenseAccountCode("MISCELLANEOUS"), debit: value, credit: 0, description: description || "Direct operating expense" },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Direct operating expense paid" },
+    ];
+  } else if (normalizedType === "OUTFLOW" && normalizedCategory === "DRAWINGS") {
+    if (!fromAccountCode) throw new Error("Drawings require a mapped Treasury GL account.");
+    lines = [
+      { accountCode: "3500", debit: value, credit: 0, description: description || `Owner / partner drawings${partyName ? `: ${partyName}` : ""}` },
+      { accountCode: fromAccountCode, debit: 0, credit: value, description: description || "Drawings paid" },
+    ];
+  } else {
+    throw new Error("This direct Treasury movement category is not supported. Use its dedicated finance workflow.");
+  }
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: normalizedType === "TRANSFER" ? "INTERNAL_TREASURY_TRANSFER" : "DIRECT_CASH_ENTRY",
+    sourceId,
+    idempotencyKey,
+    referenceNumber,
+    description: description || `Treasury ${normalizedType.toLowerCase()} - ${normalizedCategory}`,
+    lines,
+    client,
+    throwOnIdempotencyConflict: true,
   });
 };
 
@@ -2848,44 +2928,121 @@ export const postExpenseAccounting = async ({
   title,
   amount,
   paidFromAccountType = "BANK",
+  paidFromAccountCode,
+  paidAmount,
+  payableAmount,
+  idempotencyKey,
+  referenceNumber,
   isPayable = false,
   payeeName,
   transactionDate = new Date(),
+  client = prisma,
+  throwOnError = false,
 }) => {
   try {
     const amt = Number(amount || 0);
-    if (amt <= 0) return;
+    if (amt <= 0) {
+      if (throwOnError) throw new Error("Expense amount must be positive before posting.");
+      return null;
+    }
 
     const expenseCode = getOperatingExpenseAccountCode(category);
 
-    const creditCode = isPayable ? "2110" : paidFromAccountType === "CASH" ? "1110" : "1120";
+    const hasSplitAmounts = paidAmount !== undefined || payableAmount !== undefined;
+    const paid = hasSplitAmounts ? Number(paidAmount || 0) : isPayable ? 0 : amt;
+    const payable = hasSplitAmounts ? Number(payableAmount || 0) : isPayable ? amt : 0;
+    if (paid < 0 || payable < 0 || Math.abs(paid + payable - amt) > 0.01) {
+      throw new Error("Expense paid and payable portions must be non-negative and equal the total expense.");
+    }
 
-    await postJournalEntry({
+    const lines = [{
+      accountCode: expenseCode,
+      debit: amt,
+      credit: 0,
+      description: title || `Expense: ${category}`,
+    }];
+    if (paid > 0) {
+      lines.push({
+        accountCode: paidFromAccountCode || (paidFromAccountType === "CASH" ? "1110" : "1120"),
+        debit: 0,
+        credit: paid,
+        description: "Paid from mapped Treasury account",
+        supplierName: payeeName,
+      });
+    }
+    if (payable > 0) {
+      lines.push({
+        accountCode: "2110",
+        debit: 0,
+        credit: payable,
+        description: `Recorded as liability to ${payeeName || "Vendor"}`,
+        supplierName: payeeName,
+      });
+    }
+
+    return await postJournalEntry({
       transactionDate,
       sourceType: "EXPENSE_PAYMENT",
       sourceId: expenseId,
-      idempotencyKey: `EXPENSE:${expenseId}:${amt}`,
-      referenceNumber: `EXP-${expenseId ? expenseId.slice(-6) : Date.now()}`,
+      idempotencyKey: idempotencyKey || `EXPENSE:${expenseId}:${amt}`,
+      referenceNumber: referenceNumber || `EXP-${expenseId ? expenseId.slice(-6) : Date.now()}`,
       description: title || `Operating expense: ${category}`,
-      lines: [
-        {
-          accountCode: expenseCode,
-          debit: amt,
-          credit: 0,
-          description: title || `Expense: ${category}`,
-        },
-        {
-          accountCode: creditCode,
-          debit: 0,
-          credit: amt,
-          description: isPayable ? `Recorded as liability to ${payeeName || "Vendor"}` : `Paid from liquid treasury`,
-          supplierName: payeeName,
-        },
-      ],
+      lines,
+      client,
     });
   } catch (error) {
     console.error("Error in postExpenseAccounting:", error);
+    if (throwOnError) throw error;
+    return null;
   }
+};
+
+export const postDirectIncomeAccounting = async ({
+  incomeId,
+  category,
+  title,
+  amount,
+  depositAccountCode,
+  payerName,
+  invoiceNumber,
+  transactionDate = new Date(),
+  client = prisma,
+}) => {
+  const normalizedCategory = String(category || "").trim().toUpperCase();
+  if (normalizedCategory !== "OTHER") {
+    throw new Error("Manual income posting supports Other Income only. Record sales, scrap disposals, and services through their tax-aware accounting workflows.");
+  }
+  if (!incomeId) throw new Error("Direct income posting requires a saved income record.");
+  if (!depositAccountCode) throw new Error("Direct income posting requires the mapped Treasury GL account.");
+
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    throw new Error("Direct income amount must be positive.");
+  }
+
+  return postJournalEntry({
+    transactionDate,
+    sourceType: "DIRECT_INCOME",
+    sourceId: incomeId,
+    idempotencyKey: `DIRECT_INCOME:${incomeId}`,
+    referenceNumber: invoiceNumber || `INC-${incomeId.slice(-6)}`,
+    description: `Other income: ${title || "Income"} from ${payerName || "Payer"}`,
+    lines: [
+      {
+        accountCode: depositAccountCode,
+        debit: amt,
+        credit: 0,
+        description: `Other income receipt${invoiceNumber ? ` (${invoiceNumber})` : ""}`,
+      },
+      {
+        accountCode: "8100",
+        debit: 0,
+        credit: amt,
+        description: `Other income: ${title || "Income"}`,
+      },
+    ],
+    client,
+  });
 };
 
 export const getOperatingExpenseAccountCode = (category) => {
@@ -2937,10 +3094,10 @@ export const postFixedAssetPurchaseAccounting = async (assetOrParams, opts = {})
 
     if (paidAmount > 0) {
       lines.push({
-        accountCode: "1120",
+        accountCode: opts.cashAccountCode || "1120",
         debit: 0,
         credit: paidAmount,
-        description: `Paid from liquid bank account for ${asset.assetName}`,
+        description: `Paid from mapped Treasury account for ${asset.assetName}`,
         supplierName: vendorName,
       });
     }
@@ -2963,12 +3120,86 @@ export const postFixedAssetPurchaseAccounting = async (assetOrParams, opts = {})
       referenceNumber: asset.assetTag || asset.id,
       description: `Fixed Asset Acquisition: ${asset.assetName} (${asset.assetTag || asset.id}) from ${vendorName}`,
       lines,
+      client: opts.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postFixedAssetPurchaseAccounting:", error);
     throw error;
   }
+};
+
+export const postFixedAssetDisposalAccounting = async (asset, params, options = {}) => {
+  const cost = Number(asset.purchaseCost || 0);
+  const accumulatedDepreciation = Number(asset.accumulatedDepreciation || 0);
+  const bookValue = Number(asset.currentBookValue || 0);
+  const recoveredAmount = Number(params.recoveredAmount || 0);
+  const categoryAccountCode = asset.category === "FURNITURE_FIXTURES"
+    ? "1520"
+    : asset.category === "VEHICLES" ? "1530" : "1510";
+  const balanceDifference = Number((cost - accumulatedDepreciation - bookValue).toFixed(2));
+  if (cost <= 0 || Math.abs(balanceDifference) > 0.01) {
+    const error = new Error(`Asset ${asset.assetTag} gross cost, accumulated depreciation, and book value do not reconcile.`);
+    error.statusCode = 409;
+    error.code = "FIXED_ASSET_BOOK_RECONCILIATION_REQUIRED";
+    throw error;
+  }
+
+  const lines = [];
+  if (accumulatedDepreciation > 0) {
+    lines.push({
+      accountCode: "1590",
+      debit: accumulatedDepreciation,
+      credit: 0,
+      description: `Remove accumulated depreciation for ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  if (recoveredAmount > 0) {
+    lines.push({
+      accountCode: options.cashAccountCode,
+      debit: recoveredAmount,
+      credit: 0,
+      description: `Disposal proceeds received for ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  if (bookValue > recoveredAmount) {
+    lines.push({
+      accountCode: "6800",
+      debit: Number((bookValue - recoveredAmount).toFixed(2)),
+      credit: 0,
+      description: `Loss on disposal of ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  } else if (recoveredAmount > bookValue) {
+    lines.push({
+      accountCode: "8100",
+      debit: 0,
+      credit: Number((recoveredAmount - bookValue).toFixed(2)),
+      description: `Gain on disposal of ${asset.assetName}`,
+      assetId: asset.id,
+    });
+  }
+  lines.push({
+    accountCode: categoryAccountCode,
+    debit: 0,
+    credit: cost,
+    description: `Derecognize ${asset.assetName} (${asset.assetTag})`,
+    assetId: asset.id,
+  });
+
+  return postJournalEntry({
+    transactionDate: params.disposalDate,
+    sourceType: "ASSET_DISPOSAL",
+    sourceId: asset.id,
+    idempotencyKey: params.idempotencyKey,
+    referenceNumber: params.payloadHash,
+    description: `${params.status}: ${params.damageNotes || `Disposal of ${asset.assetName}`}`,
+    lines,
+    client: options.client || prisma,
+    throwOnIdempotencyConflict: true,
+  });
 };
 
 /**
@@ -2982,13 +3213,13 @@ export const postDepreciationAccounting = async (params) => {
     if (depAmt <= 0) return;
 
     const periodName = params.periodName ||
-      (params.date ? `${new Date(params.date).getFullYear()}-${String(new Date(params.date).getMonth() + 1).padStart(2, '0')}` : `BATCH-${Date.now()}`);
+      (params.date ? `${new Date(params.date).getFullYear()}-${String(new Date(params.date).getMonth() + 1).padStart(2, "0")}` : `BATCH-${Date.now()}`);
 
     const result = await postJournalEntry({
       transactionDate: params.date ? new Date(params.date) : new Date(),
       sourceType: "ASSET_DEPRECIATION",
-      sourceId: `DEP-${periodName}`,
-      idempotencyKey: `ASSET_DEPRECIATION:${periodName}:${depAmt}`,
+      sourceId: params.sourceId || `DEP-${periodName}`,
+      idempotencyKey: params.idempotencyKey || `ASSET_DEPRECIATION:${periodName}:${depAmt}`,
       referenceNumber: `DEP-${periodName}`,
       description: `Fixed Asset Depreciation batch for period ${periodName} (${params.count || 1} assets)`,
       lines: [
@@ -3005,27 +3236,33 @@ export const postDepreciationAccounting = async (params) => {
           description: `Accumulated depreciation for ${periodName}`,
         },
       ],
+      client: params.client || prisma,
+      throwOnIdempotencyConflict: params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postDepreciationAccounting:", error);
+    if (params.throwOnError) throw error;
   }
 };
 
 /**
  * 9. Loan Disbursement - flexible: accepts full entity or named params
- * DR Bank Accounts (1120)
+ * DR Mapped Treasury GL account
  * CR Bank Term Loans & Borrowings (2510)
  */
-export const postLoanDisbursementAccounting = async (loanOrParams) => {
+export const postLoanDisbursementAccounting = async (loanOrParams, options = {}) => {
   try {
     const principal = Number(loanOrParams.principalAmount || loanOrParams.principal || 0);
     const lenderName = loanOrParams.investorName || loanOrParams.lenderName || "Lender";
     const loanId = loanOrParams.id || loanOrParams.loanId || `LOAN-${Date.now()}`;
-    if (principal <= 0) return;
+    if (!Number.isFinite(principal) || principal <= 0) {
+      if (options.throwOnError) throw new Error("Loan disbursement principal must be positive.");
+      return null;
+    }
 
     const result = await postJournalEntry({
-      transactionDate: loanOrParams.startDate ? new Date(loanOrParams.startDate) : new Date(),
+      transactionDate: options.transactionDate || loanOrParams.startDate || new Date(),
       sourceType: "LOAN_DISBURSEMENT",
       sourceId: loanId,
       idempotencyKey: `LOAN_DISBURSEMENT:${loanId}`,
@@ -3033,7 +3270,7 @@ export const postLoanDisbursementAccounting = async (loanOrParams) => {
       description: `Loan facility disbursement from ${lenderName} (Rs ${principal.toLocaleString()} at ${loanOrParams.interestRate || 0}% APR)`,
       lines: [
         {
-          accountCode: "1120",
+          accountCode: options.cashAccountCode || "1120",
           debit: principal,
           credit: 0,
           description: `Loan funds received into bank from ${lenderName}`,
@@ -3045,30 +3282,43 @@ export const postLoanDisbursementAccounting = async (loanOrParams) => {
           description: `Borrowing liability created to ${lenderName}`,
         },
       ],
+      client: options.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postLoanDisbursementAccounting:", error);
+    if (options.throwOnError) throw error;
   }
 };
 
 /**
  * 10. Loan Repayment (Principal + Interest Split) - flexible signature
  * DR Bank Term Loans (2510): Principal Portion
- * DR Loan Interest Expense (7100): Interest Expense Portion  
- * CR Bank Accounts (1120): Total Repayment
+ * DR Loan Interest Expense (7100): Interest Expense Portion
+ * CR Mapped Treasury GL account: Total Repayment
  */
-export const postLoanRepaymentAccounting = async (params) => {
+export const postLoanRepaymentAccounting = async (params, options = {}) => {
   try {
     // Support both: ({ liability, amount, principalPortion, interestPortion }) and ({ liabilityId, lenderName, totalAmount, principalPortion, interestPortion })
     const liability = params.liability || {};
     const total = Number(params.amount || params.totalAmount || 0);
-    const p = Number(params.principalPortion || total);
+    const p = Number(params.principalPortion ?? total);
     const i = Number(params.interestPortion || 0);
     const lenderName = liability.investorName || params.lenderName || "Lender";
     const liabilityId = liability.id || params.liabilityId || `REPAY-${Date.now()}`;
 
-    if (total <= 0) return;
+    const totalAmount = new Prisma.Decimal(String(total));
+    const principalAmount = new Prisma.Decimal(String(p));
+    const interestAmount = new Prisma.Decimal(String(i));
+    if (
+      !totalAmount.isFinite() || totalAmount.lessThanOrEqualTo(0) ||
+      !principalAmount.isFinite() || principalAmount.isNegative() ||
+      !interestAmount.isFinite() || interestAmount.isNegative() ||
+      !principalAmount.plus(interestAmount).equals(totalAmount)
+    ) {
+      if (options.throwOnError) throw new Error("Loan repayment principal and interest must be non-negative and equal the total payment.");
+      return null;
+    }
 
     const lines = [
       {
@@ -3089,24 +3339,30 @@ export const postLoanRepaymentAccounting = async (params) => {
     }
 
     lines.push({
-      accountCode: "1120",
+      accountCode: options.cashAccountCode || "1120",
       debit: 0,
       credit: total,
-      description: `EMI payment disbursed from bank to ${lenderName}`,
+      description: `Loan repayment disbursed from Treasury to ${lenderName}`,
     });
 
+    if (options.throwOnError && !options.idempotencyKey) {
+      throw new Error("A stable idempotency key is required for strict loan repayment posting.");
+    }
+    const idempotencyKey = options.idempotencyKey || `LOAN_REPAYMENT:${liabilityId}:${total}:${Date.now()}`;
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: options.transactionDate || new Date(),
       sourceType: "LOAN_REPAYMENT",
       sourceId: liabilityId,
-      idempotencyKey: `LOAN_REPAYMENT:${liabilityId}:${total}:${Date.now()}`,
+      idempotencyKey,
       referenceNumber: `EMI-${liabilityId.slice(-6)}`,
       description: `Loan EMI repayment to ${lenderName} (Principal: Rs ${p}, Interest: Rs ${i})`,
       lines,
+      client: options.client || prisma,
     });
     return result;
   } catch (error) {
     console.error("Error in postLoanRepaymentAccounting:", error);
+    if (options.throwOnError) throw error;
   }
 };
 
@@ -3115,7 +3371,7 @@ export const postLoanRepaymentAccounting = async (params) => {
  * DR Bank Accounts (1120): Investment Inflow
  * CR Share Capital (3100): Share Capital Issued
  */
-export const postShareIssuanceAccounting = async (params) => {
+export const postShareIssuanceAccounting = async (params, options = {}) => {
   try {
     // Support: ({ investorPartner, valuationRecord, invAmt, depositAccountId }) and ({ investorName, investmentAmount, roundName })
     const investorName = params.investorName ||
@@ -3128,15 +3384,15 @@ export const postShareIssuanceAccounting = async (params) => {
     if (amount <= 0) return;
 
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: params.transactionDate || new Date(),
       sourceType: "CAPITAL_INJECTION",
       sourceId,
-      idempotencyKey: `CAPITAL_INJECTION:${sourceId}`,
-      referenceNumber: roundName || "EQUITY-ROUND",
+      idempotencyKey: params.idempotencyKey || `CAPITAL_INJECTION:${sourceId}`,
+      referenceNumber: params.referenceNumber || roundName || "EQUITY-ROUND",
       description: `Primary Share Issuance: ${investorName} invested Rs ${amount.toLocaleString()}`,
       lines: [
         {
-          accountCode: "1120",
+          accountCode: params.cashAccountCode || "1120",
           debit: amount,
           credit: 0,
           description: `Capital inflow from ${investorName}`,
@@ -3148,10 +3404,13 @@ export const postShareIssuanceAccounting = async (params) => {
           description: `Share Capital equity issued in ${roundName}`,
         },
       ],
+      client: options.client || params.client || prisma,
+      throwOnIdempotencyConflict: options.throwOnIdempotencyConflict === true || params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postShareIssuanceAccounting:", error);
+    if (options.throwOnError === true || params.throwOnError === true) throw error;
   }
 };
 
@@ -3160,19 +3419,19 @@ export const postShareIssuanceAccounting = async (params) => {
  * DR Share Capital (3100): Face Value Retired
  * CR Bank Accounts (1120): Buyback Payout
  */
-export const postShareBuybackAccounting = async (params) => {
+export const postShareBuybackAccounting = async (params, options = {}) => {
   try {
     const total = Number(params.totalTransactionValue || params.totalAmount || 0);
     if (total <= 0) return;
     const sellerName = params.seller ? params.seller.partnerName : (params.sellerName || "Shareholder");
-    const sourceId = `BUYBACK-${params.seller ? params.seller.id : Date.now()}`;
+    const sourceId = params.sourceId || `BUYBACK-${params.seller ? params.seller.id : Date.now()}`;
 
     const result = await postJournalEntry({
-      transactionDate: new Date(),
+      transactionDate: params.transactionDate || new Date(),
       sourceType: "SHARE_BUYBACK",
       sourceId,
-      idempotencyKey: `SHARE_BUYBACK:${sourceId}`,
-      referenceNumber: sourceId,
+      idempotencyKey: params.idempotencyKey || `SHARE_BUYBACK:${sourceId}`,
+      referenceNumber: params.referenceNumber || sourceId,
       description: `Company Share Buyback: Repurchased from ${sellerName}`,
       lines: [
         {
@@ -3182,16 +3441,19 @@ export const postShareBuybackAccounting = async (params) => {
           description: `Share capital retired - bought back from ${sellerName}`,
         },
         {
-          accountCode: "1120",
+          accountCode: params.cashAccountCode || "1120",
           debit: 0,
           credit: total,
           description: `Buyback payout to ${sellerName}`,
         },
       ],
+      client: options.client || params.client || prisma,
+      throwOnIdempotencyConflict: options.throwOnIdempotencyConflict === true || params.throwOnError === true,
     });
     return result;
   } catch (error) {
     console.error("Error in postShareBuybackAccounting:", error);
+    if (options.throwOnError === true || params.throwOnError === true) throw error;
   }
 };
 

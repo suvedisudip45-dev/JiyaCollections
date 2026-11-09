@@ -95,7 +95,7 @@ const ExpenseManagement = ({ token }) => {
   // Income Modal State
   const [incomeModalOpen, setIncomeModalOpen] = useState(false);
   const [incomeTitle, setIncomeTitle] = useState("");
-  const [incomeCategory, setIncomeCategory] = useState("DIRECT_SALES");
+  const [incomeCategory] = useState("OTHER");
   const [incomeAmount, setIncomeAmount] = useState("");
   const [incomeToAccountId, setIncomeToAccountId] = useState("");
   const [incomePayerName, setIncomePayerName] = useState("");
@@ -261,12 +261,17 @@ const ExpenseManagement = ({ token }) => {
   useEffect(() => {
     if (isVatBill && amount && !isNaN(parseFloat(amount))) {
       const numAmt = parseFloat(amount);
-      const computedVat = (numAmt - numAmt / 1.13).toFixed(2);
-      setVatAmount(computedVat);
+      const rate = Number(purchaseVatRate);
+      if (Number.isFinite(rate) && rate > 0 && rate <= 100) {
+        const computedVat = (numAmt - numAmt / (1 + rate / 100)).toFixed(2);
+        setVatAmount(computedVat);
+      } else {
+        setVatAmount("");
+      }
     } else if (!isVatBill) {
       setVatAmount("0");
     }
-  }, [amount, isVatBill]);
+  }, [amount, isVatBill, purchaseVatRate]);
 
   const handleOpenAddModal = () => {
     setEditingId(null);
@@ -1297,7 +1302,7 @@ const ExpenseManagement = ({ token }) => {
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900">Record Direct Income</h3>
-                <p className="text-xs text-slate-500">Deposit incoming funds directly into Bank or Cash account.</p>
+                <p className="text-xs text-slate-500">Record a non-sales Other Income receipt into a mapped Treasury account.</p>
               </div>
               <button
                 onClick={() => setIncomeModalOpen(false)}
@@ -1313,7 +1318,7 @@ const ExpenseManagement = ({ token }) => {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Scrap Fabric Waste Sale, Printing Service Fee"
+                  placeholder="e.g. Approved non-sales other receipt"
                   value={incomeTitle}
                   onChange={(e) => setIncomeTitle(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium focus:outline-none text-slate-900"
@@ -1323,18 +1328,10 @@ const ExpenseManagement = ({ token }) => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Category *</label>
-                  <select
-                    value={incomeCategory}
-                    onChange={(e) => setIncomeCategory(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 font-medium text-slate-900"
-                  >
-                    {categories.income.map((cat) => (
-                      <option key={cat.code} value={cat.code}>
-                        {cat.name}
-                      </option>
-                    ))}
-                  </select>
+                  <label className="block font-bold text-slate-700 mb-1">Income Category</label>
+                  <div className="w-full rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 font-medium text-slate-700">
+                    Other Income (GL 8100)
+                  </div>
                 </div>
 
                 <div>
@@ -1351,6 +1348,10 @@ const ExpenseManagement = ({ token }) => {
                   />
                 </div>
               </div>
+
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+                Do not use this form for sales, scrap disposals, or services that may require output VAT. Use the relevant sales/accounting workflow; this form is limited to receipts confirmed by finance as not requiring output VAT.
+              </p>
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">Deposit Into Account *</label>
@@ -1369,7 +1370,7 @@ const ExpenseManagement = ({ token }) => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">Payer / Buyer Name</label>
+                  <label className="block font-bold text-slate-700 mb-1">Source / Payer Name</label>
                   <input
                     type="text"
                     placeholder="e.g. Recycling Vendor"

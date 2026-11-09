@@ -1,10 +1,12 @@
 /* eslint-disable no-unused-vars */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 
 const AssetManagement = ({ token }) => {
+  const acquisitionRequest = useRef(null);
+  const disposalRequest = useRef(null);
   const [assets, setAssets] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -32,10 +34,8 @@ const AssetManagement = ({ token }) => {
   });
 
   const [damageForm, setDamageForm] = useState({
-    status: "DAMAGED", // DAMAGED, WRITTEN_OFF, SOLD
+    status: "DAMAGED",
     damageNotes: "",
-    disposalAmount: "0",
-    depositAccountId: "",
   });
 
   const fetchData = async () => {
@@ -76,10 +76,15 @@ const AssetManagement = ({ token }) => {
     }
 
     try {
+      const signature = JSON.stringify(newAsset);
+      if (!acquisitionRequest.current || acquisitionRequest.current.signature !== signature) {
+        acquisitionRequest.current = { signature, key: crypto.randomUUID() };
+      }
       const res = await axios.post(`${backendUrl}/api/finance/create-asset`, newAsset, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": acquisitionRequest.current.key },
       });
       if (res.data.success) {
+        acquisitionRequest.current = null;
         toast.success("Fixed asset registered");
         setShowAddModal(false);
         setNewAsset({
@@ -107,14 +112,16 @@ const AssetManagement = ({ token }) => {
   };
 
   const handleRunDepreciation = async () => {
-    if (!window.confirm("Run 1-Month Depreciation batch for all active assets?")) return;
+    if (!window.confirm("Run depreciation for the current BS accounting month for all active assets? This can only be posted once per month.")) return;
     try {
       const res = await axios.post(
         `${backendUrl}/api/finance/run-depreciation`,
         { monthsCount: 1 },
         { headers: { token } }
       );
-      if (res.data.success) {
+      if (res.data.success && res.data.alreadyProcessed) {
+        toast.info(res.data.message);
+      } else if (res.data.success) {
         toast.success(`Depreciation applied: ${currency}${res.data.totalDepreciated}`);
         fetchData();
       } else {
@@ -130,19 +137,25 @@ const AssetManagement = ({ token }) => {
     if (!selectedAsset) return;
 
     try {
+      const requestBody = {
+        assetId: selectedAsset.id,
+        ...damageForm,
+      };
+      const signature = JSON.stringify(requestBody);
+      if (!disposalRequest.current || disposalRequest.current.signature !== signature) {
+        disposalRequest.current = { signature, key: crypto.randomUUID() };
+      }
       const res = await axios.post(
         `${backendUrl}/api/finance/damage-asset`,
-        {
-          assetId: selectedAsset.id,
-          ...damageForm,
-        },
-        { headers: { token } }
+        requestBody,
+        { headers: { token, "Idempotency-Key": disposalRequest.current.key } }
       );
       if (res.data.success) {
+        disposalRequest.current = null;
         toast.success(res.data.message);
         setShowDamageModal(false);
         setSelectedAsset(null);
-        setDamageForm({ status: "DAMAGED", damageNotes: "", disposalAmount: "0", depositAccountId: "" });
+        setDamageForm({ status: "DAMAGED", damageNotes: "" });
         fetchData();
       } else {
         toast.error(res.data.message);
@@ -152,11 +165,10 @@ const AssetManagement = ({ token }) => {
     }
   };
 
-  const totalGrossCost = assets.reduce((acc, a) => acc + Number(a.purchaseCost || 0), 0);
-  const totalAccDep = assets.reduce((acc, a) => acc + Number(a.accumulatedDepreciation || 0), 0);
-  const totalCurrentBook = assets
-    .filter((a) => a.status === "ACTIVE")
-    .reduce((acc, a) => acc + Number(a.currentBookValue || 0), 0);
+  const activeAssets = assets.filter((a) => a.status === "ACTIVE");
+  const totalGrossCost = activeAssets.reduce((acc, a) => acc + Number(a.purchaseCost || 0), 0);
+  const totalAccDep = activeAssets.reduce((acc, a) => acc + Number(a.accumulatedDepreciation || 0), 0);
+  const totalCurrentBook = activeAssets.reduce((acc, a) => acc + Number(a.currentBookValue || 0), 0);
 
   return (
     <div className="space-y-8 pb-12">
@@ -198,7 +210,7 @@ const AssetManagement = ({ token }) => {
       {/* SUMMARY BANNER */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-5 bg-white rounded-2xl border border-slate-200/80 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Total Asset Historical Cost</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Active Asset Historical Cost</p>
           <p className="text-2xl font-black text-slate-900 mt-1">
             {currency}{totalGrossCost.toLocaleString()}
           </p>
@@ -206,7 +218,7 @@ const AssetManagement = ({ token }) => {
         </div>
 
         <div className="p-5 bg-white rounded-2xl border border-slate-200/80 shadow-xs">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Accumulated Depreciation</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Active Accumulated Depreciation</p>
           <p className="text-2xl font-black text-amber-600 mt-1">
             {currency}{totalAccDep.toLocaleString()}
           </p>
@@ -586,40 +598,13 @@ const AssetManagement = ({ token }) => {
                   onChange={(e) => setDamageForm({ ...damageForm, status: e.target.value })}
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-bold"
                 >
-                  <option value="DAMAGED">🔴 Damaged Beyond Repair (Impairment Loss)</option>
+                  <option value="DAMAGED">🔴 Damaged Beyond Repair (Write-off)</option>
                   <option value="WRITTEN_OFF">⚪ Obsolete / Written-Off</option>
-                  <option value="SOLD">🟢 Sold / Salvaged for Cash</option>
                 </select>
               </div>
-
-              <div>
-                <label className="font-semibold text-slate-700 block mb-1">Salvage Recovery Amount ({currency})</label>
-                <input
-                  type="number"
-                  placeholder="0"
-                  value={damageForm.disposalAmount}
-                  onChange={(e) => setDamageForm({ ...damageForm, disposalAmount: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                />
-              </div>
-
-              {Number(damageForm.disposalAmount) > 0 && (
-                <div>
-                  <label className="font-semibold text-slate-700 block mb-1">Deposit Salvage Cash Into</label>
-                  <select
-                    value={damageForm.depositAccountId}
-                    onChange={(e) => setDamageForm({ ...damageForm, depositAccountId: e.target.value })}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
-                  >
-                    <option value="">Select Treasury account...</option>
-                    {accounts.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.accountName}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <p className="text-[11px] text-amber-700">
+                Asset sales and disposal proceeds are unavailable until tax and VAT treatment is approved.
+              </p>
 
               <div>
                 <label className="font-semibold text-slate-700 block mb-1">Damage / Disposal Notes</label>

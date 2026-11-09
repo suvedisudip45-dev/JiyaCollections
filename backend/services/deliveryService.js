@@ -147,6 +147,64 @@ export const normalizeDeliveryStatus = (rawStatus = "", rawEvent = "") => {
   };
 };
 
+const recordNcmReturnPendingSettlement = async (tx, delivery, {
+  deliveryFeeActual,
+  deliveryFeeDiscount,
+} = {}) => {
+  const existing = await tx.deliveryFinancialSettlement.findUnique({
+    where: { deliveryOrderId: delivery.id },
+  });
+  const wasDelivered = Boolean(delivery.deliveredAt || delivery.state === "DELIVERED");
+  const varianceReason = wasDelivered
+    ? "NCM reported a return after delivery; preserve the original COD balance and reconcile any refund or remittance separately."
+    : "NCM reported a return before delivery; no COD sale is recognized, and physical receipt must be verified before stock changes.";
+  const deliveryFeeData = {
+    ...(deliveryFeeActual === undefined ? {} : { deliveryFeeActual }),
+    ...(deliveryFeeDiscount === undefined ? {} : { deliveryFeeDiscount }),
+  };
+
+  if (!existing) {
+    return tx.deliveryFinancialSettlement.create({
+      data: {
+        deliveryOrderId: delivery.id,
+        ncmOrderId: delivery.ncmOrderId,
+        codExpected: wasDelivered ? Number(delivery.codAmount || 0) : 0,
+        deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
+        deliveryFeeActual: deliveryFeeActual ?? Number(delivery.ncmDeliveryCharge ?? 0),
+        deliveryFeeDiscount: deliveryFeeDiscount ?? Number(delivery.ncmDeliveryDiscount || 0),
+        settlementState: "RETURN_PENDING",
+        varianceReason,
+      },
+    });
+  }
+
+  if (existing.settlementState === "SETTLED") {
+    return tx.deliveryFinancialSettlement.update({
+      where: { id: existing.id },
+      data: { varianceReason },
+    });
+  }
+
+  const updated = await tx.deliveryFinancialSettlement.updateMany({
+    where: {
+      id: existing.id,
+      settlementState: existing.settlementState,
+    },
+    data: {
+      ...deliveryFeeData,
+      settlementState: "RETURN_PENDING",
+      varianceReason,
+    },
+  });
+  if (updated.count !== 1) {
+    throw Object.assign(new Error("NCM settlement changed while recording a return. Refresh and retry."), {
+      statusCode: 409,
+      code: "NCM_RETURN_SETTLEMENT_CONFLICT",
+    });
+  }
+  return { ...existing, ...deliveryFeeData, settlementState: "RETURN_PENDING", varianceReason };
+};
+
 const parseJson = (value, fallback) => {
   if (!value) return fallback;
   if (typeof value === "object") return value;
@@ -336,7 +394,7 @@ const findDeliveryOrdersForNcmId = async (ncmId) => {
     include: {
       order: { select: { id: true, items: true, paymentMethod: true, payment: true } },
       events: {
-        where: { source: { in: ["NCM_WEBHOOK", "ADMIN_RECONCILIATION", "ADMIN_RECONCILIATION_DECISION"] } },
+        where: { source: { in: ["NCM_WEBHOOK", "ADMIN_RECONCILIATION", "SCHEDULED_RECONCILIATION", "ADMIN_RECONCILIATION_DECISION"] } },
         orderBy: { occurredAt: "desc" },
         take: 1,
         select: { occurredAt: true },
@@ -1085,6 +1143,9 @@ export const applyNcmStatus = async ({
       status: payload.status,
       event: payload.event,
       timestamp: payload.timestamp,
+      source,
+      actorId,
+      actorRole: source === "ADMIN_WEBHOOK_SIMULATION" ? "ADMIN" : "SYSTEM",
     });
     if (appliedReturnStatus) {
       results.push({ ncmId: trimmedId, customerReturn: true });
@@ -1191,9 +1252,6 @@ export const applyNcmStatus = async ({
         ...(deliveryState === "DELIVERED" && shouldApplyStatus
           ? { deliveredAt: delivery.deliveredAt || new Date() }
           : {}),
-        ...(deliveryState === "RETURN_REQUESTED" && shouldApplyStatus
-          ? { returnedAt: delivery.returnedAt || new Date() }
-          : {}),
         ncmReconciliationRequired: shouldReconcile || (!shouldApplyStatus && Boolean(delivery.ncmReconciliationRequired)),
         ncmReconciliationReason: shouldReconcile
           ? reconciliationReason
@@ -1220,10 +1278,12 @@ export const applyNcmStatus = async ({
           orderUpdateData.status = "Delivered";
           orderUpdateData.payment = true; // COD or online payment settled on delivery
         } else if (deliveryState === "RETURN_REQUESTED") {
-          orderUpdateData.status = "Returned";
-          orderUpdateData.payment = String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
-            ? false
-            : Boolean(delivery.order?.payment);
+          const wasDelivered = Boolean(delivery.deliveredAt || delivery.state === "DELIVERED");
+          orderUpdateData.payment = wasDelivered
+            ? Boolean(delivery.order?.payment)
+            : String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
+              ? false
+              : Boolean(delivery.order?.payment);
         } else if (
           ["PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"].includes(deliveryState)
         ) {
@@ -1289,31 +1349,12 @@ export const applyNcmStatus = async ({
             ncmReturnRequestedAt: new Date(),
           },
           update: {
-            state: "RETURN_REQUESTED",
             ncmReturnComment: payload.comment || payload.reason || payload.message || undefined,
           },
         });
-        await tx.deliveryFinancialSettlement.upsert({
-          where: { deliveryOrderId: delivery.id },
-          create: {
-            deliveryOrderId: delivery.id,
-            ncmOrderId: delivery.ncmOrderId,
-            codExpected: 0,
-            deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-            deliveryFeeActual: ncmPricing?.actualCharge ?? Number(delivery.ncmDeliveryCharge ?? 0),
-            deliveryFeeDiscount: ncmPricing?.discountAmount ?? Number(delivery.ncmDeliveryDiscount || 0),
-            settlementState: "RETURN_PENDING",
-            varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
-          },
-          update: {
-            codExpected: 0,
-            settlementState: "RETURN_PENDING",
-            varianceReason: "NCM reported a returned delivery; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
-            ...(ncmPricing ? {
-              deliveryFeeActual: ncmPricing.actualCharge,
-              deliveryFeeDiscount: ncmPricing.discountAmount,
-            } : {}),
-          },
+        await recordNcmReturnPendingSettlement(tx, delivery, {
+          deliveryFeeActual: ncmPricing?.actualCharge,
+          deliveryFeeDiscount: ncmPricing?.discountAmount,
         });
       }
 
@@ -1339,8 +1380,6 @@ export const applyNcmStatus = async ({
               deliveryFeeDiscount: ncmPricing.discountAmount,
             } : {}),
           },
-        }).catch((err) => {
-          logger.warn("Financial settlement upsert notice", { error: err.message });
         });
       }
 
@@ -1397,7 +1436,11 @@ export const applyNcmStatus = async ({
   return results;
 };
 
-export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = null } = {}) => {
+export const storeAndApplyWebhook = async (payload, {
+  onStockTransferStatus = null,
+  source = "NCM_WEBHOOK",
+  actorId = null,
+} = {}) => {
   // Handle test webhooks sent from NCM Vendor Portal
   if (
     payload.test === true ||
@@ -1430,7 +1473,10 @@ export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = nu
         orderIds: payload.order_ids || ids,
         status: payload.status || null,
         timestamp: occurredAt && !Number.isNaN(occurredAt.getTime()) ? occurredAt : null,
-        payloadJson: sanitizeNcmWebhookPayload(payload),
+        payloadJson: sanitizeNcmWebhookPayload({
+          ...payload,
+          ...(source !== "NCM_WEBHOOK" ? { _receivedSource: source, _actorId: actorId } : {}),
+        }),
       },
     });
   } catch (error) {
@@ -1442,7 +1488,7 @@ export const storeAndApplyWebhook = async (payload, { onStockTransferStatus = nu
   }
 
   try {
-    const updated = await applyNcmStatus({ payload, onStockTransferStatus });
+    const updated = await applyNcmStatus({ payload, onStockTransferStatus, source, actorId });
     await prisma.ncmWebhookEvent.update({
       where: { eventKey },
       data: { processingStatus: "PROCESSED", processedAt: new Date(), processingError: null },
@@ -1516,7 +1562,7 @@ export const storeOrderCommentWebhook = async (payload) => {
   }
 };
 
-const markNcmReconciliationRequired = async ({ delivery, reason, ncmStatus = null }) => {
+const markNcmReconciliationRequired = async ({ delivery, reason, ncmStatus = null, source = "ADMIN_RECONCILIATION" }) => {
   const now = new Date();
   const eventKey = statusEventKey({
     orderId: delivery.id,
@@ -1528,7 +1574,7 @@ const markNcmReconciliationRequired = async ({ delivery, reason, ncmStatus = nul
     await createEvent(tx, {
       deliveryOrderId: delivery.id,
       orderId: delivery.orderId,
-      source: "ADMIN_RECONCILIATION",
+      source,
       eventType: "NCM_RECONCILIATION_REQUIRED",
       fromState: delivery.state,
       toState: delivery.state,
@@ -1571,7 +1617,10 @@ const getLatestNcmStatusRecord = (response) => {
   })[0] || null;
 };
 
-export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => {
+export const reconcileDelivery = async (deliveryId, {
+  actorId = null,
+  source = "ADMIN_RECONCILIATION",
+} = {}) => {
   const delivery = await prisma.deliveryOrder.findUnique({
     where: { id: deliveryId },
     select: {
@@ -1588,7 +1637,7 @@ export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => 
   }
   if (!delivery.ncmOrderId) {
     const reason = "No NCM order ID is linked to this delivery; Admin review is required.";
-    await markNcmReconciliationRequired({ delivery, reason });
+    await markNcmReconciliationRequired({ delivery, reason, source });
     return prisma.deliveryOrder.findUnique({ where: { id: delivery.id }, include: { events: { orderBy: { occurredAt: "desc" } } } });
   }
 
@@ -1596,13 +1645,13 @@ export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => 
   try {
     response = await getOrderStatus(delivery.ncmOrderId);
   } catch (error) {
-    logger.error("NCM status lookup failed during Admin reconciliation", {
+    logger.error("NCM status lookup failed during delivery reconciliation", {
       deliveryId: delivery.id,
       errorName: error.name,
       errorCode: error.code,
     });
     const reason = "NCM status lookup failed; verify the carrier status and resolve this delivery manually.";
-    await markNcmReconciliationRequired({ delivery, reason });
+    await markNcmReconciliationRequired({ delivery, reason, source });
     throw Object.assign(new Error("NCM status lookup failed; this delivery was added to the reconciliation queue."), {
       code: "NCM_RECONCILIATION_FETCH_FAILED",
     });
@@ -1614,7 +1663,7 @@ export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => 
   const timestamp = latestStatus?.timestamp || latestStatus?.added_time || new Date().toISOString();
   if (!status && !event) {
     const reason = "NCM returned no recognizable status record; verify the carrier order and resolve it manually.";
-    await markNcmReconciliationRequired({ delivery, reason });
+    await markNcmReconciliationRequired({ delivery, reason, source });
     return prisma.deliveryOrder.findUnique({ where: { id: delivery.id }, include: { events: { orderBy: { occurredAt: "desc" } } } });
   }
 
@@ -1625,7 +1674,7 @@ export const reconcileDelivery = async (deliveryId, { actorId = null } = {}) => 
       ...(event ? { event } : {}),
       timestamp,
     },
-    source: "ADMIN_RECONCILIATION",
+    source,
     actorId,
   });
   return prisma.deliveryOrder.findUnique({
@@ -1639,13 +1688,94 @@ export const requestCodSettlement = async ({ bankName, bankAccountName, bankAcco
   return response.data;
 };
 
-export const reconcileActiveDeliveries = async () => {
-  return prisma.deliveryOrder.findMany({
-    where: { ncmOrderId: { not: null }, state: { in: ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"] } },
-    include: { events: { orderBy: { occurredAt: "desc" }, take: 10 } },
-    orderBy: { updatedAt: "desc" },
-    take: 100,
+const ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE = 25;
+
+const reconcileDeliveryBatch = async (deliveries, {
+  actorId = null,
+  source = "ADMIN_RECONCILIATION",
+} = {}) => {
+  const results = [];
+
+  for (const { id } of deliveries) {
+    try {
+      const delivery = await reconcileDelivery(id, { actorId, source });
+      results.push({
+        deliveryId: id,
+        outcome: delivery?.ncmReconciliationRequired ? "NEEDS_REVIEW" : "RECONCILED",
+        state: delivery?.state || null,
+      });
+    } catch (error) {
+      results.push({
+        deliveryId: id,
+        outcome: "FAILED",
+        code: error.code || "NCM_RECONCILIATION_FAILED",
+        message: error.message || "NCM status reconciliation failed.",
+      });
+    }
+  }
+
+  return {
+    count: results.length,
+    reconciledCount: results.filter(({ outcome }) => outcome === "RECONCILED").length,
+    reviewCount: results.filter(({ outcome }) => outcome === "NEEDS_REVIEW").length,
+    failedCount: results.filter(({ outcome }) => outcome === "FAILED").length,
+    results,
+  };
+};
+
+export const reconcileActiveDeliveries = async ({ actorId = null, afterId = null } = {}) => {
+  const activeDeliveries = await prisma.deliveryOrder.findMany({
+    where: {
+      ncmOrderId: { not: null },
+      state: { in: ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"] },
+      ...(afterId ? { id: { gt: afterId } } : {}),
+    },
+    select: { id: true },
+    orderBy: { id: "asc" },
+    take: ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE + 1,
   });
+  const hasMore = activeDeliveries.length > ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE;
+  const batch = activeDeliveries.slice(0, ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE);
+  const result = await reconcileDeliveryBatch(batch, { actorId });
+  return {
+    ...result,
+    hasMore,
+    nextAfterId: hasMore ? batch.at(-1)?.id || null : null,
+  };
+};
+
+export const reconcileDueActiveDeliveries = async ({
+  actorId = "SYSTEM:NCM_DELIVERY_RECONCILIATION",
+  olderThan,
+  limit = ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE,
+} = {}) => {
+  if (!(olderThan instanceof Date) || Number.isNaN(olderThan.getTime())) {
+    throw new TypeError("A valid olderThan date is required for scheduled NCM reconciliation.");
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE) {
+    throw new RangeError(`Scheduled NCM reconciliation limit must be between 1 and ${ACTIVE_DELIVERY_RECONCILIATION_BATCH_SIZE}.`);
+  }
+
+  const dueDeliveries = await prisma.deliveryOrder.findMany({
+    where: {
+      ncmOrderId: { not: null },
+      state: { in: ["NCM_CREATED", "PICKUP_CONFIRMED", "IN_TRANSIT", "ARRIVED_AT_DESTINATION", "OUT_FOR_DELIVERY"] },
+      ncmReconciliationRequired: false,
+      OR: [
+        { lastSyncedAt: null },
+        { lastSyncedAt: { lt: olderThan } },
+      ],
+    },
+    select: { id: true },
+    orderBy: [{ lastSyncedAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
+  });
+  const hasMore = dueDeliveries.length > limit;
+  const result = await reconcileDeliveryBatch(dueDeliveries.slice(0, limit), {
+    actorId,
+    source: "SCHEDULED_RECONCILIATION",
+  });
+  return { ...result, hasMore };
 };
 
 export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, distributorId, reason }) => {
@@ -1661,35 +1791,20 @@ export const requestDeliveryReturn = async ({ deliveryId, manufacturerId, distri
   const response = await requestOrderReturn({ pk: delivery.ncmOrderId, comment: reason });
   return runTransaction(async (tx) => {
     const returned = await tx.deliveryReturn.create({ data: { deliveryOrderId: deliveryId, orderId: delivery.orderId, manufacturerId: delivery.manufacturerId, distributorId: delivery.distributorId, returnReason: reason, ncmReturnComment: reason, ncmReturnRequestedAt: new Date(), state: "RETURN_REQUESTED" } });
-    await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested", returnedAt: new Date() } });
+    await tx.deliveryOrder.update({ where: { id: deliveryId }, data: { state: "RETURN_REQUESTED", ncmStatus: "Return Requested" } });
+    const wasDelivered = Boolean(delivery.deliveredAt || delivery.state === "DELIVERED");
     await tx.order.update({
       where: { id: delivery.orderId },
       data: {
-        status: "Returned",
         fulfillmentStatus: "return_requested",
-        payment: String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
-          ? false
-          : Boolean(delivery.order?.payment),
+        payment: wasDelivered
+          ? Boolean(delivery.order?.payment)
+          : String(delivery.order?.paymentMethod || "COD").toUpperCase() === "COD"
+            ? false
+            : Boolean(delivery.order?.payment),
       },
     });
-    await tx.deliveryFinancialSettlement.upsert({
-      where: { deliveryOrderId: deliveryId },
-      create: {
-        deliveryOrderId: deliveryId,
-        ncmOrderId: delivery.ncmOrderId,
-        codExpected: 0,
-        deliveryFeeExpected: Number(delivery.customerDeliveryCharge || 0),
-        deliveryFeeActual: Number(delivery.ncmDeliveryCharge ?? 0),
-        deliveryFeeDiscount: Number(delivery.ncmDeliveryDiscount || 0),
-        settlementState: "RETURN_PENDING",
-        varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
-      },
-      update: {
-        codExpected: 0,
-        settlementState: "RETURN_PENDING",
-        varianceReason: "Carrier return requested; awaiting physical receipt and inspection before refund, restock, or VAT reversal.",
-      },
-    });
+    await recordNcmReturnPendingSettlement(tx, delivery);
     await createEvent(tx, { deliveryOrderId: deliveryId, orderId: delivery.orderId, source: distributorId ? "DISTRIBUTOR" : "MANUFACTURER", eventType: "RETURN_REQUESTED", fromState: delivery.state, toState: "RETURN_REQUESTED", actorId: distributorId || manufacturerId, payloadJson: response.data, idempotencyKey: `RETURN_REQUESTED:${deliveryId}` });
     return returned;
   });

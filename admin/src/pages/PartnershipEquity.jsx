@@ -1,10 +1,18 @@
 /* eslint-disable no-unused-vars, react/prop-types */
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { toast } from "react-toastify";
 import { backendUrl, currency } from "../App";
 import NepaliDatePicker from "../components/NepaliDatePicker";
 import { getNepaliDateRangeForDate } from "../utils/nepaliDate";
+
+const getStableIdempotencyKey = (ref, prefix, request) => {
+  const signature = JSON.stringify(request);
+  if (ref.current?.signature !== signature) {
+    ref.current = { signature, key: `${prefix}-${crypto.randomUUID()}` };
+  }
+  return ref.current.key;
+};
 
 const PartnershipEquity = ({ token }) => {
   const [capTableData, setCapTableData] = useState({
@@ -36,6 +44,11 @@ const PartnershipEquity = ({ token }) => {
   const [selectedLoan, setSelectedLoan] = useState(null);
   const [selectedLoanSchedule, setSelectedLoanSchedule] = useState([]);
   const [editingPartner, setEditingPartner] = useState(null);
+  const loanDisbursementIdempotencyKey = useRef(null);
+  const loanRepaymentIdempotencyKey = useRef(null);
+  const shareIssuanceIdempotencyKey = useRef(null);
+  const shareBuybackIdempotencyKey = useRef(null);
+  const peerShareTransferIdempotencyKey = useRef(null);
 
   // Forms
   const [partnerForm, setPartnerForm] = useState({
@@ -220,16 +233,19 @@ const PartnershipEquity = ({ token }) => {
   // Primary Share Issuance
   const handleIssueShares = async (e) => {
     e.preventDefault();
-    if (!issueForm.investorName || !issueForm.email || !issueForm.preMoneyValuation || !issueForm.investmentAmount) {
-      return toast.warn("Investor name, email, pre-money valuation, and investment amount are required");
+    if (!issueForm.investorName || !issueForm.email || !issueForm.preMoneyValuation ||
+        !issueForm.investmentAmount || !issueForm.depositAccountId) {
+      return toast.warn("Investor details, valuation, investment amount, and a Treasury account are required");
     }
 
     try {
+      const idempotencyKey = getStableIdempotencyKey(shareIssuanceIdempotencyKey, "SHARE-ISSUANCE", issueForm);
       const res = await axios.post(`${backendUrl}/api/finance/issue-new-shares`, issueForm, {
-        headers: { token },
+        headers: { token, "Idempotency-Key": idempotencyKey },
       });
       if (res.data.success) {
         toast.success(res.data.message);
+        shareIssuanceIdempotencyKey.current = null;
         setShowIssueSharesModal(false);
         setIssueForm({
           investorName: "",
@@ -259,11 +275,40 @@ const PartnershipEquity = ({ token }) => {
     }
 
     try {
+      const isBuyback = transferForm.transferType === "COMPANY_BUYBACK";
+      if (isBuyback && !transferForm.fromTreasuryAccountId) {
+        return toast.warn("Select the mapped Treasury account funding the share buyback");
+      }
+      const idempotencyKey = isBuyback
+        ? getStableIdempotencyKey(shareBuybackIdempotencyKey, "SHARE-BUYBACK", {
+            sellerPartnerId: transferForm.sellerPartnerId,
+            sharesToTransfer: transferForm.sharesToTransfer,
+            sharePrice: transferForm.sharePrice || "100",
+            fromTreasuryAccountId: transferForm.fromTreasuryAccountId,
+            notes: transferForm.notes || "",
+          })
+        : getStableIdempotencyKey(peerShareTransferIdempotencyKey, "PEER-SHARE-TRANSFER", {
+            sellerPartnerId: transferForm.sellerPartnerId,
+            buyerType: transferForm.buyerType,
+            buyerPartnerId: transferForm.buyerPartnerId,
+            buyerName: transferForm.buyerName,
+            buyerEmail: transferForm.buyerEmail,
+            buyerPhone: transferForm.buyerPhone,
+            buyerRole: transferForm.buyerRole,
+            sharesToTransfer: transferForm.sharesToTransfer,
+            sharePrice: transferForm.sharePrice || "100",
+            notes: transferForm.notes || "",
+          });
       const res = await axios.post(`${backendUrl}/api/finance/transfer-share`, transferForm, {
-        headers: { token },
+        headers: {
+          token,
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
       });
       if (res.data.success) {
         toast.success(res.data.message);
+        if (isBuyback) shareBuybackIdempotencyKey.current = null;
+        else peerShareTransferIdempotencyKey.current = null;
         setShowTransferSharesModal(false);
         setTransferForm({
           sellerPartnerId: "",
@@ -326,11 +371,26 @@ const PartnershipEquity = ({ token }) => {
     }
 
     try {
-      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, { ...loanForm, calendar: "BS" }, {
-        headers: { token },
+      const request = { ...loanForm, calendar: "BS" };
+      const idempotencyKey = getStableIdempotencyKey(loanDisbursementIdempotencyKey, "LOAN-DISBURSEMENT", {
+        investorName: request.investorName,
+        type: request.type,
+        loanType: request.loanType,
+        principalAmount: request.principalAmount,
+        interestRate: request.interestRate,
+        loanTermMonths: request.loanTermMonths,
+        startDate: request.startDate,
+        depositAccountId: request.depositAccountId,
+      });
+      const res = await axios.post(`${backendUrl}/api/finance/record-financing`, request, {
+        headers: {
+          token,
+          "Idempotency-Key": idempotencyKey,
+        },
       });
       if (res.data.success) {
         toast.success(res.data.message);
+        loanDisbursementIdempotencyKey.current = null;
         setShowAddLoanModal(false);
         setLoanForm({
           investorName: "",
@@ -360,16 +420,25 @@ const PartnershipEquity = ({ token }) => {
     if (!selectedLoan || !repayForm.repaymentAmount) return;
 
     try {
+      const request = { liabilityId: selectedLoan.id, ...repayForm };
+      const idempotencyKey = getStableIdempotencyKey(loanRepaymentIdempotencyKey, "LOAN-REPAYMENT", {
+        liabilityId: request.liabilityId,
+        repaymentAmount: request.repaymentAmount,
+        principalPortion: request.principalPortion,
+        interestPortion: request.interestPortion,
+        fromAccountId: request.fromAccountId,
+      });
       const res = await axios.post(
         `${backendUrl}/api/finance/repay-liability`,
         {
-          liabilityId: selectedLoan.id,
-          ...repayForm,
+          ...request,
+          idempotencyKey,
         },
         { headers: { token } }
       );
       if (res.data.success) {
         toast.success(res.data.message);
+        loanRepaymentIdempotencyKey.current = null;
         setShowRepayLoanModal(false);
         setSelectedLoan(null);
         setRepayForm({ repaymentAmount: "", principalPortion: "", interestPortion: "", fromAccountId: "", notes: "" });
@@ -1294,8 +1363,9 @@ const PartnershipEquity = ({ token }) => {
                   value={issueForm.depositAccountId}
                   onChange={(e) => setIssueForm({ ...issueForm, depositAccountId: e.target.value })}
                   className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-semibold"
+                  required
                 >
-                  <option value="">Do not auto-credit treasury balance</option>
+                  <option value="">Select the active mapped NPR Treasury account receiving funds</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.accountName} (Current Balance: {currency}{Number(a.currentBalance).toLocaleString()})
@@ -1824,8 +1894,9 @@ const PartnershipEquity = ({ token }) => {
                   value={loanForm.depositAccountId}
                   onChange={(e) => setLoanForm({ ...loanForm, depositAccountId: e.target.value })}
                   className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900 font-semibold"
+                  required
                 >
-                  <option value="">Do not credit treasury balance</option>
+                  <option value="">Select Treasury account...</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.accountName} (Balance: {currency}{Number(a.currentBalance).toLocaleString()})
@@ -1886,28 +1957,45 @@ const PartnershipEquity = ({ token }) => {
                 />
               </div>
 
+              {repayForm.repaymentAmount && Number(repayForm.repaymentAmount) > 0 && (
+                <p className="rounded-lg bg-amber-50 p-2 text-[10px] text-amber-900">
+                  Legacy monthly estimate for guidance only — interest: {currency}
+                  {Number((Number(selectedLoan.outstandingBalance || 0) * Number(selectedLoan.interestRate || 0) / 1200).toFixed(2)).toLocaleString()},
+                  principal: {currency}
+                  {Math.max(0, Number((Number(repayForm.repaymentAmount) - Number(selectedLoan.outstandingBalance || 0) * Number(selectedLoan.interestRate || 0) / 1200).toFixed(2))).toLocaleString()}.
+                  Enter and verify both portions from the approved repayment evidence; the estimate is not posted automatically.
+                </p>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Principal Portion</label>
+                  <label className="font-bold text-slate-700 block mb-1">Principal Portion *</label>
                   <input
                     type="number"
-                    placeholder="Auto-calculated"
+                    min="0"
+                    step="0.01"
+                    placeholder="Enter confirmed principal"
                     value={repayForm.principalPortion}
                     onChange={(e) => setRepayForm({ ...repayForm, principalPortion: e.target.value })}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                    required
                   />
                 </div>
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Interest Expense Portion</label>
+                  <label className="font-bold text-slate-700 block mb-1">Interest Expense Portion *</label>
                   <input
                     type="number"
-                    placeholder="Auto-calculated"
+                    min="0"
+                    step="0.01"
+                    placeholder="Enter confirmed interest"
                     value={repayForm.interestPortion}
                     onChange={(e) => setRepayForm({ ...repayForm, interestPortion: e.target.value })}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-hidden focus:border-slate-900"
+                    required
                   />
                 </div>
               </div>
+              <p className="text-[10px] text-slate-500">The principal and interest portions must add exactly to the repayment amount.</p>
 
               <div>
                 <label className="font-black text-rose-900 block mb-1">

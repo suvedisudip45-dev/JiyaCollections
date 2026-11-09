@@ -50,6 +50,7 @@ const validateInspectionItems = (requestedItems, inspectedItems) => {
     expected.set(key, (expected.get(key) || 0) + Number(item.quantity || 0));
   }
   const actual = new Map();
+  const normalizedItems = new Map();
   for (const item of inspectedItems) {
     const key = itemKey(item);
     const quantity = Number(item.quantity);
@@ -57,12 +58,23 @@ const validateInspectionItems = (requestedItems, inspectedItems) => {
     if (!Number.isSafeInteger(quantity) || quantity <= 0 || !["GOOD", "DAMAGED"].includes(condition)) {
       throw fail("Each inspected item must have a valid quantity and Good or Damaged condition.", "INVALID_EXCHANGE_INSPECTION");
     }
-    actual.set(key, (actual.get(key) || 0) + quantity);
+    const total = (actual.get(key) || 0) + quantity;
+    if (!Number.isSafeInteger(total)) {
+      throw fail("Inspected quantities exceed the supported inventory limit.", "INVALID_EXCHANGE_INSPECTION");
+    }
+    actual.set(key, total);
+    const conditionKey = JSON.stringify([key, condition]);
+    const existing = normalizedItems.get(conditionKey);
+    normalizedItems.set(conditionKey, {
+      ...item,
+      condition,
+      quantity: (existing?.quantity || 0) + quantity,
+    });
   }
   if (expected.size !== actual.size || [...expected].some(([key, quantity]) => actual.get(key) !== quantity)) {
     throw fail("Inspection quantities must match the exact approved returned items.", "EXCHANGE_INSPECTION_QUANTITY_MISMATCH", 409);
   }
-  return inspectedItems;
+  return [...normalizedItems.values()];
 };
 
 const consumeReservedReplacementStock = async ({ tx, request, reservations, actorId }) => {
@@ -338,6 +350,28 @@ export const processDistributorExchange = async ({
     if (request.status === "COMPLETED") return request;
     if (request.replacementStatus !== "DISPATCHED" || !request.replacementStockConsumedAt) {
       throw fail("Dispatch the replacement before marking it delivered.", "EXCHANGE_REPLACEMENT_NOT_DISPATCHED", 409);
+    }
+    const priceDifference = new Prisma.Decimal(String(request.priceDifference || 0)).toDecimalPlaces(2);
+    if (!priceDifference.isZero()) {
+      const eventType = priceDifference.isPositive()
+        ? "EXCHANGE_UPGRADE_COLLECTION"
+        : "EXCHANGE_DOWNGRADE_REFUND";
+      const paymentEvidence = await tx.distributorCashEvent.findFirst({
+        where: {
+          orderExchangeRequestId: request.id,
+          distributorId,
+          eventType,
+          status: { in: ["VERIFIED", "POSTED"] },
+        },
+        select: { amount: true },
+      });
+      if (!paymentEvidence || !new Prisma.Decimal(String(paymentEvidence.amount)).equals(priceDifference.abs())) {
+        throw fail(
+          "Admin must verify exact-amount exchange collection or refund evidence before you can mark the replacement delivered.",
+          "EXCHANGE_PAYMENT_NOT_VERIFIED",
+          409,
+        );
+      }
     }
     const now = new Date();
     const updated = await tx.orderExchangeRequest.update({

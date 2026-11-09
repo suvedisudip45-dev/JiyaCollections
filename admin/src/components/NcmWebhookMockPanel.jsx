@@ -1,5 +1,7 @@
 import { useState } from "react";
+import axios from "axios";
 import { AlertTriangle, MessageSquare, Send, Truck } from "lucide-react";
+import { backendUrl } from "../App";
 
 const statusPresets = [
   { status: "Pickup Order Created", event: "pickup_order_created" },
@@ -19,27 +21,22 @@ const commentFormats = {
   comments: (orderId, message, timestamp) => ({
     order_id: Number(orderId),
     comments: message,
-    addedBy: "NCM",
+    addedBy: "ADMIN_WEBHOOK_SIMULATION",
     added_time: timestamp,
   }),
   comment: (orderId, message, timestamp) => ({
     orderid: Number(orderId),
     comment: message,
-    addedBy: "NCM",
+    addedBy: "ADMIN_WEBHOOK_SIMULATION",
     added_time: timestamp,
   }),
   message: (orderId, message, timestamp) => ({
     id: Number(orderId),
     message,
-    added_by: "NCM",
+    added_by: "ADMIN_WEBHOOK_SIMULATION",
     added_time: timestamp,
   }),
 };
-
-const webhookSecret = import.meta.env.VITE_NCM_WEBHOOK_SECRET ;
-const webhookBaseUrl = import.meta.env.VITE_NCM_WEBHOOK_BASE_URL
-  || import.meta.env.VITE_BACKEND_URL
-  || "http://localhost:4000";
 
 const NcmWebhookMockPanel = () => {
   const [orderId, setOrderId] = useState("");
@@ -52,41 +49,38 @@ const NcmWebhookMockPanel = () => {
 
   const sendMockWebhook = async (event) => {
     event.preventDefault();
-    if (!webhookSecret) return;
 
     const timestamp = new Date().toISOString();
     const payload = requestType === "status"
       ? { order_id: Number(orderId), ...statusPresets[statusIndex], timestamp }
       : commentFormats[commentFormat](orderId, comment.trim(), timestamp);
-    const endpoint = requestType === "status" ? "order-status" : "order-comment";
-    const url = new URL(`${webhookBaseUrl.replace(/\/+$/, "")}/api/delivery/webhook/ncm/${endpoint}`);
-    url.searchParams.set("secret", webhookSecret);
 
     setSubmitting(true);
     setLastResult(null);
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        mode: "cors",
-        credentials: "omit",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const responseBody = await response.json().catch(() => ({}));
-      if (!response.ok || responseBody.success === false) {
-        throw new Error(responseBody.message || `Webhook returned HTTP ${response.status}`);
-      }
-      setLastResult({ ok: true, payload, response: responseBody });
+      const response = await axios.post(
+        `${backendUrl}/api/delivery/admin/ncm/webhook/simulate`,
+        { type: requestType, payload },
+      );
+      if (!response.data?.success) throw new Error(response.data?.message || "Webhook simulation failed.");
+      setLastResult({ ok: true, payload, response: response.data });
     } catch (error) {
-      setLastResult({ ok: false, payload, response: { message: error.message } });
+      setLastResult({ ok: false, payload, response: { message: error.response?.data?.message || error.message } });
     } finally {
       setSubmitting(false);
     }
   };
 
-  const validOrderId = Number.isInteger(Number(orderId)) && Number(orderId) > 0;
+  const validOrderId = Number.isSafeInteger(Number(orderId)) && Number(orderId) > 0;
   const validComment = requestType !== "comment" || Boolean(comment.trim());
-  const canSubmit = Boolean(webhookSecret) && validOrderId && validComment && !submitting;
+  const canSubmit = validOrderId && validComment && !submitting;
+  const lastResultTitle = !lastResult?.ok
+    ? "Simulation request failed"
+    : requestType === "status" && lastResult.response?.updates?.length === 0
+      ? "Test event accepted; no workflow matched"
+      : requestType === "comment" && !lastResult.response?.matchedDelivery
+        ? "Test comment accepted; no delivery matched"
+        : "Simulation processed";
 
   return (
     <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4" aria-labelledby="ncm-mock-title">
@@ -97,7 +91,7 @@ const NcmWebhookMockPanel = () => {
             <h2 id="ncm-mock-title" className="text-sm font-bold text-slate-900">NCM Webhook Simulator</h2>
             <span className="rounded border border-amber-300 bg-white px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-800">Demo</span>
           </div>
-          <p className="mt-1 text-xs text-slate-600">Send sample NCM callbacks directly to the public webhook. No user token is sent.</p>
+          <p className="mt-1 text-xs text-slate-600">Send a sample event through the authenticated Admin API. Enable the simulator on the backend; the NCM webhook secret is never sent to the browser.</p>
         </div>
         <div className="flex shrink-0 gap-1 rounded-lg border border-slate-200 bg-white p-1">
           <button
@@ -119,12 +113,12 @@ const NcmWebhookMockPanel = () => {
         </div>
       </div>
 
-      {!webhookSecret && (
-        <div className="mt-3 flex items-start gap-2 rounded-lg border border-rose-200 bg-white p-3 text-xs text-rose-800">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>Set <code>VITE_NCM_WEBHOOK_SECRET</code> in the admin build environment to enable webhook simulation.</p>
-        </div>
-      )}
+      <div role="note" className="mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-white/80 p-3 text-xs text-amber-950">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+        <p>
+          Use only a synthetic, unmatched test ID—not a real NCM order ID. IDs linked to a delivery, transfer, return, or exchange are rejected. A simulated event is not a callback from NCM.
+        </p>
+      </div>
 
       <form onSubmit={sendMockWebhook} className="mt-3 grid gap-3 md:grid-cols-[minmax(150px,0.7fr)_minmax(220px,1.3fr)_auto] md:items-end">
         <label className="block text-xs font-semibold text-slate-700">
@@ -191,9 +185,13 @@ const NcmWebhookMockPanel = () => {
       </form>
 
       {lastResult && (
-        <div className={`mt-3 rounded-lg border p-3 ${lastResult.ok ? "border-emerald-200 bg-white" : "border-rose-200 bg-white"}`}>
+        <div
+          role={lastResult.ok ? "status" : "alert"}
+          aria-live="polite"
+          className={`mt-3 rounded-lg border p-3 ${lastResult.ok ? "border-emerald-200 bg-white" : "border-rose-200 bg-white"}`}
+        >
           <p className={`text-xs font-bold ${lastResult.ok ? "text-emerald-700" : "text-rose-700"}`}>
-            {lastResult.ok ? "Webhook accepted" : "Webhook request failed"}
+            {lastResultTitle}
           </p>
           <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] text-slate-600">
             {JSON.stringify({ payload: lastResult.payload, response: lastResult.response }, null, 2)}

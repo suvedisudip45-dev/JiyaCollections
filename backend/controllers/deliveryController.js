@@ -28,6 +28,39 @@ import { validateCodTransferBankDetails } from "../services/ncmClient.js";
 
 const webhookSecret = process.env.NCM_WEBHOOK_SECRET || "";
 
+const findNcmSimulationOrderMatch = async (numericOrderId) => {
+  const stringOrderId = String(numericOrderId);
+  const [delivery, stockTransfer, customerReturn, exchange] = await Promise.all([
+    prisma.deliveryOrder.findFirst({
+      where: {
+        OR: [
+          { ncmOrderId: numericOrderId },
+          { vendorReference: stringOrderId },
+          { orderId: stringOrderId },
+          { id: stringOrderId },
+        ],
+      },
+      select: { id: true },
+    }),
+    prisma.stockTransferShipment.findFirst({
+      where: {
+        bookingMode: "NCM",
+        OR: [{ ncmOrderId: stringOrderId }, { externalReference: stringOrderId }],
+      },
+      select: { id: true },
+    }),
+    prisma.customerReturn.findFirst({
+      where: { OR: [{ originalNcmOrderId: numericOrderId }, { ncmReturnOrderId: numericOrderId }] },
+      select: { id: true },
+    }),
+    prisma.orderExchangeRequest.findFirst({
+      where: { OR: [{ ncmReturnOrderId: numericOrderId }, { ncmReplacementOrderId: numericOrderId }] },
+      select: { id: true },
+    }),
+  ]);
+  return delivery || stockTransfer || customerReturn || exchange;
+};
+
 export const getNcmSettlementFailureMessage = (error, submittedBankDetails) => {
   const response = error?.response;
   const providerHttpError = /^NCM_HTTP_\d{3}$/.test(String(error?.code || ""));
@@ -264,6 +297,86 @@ export const receiveWebhook = async (req, res) => {
 
 export const receiveOrderStatusWebhook = (req, res) => receiveWebhook(req, res);
 
+export const adminSimulateNcmWebhook = async (req, res) => {
+  const simulatorEnabled = process.env.NCM_WEBHOOK_SIMULATOR_ENABLED === "true";
+  const isProduction = process.env.NODE_ENV === "production" && process.env.APP_ENV !== "staging";
+  if (!simulatorEnabled || isProduction) {
+    return res.status(404).json({ success: false, message: "NCM webhook simulation is disabled." });
+  }
+
+  const { type, payload } = req.body || {};
+  if (type === "status") {
+    const validation = validateNcmWebhookPayload(payload);
+    if (!validation.valid) {
+      return res.status(validation.statusCode || 400).json({
+        success: false,
+        message: validation.message,
+      });
+    }
+    if (validation.identifiers.length !== 1 || !/^\d+$/.test(validation.identifiers[0])) {
+      return res.status(400).json({ success: false, message: "Simulation requires exactly one numeric NCM order ID." });
+    }
+
+    try {
+      const numericOrderId = Number(validation.identifiers[0]);
+      if (await findNcmSimulationOrderMatch(numericOrderId)) {
+        return res.status(409).json({
+          success: false,
+          message: "Simulation is restricted to unmatched test order IDs and cannot alter a linked delivery, transfer, return, or exchange.",
+        });
+      }
+      const result = await storeAndApplyWebhook(payload, {
+        onStockTransferStatus: applyNcmStockTransferWebhook,
+        source: "ADMIN_WEBHOOK_SIMULATION",
+        actorId: req.auth?.accountId || null,
+      });
+      return res.json({
+        success: true,
+        simulated: true,
+        duplicate: result.duplicate,
+        updates: result.updated,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Unable to apply simulated NCM status.",
+      });
+    }
+  }
+
+  if (type === "comment") {
+    const commentPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    const orderId = Number(commentPayload.order_id ?? commentPayload.orderid ?? commentPayload.id);
+    const rawComment = commentPayload.comments ?? commentPayload.comment ?? commentPayload.message;
+    const comments = typeof rawComment === "string" ? rawComment.trim() : "";
+    if (!Number.isSafeInteger(orderId) || orderId <= 0 || !comments || comments.length > 2000) {
+      return res.status(400).json({ success: false, message: "Simulation requires a numeric order ID and comment of 1–2000 characters." });
+    }
+    try {
+      if (await findNcmSimulationOrderMatch(orderId)) {
+        return res.status(409).json({
+          success: false,
+          message: "Simulation is restricted to unmatched test order IDs and cannot alter a linked delivery, transfer, return, or exchange.",
+        });
+      }
+      const result = await storeOrderCommentWebhook({
+        ...commentPayload,
+        order_id: orderId,
+        comments,
+        addedBy: "ADMIN_WEBHOOK_SIMULATION",
+      });
+      return res.json({ success: true, simulated: true, duplicate: result.duplicate, matchedDelivery: result.matchedDelivery });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Unable to store simulated NCM comment.",
+      });
+    }
+  }
+
+  return res.status(400).json({ success: false, message: "Simulation type must be status or comment." });
+};
+
 export const receiveOrderCommentWebhook = async (req, res) => {
   if (!isWebhookAuthorized(req)) {
     return res.status(401).json({ status: "unauthorized", success: false, message: "Unauthorized webhook" });
@@ -424,10 +537,17 @@ export const adminResolveNcmDeliveryReconciliation = async (req, res) => {
   }
 };
 
-export const adminReconcileActive = async (_req, res) => {
+export const adminReconcileActive = async (req, res) => {
+  const afterId = req.query.afterId;
+  if (afterId !== undefined && (typeof afterId !== "string" || !afterId.trim() || afterId.length > 191)) {
+    return res.status(400).json({ success: false, message: "afterId must be a non-empty delivery ID of at most 191 characters." });
+  }
   try {
-    const deliveries = await reconcileActiveDeliveries();
-    res.json({ success: true, count: deliveries.length });
+    const result = await reconcileActiveDeliveries({
+      actorId: req.auth?.accountId || null,
+      afterId: afterId?.trim() || null,
+    });
+    res.status(result.failedCount > 0 ? 207 : 200).json({ success: result.failedCount === 0, ...result });
   } catch (error) {
     res.status(502).json({ success: false, message: error.message });
   }
